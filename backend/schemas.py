@@ -21,7 +21,7 @@ class PilotStudyCreate(BaseModel):
     description: str
     estimated_completion_time: int = Field(ge=1)
     reward: int = Field(ge=1)
-    pilot_hours: int = Field(default=5, ge=1)
+    pilot_places: int = Field(default=5, ge=1)
     device_compatibility: list[Literal["desktop", "tablet", "mobile"]] = Field(
         default_factory=lambda: ["desktop"]
     )
@@ -29,6 +29,26 @@ class PilotStudyCreate(BaseModel):
 
 class ExperimentRoundCreate(BaseModel):
     places: int = Field(ge=1)
+
+
+class ExperimentRoundUpdate(BaseModel):
+    description: Optional[str] = None
+    estimated_completion_time: Optional[int] = Field(default=None, ge=1)
+    reward: Optional[int] = Field(default=None, ge=1)
+    places: Optional[int] = Field(default=None, ge=1)
+    device_compatibility: Optional[list[Literal["desktop", "tablet", "mobile"]]] = None
+
+    def has_any(self) -> bool:
+        return any(
+            getattr(self, field) is not None
+            for field in (
+                "description",
+                "estimated_completion_time",
+                "reward",
+                "places",
+                "device_compatibility",
+            )
+        )
 
 
 class RecommendationResponse(BaseModel):
@@ -45,6 +65,10 @@ class ExperimentRoundResponse(BaseModel):
     prolific_study_id: str
     prolific_study_status: ProlificStudyStatus
     places_requested: int
+    description: str
+    estimated_completion_time: int
+    reward: int
+    device_compatibility: list[str]
     created_at: datetime
     prolific_study_url: str
 
@@ -53,6 +77,8 @@ class ExperimentRoundResponse(BaseModel):
 
 class PlatformStatus(BaseModel):
     prolific_enabled: bool
+    currency_code: str | None = None
+    currency_symbol: str | None = None
 
 
 # Experiment schemas
@@ -90,6 +116,7 @@ class QuestionResponse(BaseModel):
     question_text: str
     options: Optional[str] = None
     question_type: str
+    parent_question_text: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

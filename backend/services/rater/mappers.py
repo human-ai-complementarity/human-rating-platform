@@ -10,13 +10,17 @@ def build_session_end_time(session_start: datetime) -> datetime:
     return session_start + timedelta(minutes=SESSION_DURATION_MINUTES)
 
 
-def build_question_response(question: Question) -> QuestionResponse:
+def build_question_response(
+    question: Question,
+    parent_question_text: str | None = None,
+) -> QuestionResponse:
     return QuestionResponse(
         id=question.id,
         question_id=question.question_id,
         question_text=question.question_text,
         options=question.options,
         question_type=question.question_type,
+        parent_question_text=parent_question_text,
     )
 
 

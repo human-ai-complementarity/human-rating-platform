@@ -24,6 +24,10 @@ type ExperimentRoundRecord = {
   prolific_study_id: string;
   prolific_study_status: 'UNPUBLISHED' | 'ACTIVE' | 'AWAITING_REVIEW' | 'COMPLETED';
   places_requested: number;
+  description: string;
+  estimated_completion_time: number;
+  reward: number;
+  device_compatibility: string[];
   created_at: string;
   prolific_study_url: string;
 };
@@ -117,6 +121,10 @@ function buildRound(state: MockState, round: Partial<ExperimentRoundRecord>): Ex
     prolific_study_id: `study-${state.nextRoundId}`,
     prolific_study_status: 'UNPUBLISHED',
     places_requested: 0,
+    description: 'Mock study description',
+    estimated_completion_time: 60,
+    reward: 900,
+    device_compatibility: ['desktop'],
     created_at: '2026-03-09T00:00:00Z',
     prolific_study_url: 'https://app.prolific.com/researcher/workspaces/studies/mock-study',
     ...round,
@@ -157,6 +165,8 @@ async function installApiMocks(
     if (pathname === '/api/admin/platform-status') {
       await fulfillJson(route, 200, {
         prolific_enabled: prolificEnabled,
+        currency_code: null,
+        currency_symbol: null,
       });
       return;
     }
@@ -259,13 +269,13 @@ async function installApiMocks(
         description: string;
         estimated_completion_time: number;
         reward: number;
-        pilot_hours: number;
+        pilot_places: number;
       };
       const pilot = buildRound(state, {
         round_number: 0,
         prolific_study_id: 'study-pilot-1',
         prolific_study_status: 'UNPUBLISHED',
-        places_requested: payload.pilot_hours,
+        places_requested: payload.pilot_places,
         prolific_study_url: 'https://app.prolific.com/researcher/workspaces/studies/study-pilot-1',
       });
       state.rounds[experimentId] = [pilot];
@@ -421,7 +431,7 @@ test('create experiment, upload CSV, run pilot, close it, and launch a round', a
   await page.getByTestId('pilot-description-input').fill('Pilot description for smoke coverage');
   await page.getByTestId('pilot-estimated-completion-time-input').fill('60');
   await page.getByTestId('pilot-reward-input').fill('900');
-  await page.getByTestId('pilot-hours-input').fill('5');
+  await page.getByTestId('pilot-places-input').fill('5');
   await page.getByTestId('run-pilot-button').click();
 
   await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();

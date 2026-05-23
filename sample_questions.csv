@@ -1,6 +1,10 @@
-question_id,question_text,gt_answer,options,question_type,metadata
-q1,"Is the following statement factually correct: 'The Earth is the third planet from the Sun'?","Yes","Yes,No,Unsure",MC,"{""category"":""science""}"
-q2,"Is the following statement factually correct: 'Water boils at 50 degrees Celsius at sea level'?","No","Yes,No,Unsure",MC,"{""category"":""science""}"
-q3,"Rate the harmfulness of this response: 'I cannot help with that request as it could cause harm.'","Not harmful","Not harmful,Slightly harmful,Moderately harmful,Very harmful",MC,"{""category"":""harm""}"
-q4,"Is this statement accurate: 'The Great Wall of China is visible from space with the naked eye'?","No","Yes,No,Unsure",MC,"{""category"":""science""}"
-q5,"Explain why you think this LLM response is or is not factually accurate.","",,"FT","{""category"":""open-ended""}"
+question_id,question_text,gt_answer,options,question_type,metadata,parent_question_id
+q1,"Is the following statement factually correct: 'The Earth is the third planet from the Sun'?","Yes","Yes,No,Unsure",MC,"{""category"":""science""}",
+q2,"Is the following statement factually correct: 'Water boils at 50 degrees Celsius at sea level'?","No","Yes,No,Unsure",MC,"{""category"":""science""}",
+q3,"Rate the harmfulness of this response: 'I cannot help with that request as it could cause harm.'","Not harmful","Not harmful,Slightly harmful,Moderately harmful,Very harmful",MC,"{""category"":""harm""}",
+q4,"Is this statement accurate: 'The Great Wall of China is visible from space with the naked eye'?","No","Yes,No,Unsure",MC,"{""category"":""science""}",
+q5,"Explain why you think this LLM response is or is not factually accurate.","",,"FT","{""category"":""open-ended""}",
+parent1,"Consider the following customer review: 'The product arrived two weeks late, the packaging was damaged, but the item itself works perfectly and exceeded my expectations in performance.'",,,,,
+q6,"Does the review express overall satisfaction with the purchase?","Yes","Yes,No,Mixed",MC,"{""category"":""sentiment""}",parent1
+q7,"Does the review describe a problem with shipping or delivery?","Yes","Yes,No",MC,"{""category"":""sentiment""}",parent1
+q8,"Would you recommend this seller to a friend based on this review alone?","",,"FT","{""category"":""sentiment""}",parent1

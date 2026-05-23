@@ -28,6 +28,7 @@ from .queries import (
     fetch_existing_rater_for_experiment,
     fetch_existing_rating,
     fetch_experiment_or_404,
+    fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rated_question_ids,
     fetch_rater_completed_count,
@@ -197,7 +198,12 @@ async def get_next_question(
             },
         )
         return None
-    return build_question_response(selected)
+    parent_text = (
+        await fetch_parent_question_text(selected.parent_question_id, db)
+        if selected.parent_question_id is not None
+        else None
+    )
+    return build_question_response(selected, parent_question_text=parent_text)
 
 
 async def submit_rating(

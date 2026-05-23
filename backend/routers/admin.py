@@ -9,6 +9,7 @@ from database import get_session
 from schemas import (
     ExperimentRoundCreate,
     ExperimentRoundResponse,
+    ExperimentRoundUpdate,
     ExperimentCreate,
     ExperimentResponse,
     ExperimentUpdate,
@@ -17,6 +18,7 @@ from schemas import (
     RecommendationResponse,
 )
 from services import admin as admin_service
+from services.admin.prolific import get_cached_workspace_currency
 from auth import require_admin, get_admin_manager
 from services.authn import verify_clerk_token_and_get_email
 
@@ -75,7 +77,12 @@ async def admin_logout(manager=Depends(get_admin_manager)):
 @router.get("/platform-status", response_model=PlatformStatus)
 async def get_platform_status():
     settings = get_settings()
-    return PlatformStatus(prolific_enabled=settings.prolific.enabled)
+    code, symbol = await get_cached_workspace_currency(settings.prolific)
+    return PlatformStatus(
+        prolific_enabled=settings.prolific.enabled,
+        currency_code=code,
+        currency_symbol=symbol,
+    )
 
 
 @secure_router.post("/experiments", response_model=ExperimentResponse)
@@ -233,6 +240,24 @@ async def list_experiment_rounds(
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.list_experiment_rounds(experiment_id=experiment_id, db=db)
+
+
+@secure_router.patch(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}",
+    response_model=ExperimentRoundResponse,
+)
+async def update_experiment_round(
+    experiment_id: int,
+    round_id: int,
+    payload: ExperimentRoundUpdate,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.update_experiment_round(
+        experiment_id=experiment_id,
+        round_id=round_id,
+        payload=payload,
+        db=db,
+    )
 
 
 @secure_router.post("/experiments/{experiment_id}/prolific/rounds/{round_id}/publish")

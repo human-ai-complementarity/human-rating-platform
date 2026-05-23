@@ -43,14 +43,29 @@ class HumanAsAToolMethod(AssistanceMethod):
         self._decomposer = SubtaskDecomposer()
         self._estimator = confidence_estimator
 
-    async def start(self, question: Question, params: dict) -> InteractionStep:
+    async def start(
+        self,
+        question: Question,
+        params: dict,
+        *,
+        parent_question_text: str | None = None,
+    ) -> InteractionStep:
         settings = get_settings()
         model = params.get("model") or settings.llm.decomposition_model
         max_rounds = int(params.get("max_rounds", 5))
         max_subtasks = int(params.get("max_subtasks", 5))
         confidence_threshold = int(params.get("confidence_threshold", _CONFIDENCE_THRESHOLD))
 
-        question_text = question.question_text
+        # When the row is a sub-question, prepend the parent's text as Context so the
+        # LLM sees the same framing the rater does. We bake this into the effective
+        # question_text once here so it flows into decomposer.start, _score_subtasks,
+        # and into state for advance() to reuse.
+        if parent_question_text:
+            question_text = (
+                f"Context:\n{parent_question_text}\n\nQuestion: {question.question_text}"
+            )
+        else:
+            question_text = question.question_text
         options = question.options or ""
 
         result = await self._decomposer.start(question_text, options, max_subtasks, model)

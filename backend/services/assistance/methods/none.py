@@ -7,5 +7,11 @@ from ..base import AssistanceMethod, InteractionStep, StepType
 
 
 class NoAssistance(AssistanceMethod):
-    async def start(self, question: Question, params: dict) -> InteractionStep:
+    async def start(
+        self,
+        question: Question,
+        params: dict,
+        *,
+        parent_question_text: str | None = None,
+    ) -> InteractionStep:
         return InteractionStep(type=StepType.NONE, is_terminal=True)

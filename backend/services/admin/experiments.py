@@ -14,6 +14,7 @@ from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .prolific import delete_study
 from services.assistance.registry import get_method
+from services.queries import parent_question_ids_subquery
 from .queries import (
     fetch_experiment_or_404,
     fetch_total_questions_for_experiment,
@@ -67,6 +68,7 @@ async def list_experiments(
             Question.experiment_id,
             func.count(Question.id).label("question_count"),
         )
+        .where(Question.id.notin_(parent_question_ids_subquery()))
         .group_by(Question.experiment_id)
         .subquery()
     )
@@ -204,6 +206,7 @@ async def get_experiment_stats(
         .join(Rating, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
         .where(Question.experiment_id == experiment_id)
+        .where(Question.id.notin_(parent_question_ids_subquery()))
         .group_by(Question.id)
         .having(func.count(Rating.id) >= experiment.num_ratings_per_question)
     )

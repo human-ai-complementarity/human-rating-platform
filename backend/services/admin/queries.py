@@ -4,7 +4,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Question, Rating, Rater
-from services.queries import fetch_experiment_or_404  # noqa: F401 — re-exported for backwards compat
+from services.queries import (  # noqa: F401 — re-exported for backwards compat
+    fetch_experiment_or_404,
+    parent_question_ids_subquery,
+)
 
 
 async def fetch_ratings_for_experiment(
@@ -30,7 +33,9 @@ async def fetch_total_questions_for_experiment(
 ) -> int:
     total_questions = (
         await db.execute(
-            select(func.count(Question.id)).where(Question.experiment_id == experiment_id)
+            select(func.count(Question.id))
+            .where(Question.experiment_id == experiment_id)
+            .where(Question.id.notin_(parent_question_ids_subquery()))
         )
     ).scalar_one()
     return int(total_questions or 0)

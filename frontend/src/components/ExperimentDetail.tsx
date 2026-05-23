@@ -34,15 +34,25 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
   const [includePreview, setIncludePreview] = useState(false);
   const [publishingRoundId, setPublishingRoundId] = useState<number | null>(null);
   const [closingRoundId, setClosingRoundId] = useState<number | null>(null);
+  const [editingRoundId, setEditingRoundId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState<{
+    description: string;
+    estimated_completion_time: number;
+    reward: number;
+    places: number;
+  }>({ description: '', estimated_completion_time: 60, reward: 900, places: 1 });
+  const [savingEdit, setSavingEdit] = useState(false);
   const [prolificEnabled, setProlificEnabled] = useState<'loading' | boolean>('loading');
   const [platformStatusMessage, setPlatformStatusMessage] = useState<string | null>(null);
+  const [currencyCode, setCurrencyCode] = useState<string | null>(null);
+  const [currencySymbol, setCurrencySymbol] = useState<string | null>(null);
   const [rounds, setRounds] = useState<ExperimentRound[]>([]);
   const [recommendation, setRecommendation] = useState<RecommendationResponse | null>(null);
   const [pilotForm, setPilotForm] = useState<PilotStudyCreate>({
     description: '',
     estimated_completion_time: 60,
     reward: 900,
-    pilot_hours: 5,
+    pilot_places: 5,
     device_compatibility: ['desktop'],
   });
 
@@ -145,6 +155,8 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
     api.getPlatformStatus()
       .then((s) => {
         setProlificEnabled(s.prolific_enabled);
+        setCurrencyCode(s.currency_code);
+        setCurrencySymbol(s.currency_symbol);
         setPlatformStatusMessage(null);
       })
       .catch(() => {
@@ -217,6 +229,37 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
       setError(err instanceof Error ? err.message : 'Failed to publish study');
     } finally {
       setPublishingRoundId(null);
+    }
+  };
+
+  const handleStartEditRound = (round: ExperimentRound) => {
+    setEditingRoundId(round.id);
+    setEditForm({
+      description: round.description,
+      estimated_completion_time: round.estimated_completion_time,
+      reward: round.reward,
+      places: round.places_requested,
+    });
+    setError(null);
+  };
+
+  const handleCancelEditRound = () => {
+    setEditingRoundId(null);
+  };
+
+  const handleSaveEditRound = async (roundId: number) => {
+    setError(null);
+    setSavingEdit(true);
+    try {
+      await api.editExperimentRound(experiment.id, roundId, editForm);
+      setSuccess('Round updated on Prolific.');
+      setTimeout(() => setSuccess(null), 3000);
+      setEditingRoundId(null);
+      await loadRounds();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update round');
+    } finally {
+      setSavingEdit(false);
     }
   };
 
@@ -730,11 +773,20 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                           >
                             Open on Prolific
                           </button>
+                          {round.prolific_study_status === 'UNPUBLISHED' && editingRoundId !== round.id && (
+                            <button
+                              data-testid={`edit-round-${round.round_number}`}
+                              onClick={() => handleStartEditRound(round)}
+                              style={{ ...styles.secondaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
+                            >
+                              Edit
+                            </button>
+                          )}
                           {round.prolific_study_status === 'UNPUBLISHED' && (
                             <button
                               data-testid={`publish-round-${round.round_number}`}
                               onClick={() => handlePublishRound(round.id, round.round_number)}
-                              disabled={publishingRoundId === round.id}
+                              disabled={publishingRoundId === round.id || editingRoundId === round.id}
                               style={{ ...styles.primaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
                             >
                               {publishingRoundId === round.id ? 'Publishing...' : 'Publish'}
@@ -751,6 +803,83 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                             </button>
                           )}
                         </div>
+                        {editingRoundId === round.id && (
+                          <div
+                            data-testid={`edit-round-form-${round.round_number}`}
+                            style={{ marginTop: '12px', padding: '12px', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #e0e0e0' }}
+                          >
+                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
+                              <label style={{ ...styles.label, fontSize: '12px' }}>Description</label>
+                              <textarea
+                                data-testid={`edit-round-description-${round.round_number}`}
+                                value={editForm.description}
+                                onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                                rows={3}
+                                style={{ ...styles.input, fontFamily: 'inherit', resize: 'vertical' as const }}
+                              />
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+                              <div>
+                                <label style={{ ...styles.label, fontSize: '12px' }}>Time (min)</label>
+                                <input
+                                  data-testid={`edit-round-time-${round.round_number}`}
+                                  type="number"
+                                  min="1"
+                                  value={editForm.estimated_completion_time}
+                                  onChange={(e) => setEditForm({ ...editForm, estimated_completion_time: parseInt(e.target.value) || 0 })}
+                                  style={styles.input}
+                                />
+                              </div>
+                              <div>
+                                <label style={{ ...styles.label, fontSize: '12px' }}>
+                                  Reward (minor units{currencyCode ? ` of ${currencyCode}` : ''})
+                                </label>
+                                <input
+                                  data-testid={`edit-round-reward-${round.round_number}`}
+                                  type="number"
+                                  min="1"
+                                  value={editForm.reward}
+                                  onChange={(e) => setEditForm({ ...editForm, reward: parseInt(e.target.value) || 0 })}
+                                  style={styles.input}
+                                />
+                                <div style={{ ...styles.hint, fontSize: '11px', marginTop: '4px' }}>
+                                  {currencyCode && currencySymbol
+                                    ? `e.g., 900 = ${currencySymbol}9.00`
+                                    : 'e.g., 900 = 9.00'}
+                                </div>
+                              </div>
+                              <div>
+                                <label style={{ ...styles.label, fontSize: '12px' }}>Places</label>
+                                <input
+                                  data-testid={`edit-round-places-${round.round_number}`}
+                                  type="number"
+                                  min="1"
+                                  value={editForm.places}
+                                  onChange={(e) => setEditForm({ ...editForm, places: parseInt(e.target.value) || 0 })}
+                                  style={styles.input}
+                                />
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                              <button
+                                data-testid={`edit-round-cancel-${round.round_number}`}
+                                onClick={handleCancelEditRound}
+                                disabled={savingEdit}
+                                style={{ ...styles.secondaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                data-testid={`edit-round-save-${round.round_number}`}
+                                onClick={() => handleSaveEditRound(round.id)}
+                                disabled={savingEdit}
+                                style={{ ...styles.primaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
+                              >
+                                {savingEdit ? 'Saving...' : 'Save'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -833,7 +962,9 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                       />
                     </div>
                     <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-reward" style={styles.label}>Reward (cents)</label>
+                      <label htmlFor="pilot-reward" style={styles.label}>
+                        Reward (minor units{currencyCode ? ` of ${currencyCode}` : ''})
+                      </label>
                       <input
                         id="pilot-reward"
                         data-testid="pilot-reward-input"
@@ -844,16 +975,20 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                         required
                         style={styles.input}
                       />
-                      <div style={styles.hint}>Payment in cents (e.g., 900 = $9.00)</div>
+                      <div style={styles.hint}>
+                        {currencyCode && currencySymbol
+                          ? `Smallest unit of ${currencyCode} (e.g., 900 = ${currencySymbol}9.00)`
+                          : 'Smallest unit of workspace currency (e.g., 900 = 9.00)'}
+                      </div>
                     </div>
                     <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-hours" style={styles.label}>Pilot Hours (# of raters)</label>
+                      <label htmlFor="pilot-places" style={styles.label}>Number of Raters</label>
                       <input
-                        id="pilot-hours"
-                        data-testid="pilot-hours-input"
+                        id="pilot-places"
+                        data-testid="pilot-places-input"
                         type="number"
-                        value={pilotForm.pilot_hours}
-                        onChange={(e) => setPilotForm({ ...pilotForm, pilot_hours: parseInt(e.target.value) || 0 })}
+                        value={pilotForm.pilot_places}
+                        onChange={(e) => setPilotForm({ ...pilotForm, pilot_places: parseInt(e.target.value) || 0 })}
                         min="1"
                         required
                         style={styles.input}
@@ -942,7 +1077,7 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                     style={{ fontSize: '14px' }}
                   />
                   <div style={styles.hint}>
-                    Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata. Supports long-context rows and files up to 200MB.
+                    Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id. Supports long-context rows and files up to 200MB.
                   </div>
                 </div>
                 <button

@@ -58,11 +58,13 @@ async def upload_questions_csv(
     try:
         reader = csv.DictReader(text_stream)
         required_fields = ["question_id", "question_text"]
-        questions_added = 0
+        rows: list[dict[str, Any]] = []
+        new_questions: list[Question] = []
 
         for row in reader:
             validate_csv_required_fields(row, required_fields)
-            db.add(
+            rows.append(row)
+            new_questions.append(
                 Question(
                     experiment_id=experiment_id,
                     question_id=row["question_id"],
@@ -73,7 +75,7 @@ async def upload_questions_csv(
                     extra_data=row.get("metadata") or "{}",
                 )
             )
-            questions_added += 1
+            db.add(new_questions[-1])
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded") from exc
     except csv.Error as exc:
@@ -84,6 +86,52 @@ async def upload_questions_csv(
         except Exception:
             pass
 
+    # Flush so newly inserted rows have DB ids before we resolve parent references.
+    await db.flush()
+
+    parent_refs = {
+        (row.get("parent_question_id") or "").strip()
+        for row in rows
+        if (row.get("parent_question_id") or "").strip()
+    }
+    if parent_refs:
+        # Build {question_id_string -> db id} for this experiment, covering both rows
+        # just inserted and any pre-existing ones from earlier uploads.
+        existing = (
+            await db.execute(
+                select(Question.question_id, Question.id).where(
+                    Question.experiment_id == experiment_id
+                )
+            )
+        ).all()
+        question_id_to_db_id: dict[str, int] = {}
+        for qid_string, db_id in existing:
+            # Last write wins on duplicate question_id strings — questions already
+            # allow duplicates within an experiment, and the CSV-string parent ref
+            # is inherently ambiguous in that case. We pick whichever the DB returns.
+            question_id_to_db_id[qid_string] = db_id
+
+        for question, row in zip(new_questions, rows):
+            parent_ref = (row.get("parent_question_id") or "").strip()
+            if not parent_ref:
+                continue
+            if parent_ref == question.question_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Question '{question.question_id}' cannot reference itself as parent",
+                )
+            parent_db_id = question_id_to_db_id.get(parent_ref)
+            if parent_db_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"parent_question_id '{parent_ref}' (referenced by '{question.question_id}') "
+                        f"does not match any question in this experiment"
+                    ),
+                )
+            question.parent_question_id = parent_db_id
+
+    questions_added = len(new_questions)
     db.add(
         Upload(
             experiment_id=experiment_id,

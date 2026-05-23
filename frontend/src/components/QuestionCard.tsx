@@ -3,6 +3,8 @@ import type { Question } from '../types';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
 const openedLongContextDocumentKeys = new Set<string>();
+// 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
+const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
 
 interface QuestionCardProps {
   question: Question;
@@ -201,11 +203,34 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       letterSpacing: '0.5px',
       marginBottom: '12px',
     },
+    parentBox: {
+      background: '#f0f4f8',
+      border: '1px solid #d6e0ea',
+      borderRadius: '8px',
+      padding: '16px 20px',
+      marginBottom: '20px',
+    },
+    parentLabel: {
+      fontSize: '11px',
+      fontWeight: 600,
+      color: '#5a7896',
+      textTransform: 'uppercase' as const,
+      letterSpacing: '0.5px',
+      marginBottom: '6px',
+    },
+    parentText: {
+      fontSize: '15px',
+      lineHeight: 1.5,
+      color: '#3a4a5c',
+      whiteSpace: 'pre-wrap' as const,
+      margin: 0,
+    },
     questionText: {
       fontSize: '20px',
       lineHeight: 1.5,
       color: '#333',
       marginBottom: '28px',
+      whiteSpace: 'pre-wrap' as const,
     },
     documentLink: {
       display: 'inline-flex',
@@ -292,11 +317,15 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       cursor: 'pointer',
     },
     sliderLabels: {
-      display: 'flex',
-      justifyContent: 'space-between',
+      position: 'relative' as const,
+      height: '14px',
       marginTop: '8px',
-      fontSize: '12px',
+      fontSize: '11px',
       color: '#888',
+    },
+    sliderLabel: {
+      position: 'absolute' as const,
+      whiteSpace: 'nowrap' as const,
     },
     submitButton: {
       width: '100%',
@@ -315,6 +344,13 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   return (
     <div style={styles.card}>
       <div style={styles.questionId}>Question {question.question_id}</div>
+
+      {question.parent_question_text && (
+        <div style={styles.parentBox}>
+          <div style={styles.parentLabel}>Context</div>
+          <p style={styles.parentText}>{question.parent_question_text}</p>
+        </div>
+      )}
 
       {display.documentText && documentUrl && (
         <>
@@ -381,7 +417,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         <div style={styles.confidenceSection}>
           <div style={styles.confidenceLabel}>
             <span style={styles.confidenceTitle}>How confident are you?</span>
-            <span style={styles.confidenceValue}>{confidence}/5</span>
+            <span style={styles.confidenceValue}>{CONFIDENCE_LABELS[confidence - 1]} confident</span>
           </div>
           <input
             type="range"
@@ -392,8 +428,25 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             style={styles.slider}
           />
           <div style={styles.sliderLabels}>
-            <span>Not confident</span>
-            <span>Very confident</span>
+            {CONFIDENCE_LABELS.map((label, i) => {
+              const pct = (i / (CONFIDENCE_LABELS.length - 1)) * 100;
+              const isFirst = i === 0;
+              const isLast = i === CONFIDENCE_LABELS.length - 1;
+              return (
+                <span
+                  key={label}
+                  style={{
+                    ...styles.sliderLabel,
+                    left: `${pct}%`,
+                    transform: isFirst ? 'none' : isLast ? 'translateX(-100%)' : 'translateX(-50%)',
+                    fontWeight: confidence === i + 1 ? 600 : 400,
+                    color: confidence === i + 1 ? '#4a90d9' : '#888',
+                  }}
+                >
+                  {label}
+                </span>
+              );
+            })}
           </div>
         </div>
       )}

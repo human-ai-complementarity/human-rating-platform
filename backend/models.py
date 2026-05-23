@@ -100,6 +100,14 @@ class Question(SQLModel, table=True):
         sa_column=Column(String(16), nullable=False, server_default=text("'MC'")),
     )
     extra_data: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    parent_question_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("questions.id", ondelete="CASCADE"),
+            nullable=True,
+        ),
+    )
 
 
 class Rater(SQLModel, table=True):

@@ -16,6 +16,7 @@ from models import AssistanceSession
 from schemas import AssistanceStepResponse
 from services.queries import (
     fetch_experiment_or_404,
+    fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rater_or_404,
 )
@@ -109,7 +110,13 @@ async def start_assistance(
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    step = await method.start(question, params)
+    parent_question_text = (
+        await fetch_parent_question_text(question.parent_question_id, db)
+        if question.parent_question_id is not None
+        else None
+    )
+
+    step = await method.start(question, params, parent_question_text=parent_question_text)
 
     assistance_session = AssistanceSession(
         rater_id=rater_id,

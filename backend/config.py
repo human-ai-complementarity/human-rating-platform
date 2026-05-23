@@ -99,6 +99,7 @@ class SeedingSettings(_StrictModel):
 class ProlificSettings(_StrictModel):
     api_token: str = ""
     base_url: str = "https://api.prolific.com/api/v1"
+    project_id: str = ""
 
     @property
     def enabled(self) -> bool:

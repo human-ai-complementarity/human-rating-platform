@@ -8,6 +8,7 @@ import type {
   Analytics,
   AssistanceStep,
   ExperimentRound,
+  ExperimentRoundUpdate,
   Experiment,
   ExperimentCreate,
   ExperimentStats,
@@ -71,6 +72,8 @@ const routes = {
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
     prolificRounds: (id: number) => `/admin/experiments/${id}/prolific/rounds`,
+    prolificRound: (experimentId: number, roundId: number) =>
+      `/admin/experiments/${experimentId}/prolific/rounds/${roundId}`,
     prolificRoundPublish: (experimentId: number, roundId: number) =>
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/publish`,
     prolificRoundClose: (experimentId: number, roundId: number) =>
@@ -179,8 +182,28 @@ async function throwHttpError(response: Response, url: string): Promise<never> {
     throw new Error(buildRoutingHint(url));
   }
 
-  const message = body.trim() || `${response.status} ${response.statusText}`;
-  throw new Error(`Request failed (${response.status}) for ${url}: ${message}`);
+  const detail = extractDetail(body);
+  if (detail) {
+    throw new Error(detail);
+  }
+  const fallback = body.trim() || `${response.status} ${response.statusText}`;
+  throw new Error(`Request failed (${response.status}) for ${url}: ${fallback}`);
+}
+
+// FastAPI returns `{"detail": "..."}` for HTTPException; unwrap so users see
+// the message directly instead of escaped JSON.
+function extractDetail(body: string): string | null {
+  const trimmed = body.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
+      return parsed.detail.trim();
+    }
+  } catch {
+    // not JSON — fall through to raw body fallback in caller
+  }
+  return null;
 }
 
 async function parseJson<T>(response: Response, url: string): Promise<T> {
@@ -351,6 +374,17 @@ export const api = {
 
   async listExperimentRounds(experimentId: number): Promise<ExperimentRound[]> {
     return requestJson<ExperimentRound[]>(routes.admin.prolificRounds(experimentId));
+  },
+
+  async editExperimentRound(
+    experimentId: number,
+    roundId: number,
+    fields: ExperimentRoundUpdate,
+  ): Promise<ExperimentRound> {
+    return requestJson<ExperimentRound>(routes.admin.prolificRound(experimentId, roundId), {
+      method: 'PATCH',
+      json: fields,
+    });
   },
 
   async publishExperimentRound(experimentId: number, roundId: number): Promise<MessageResponse> {

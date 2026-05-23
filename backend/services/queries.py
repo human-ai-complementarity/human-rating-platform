@@ -36,3 +36,26 @@ async def fetch_question_or_404(question_id: int, db: AsyncSession) -> Question:
     if not question:
         raise HTTPException(status_code=404, detail="Question not found")
     return question
+
+
+def parent_question_ids_subquery():
+    """Subquery yielding ids of questions referenced as a parent.
+
+    Parent rows are header-only context for their children; they are never
+    assigned to raters and never receive ratings, so they must be excluded
+    from question counts, completion checks, and Prolific recommendations.
+    """
+    return (
+        select(Question.parent_question_id)
+        .where(Question.parent_question_id.is_not(None))
+        .distinct()
+    )
+
+
+async def fetch_parent_question_text(
+    parent_question_id: int,
+    db: AsyncSession,
+) -> str | None:
+    return (
+        await db.execute(select(Question.question_text).where(Question.id == parent_question_id))
+    ).scalar_one_or_none()

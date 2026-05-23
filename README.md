@@ -261,6 +261,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `TESTING__EXPORT_SEED_ROW_COUNT` — characterization test dataset volume
 - `SEEDING__*` — local seed generation (`enabled`, `experiment_name`, `question_count`, etc.)
 - `PROLIFIC__API_TOKEN` — Prolific API token (optional; enables automated study management)
+- `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under. If unset, Prolific uses the API user's `current_project_id`, which can land studies in the wrong workspace on multi-workspace accounts. The project's workspace and currency are derived automatically.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 
 Top‑level convenience envs (not nested):
@@ -377,6 +378,7 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 - `APP__CORS_ORIGINS` — JSON array including web origin, e.g. `["https://human-rating-platform-web.onrender.com"]`
 - `APP__SITE_URL` — public frontend URL, e.g. `https://human-rating-platform-web.onrender.com`
 - `PROLIFIC__API_TOKEN` — Prolific API token (set to enable automated study management)
+- `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under (recommended on multi-workspace accounts to avoid wrong-currency studies; workspace and currency are auto-derived)
 
 **Web service** (set in Render Dashboard → Web service → Environment):
 - `VITE_API_HOST` — public API origin, e.g. `https://human-rating-platform-api-uxnt.onrender.com`

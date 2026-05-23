@@ -561,7 +561,7 @@ def _pilot_payload() -> dict:
         "description": "Test study",
         "estimated_completion_time": 10,
         "reward": 500,
-        "pilot_hours": 5,
+        "pilot_places": 5,
         "device_compatibility": ["desktop"],
     }
 
@@ -604,6 +604,65 @@ def _mock_get_study(
     return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/").mock(
         return_value=Response(status, json=body)
     )
+
+
+def _mock_project(
+    *,
+    project_id: str,
+    workspace_id: str | None = "WS_ABC",
+    status: int = 200,
+) -> respx.Route:
+    if status == 200:
+        body: dict = {"id": project_id}
+        if workspace_id is not None:
+            body["workspace"] = workspace_id
+    else:
+        body = {}
+    return respx.get(f"{PROLIFIC_BASE}/projects/{project_id}/").mock(
+        return_value=Response(status, json=body)
+    )
+
+
+def _mock_workspace_balance(
+    *,
+    workspace_id: str,
+    currency_code: str = "USD",
+    status: int = 200,
+) -> respx.Route:
+    body = (
+        {
+            "currency_code": currency_code,
+            "total_balance": 0,
+            "available_balance": 0,
+        }
+        if status == 200
+        else {}
+    )
+    return respx.get(f"{PROLIFIC_BASE}/workspaces/{workspace_id}/balance/").mock(
+        return_value=Response(status, json=body)
+    )
+
+
+def _mock_update_study(
+    *,
+    study_id: str = PROLIFIC_STUDY_ID,
+    status: int = 200,
+) -> respx.Route:
+    body = {"id": study_id, "status": "UNPUBLISHED"} if status == 200 else {"error": "fail"}
+    return respx.patch(f"{PROLIFIC_BASE}/studies/{study_id}/").mock(
+        return_value=Response(status, json=body)
+    )
+
+
+@pytest.fixture(autouse=True)
+def _reset_prolific_currency_cache():
+    # Module-level cache in services.admin.prolific persists across tests in
+    # the same process; reset it so each test sees a clean lookup state.
+    from services.admin.prolific import _reset_currency_cache
+
+    _reset_currency_cache()
+    yield
+    _reset_currency_cache()
 
 
 def _patch_commit_to_fail_for_round(
@@ -720,6 +779,73 @@ def test_prolific_create_failure_returns_502(client: TestClient, enable_prolific
     assert stored["prolific_completion_url"] is None
     rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
     assert rounds == []
+
+
+@respx.mock
+def test_prolific_create_includes_project_when_set(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(get_settings().prolific, "project_id", "PROJ_ABC")
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert sent["project"] == "PROJ_ABC"
+
+
+@respx.mock
+def test_prolific_create_omits_project_when_unset(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # When project_id is empty, the field must be absent from the payload —
+    # sending an empty string would 400 from Prolific.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert "project" not in sent
+
+
+@respx.mock
+def test_prolific_create_failure_propagates_message(client: TestClient, enable_prolific):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    respx.post(f"{PROLIFIC_BASE}/studies/").mock(
+        return_value=Response(
+            400,
+            json={"error": {"detail": "Reward must be at least 100"}},
+        )
+    )
+
+    resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert resp.status_code == 502
+    assert "Reward must be at least 100" in resp.json()["detail"]
 
 
 @respx.mock
@@ -1058,6 +1184,90 @@ def test_prolific_round_publish_updates_status(client: TestClient, enable_prolif
 
 
 @respx.mock
+def test_prolific_round_edit_updates_db_and_calls_prolific(client: TestClient, enable_prolific):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/1",
+        json={"description": "Updated description", "reward": 1500, "places": 7},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["description"] == "Updated description"
+    assert body["reward"] == 1500
+    assert body["places_requested"] == 7
+    assert route.called
+
+    sent = json.loads(route.calls[0].request.content)
+    assert sent == {
+        "description": "Updated description",
+        "reward": 1500,
+        "total_available_places": 7,
+    }
+
+
+@respx.mock
+def test_prolific_round_edit_rejects_when_published(client: TestClient, enable_prolific):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_publish_study()
+    publish_resp = client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/publish")
+    assert publish_resp.status_code == 200
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/1",
+        json={"description": "Cannot edit"},
+    )
+
+    assert resp.status_code == 400
+    assert "unpublished" in resp.json()["detail"].lower()
+
+
+@respx.mock
+def test_prolific_round_edit_rejects_empty_payload(client: TestClient, enable_prolific):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/1",
+        json={},
+    )
+
+    assert resp.status_code == 400
+
+
+@respx.mock
+def test_prolific_round_edit_returns_404_for_missing_round(client: TestClient, enable_prolific):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/9999",
+        json={"description": "x"},
+    )
+
+    assert resp.status_code == 404
+
+
+@respx.mock
+def test_prolific_round_edit_returns_502_when_prolific_fails(client: TestClient, enable_prolific):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_update_study(status=500)
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/1",
+        json={"description": "x"},
+    )
+
+    assert resp.status_code == 502
+
+
+@respx.mock
 def test_prolific_round_list_refreshes_transient_status_from_prolific(
     client: TestClient,
     enable_prolific,
@@ -1177,3 +1387,243 @@ def test_platform_status_disabled_by_default(client: TestClient):
         assert resp.json()["prolific_enabled"] is False
     finally:
         settings.prolific.api_token = original
+
+
+@respx.mock
+def test_platform_status_returns_workspace_currency(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(get_settings().prolific, "project_id", "PROJ_ABC")
+
+    _mock_project(project_id="PROJ_ABC", workspace_id="WS_ABC")
+    _mock_workspace_balance(workspace_id="WS_ABC", currency_code="USD")
+
+    resp = client.get("/api/admin/platform-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["currency_code"] == "USD"
+    assert body["currency_symbol"] == "$"
+
+
+def test_platform_status_currency_null_when_project_id_unset(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+
+    resp = client.get("/api/admin/platform-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["currency_code"] is None
+    assert body["currency_symbol"] is None
+
+
+@respx.mock
+def test_platform_status_currency_null_when_project_lookup_fails(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(get_settings().prolific, "project_id", "PROJ_NOT_FOUND")
+
+    _mock_project(project_id="PROJ_NOT_FOUND", status=404)
+    balance_route = _mock_workspace_balance(workspace_id="WS_ABC")
+
+    resp = client.get("/api/admin/platform-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["currency_code"] is None
+    assert body["currency_symbol"] is None
+    # Project lookup fails before we learn the workspace, so balance is never queried.
+    assert not balance_route.called
+
+
+@respx.mock
+def test_platform_status_currency_null_when_balance_fails(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(get_settings().prolific, "project_id", "PROJ_ABC")
+
+    _mock_project(project_id="PROJ_ABC", workspace_id="WS_ABC")
+    _mock_workspace_balance(workspace_id="WS_ABC", status=500)
+
+    resp = client.get("/api/admin/platform-status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["currency_code"] is None
+    assert body["currency_symbol"] is None
+
+
+@respx.mock
+def test_platform_status_currency_cached_across_calls(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(get_settings().prolific, "project_id", "PROJ_ABC")
+
+    project_route = _mock_project(project_id="PROJ_ABC", workspace_id="WS_ABC")
+    balance_route = _mock_workspace_balance(workspace_id="WS_ABC", currency_code="GBP")
+
+    resp1 = client.get("/api/admin/platform-status")
+    resp2 = client.get("/api/admin/platform-status")
+
+    assert resp1.json()["currency_code"] == "GBP"
+    assert resp1.json()["currency_symbol"] == "£"
+    assert resp2.json()["currency_code"] == "GBP"
+    assert project_route.call_count == 1
+    assert balance_route.call_count == 1
+
+
+# ── parent_question_id (sub-questions) ────────────────────────────────────────
+
+PARENT_TEXT = "Customer review: arrived late but exceeded expectations."
+
+
+def _upload_parent_and_children(client: TestClient, experiment_id: int) -> None:
+    csv_data = (
+        "question_id,question_text,gt_answer,options,question_type,parent_question_id\n"
+        f'parent1,"{PARENT_TEXT}",,,,\n'
+        "sub_satisfied,Does the review express satisfaction?,Yes,Yes|No,MC,parent1\n"
+        "sub_problem,Does the review describe a delivery problem?,Yes,Yes|No,MC,parent1\n"
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment_id}/upload",
+        files={"file": ("questions.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_upload_with_parent_question_id_attaches_context_to_children(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PARENT_CTX")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+
+    # Both eligible questions are children; either should carry the parent text.
+    assert question["question_id"] in {"sub_satisfied", "sub_problem"}
+    assert question["parent_question_text"] == PARENT_TEXT
+
+
+def test_upload_without_parent_question_id_returns_null_context(client: TestClient):
+    """Backwards compat: standalone questions still have parent_question_text == None."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])  # legacy CSV without the column
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LEGACY")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+
+    assert question["parent_question_text"] is None
+
+
+def test_upload_rejects_self_referential_parent(client: TestClient):
+    experiment = _create_experiment(client)
+    csv_data = "question_id,question_text,parent_question_id\nloop,Self-referential question,loop\n"
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("self_ref.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 400
+    assert "cannot reference itself" in response.json()["detail"]
+
+
+def test_upload_rejects_unresolvable_parent_reference(client: TestClient):
+    experiment = _create_experiment(client)
+    csv_data = (
+        "question_id,question_text,parent_question_id\n"
+        "orphan,Child without a parent,does_not_exist\n"
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("orphan.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "does_not_exist" in detail
+    assert "orphan" in detail
+
+
+def test_next_question_never_returns_parent_rows(client: TestClient):
+    """Parents are header rows; the rater should only ever see children."""
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_NO_PARENT")
+    headers = _rater_headers(session_payload)
+
+    seen_question_ids: set[str] = set()
+    for _ in range(2):
+        resp = client.get("/api/raters/next-question", headers=headers)
+        assert resp.status_code == 200
+        question = resp.json()
+        seen_question_ids.add(question["question_id"])
+        client.post(
+            "/api/raters/submit",
+            headers=headers,
+            json={
+                "question_id": question["id"],
+                "answer": "Yes",
+                "confidence": 4,
+                "time_started": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    assert seen_question_ids == {"sub_satisfied", "sub_problem"}
+    assert "parent1" not in seen_question_ids
+
+
+def test_stats_total_questions_excludes_parent_rows(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+
+    stats = client.get(f"/api/admin/experiments/{experiment['id']}/stats").json()
+    # parent1 + 2 children uploaded, but parent1 is not ratable.
+    assert stats["total_questions"] == 2
+
+
+def test_list_experiments_question_count_excludes_parent_rows(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+
+    items = client.get("/api/admin/experiments").json()
+    matching = next(item for item in items if item["id"] == experiment["id"])
+    assert matching["question_count"] == 2
+
+
+def test_recommendation_remaining_actions_excludes_parent_rows(client: TestClient):
+    """Bug guard: ghost parent rows used to inflate recommended_places."""
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+
+    # num_ratings_per_question defaults to 2 in _create_experiment, 2 children → 4 actions total.
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_REC")
+    headers = _rater_headers(session_payload)
+    question = client.get("/api/raters/next-question", headers=headers).json()
+    submit = client.post(
+        "/api/raters/submit",
+        headers=headers,
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": (datetime.now(UTC) - timedelta(seconds=30)).isoformat(),
+        },
+    )
+    assert submit.status_code == 200
+
+    resp = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/recommend")
+    assert resp.status_code == 200
+    payload = resp.json()
+    # 2 children × 2 ratings - 1 submitted = 3. (Pre-fix this was 5: 3 questions × 2 - 1.)
+    assert payload["remaining_rating_actions"] == 3

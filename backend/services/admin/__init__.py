@@ -16,6 +16,7 @@ from .rounds import (
     publish_experiment_round,
     run_experiment_round,
     run_pilot_study,
+    update_experiment_round,
 )
 from .uploads import list_uploads, upload_questions_csv
 
@@ -35,5 +36,6 @@ __all__ = [
     "run_pilot_study",
     "stream_export_csv_chunks",
     "update_experiment",
+    "update_experiment_round",
     "upload_questions_csv",
 ]

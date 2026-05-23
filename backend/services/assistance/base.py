@@ -38,8 +38,22 @@ class AssistanceMethod(ABC):
     """
 
     @abstractmethod
-    async def start(self, question: Question, params: dict) -> InteractionStep:
-        """Begin an assistance interaction for the given question."""
+    async def start(
+        self,
+        question: Question,
+        params: dict,
+        *,
+        parent_question_text: str | None = None,
+    ) -> InteractionStep:
+        """Begin an assistance interaction for the given question.
+
+        parent_question_text:
+            If the question is a sub-question (CSV column parent_question_id
+            populated), this is the parent row's question_text — the same
+            context shown to the rater above the question. Methods that pass
+            the question to an LLM should incorporate this; otherwise the
+            model loses the context the rater can see.
+        """
         ...
 
     async def advance(self, state: dict, human_input: str, params: dict) -> InteractionStep:
