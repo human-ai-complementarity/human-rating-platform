@@ -298,10 +298,11 @@ const handleSessionExpired = () => {
   }, [assistanceStep?.type, sessionToken, loadNextQuestion]);
 
   const hasAssistance = session?.assistance_method && session.assistance_method !== 'none';
-  const assistanceBlocksRating =
+  const assistanceBlocksRating = Boolean(
     hasAssistance &&
-    question !== null &&
-    (assistanceStep === null || assistanceStep.type === 'ask_input');
+      question !== null &&
+      (assistanceStep === null || assistanceStep.type === 'ask_input')
+  );
   // Collapse to single column when assistance returned 'none' (LLM decided no help needed)
 
   const styles = {

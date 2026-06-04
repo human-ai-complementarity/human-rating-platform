@@ -49,7 +49,9 @@ def _parse_options(raw_options: str | None) -> list[str]:
     if len(labeled_option_starts) > 1:
         options = []
         for index, start in enumerate(labeled_option_starts):
-            end = labeled_option_starts[index + 1] if index + 1 < len(labeled_option_starts) else None
+            end = (
+                labeled_option_starts[index + 1] if index + 1 < len(labeled_option_starts) else None
+            )
             option = raw_options[start:end].strip(" ,\r\n")
             if option:
                 options.append(option)
@@ -177,9 +179,7 @@ class TopNAssistance(AssistanceMethod):
             else "(free-response question; propose concise candidate answers)"
         )
         context_block = (
-            f"Parent question/context:\n{parent_question_text}\n\n"
-            if parent_question_text
-            else ""
+            f"Parent question/context:\n{parent_question_text}\n\n" if parent_question_text else ""
         )
         user_prompt = (
             f"{context_block}"
