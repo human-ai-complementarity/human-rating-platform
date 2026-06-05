@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import type { Question } from '../types';
 
+const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
+const openedLongContextDocumentKeys = new Set<string>();
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
 
@@ -12,20 +14,143 @@ interface QuestionCardProps {
   assistanceActive?: boolean;
 }
 
+type QuestionDisplay = {
+  documentText: string | null;
+  questionText: string;
+};
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function parseQuestionDisplay(questionText: string): QuestionDisplay {
+  const separators = Array.from(questionText.matchAll(LONG_CONTEXT_SEPARATOR_PATTERN));
+  const separator = separators[separators.length - 1];
+  if (!separator || separator.index === undefined) {
+    return { documentText: null, questionText };
+  }
+
+  const documentText = questionText.slice(0, separator.index).trim();
+  const displayQuestion = questionText
+    .slice(separator.index + separator[0].length)
+    .trim();
+
+  if (!documentText || !displayQuestion) {
+    return { documentText: null, questionText };
+  }
+
+  return { documentText, questionText: displayQuestion };
+}
+
+function buildLongContextDocumentHtml(question: Question, documentText: string): string {
+  const title = `Document for Question ${question.question_id}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtml(title)}</title>
+  <style>
+    body {
+      margin: 0;
+      background: #f6f7f9;
+      color: #222;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+    h1 {
+      margin: 0 0 20px;
+      font-size: 22px;
+      line-height: 1.3;
+      font-weight: 650;
+    }
+    pre {
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+      padding: 24px;
+      border: 1px solid #dfe3e8;
+      border-radius: 8px;
+      background: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${escapeHtml(title)}</h1>
+    <pre>${escapeHtml(documentText)}</pre>
+  </main>
+</body>
+</html>`;
+}
+
 function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false }: QuestionCardProps) {
   const [selectedAnswer, setSelectedAnswer] = useState('');
   const [freeTextAnswer, setFreeTextAnswer] = useState('');
   const [confidence, setConfidence] = useState(3);
   const [submitting, setSubmitting] = useState(false);
+  const [documentOpenBlocked, setDocumentOpenBlocked] = useState(false);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const timeStartedRef = useRef(new Date().toISOString());
+  const display = useMemo(
+    () => parseQuestionDisplay(question.question_text),
+    [question.question_text]
+  );
 
   useEffect(() => {
     setSelectedAnswer('');
     setFreeTextAnswer('');
     setConfidence(3);
     setSubmitting(false);
+    setDocumentOpenBlocked(false);
     timeStartedRef.current = new Date().toISOString();
   }, [question.id]);
+
+  useEffect(() => {
+    if (!display.documentText) {
+      setDocumentUrl(null);
+      return;
+    }
+
+    const html = buildLongContextDocumentHtml(question, display.documentText);
+    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+    setDocumentUrl(url);
+
+    return () => {
+      URL.revokeObjectURL(url);
+      setDocumentUrl(null);
+    };
+  }, [display.documentText, question]);
+
+  useEffect(() => {
+    if (!documentUrl) {
+      return;
+    }
+
+    const documentKey = `${question.id}:${question.question_id}`;
+    if (openedLongContextDocumentKeys.has(documentKey)) {
+      return;
+    }
+    openedLongContextDocumentKeys.add(documentKey);
+
+    const openedWindow = window.open(documentUrl, "_blank");
+    if (openedWindow) {
+      openedWindow.opener = null;
+    }
+    setDocumentOpenBlocked(openedWindow === null);
+  }, [documentUrl, question.id, question.question_id]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -106,6 +231,26 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       color: '#333',
       marginBottom: '28px',
       whiteSpace: 'pre-wrap' as const,
+    },
+    documentLink: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '10px 14px',
+      background: '#f8f9fa',
+      border: '1px solid #d6dce2',
+      borderRadius: '8px',
+      color: '#2f6fae',
+      fontSize: '14px',
+      fontWeight: 500,
+      textDecoration: 'none',
+      marginBottom: '20px',
+    },
+    documentNotice: {
+      fontSize: '14px',
+      color: '#666',
+      marginTop: '-8px',
+      marginBottom: '16px',
     },
     optionsGrid: {
       display: 'flex',
@@ -207,7 +352,25 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         </div>
       )}
 
-      <p style={styles.questionText}>{question.question_text}</p>
+      {display.documentText && documentUrl && (
+        <>
+          <a
+            href={documentUrl}
+            target="_blank"
+            rel="noreferrer"
+            style={styles.documentLink}
+          >
+            Open document in new tab
+          </a>
+          {documentOpenBlocked && (
+            <p style={styles.documentNotice}>
+              Your browser blocked the automatic document tab. Use the document link before answering.
+            </p>
+          )}
+        </>
+      )}
+
+      <p style={styles.questionText}>{display.questionText}</p>
 
       {assistanceActive && assistanceAnswer == null && (
         <p style={{ fontSize: '14px', color: '#888', fontStyle: 'italic', marginBottom: '16px' }}>

@@ -211,6 +211,28 @@ def test_upload_rejects_non_csv_file(client: TestClient):
     assert response.json()["detail"] == "File must be a CSV file"
 
 
+def test_upload_accepts_large_question_text_fields(client: TestClient):
+    experiment = _create_experiment(client)
+    large_question_text = "x" * 200_000
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "gt_answer", "options", "question_type"])
+    writer.writerow(["long-q", large_question_text, "Yes", "Yes|No", "MC"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("long_questions.csv", output.getvalue(), "text/csv")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Uploaded 1 questions"
+
+    stats_response = client.get(f"/api/admin/experiments/{experiment['id']}/stats")
+    assert stats_response.status_code == 200
+    assert stats_response.json()["total_questions"] == 1
+
+
 def test_start_session_creates_new_rater_session(client: TestClient):
     experiment = _create_experiment(
         client,

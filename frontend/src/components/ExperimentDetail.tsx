@@ -1077,7 +1077,7 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                     style={{ fontSize: '14px' }}
                   />
                   <div style={styles.hint}>
-                    Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id
+                    Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id. Supports long-context rows and files up to 200MB.
                   </div>
                 </div>
                 <button

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import sys
 from typing import Any
 
 from fastapi import HTTPException, UploadFile
@@ -16,7 +17,28 @@ from .validators import validate_csv_required_fields, validate_csv_upload
 
 logger = logging.getLogger(__name__)
 
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
+
+
+def _configure_csv_field_limit() -> None:
+    """Raise Python's per-field CSV cap so long-context rows can be parsed."""
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+
+
+def _get_upload_size(file: UploadFile) -> int:
+    """Measure the uploaded file without loading it fully into memory."""
+    stream = file.file
+    current = stream.tell()
+    stream.seek(0, io.SEEK_END)
+    size = stream.tell()
+    stream.seek(current)
+    return size
 
 
 async def upload_questions_csv(
@@ -26,36 +48,43 @@ async def upload_questions_csv(
 ) -> dict[str, str]:
     await fetch_experiment_or_404(experiment_id, db)
     validate_csv_upload(file)
+    _configure_csv_field_limit()
 
-    content_bytes = await file.read()
-    if len(content_bytes) > MAX_FILE_SIZE:
-        raise HTTPException(status_code=400, detail="File size exceeds 50MB limit")
+    if _get_upload_size(file) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File size exceeds 200MB limit")
 
+    await file.seek(0)
+    text_stream = io.TextIOWrapper(file.file, encoding="utf-8", newline="")
     try:
-        content = content_bytes.decode("utf-8")
+        reader = csv.DictReader(text_stream)
+        required_fields = ["question_id", "question_text"]
+        rows: list[dict[str, Any]] = []
+        new_questions: list[Question] = []
+
+        for row in reader:
+            validate_csv_required_fields(row, required_fields)
+            rows.append(row)
+            new_questions.append(
+                Question(
+                    experiment_id=experiment_id,
+                    question_id=row["question_id"],
+                    question_text=row["question_text"],
+                    gt_answer=row.get("gt_answer") or "",
+                    options=row.get("options") or "",
+                    question_type=row.get("question_type") or "MC",
+                    extra_data=row.get("metadata") or "{}",
+                )
+            )
+            db.add(new_questions[-1])
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded") from exc
-
-    reader = csv.DictReader(io.StringIO(content))
-    required_fields = ["question_id", "question_text"]
-    rows = list(reader)
-    for row in rows:
-        validate_csv_required_fields(row, required_fields)
-
-    new_questions: list[Question] = []
-    for row in rows:
-        new_questions.append(
-            Question(
-                experiment_id=experiment_id,
-                question_id=row["question_id"],
-                question_text=row["question_text"],
-                gt_answer=row.get("gt_answer") or "",
-                options=row.get("options") or "",
-                question_type=row.get("question_type") or "MC",
-                extra_data=row.get("metadata") or "{}",
-            )
-        )
-        db.add(new_questions[-1])
+    except csv.Error as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid CSV file: {exc}") from exc
+    finally:
+        try:
+            text_stream.detach()
+        except Exception:
+            pass
 
     # Flush so newly inserted rows have DB ids before we resolve parent references.
     await db.flush()
