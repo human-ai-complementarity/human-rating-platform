@@ -145,8 +145,10 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
     openedLongContextDocumentKeys.add(documentKey);
 
-    const openedWindow = window.open(documentUrl, '_blank');
-    window.open(url, '_blank', 'noopener');
+    const openedWindow = window.open(documentUrl, "_blank");
+    if (openedWindow) {
+      openedWindow.opener = null;
+    }
     setDocumentOpenBlocked(openedWindow === null);
   }, [documentUrl, question.id, question.question_id]);
 
