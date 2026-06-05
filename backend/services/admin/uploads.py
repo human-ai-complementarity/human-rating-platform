@@ -58,9 +58,24 @@ async def upload_questions_csv(
     try:
         reader = csv.DictReader(text_stream)
         required_fields = ["question_id", "question_text"]
-        rows = list(reader)
-        for row in rows:
+        rows: list[dict[str, Any]] = []
+        new_questions: list[Question] = []
+
+        for row in reader:
             validate_csv_required_fields(row, required_fields)
+            rows.append(row)
+            new_questions.append(
+                Question(
+                    experiment_id=experiment_id,
+                    question_id=row["question_id"],
+                    question_text=row["question_text"],
+                    gt_answer=row.get("gt_answer") or "",
+                    options=row.get("options") or "",
+                    question_type=row.get("question_type") or "MC",
+                    extra_data=row.get("metadata") or "{}",
+                )
+            )
+            db.add(new_questions[-1])
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="File must be UTF-8 encoded") from exc
     except csv.Error as exc:
@@ -70,21 +85,6 @@ async def upload_questions_csv(
             text_stream.detach()
         except Exception:
             pass
-
-    new_questions: list[Question] = [
-        Question(
-            experiment_id=experiment_id,
-            question_id=row["question_id"],
-            question_text=row["question_text"],
-            gt_answer=row.get("gt_answer") or "",
-            options=row.get("options") or "",
-            question_type=row.get("question_type") or "MC",
-            extra_data=row.get("metadata") or "{}",
-        )
-        for row in rows
-    ]
-    for question in new_questions:
-        db.add(question)
 
     # Flush so newly inserted rows have DB ids before we resolve parent references.
     await db.flush()
