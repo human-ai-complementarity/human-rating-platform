@@ -69,7 +69,7 @@ export default function LandingPage() {
             codes.
           </p>
           <p style={{ fontSize: 14, color: '#333', lineHeight: 1.5 }}>
-            <strong>Automated recruitment</strong> — use a small pilot study to estimate and recruit the correct number of participants
+            <strong>Automated recruitment</strong> — use a small pilot to estimate and recruit the correct number of participants to finish your study.
           </p>
         </div>
 
