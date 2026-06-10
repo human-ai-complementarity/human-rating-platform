@@ -121,11 +121,11 @@ class TestStripMarkdownJson:
         assert _strip_markdown_json(raw) == raw
 
     def test_strips_json_fence(self):
-        raw = "```json\n{\"candidates\": []}\n```"
+        raw = '```json\n{"candidates": []}\n```'
         assert _strip_markdown_json(raw) == '{"candidates": []}'
 
     def test_strips_plain_fence(self):
-        raw = "```\n{\"candidates\": []}\n```"
+        raw = '```\n{"candidates": []}\n```'
         assert _strip_markdown_json(raw) == '{"candidates": []}'
 
 
@@ -298,10 +298,12 @@ def _llm_response(candidates: list[dict]) -> str:
 async def test_start_returns_display_step_with_candidates():
     method = TopNAssistance()
     question = _make_question()
-    llm_payload = _llm_response([
-        {"answer": "Yes", "confidence": 85, "rationale": "Strong match"},
-        {"answer": "No", "confidence": 40, "rationale": "Unlikely"},
-    ])
+    llm_payload = _llm_response(
+        [
+            {"answer": "Yes", "confidence": 85, "rationale": "Strong match"},
+            {"answer": "No", "confidence": 40, "rationale": "Unlikely"},
+        ]
+    )
 
     with patch(
         "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
@@ -321,11 +323,13 @@ async def test_start_returns_display_step_with_candidates():
 async def test_start_respects_n_param():
     method = TopNAssistance()
     question = _make_question(options="A|B|C|D")
-    llm_payload = _llm_response([
-        {"answer": "A", "confidence": 90, "rationale": ""},
-        {"answer": "B", "confidence": 70, "rationale": ""},
-        {"answer": "C", "confidence": 50, "rationale": ""},
-    ])
+    llm_payload = _llm_response(
+        [
+            {"answer": "A", "confidence": 90, "rationale": ""},
+            {"answer": "B", "confidence": 70, "rationale": ""},
+            {"answer": "C", "confidence": 50, "rationale": ""},
+        ]
+    )
 
     with patch(
         "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
@@ -340,10 +344,12 @@ async def test_start_respects_n_param():
 async def test_start_clamps_n_to_number_of_options():
     method = TopNAssistance()
     question = _make_question(options="Yes|No")  # only 2 options
-    llm_payload = _llm_response([
-        {"answer": "Yes", "confidence": 90, "rationale": ""},
-        {"answer": "No", "confidence": 60, "rationale": ""},
-    ])
+    llm_payload = _llm_response(
+        [
+            {"answer": "Yes", "confidence": 90, "rationale": ""},
+            {"answer": "No", "confidence": 60, "rationale": ""},
+        ]
+    )
 
     with patch(
         "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
@@ -388,9 +394,11 @@ async def test_start_returns_none_step_on_unparseable_llm_response():
 async def test_start_free_response_has_options_false():
     method = TopNAssistance()
     question = _make_question(options=None, question_type="FR")
-    llm_payload = _llm_response([
-        {"answer": "Because of X", "confidence": 75, "rationale": "compelling"},
-    ])
+    llm_payload = _llm_response(
+        [
+            {"answer": "Because of X", "confidence": 75, "rationale": "compelling"},
+        ]
+    )
 
     with patch(
         "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
@@ -405,9 +413,11 @@ async def test_start_free_response_has_options_false():
 async def test_start_includes_parent_question_context():
     method = TopNAssistance()
     question = _make_question()
-    llm_payload = _llm_response([
-        {"answer": "Yes", "confidence": 80, "rationale": "given context"},
-    ])
+    llm_payload = _llm_response(
+        [
+            {"answer": "Yes", "confidence": 80, "rationale": "given context"},
+        ]
+    )
 
     mock_complete = AsyncMock(return_value=llm_payload)
     with patch("services.assistance.methods.top_n.complete", new=mock_complete):
