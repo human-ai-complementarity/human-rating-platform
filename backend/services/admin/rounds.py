@@ -139,7 +139,9 @@ def _build_round_study_name(experiment_name: str, round_number: int) -> str:
     return f"{experiment_name} - {suffix}"
 
 
-def _build_round_internal_name(experiment_internal_name: str | None, round_number: int) -> str | None:
+def _build_round_internal_name(
+    experiment_internal_name: str | None, round_number: int
+) -> str | None:
     """Per-round Prolific internal_name: includes the round suffix so the
     researcher can disambiguate rounds of the same experiment in Prolific's
     study list. Returns None when no internal name was set on the experiment
