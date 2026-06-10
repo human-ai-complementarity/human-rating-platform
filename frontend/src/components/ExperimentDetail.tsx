@@ -17,6 +17,20 @@ interface ExperimentDetailProps {
   onRefresh: () => void;
 }
 
+// Prolific's API stores reward in minor units (cents). Our form lets the
+// researcher enter major units to match Prolific's own UI; we convert at the
+// boundary so the wire value stays in cents.
+function centsToMajorString(cents: number): string {
+  if (!Number.isFinite(cents) || cents <= 0) return '';
+  return (cents / 100).toFixed(2);
+}
+
+function majorStringToCents(value: string): number {
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.round(parsed * 100);
+}
+
 interface AssistanceMethods {
   searchResults: boolean;
   selectedEvidence: boolean;
@@ -840,20 +854,23 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                               </div>
                               <div>
                                 <label style={{ ...styles.label, fontSize: '12px' }}>
-                                  Reward (minor units{currencyCode ? ` of ${currencyCode}` : ''})
+                                  Reward{currencyCode ? ` (${currencyCode})` : ''}
                                 </label>
-                                <input
-                                  data-testid={`edit-round-reward-${round.round_number}`}
-                                  type="number"
-                                  min="1"
-                                  value={editForm.reward}
-                                  onChange={(e) => setEditForm({ ...editForm, reward: parseInt(e.target.value) || 0 })}
-                                  style={styles.input}
-                                />
-                                <div style={{ ...styles.hint, fontSize: '11px', marginTop: '4px' }}>
-                                  {currencyCode && currencySymbol
-                                    ? `e.g., 900 = ${currencySymbol}9.00`
-                                    : 'e.g., 900 = 9.00'}
+                                <div style={{ position: 'relative' }}>
+                                  {currencySymbol && (
+                                    <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#666', pointerEvents: 'none' }}>
+                                      {currencySymbol}
+                                    </span>
+                                  )}
+                                  <input
+                                    data-testid={`edit-round-reward-${round.round_number}`}
+                                    type="number"
+                                    step="0.01"
+                                    min="0.01"
+                                    value={centsToMajorString(editForm.reward)}
+                                    onChange={(e) => setEditForm({ ...editForm, reward: majorStringToCents(e.target.value) })}
+                                    style={currencySymbol ? { ...styles.input, paddingLeft: '24px' } : styles.input}
+                                  />
                                 </div>
                               </div>
                               <div>
@@ -992,23 +1009,27 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                     </div>
                     <div style={styles.inputGroup}>
                       <label htmlFor="pilot-reward" style={styles.label}>
-                        Reward (minor units{currencyCode ? ` of ${currencyCode}` : ''})
+                        Reward{currencyCode ? ` (${currencyCode})` : ''}
                       </label>
-                      <input
-                        id="pilot-reward"
-                        data-testid="pilot-reward-input"
-                        type="number"
-                        value={pilotForm.reward}
-                        onChange={(e) => setPilotForm({ ...pilotForm, reward: parseInt(e.target.value) || 0 })}
-                        min="1"
-                        required
-                        style={styles.input}
-                      />
-                      <div style={styles.hint}>
-                        {currencyCode && currencySymbol
-                          ? `Smallest unit of ${currencyCode} (e.g., 900 = ${currencySymbol}9.00)`
-                          : 'Smallest unit of workspace currency (e.g., 900 = 9.00)'}
+                      <div style={{ position: 'relative' }}>
+                        {currencySymbol && (
+                          <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#666', pointerEvents: 'none' }}>
+                            {currencySymbol}
+                          </span>
+                        )}
+                        <input
+                          id="pilot-reward"
+                          data-testid="pilot-reward-input"
+                          type="number"
+                          step="0.01"
+                          value={centsToMajorString(pilotForm.reward)}
+                          onChange={(e) => setPilotForm({ ...pilotForm, reward: majorStringToCents(e.target.value) })}
+                          min="0.01"
+                          required
+                          style={currencySymbol ? { ...styles.input, paddingLeft: '24px' } : styles.input}
+                        />
                       </div>
+                      <div style={styles.hint}>Enter the amount as you'd see it on Prolific (e.g. 9.00 = nine dollars).</div>
                     </div>
                     <div style={styles.inputGroup}>
                       <label htmlFor="pilot-places" style={styles.label}>Number of Raters</label>
