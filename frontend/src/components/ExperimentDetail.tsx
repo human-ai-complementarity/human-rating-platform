@@ -54,6 +54,7 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
     reward: 900,
     pilot_places: 5,
     device_compatibility: ['desktop'],
+    study_label: 'annotation',
   });
 
   // TODO: When the methods team provides assistance methods for experimentation, we should add them here.
@@ -957,6 +958,24 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                       <div style={styles.hint}>
                         Markdown is converted to Prolific's HTML subset (headings, bold/italic/strike, lists, paragraphs). Links and images are not supported by Prolific.
                       </div>
+                    </div>
+                    <div style={styles.inputGroup}>
+                      <label htmlFor="pilot-study-label" style={styles.label}>Study Label</label>
+                      <select
+                        id="pilot-study-label"
+                        data-testid="pilot-study-label-select"
+                        value={pilotForm.study_label}
+                        onChange={(e) => setPilotForm({ ...pilotForm, study_label: e.target.value as PilotStudyCreate['study_label'] })}
+                        style={styles.input}
+                      >
+                        <option value="annotation">Annotation</option>
+                        <option value="survey">Survey</option>
+                        <option value="decision_making_task">Decision-making task</option>
+                        <option value="writing_task">Writing task</option>
+                        <option value="interview">Interview</option>
+                        <option value="other">Other</option>
+                      </select>
+                      <div style={styles.hint}>Categorises the study on Prolific; participants see this tag when browsing.</div>
                     </div>
                     <div style={styles.inputGroup}>
                       <label htmlFor="pilot-estimated-completion-time" style={styles.label}>Estimated Completion Time (minutes)</label>
