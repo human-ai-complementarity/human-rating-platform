@@ -181,7 +181,7 @@ class TestMatchOptionAnswer:
         assert _match_option_answer("c)", self.OPTIONS) == "Berlin"
 
     def test_no_match_returns_none(self):
-        assert _match_option_answer("Tokyo", self.OPTIONS) == None
+        assert _match_option_answer("Tokyo", self.OPTIONS) is None
 
     def test_out_of_range_index_returns_none(self):
         assert _match_option_answer("5", self.OPTIONS) is None
