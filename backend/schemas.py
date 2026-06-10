@@ -51,7 +51,6 @@ class ExperimentRoundUpdate(BaseModel):
     reward: Optional[int] = Field(default=None, ge=1)
     places: Optional[int] = Field(default=None, ge=1)
     device_compatibility: Optional[list[Literal["desktop", "tablet", "mobile"]]] = None
-    study_label: Optional[StudyLabel] = None
 
     def has_any(self) -> bool:
         return any(
@@ -62,7 +61,6 @@ class ExperimentRoundUpdate(BaseModel):
                 "reward",
                 "places",
                 "device_compatibility",
-                "study_label",
             )
         )
 
@@ -101,7 +99,10 @@ class PlatformStatus(BaseModel):
 # Experiment schemas
 class ExperimentCreate(BaseModel):
     name: str
-    internal_name: Optional[str] = None
+    # `internal_name` is capped to match the DB column (`String(255)`) so an
+    # overlong value is rejected by Pydantic as a clean 422 instead of falling
+    # through to Postgres and surfacing as a 500.
+    internal_name: Optional[str] = Field(default=None, max_length=255)
     num_ratings_per_question: int = 3
     prolific_completion_url: Optional[str] = None
     prolific: Optional[ProlificStudyConfig] = None
@@ -126,7 +127,7 @@ class ExperimentResponse(BaseModel):
 class ExperimentUpdate(BaseModel):
     assistance_method: str
     assistance_params: Optional[dict] = None
-    internal_name: Optional[str] = None
+    internal_name: Optional[str] = Field(default=None, max_length=255)
 
 
 # Question schemas

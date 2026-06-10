@@ -139,7 +139,9 @@ def _build_round_study_name(experiment_name: str, round_number: int) -> str:
     return f"{experiment_name} - {suffix}"
 
 
-def _build_round_internal_name(experiment_internal_name: str | None, round_number: int) -> str | None:
+def _build_round_internal_name(
+    experiment_internal_name: str | None, round_number: int
+) -> str | None:
     """Per-round Prolific internal_name: includes the round suffix so the
     researcher can disambiguate rounds of the same experiment in Prolific's
     study list. Returns None when no internal name was set on the experiment
@@ -672,8 +674,6 @@ async def update_experiment_round(
         # Convert markdown to Prolific's HTML subset on the wire, but keep
         # the raw markdown in our DB so editors see what they typed.
         prolific_fields["description"] = to_prolific_html(payload.description)
-    if payload.study_label is not None:
-        prolific_fields["study_labels"] = [payload.study_label]
 
     try:
         await update_study(
@@ -709,8 +709,6 @@ async def update_experiment_round(
         round_.places_requested = payload.places
     if payload.device_compatibility is not None:
         round_.device_compatibility = json.dumps(payload.device_compatibility)
-    if payload.study_label is not None:
-        round_.study_label = payload.study_label
     await db.commit()
     await db.refresh(round_)
 

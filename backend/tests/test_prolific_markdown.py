@@ -23,10 +23,25 @@ from services.admin.prolific_markdown import to_prolific_html
         ("*italic*", "<p><i>italic</i></p>"),
         ("~~strike~~", "<p><s>strike</s></p>"),
         ("a **b** *c*", "<p>a <b>b</b> <i>c</i></p>"),
+        # Adjacent headings (no blank line between them) each render as their
+        # own tag rather than the second one being lost as paragraph text.
+        ("# A\n## B", "<h1>A</h1><h2>B</h2>"),
+        ("## A\n## B", "<h2>A</h2><h2>B</h2>"),
+        ("# A\n## B\nbody", "<h1>A</h1><h2>B</h2><p>body</p>"),
     ],
 )
 def test_to_prolific_html_basic_shapes(markdown: str, expected: str) -> None:
     assert to_prolific_html(markdown) == expected
+
+
+def test_overlapping_bold_italic_falls_through_as_literal() -> None:
+    # `**bold and *italic***` previously produced `<b>bold and <i>italic</b></i>`
+    # — overlapping tags that Prolific's sanitiser drops. With strict bold
+    # delimiters the input now falls through escaped so the researcher sees
+    # exactly what they typed and can fix it.
+    out = to_prolific_html("**bold and *italic***")
+    assert out == "<p>**bold and *italic***</p>"
+    assert "<b>" not in out and "<i>" not in out
 
 
 def test_html_in_description_is_escaped_not_passed_through() -> None:

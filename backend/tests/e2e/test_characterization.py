@@ -1651,7 +1651,9 @@ def test_prolific_create_converts_description_markdown_to_html(
     assert pilot_resp.status_code == 200, pilot_resp.text
 
     sent = json.loads(route.calls[-1].request.content.decode())
-    assert sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
+    assert (
+        sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
+    )
 
 
 @respx.mock

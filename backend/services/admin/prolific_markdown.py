@@ -22,8 +22,13 @@ from __future__ import annotations
 import re
 from html import escape
 
-_BOLD_DOUBLE_STAR = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
-_BOLD_DOUBLE_UNDERSCORE = re.compile(r"__(.+?)__", re.DOTALL)
+# Bold patterns forbid the same delimiter character inside the match so that
+# `**bold and *italic***` doesn't produce overlapping <b>…<i></b>…</i> — that
+# is malformed and Prolific's sanitiser drops the whole subtree. With these
+# patterns the input falls through as escaped literal so the researcher sees
+# their malformed markdown and corrects it.
+_BOLD_DOUBLE_STAR = re.compile(r"\*\*([^*]+?)\*\*", re.DOTALL)
+_BOLD_DOUBLE_UNDERSCORE = re.compile(r"__([^_]+?)__", re.DOTALL)
 _STRIKE = re.compile(r"~~(.+?)~~", re.DOTALL)
 _ITALIC_STAR = re.compile(r"(?<!\*)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\*)")
 _ITALIC_UNDERSCORE = re.compile(r"(?<![_\w])_(?!\s)([^_\n]+?)(?<!\s)_(?![_\w])")
@@ -56,18 +61,6 @@ def to_prolific_html(markdown: str) -> str:
 
 def _render_block(block: str) -> str:
     lines = block.split("\n")
-    first = lines[0].lstrip()
-
-    if first.startswith("## "):
-        # Multi-line headings: only the first line is the heading; the rest
-        # becomes a following paragraph so we don't silently drop content.
-        head = f"<h2>{_inline(first[3:].strip())}</h2>"
-        tail = _render_paragraph(lines[1:])
-        return head + tail
-    if first.startswith("# "):
-        head = f"<h1>{_inline(first[2:].strip())}</h1>"
-        tail = _render_paragraph(lines[1:])
-        return head + tail
 
     non_empty = [line for line in lines if line.strip()]
     if non_empty and all(_BULLET_PREFIX.match(line) for line in non_empty):
@@ -77,7 +70,29 @@ def _render_block(block: str) -> str:
         items = [_ORDERED_PREFIX.sub("", line, count=1).strip() for line in non_empty]
         return "<ol>" + "".join(f"<li>{_inline(item)}</li>" for item in items) + "</ol>"
 
-    return _render_paragraph(lines)
+    # Walk the block line by line so adjacent headings (no blank line between
+    # them) each render as their own tag, and non-heading runs accumulate into
+    # a single <p>…<br>…</p>.
+    parts: list[str] = []
+    paragraph_lines: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph_lines:
+            parts.append(_render_paragraph(paragraph_lines))
+            paragraph_lines.clear()
+
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("## "):
+            flush_paragraph()
+            parts.append(f"<h2>{_inline(stripped[3:].strip())}</h2>")
+        elif stripped.startswith("# "):
+            flush_paragraph()
+            parts.append(f"<h1>{_inline(stripped[2:].strip())}</h1>")
+        else:
+            paragraph_lines.append(line)
+    flush_paragraph()
+    return "".join(parts)
 
 
 def _render_paragraph(lines: list[str]) -> str:

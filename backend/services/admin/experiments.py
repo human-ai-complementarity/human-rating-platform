@@ -35,7 +35,7 @@ async def create_experiment(
 
     db_experiment = Experiment(
         name=payload.name,
-        internal_name=payload.internal_name,
+        internal_name=(payload.internal_name.strip() or None) if payload.internal_name else None,
         num_ratings_per_question=payload.num_ratings_per_question,
         prolific_completion_url=payload.prolific_completion_url,
         assistance_method=payload.assistance_method,

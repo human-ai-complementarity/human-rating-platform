@@ -168,7 +168,6 @@ export interface ExperimentRoundUpdate {
   reward?: number;
   places?: number;
   device_compatibility?: string[];
-  study_label?: StudyLabel;
 }
 
 export interface PilotStudyCreate {

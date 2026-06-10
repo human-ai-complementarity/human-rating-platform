@@ -39,11 +39,9 @@ function AdminView() {
     setSuccess(null);
 
     try {
-      const internal = (newExperiment.internal_name ?? '').trim();
-      const created = await api.createExperiment({
-        ...newExperiment,
-        internal_name: internal === '' ? null : internal,
-      });
+      // Backend normalises whitespace/empty → null for internal_name on both
+      // create and update, so we just forward the form value as-typed.
+      const created = await api.createExperiment(newExperiment);
       setNewExperiment({
         name: '',
         internal_name: '',
