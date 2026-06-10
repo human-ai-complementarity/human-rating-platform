@@ -112,6 +112,7 @@ async def create_study(
     completion_code: str,
     device_compatibility: list[str] | None = None,
     internal_name: str | None = None,
+    study_label: str | None = None,
 ) -> dict[str, str]:
     if not settings.enabled:
         raise RuntimeError("create_study called while Prolific is disabled")
@@ -135,6 +136,8 @@ async def create_study(
     }
     if internal_name:
         payload["internal_name"] = internal_name
+    if study_label:
+        payload["study_labels"] = [study_label]
     if settings.project_id:
         payload["project"] = settings.project_id
 

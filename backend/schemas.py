@@ -6,6 +6,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from models import ProlificStudyStatus, StepType
 
 
+# Allowed values for Prolific's `study_labels` field. The Prolific API also
+# accepts AI-task variants, but we expose only the data-collection set our
+# researchers actually pick from.
+StudyLabel = Literal[
+    "annotation",
+    "survey",
+    "decision_making_task",
+    "writing_task",
+    "interview",
+    "other",
+]
+
+
 # Prolific schemas
 class ProlificStudyConfig(BaseModel):
     description: str
@@ -25,6 +38,7 @@ class PilotStudyCreate(BaseModel):
     device_compatibility: list[Literal["desktop", "tablet", "mobile"]] = Field(
         default_factory=lambda: ["desktop"]
     )
+    study_label: StudyLabel = "annotation"
 
 
 class ExperimentRoundCreate(BaseModel):
@@ -37,6 +51,7 @@ class ExperimentRoundUpdate(BaseModel):
     reward: Optional[int] = Field(default=None, ge=1)
     places: Optional[int] = Field(default=None, ge=1)
     device_compatibility: Optional[list[Literal["desktop", "tablet", "mobile"]]] = None
+    study_label: Optional[StudyLabel] = None
 
     def has_any(self) -> bool:
         return any(
@@ -47,6 +62,7 @@ class ExperimentRoundUpdate(BaseModel):
                 "reward",
                 "places",
                 "device_compatibility",
+                "study_label",
             )
         )
 
@@ -69,6 +85,7 @@ class ExperimentRoundResponse(BaseModel):
     estimated_completion_time: int
     reward: int
     device_compatibility: list[str]
+    study_label: Optional[str] = None
     created_at: datetime
     prolific_study_url: str
 

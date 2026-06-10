@@ -1702,3 +1702,55 @@ def test_prolific_create_omits_internal_name_when_unset(
 
     sent = json.loads(route.calls[-1].request.content.decode())
     assert "internal_name" not in sent
+    # `annotation` is the schema default so we still emit study_labels.
+    assert sent["study_labels"] == ["annotation"]
+
+
+@respx.mock
+def test_prolific_create_sends_chosen_study_label(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "study_label": "survey"},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert sent["study_labels"] == ["survey"]
+
+
+@respx.mock
+def test_prolific_round_inherits_pilot_study_label(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200
+    experiment = create_resp.json()
+
+    _mock_create_study(study_id="PILOT_S")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "study_label": "decision_making_task"},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    _mock_publish_study(study_id="PILOT_S")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
+    _mock_close_study(study_id="PILOT_S")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
+
+    round_route = _mock_create_study(study_id="R1_S")
+    round_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert round_resp.status_code == 200, round_resp.text
+    sent = json.loads(round_route.calls[-1].request.content.decode())
+    assert sent["study_labels"] == ["decision_making_task"]

@@ -108,6 +108,7 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         estimated_completion_time=round_.estimated_completion_time,
         reward=round_.reward,
         device_compatibility=_parse_device_compatibility(round_.device_compatibility),
+        study_label=round_.study_label,
         created_at=round_.created_at,
         prolific_study_url=build_study_url(study_id=round_.prolific_study_id),
     )
@@ -276,6 +277,7 @@ async def _create_prolific_study_for_round(
     reward: int,
     places: int,
     device_compatibility: list[str],
+    study_label: str | None,
 ) -> dict[str, str]:
     settings = get_settings()
     completion_code = _ensure_completion_code(experiment)
@@ -295,6 +297,7 @@ async def _create_prolific_study_for_round(
         total_available_places=places,
         completion_code=completion_code,
         device_compatibility=device_compatibility,
+        study_label=study_label,
     )
 
 
@@ -383,6 +386,7 @@ async def run_pilot_study(
             reward=payload.reward,
             places=payload.pilot_places,
             device_compatibility=payload.device_compatibility,
+            study_label=payload.study_label,
         )
     except HTTPException:
         raise
@@ -421,6 +425,7 @@ async def run_pilot_study(
         estimated_completion_time=payload.estimated_completion_time,
         reward=payload.reward,
         device_compatibility=json.dumps(payload.device_compatibility),
+        study_label=payload.study_label,
         places_requested=payload.pilot_places,
     )
     await _commit_round_creation(
@@ -481,6 +486,7 @@ async def run_experiment_round(
             reward=pilot_round.reward,
             places=payload.places,
             device_compatibility=device_compatibility,
+            study_label=pilot_round.study_label,
         )
     except HTTPException:
         raise
@@ -525,6 +531,7 @@ async def run_experiment_round(
         estimated_completion_time=pilot_round.estimated_completion_time,
         reward=pilot_round.reward,
         device_compatibility=pilot_round.device_compatibility,
+        study_label=pilot_round.study_label,
         places_requested=payload.places,
     )
     await _commit_round_creation(
@@ -665,6 +672,8 @@ async def update_experiment_round(
         # Convert markdown to Prolific's HTML subset on the wire, but keep
         # the raw markdown in our DB so editors see what they typed.
         prolific_fields["description"] = to_prolific_html(payload.description)
+    if payload.study_label is not None:
+        prolific_fields["study_labels"] = [payload.study_label]
 
     try:
         await update_study(
@@ -700,6 +709,8 @@ async def update_experiment_round(
         round_.places_requested = payload.places
     if payload.device_compatibility is not None:
         round_.device_compatibility = json.dumps(payload.device_compatibility)
+    if payload.study_label is not None:
+        round_.study_label = payload.study_label
     await db.commit()
     await db.refresh(round_)
 
