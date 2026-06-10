@@ -610,7 +610,14 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
       {/* Header */}
       <div style={styles.header}>
         <button onClick={onBack} style={styles.backButton}>← Back</button>
-        <h1 style={styles.title}>{experiment.name}</h1>
+        <div>
+          <h1 style={styles.title}>{experiment.internal_name || experiment.name}</h1>
+          {experiment.internal_name && (
+            <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
+              Public name (shown to raters): {experiment.name}
+            </div>
+          )}
+        </div>
       </div>
 
       {error && <div className="error" style={{ marginBottom: '16px' }}>{error}</div>}

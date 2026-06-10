@@ -84,6 +84,7 @@ class PlatformStatus(BaseModel):
 # Experiment schemas
 class ExperimentCreate(BaseModel):
     name: str
+    internal_name: Optional[str] = None
     num_ratings_per_question: int = 3
     prolific_completion_url: Optional[str] = None
     prolific: Optional[ProlificStudyConfig] = None
@@ -94,6 +95,7 @@ class ExperimentCreate(BaseModel):
 class ExperimentResponse(BaseModel):
     id: int
     name: str
+    internal_name: Optional[str] = None
     created_at: datetime
     num_ratings_per_question: int
     prolific_completion_url: Optional[str] = None
@@ -107,6 +109,7 @@ class ExperimentResponse(BaseModel):
 class ExperimentUpdate(BaseModel):
     assistance_method: str
     assistance_params: Optional[dict] = None
+    internal_name: Optional[str] = None
 
 
 # Question schemas

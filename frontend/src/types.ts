@@ -1,6 +1,7 @@
 export interface Experiment {
   id: number;
   name: string;
+  internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
   prolific_completion_url: string | null;
@@ -132,6 +133,7 @@ export interface PlatformStatus {
 
 export interface ExperimentCreate {
   name: string;
+  internal_name?: string | null;
   num_ratings_per_question: number;
   prolific_completion_url: string;
   prolific?: ProlificStudyConfig;
