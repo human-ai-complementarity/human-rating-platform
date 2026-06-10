@@ -35,6 +35,7 @@ from .prolific import (
     stop_study,
     update_study,
 )
+from .prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
@@ -274,7 +275,7 @@ async def _create_prolific_study_for_round(
     return await create_study(
         settings=settings.prolific,
         name=_build_round_study_name(experiment.name, round_number),
-        description=description,
+        description=to_prolific_html(description),
         external_study_url=external_study_url,
         estimated_completion_time=estimated_completion_time,
         reward=reward,
@@ -610,7 +611,6 @@ async def publish_experiment_round(
 
 
 _PROLIFIC_FIELD_MAP = {
-    "description": "description",
     "estimated_completion_time": "estimated_completion_time",
     "reward": "reward",
     "places": "total_available_places",
@@ -648,6 +648,10 @@ async def update_experiment_round(
             prolific_fields[dst] = value
     if payload.device_compatibility is not None:
         prolific_fields["device_compatibility"] = payload.device_compatibility
+    if payload.description is not None:
+        # Convert markdown to Prolific's HTML subset on the wire, but keep
+        # the raw markdown in our DB so editors see what they typed.
+        prolific_fields["description"] = to_prolific_html(payload.description)
 
     try:
         await update_study(

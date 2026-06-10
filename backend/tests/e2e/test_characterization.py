@@ -1202,8 +1202,10 @@ def test_prolific_round_edit_updates_db_and_calls_prolific(client: TestClient, e
     assert route.called
 
     sent = json.loads(route.calls[0].request.content)
+    # Description is converted to Prolific's HTML subset on the wire; the raw
+    # markdown is what we store back in the DB and return in the response.
     assert sent == {
-        "description": "Updated description",
+        "description": "<p>Updated description</p>",
         "reward": 1500,
         "total_available_places": 7,
     }
@@ -1627,3 +1629,26 @@ def test_recommendation_remaining_actions_excludes_parent_rows(client: TestClien
     payload = resp.json()
     # 2 children × 2 ratings - 1 submitted = 3. (Pre-fix this was 5: 3 questions × 2 - 1.)
     assert payload["remaining_rating_actions"] == 3
+
+
+@respx.mock
+def test_prolific_create_converts_description_markdown_to_html(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={
+            **_pilot_payload(),
+            "description": "Read the article.\n\n- Be fair\n- Be quick",
+        },
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"

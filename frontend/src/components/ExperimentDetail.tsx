@@ -943,10 +943,13 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                         data-testid="pilot-description-input"
                         value={pilotForm.description}
                         onChange={(e) => setPilotForm({ ...pilotForm, description: e.target.value })}
-                        placeholder="Describe the task for Prolific participants..."
+                        placeholder={"Describe the task for Prolific participants...\n\nMarkdown is supported: # heading, ## subheading, **bold**, *italic*, ~~strike~~, -/1. lists. Blank lines separate paragraphs."}
                         required
-                        style={{ ...styles.input, minHeight: '80px', resize: 'vertical' as const }}
+                        style={{ ...styles.input, minHeight: '120px', resize: 'vertical' as const, fontFamily: 'inherit' }}
                       />
+                      <div style={styles.hint}>
+                        Markdown is converted to Prolific's HTML subset (headings, bold/italic/strike, lists, paragraphs). Links and images are not supported by Prolific.
+                      </div>
                     </div>
                     <div style={styles.inputGroup}>
                       <label htmlFor="pilot-estimated-completion-time" style={styles.label}>Estimated Completion Time (minutes)</label>
