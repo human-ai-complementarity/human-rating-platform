@@ -1652,3 +1652,53 @@ def test_prolific_create_converts_description_markdown_to_html(
 
     sent = json.loads(route.calls[-1].request.content.decode())
     assert sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
+
+
+@respx.mock
+def test_prolific_create_sends_internal_name_when_set(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("public-exp"),
+            "internal_name": "Internal Q2 Eval",
+            "num_ratings_per_question": 2,
+            "prolific_completion_url": None,
+        },
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+    assert experiment["internal_name"] == "Internal Q2 Eval"
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert sent["internal_name"] == "Internal Q2 Eval - Pilot"
+
+
+@respx.mock
+def test_prolific_create_omits_internal_name_when_unset(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+    assert experiment["internal_name"] is None
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert "internal_name" not in sent

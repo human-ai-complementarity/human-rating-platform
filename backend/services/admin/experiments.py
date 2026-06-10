@@ -35,6 +35,7 @@ async def create_experiment(
 
     db_experiment = Experiment(
         name=payload.name,
+        internal_name=payload.internal_name,
         num_ratings_per_question=payload.num_ratings_per_question,
         prolific_completion_url=payload.prolific_completion_url,
         assistance_method=payload.assistance_method,
@@ -122,6 +123,8 @@ async def update_experiment(
     experiment.assistance_method = payload.assistance_method
     if payload.assistance_params is not None:
         experiment.assistance_params = json.dumps(payload.assistance_params)
+    if payload.internal_name is not None:
+        experiment.internal_name = payload.internal_name.strip() or None
     await db.commit()
     await db.refresh(experiment)
 

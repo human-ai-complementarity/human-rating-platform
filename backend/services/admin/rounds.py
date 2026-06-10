@@ -138,6 +138,18 @@ def _build_round_study_name(experiment_name: str, round_number: int) -> str:
     return f"{experiment_name} - {suffix}"
 
 
+def _build_round_internal_name(experiment_internal_name: str | None, round_number: int) -> str | None:
+    """Per-round Prolific internal_name: includes the round suffix so the
+    researcher can disambiguate rounds of the same experiment in Prolific's
+    study list. Returns None when no internal name was set on the experiment
+    so we don't send an empty field.
+    """
+    if not experiment_internal_name or not experiment_internal_name.strip():
+        return None
+    suffix = "Pilot" if round_number == 0 else f"Round {round_number}"
+    return f"{experiment_internal_name.strip()} - {suffix}"
+
+
 async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSession) -> None:
     settings = get_settings()
     if not settings.prolific.enabled:
@@ -275,6 +287,7 @@ async def _create_prolific_study_for_round(
     return await create_study(
         settings=settings.prolific,
         name=_build_round_study_name(experiment.name, round_number),
+        internal_name=_build_round_internal_name(experiment.internal_name, round_number),
         description=to_prolific_html(description),
         external_study_url=external_study_url,
         estimated_completion_time=estimated_completion_time,
