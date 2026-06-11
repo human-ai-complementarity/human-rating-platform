@@ -1585,6 +1585,51 @@ def test_next_question_never_returns_parent_rows(client: TestClient):
     assert "parent1" not in seen_question_ids
 
 
+def test_next_question_groups_siblings_together(client: TestClient):
+    """Once a rater starts a parent group, remaining picks should be siblings
+    of that group before any question from a different group is served."""
+    experiment = _create_experiment(client)
+    csv_data = (
+        "question_id,question_text,gt_answer,options,question_type,parent_question_id\n"
+        'pA,"Parent A context",,,,\n'
+        "a1,Child A1?,Yes,Yes|No,MC,pA\n"
+        "a2,Child A2?,Yes,Yes|No,MC,pA\n"
+        'pB,"Parent B context",,,,\n'
+        "b1,Child B1?,Yes,Yes|No,MC,pB\n"
+        "b2,Child B2?,Yes,Yes|No,MC,pB\n"
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("two_groups.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GROUPING")
+    headers = _rater_headers(session_payload)
+
+    sibling_of = {"a1": "a2", "a2": "a1", "b1": "b2", "b2": "b1"}
+    served_order: list[str] = []
+    for _ in range(4):
+        question = client.get("/api/raters/next-question", headers=headers).json()
+        served_order.append(question["question_id"])
+        submit = client.post(
+            "/api/raters/submit",
+            headers=headers,
+            json={
+                "question_id": question["id"],
+                "answer": "Yes",
+                "confidence": 4,
+                "time_started": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert submit.status_code == 200
+
+    # First two picks (whichever group came first) must be siblings; same for last two.
+    assert served_order[1] == sibling_of[served_order[0]], served_order
+    assert served_order[3] == sibling_of[served_order[2]], served_order
+    assert set(served_order) == {"a1", "a2", "b1", "b2"}
+
+
 def test_stats_total_questions_excludes_parent_rows(client: TestClient):
     experiment = _create_experiment(client)
     _upload_parent_and_children(client, experiment["id"])
