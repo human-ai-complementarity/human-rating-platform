@@ -148,9 +148,11 @@ class RaterStartResponse(BaseModel):
     session_start: datetime
     session_end_time: datetime
     experiment_name: str
+    experiment_description: Optional[str] = None
     completion_url: Optional[str] = None
     rater_session_token: str
     assistance_method: str = "none"
+    assistance_instructions: Optional[str] = None
 
 
 class SessionStatusResponse(BaseModel):

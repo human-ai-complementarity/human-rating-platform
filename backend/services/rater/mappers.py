@@ -29,16 +29,20 @@ def build_rater_start_response(
     rater_id: int,
     session_start: datetime,
     experiment_name: str,
+    experiment_description: str | None,
     completion_url: str | None,
     rater_session_token: str,
     assistance_method: str = "none",
+    assistance_instructions: str | None = None,
 ) -> RaterStartResponse:
     return RaterStartResponse(
         rater_id=rater_id,
         session_start=session_start,
         session_end_time=build_session_end_time(session_start),
         experiment_name=experiment_name,
+        experiment_description=experiment_description,
         completion_url=completion_url,
         rater_session_token=rater_session_token,
         assistance_method=assistance_method,
+        assistance_instructions=assistance_instructions,
     )

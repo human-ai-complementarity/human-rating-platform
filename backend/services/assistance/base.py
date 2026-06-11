@@ -35,7 +35,14 @@ class AssistanceMethod(ABC):
 
     One-shot methods only need to override start(); multi-turn methods
     override both start() and advance().
+
+    Subclasses should set ``rater_instructions`` to a short plain-text
+    description of how the method works from the rater's perspective.
+    It is shown to raters on the intro screen before they begin rating.
+    Leave as the empty string to suppress the box.
     """
+
+    rater_instructions: str = ""
 
     @abstractmethod
     async def start(

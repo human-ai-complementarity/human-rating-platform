@@ -4,6 +4,7 @@ import { api } from '../api';
 import Timer from './Timer';
 import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
+import RaterIntro from './RaterIntro';
 import type { Session, Question, AssistanceStep } from '../types';
 
 const STORAGE_KEY = 'hrp_rater_session';
@@ -16,6 +17,7 @@ type StoredSession = {
   experimentId?: string;
   session: Session;
   token: string;
+  introAcknowledged: boolean;
 };
 
 type ProlificSessionParams = {
@@ -36,8 +38,14 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     typeof value.session_start === 'string' &&
     typeof value.session_end_time === 'string' &&
     typeof value.experiment_name === 'string' &&
+    (value.experiment_description === null ||
+      value.experiment_description === undefined ||
+      typeof value.experiment_description === 'string') &&
     (value.completion_url === null || typeof value.completion_url === 'string') &&
-    (value.rater_session_token === undefined || typeof value.rater_session_token === 'string')
+    (value.rater_session_token === undefined || typeof value.rater_session_token === 'string') &&
+    (value.assistance_instructions === null ||
+      value.assistance_instructions === undefined ||
+      typeof value.assistance_instructions === 'string')
   );
 }
 
@@ -55,10 +63,19 @@ function parseStoredSession(raw: string): StoredSession | null {
       return null;
     }
 
+    const sessionPayload = parsed.session;
+    const session: Session = {
+      ...sessionPayload,
+      rater_session_token: token,
+      experiment_description: sessionPayload.experiment_description ?? null,
+      assistance_instructions: sessionPayload.assistance_instructions ?? null,
+    };
+
     return {
       experimentId: typeof parsed.experimentId === 'string' ? parsed.experimentId : undefined,
-      session: { ...parsed.session, rater_session_token: token },
+      session,
       token,
+      introAcknowledged: parsed.introAcknowledged === true,
     };
   } catch {
     return null;
@@ -95,6 +112,10 @@ function getProlificSessionParams(params: {
   };
 }
 
+function hasIntroContent(session: Session): boolean {
+  return Boolean(session.experiment_description || session.assistance_instructions);
+}
+
 function RaterView() {
   const [searchParams] = useSearchParams();
   const [session, setSession] = useState<Session | null>(null);
@@ -107,6 +128,7 @@ function RaterView() {
   const [allDone, setAllDone] = useState(false);
   const [assistanceSessionId, setAssistanceSessionId] = useState<number | null>(null);
   const [assistanceStep, setAssistanceStep] = useState<AssistanceStep | null>(null);
+  const [showIntro, setShowIntro] = useState(false);
 
   const experimentId = searchParams.get('experiment_id');
   const prolificId = searchParams.get('PROLIFIC_PID');
@@ -126,16 +148,30 @@ function RaterView() {
     }
   }, []);
 
-  const persistSession = useCallback((nextSession: Session) => {
+  const persistSession = useCallback((nextSession: Session, introAcknowledged: boolean) => {
     try {
       sessionStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ session: nextSession, experimentId })
+        JSON.stringify({ session: nextSession, experimentId, introAcknowledged })
       );
     } catch {
       // Ignore storage failures (private mode, quota, etc.)
     }
   }, [experimentId]);
+
+  const markIntroAcknowledged = useCallback(() => {
+    try {
+      const stored = sessionStorage.getItem(STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+      sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ...parsed, introAcknowledged: true })
+      );
+    } catch {
+      // Ignore storage failures (private mode, quota, etc.)
+    }
+  }, []);
 
   const fetchNextQuestion = useCallback(async (token: string) => {
     try {
@@ -188,6 +224,17 @@ function RaterView() {
       if (status) {
         setQuestionsCompleted(status.questions_completed);
       }
+
+      // Re-show intro only if it was never acknowledged AND no questions
+      // completed yet — otherwise a refresh mid-rating shouldn't replay it.
+      const completed = status?.questions_completed ?? 0;
+      if (
+        !storedSession.introAcknowledged &&
+        completed === 0 &&
+        hasIntroContent(storedSession.session)
+      ) {
+        setShowIntro(true);
+      }
     } finally {
       setLoading(false);
     }
@@ -204,13 +251,30 @@ function RaterView() {
       );
       setSession(nextSession);
       setSessionToken(nextSession.rater_session_token);
-      persistSession(nextSession);
-      await loadNextQuestion(nextSession.rater_session_token);
+      const needsIntro = hasIntroContent(nextSession);
+      persistSession(nextSession, !needsIntro);
+      if (needsIntro) {
+        setShowIntro(true);
+        setLoading(false);
+      } else {
+        await loadNextQuestion(nextSession.rater_session_token);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
       setLoading(false);
     }
   }, [isPreview, persistSession, loadNextQuestion]);
+
+  const handleIntroContinue = useCallback(() => {
+    if (!sessionToken) return;
+    markIntroAcknowledged();
+    setShowIntro(false);
+    // On fresh start we skipped the question fetch; on restore it's already
+    // loaded. Only fetch when we don't yet have one.
+    if (!question) {
+      void loadNextQuestion(sessionToken);
+    }
+  }, [sessionToken, markIntroAcknowledged, loadNextQuestion, question]);
 
   const startedRef = useRef(false);
 
@@ -448,6 +512,32 @@ const handleSessionExpired = () => {
         <div style={styles.loadingCard}>
           Loading...
         </div>
+      </div>
+    );
+  }
+
+  if (showIntro) {
+    return (
+      <div style={{ ...styles.container, maxWidth: '700px' }}>
+        {isPreview && (
+          <div style={{
+            background: '#fff3cd',
+            border: '1px solid #ffc107',
+            borderRadius: '8px',
+            padding: '12px 16px',
+            marginBottom: '16px',
+            fontSize: '14px',
+            color: '#856404',
+          }}>
+            Preview mode — ratings submitted here are real and will appear in your data.
+          </div>
+        )}
+        <RaterIntro
+          experimentName={session.experiment_name}
+          description={session.experiment_description}
+          assistanceInstructions={session.assistance_instructions}
+          onContinue={handleIntroContinue}
+        />
       </div>
     );
   }

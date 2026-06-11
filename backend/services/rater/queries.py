@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Question, Rating, Rater
+from models import ExperimentRound, Question, Rating, Rater
 from services.queries import (  # noqa: F401 — re-exported for backwards compat
     fetch_experiment_or_404,
     fetch_parent_question_text,
@@ -11,6 +11,39 @@ from services.queries import (  # noqa: F401 — re-exported for backwards compa
     fetch_rater_or_404,
     parent_question_ids_subquery,
 )
+
+
+async def fetch_round_description(
+    *,
+    experiment_id: int,
+    prolific_study_id: str,
+    is_preview: bool,
+    db: AsyncSession,
+) -> str | None:
+    """Return the description shown to the rater on the intro screen.
+
+    For real Prolific sessions, looks up the round whose Prolific study the
+    rater entered from. For preview sessions (STUDY_ID is the stub "preview"
+    string), falls back to the most recent round so admins see a representative
+    preview. Returns None when no round exists yet.
+    """
+    if is_preview:
+        return (
+            await db.execute(
+                select(ExperimentRound.description)
+                .where(ExperimentRound.experiment_id == experiment_id)
+                .order_by(ExperimentRound.round_number.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    return (
+        await db.execute(
+            select(ExperimentRound.description).where(
+                ExperimentRound.experiment_id == experiment_id,
+                ExperimentRound.prolific_study_id == prolific_study_id,
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def fetch_rated_question_ids(rater_id: int, db: AsyncSession) -> list[int]:

@@ -39,6 +39,15 @@ _CONFIDENCE_THRESHOLD = 75
 
 
 class HumanAsAToolMethod(AssistanceMethod):
+    rater_instructions = (
+        "For each question, an AI will break it down into smaller subtasks. "
+        "Subtasks the AI is confident about will be pre-filled with its answer — "
+        "you can edit any of these if you disagree. You'll be asked to answer the "
+        "subtasks the AI is uncertain about. Once all subtasks are resolved, the "
+        "AI will use them to synthesise a final answer that you can review and "
+        "adjust before submitting."
+    )
+
     def __init__(self, confidence_estimator: ConfidenceEstimator | None = None) -> None:
         self._decomposer = SubtaskDecomposer()
         self._estimator = confidence_estimator
