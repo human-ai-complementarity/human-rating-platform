@@ -338,3 +338,71 @@ input[type="range"] {
 .cl-userButtonPopoverFooter {
   display: none !important;
 }
+
+/* ── Admin docs (markdown-rendered guide) ────────────────────────────────── */
+
+.admin-docs {
+  color: #333;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.admin-docs h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 16px 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eee;
+}
+
+.admin-docs h2 {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 32px 0 12px 0;
+}
+
+.admin-docs h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 24px 0 8px 0;
+}
+
+.admin-docs p {
+  margin: 0 0 14px 0;
+}
+
+.admin-docs ul,
+.admin-docs ol {
+  margin: 0 0 14px 0;
+  padding-left: 24px;
+}
+
+.admin-docs li {
+  margin-bottom: 6px;
+}
+
+.admin-docs li > p {
+  margin-bottom: 6px;
+}
+
+.admin-docs code {
+  background: #f3f4f6;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.admin-docs hr {
+  border: none;
+  border-top: 1px solid #eee;
+  margin: 32px 0;
+}
+
+.admin-docs a {
+  color: #4a90d9;
+}
+
+.admin-docs strong {
+  font-weight: 600;
+}
