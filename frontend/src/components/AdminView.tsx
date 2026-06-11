@@ -62,6 +62,10 @@ function AdminView() {
     },
     header: {
       marginBottom: '32px',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'flex-end',
+      gap: '16px',
     },
     title: {
       margin: 0,
@@ -73,6 +77,16 @@ function AdminView() {
       margin: '8px 0 0 0',
       fontSize: '14px',
       color: '#666',
+    },
+    docsLink: {
+      color: '#4a90d9',
+      fontSize: '14px',
+      textDecoration: 'none',
+      background: 'none',
+      border: 'none',
+      cursor: 'pointer',
+      padding: 0,
+      whiteSpace: 'nowrap' as const,
     },
     grid: {
       display: 'grid',
@@ -174,8 +188,17 @@ function AdminView() {
     <div style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
-        <h1 style={styles.title}>Experiments</h1>
-        <p style={styles.subtitle}>Create and manage your rating experiments</p>
+        <div>
+          <h1 style={styles.title}>Experiments</h1>
+          <p style={styles.subtitle}>Create and manage your rating experiments</p>
+        </div>
+        <button
+          type="button"
+          style={styles.docsLink}
+          onClick={() => navigate('/admin/docs')}
+        >
+          How to run an experiment →
+        </button>
       </div>
 
       {error && <div className="error" style={{ marginBottom: '16px' }}>{error}</div>}
