@@ -14,7 +14,10 @@ from services.admin.prolific_markdown import to_prolific_html
         ("# Title\nbody", "<h1>Title</h1><p>body</p>"),
         ("## Sub", "<h2>Sub</h2>"),
         ("para 1\n\npara 2", "<p>para 1</p><p>para 2</p>"),
-        ("line a\nline b", "<p>line a<br>line b</p>"),
+        # Soft newlines become separate <p> tags rather than <br>-joined inside
+        # a single <p> — Prolific strips <br>, so the <br> form silently
+        # collapsed back to a single line on the study page.
+        ("line a\nline b", "<p>line a</p><p>line b</p>"),
         ("- one\n- two", "<ul><li>one</li><li>two</li></ul>"),
         ("* one\n* two", "<ul><li>one</li><li>two</li></ul>"),
         ("1. one\n2. two", "<ol><li>one</li><li>two</li></ol>"),
@@ -59,8 +62,8 @@ def test_ampersand_is_escaped() -> None:
 def test_heading_with_trailing_body_keeps_body() -> None:
     # We don't want the body of a heading-block to silently disappear.
     out = to_prolific_html("# Title\nbody line 1\nbody line 2")
-    assert out == "<h1>Title</h1><p>body line 1<br>body line 2</p>"
+    assert out == "<h1>Title</h1><p>body line 1</p><p>body line 2</p>"
 
 
 def test_crlf_line_endings_normalised() -> None:
-    assert to_prolific_html("a\r\nb") == "<p>a<br>b</p>"
+    assert to_prolific_html("a\r\nb") == "<p>a</p><p>b</p>"

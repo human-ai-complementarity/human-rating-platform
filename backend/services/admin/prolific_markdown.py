@@ -9,7 +9,9 @@ We accept markdown-ish input from researchers and emit only those tags. The
 converter is intentionally minimal:
 
 * Block-level: ``# H1``, ``## H2``, ``- list``, ``* list``, ``1. list``,
-  blank-line-separated paragraphs, single newlines become ``<br>``.
+  blank-line-separated paragraphs, single newlines within a paragraph become
+  their own ``<p>`` so the line break survives Prolific's sanitiser (``<br>``
+  is not in the whitelist and gets stripped).
 * Inline: ``**bold**`` / ``__bold__`` → ``<b>``; ``*italic*`` / ``_italic_``
   → ``<i>``; ``~~strike~~`` → ``<s>``.
 * Anything else (links, images, code blocks, tables, ``###`` and deeper
@@ -70,36 +72,20 @@ def _render_block(block: str) -> str:
         items = [_ORDERED_PREFIX.sub("", line, count=1).strip() for line in non_empty]
         return "<ol>" + "".join(f"<li>{_inline(item)}</li>" for item in items) + "</ol>"
 
-    # Walk the block line by line so adjacent headings (no blank line between
-    # them) each render as their own tag, and non-heading runs accumulate into
-    # a single <p>…<br>…</p>.
+    # Walk the block line by line. Each non-heading line becomes its own <p>
+    # because Prolific strips <br>, so a single <p> with <br>-joined lines
+    # would silently collapse back to one run of text — the exact pain point
+    # this converter exists to solve.
     parts: list[str] = []
-    paragraph_lines: list[str] = []
-
-    def flush_paragraph() -> None:
-        if paragraph_lines:
-            parts.append(_render_paragraph(paragraph_lines))
-            paragraph_lines.clear()
-
     for line in lines:
         stripped = line.lstrip()
         if stripped.startswith("## "):
-            flush_paragraph()
             parts.append(f"<h2>{_inline(stripped[3:].strip())}</h2>")
         elif stripped.startswith("# "):
-            flush_paragraph()
             parts.append(f"<h1>{_inline(stripped[2:].strip())}</h1>")
-        else:
-            paragraph_lines.append(line)
-    flush_paragraph()
+        elif stripped:
+            parts.append(f"<p>{_inline(stripped)}</p>")
     return "".join(parts)
-
-
-def _render_paragraph(lines: list[str]) -> str:
-    inner = "<br>".join(_inline(line.strip()) for line in lines if line.strip())
-    if not inner:
-        return ""
-    return f"<p>{inner}</p>"
 
 
 def _inline(text: str) -> str:

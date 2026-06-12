@@ -316,9 +316,13 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
     setError(null);
     setSavingEdit(true);
     try {
+      // A blank reward input converts to 0, which the backend rejects (ge=1).
+      // Treat that as "don't change the reward" rather than sending an invalid
+      // value — the user can still edit the other fields without retyping it.
+      const rewardMinor = rewardInputToMinor(editRewardInput, currencyCode);
       await api.editExperimentRound(experiment.id, roundId, {
         ...editForm,
-        reward: rewardInputToMinor(editRewardInput, currencyCode),
+        ...(rewardMinor > 0 ? { reward: rewardMinor } : {}),
       });
       setSuccess('Round updated on Prolific.');
       setTimeout(() => setSuccess(null), 3000);
