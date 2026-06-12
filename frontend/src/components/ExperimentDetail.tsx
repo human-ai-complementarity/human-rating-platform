@@ -67,14 +67,12 @@ function rewardHintText(
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-interface AssistanceMethods {
-  searchResults: boolean;
-  selectedEvidence: boolean;
-  aiConfidence: boolean;
-  aiChatAssistant: boolean;
-}
-
-function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: ExperimentDetailProps) {
+function ExperimentDetail({
+  experiment,
+  onBack,
+  onDeleted,
+  onRefresh,
+}: ExperimentDetailProps) {
   const [stats, setStats] = useState<ExperimentStats | null>(null);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -121,40 +119,60 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
     }
   }, [currencyCode]);
 
-  // TODO: When the methods team provides assistance methods for experimentation, we should add them here.
-  const [assistanceMethods, setAssistanceMethods] = useState<AssistanceMethods>({
-    searchResults: false,
-    selectedEvidence: false,
-    aiConfidence: false,
-    aiChatAssistant: false,
-  });
   const [humanAsATool, setHumanAsATool] = useState(
     experiment.assistance_method === 'human_as_a_tool'
+  );
+  const [topNEnabled, setTopNEnabled] = useState(experiment.assistance_method === 'top_n');
+  const [topNValue, setTopNValue] = useState<number>(
+    Number(experiment.assistance_params?.n ?? 3)
   );
   const [confidenceMethod, setConfidenceMethod] = useState<string>(
     (experiment.assistance_params?.confidence_method as string) ?? 'self_report'
   );
 
-  const handleAssistanceToggle = (method: keyof AssistanceMethods) => {
-    // TODO: Implement API call to save assistance method settings
-    // TODO: Disable toggles if experiment has ratings (to prevent mid-experiment changes)
-    setAssistanceMethods(prev => ({
-      ...prev,
-      [method]: !prev[method],
-    }));
-    setSuccess('Assistance method updated (not yet saved to backend)');
-    setTimeout(() => setSuccess(null), 2000);
+  const saveAssistanceMethod = async (
+    method: 'none' | 'top_n' | 'human_as_a_tool',
+    params?: Record<string, unknown>
+  ) => {
+    await api.updateExperiment(experiment.id, {
+      assistance_method: method,
+      assistance_params: params,
+    });
+    setTopNEnabled(method === 'top_n');
+    setHumanAsATool(method === 'human_as_a_tool');
+  };
+
+  const handleTopNToggle = async () => {
+    const next = !topNEnabled;
+    try {
+      await saveAssistanceMethod(next ? 'top_n' : 'none', next ? { n: topNValue } : undefined);
+      setSuccess(`Top N assistance ${next ? 'enabled' : 'disabled'}`);
+      setTimeout(() => setSuccess(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update assistance method');
+    }
+  };
+
+  const handleTopNChange = async (value: number) => {
+    const nextValue = Math.max(1, Math.min(10, value));
+    setTopNValue(nextValue);
+    if (!topNEnabled) return;
+    try {
+      await saveAssistanceMethod('top_n', { n: nextValue });
+      setSuccess('Top N setting updated');
+      setTimeout(() => setSuccess(null), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update Top N setting');
+    }
   };
 
   const handleHumanAsAToolToggle = async () => {
     const next = !humanAsATool;
-    const method = next ? 'human_as_a_tool' : 'none';
     try {
-      await api.updateExperiment(experiment.id, {
-        assistance_method: method,
-        assistance_params: next ? { confidence_method: confidenceMethod } : undefined,
-      });
-      setHumanAsATool(next);
+      await saveAssistanceMethod(
+        next ? 'human_as_a_tool' : 'none',
+        next ? { confidence_method: confidenceMethod } : undefined
+      );
       setSuccess(`Human-as-a-tool ${next ? 'enabled' : 'disabled'}`);
       setTimeout(() => setSuccess(null), 2000);
     } catch (err) {
@@ -165,10 +183,7 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
   const handleConfidenceMethodChange = async (method: string) => {
     setConfidenceMethod(method);
     try {
-      await api.updateExperiment(experiment.id, {
-        assistance_method: 'human_as_a_tool',
-        assistance_params: { confidence_method: method },
-      });
+      await saveAssistanceMethod('human_as_a_tool', { confidence_method: method });
       setSuccess('Confidence method updated');
       setTimeout(() => setSuccess(null), 2000);
     } catch (err) {
@@ -1268,6 +1283,62 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
               <h2 style={styles.sectionTitle}>Rater Assistance Methods</h2>
             </div>
             <div style={styles.sectionBody}>
+              <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
+                Choose one assistance mode for this experiment. Changes apply to new participant assistance sessions.
+              </div>
+
+              {/* Top N Toggle */}
+              <div style={styles.toggleRow}>
+                <div style={styles.toggleInfo}>
+                  <div style={styles.toggleLabel}>Top N Suggestions</div>
+                  <div style={styles.toggleDescription}>
+                    AI ranks the most likely answers and shows raters a short ordered list before they submit their own rating.
+                  </div>
+                </div>
+                <div style={styles.toggle}>
+                  <div
+                    style={{
+                      ...styles.toggleTrack,
+                      background: topNEnabled ? '#4a90d9' : '#ddd',
+                    }}
+                    onClick={handleTopNToggle}
+                  />
+                  <div
+                    style={{
+                      ...styles.toggleThumb,
+                      left: topNEnabled ? '22px' : '2px',
+                    }}
+                  />
+                </div>
+              </div>
+
+              {topNEnabled && (
+                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px' }}>
+                  <label htmlFor="top-n-input" style={{ fontSize: '13px', fontWeight: 500, color: '#555', display: 'block', marginBottom: '8px' }}>
+                    Suggestions to show
+                  </label>
+                  <input
+                    id="top-n-input"
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={topNValue}
+                    onChange={e => handleTopNChange(parseInt(e.target.value) || 1)}
+                    style={{
+                      padding: '8px 12px',
+                      border: '1px solid #ddd',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      color: '#333',
+                      background: '#fff',
+                      width: '120px',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <div style={styles.hint}>For multiple-choice questions, this is capped by the number of available options.</div>
+                </div>
+              )}
+
               {/* Human-as-a-Tool Toggle */}
               <div style={styles.toggleRow}>
                 <div style={styles.toggleInfo}>
@@ -1320,118 +1391,6 @@ function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: Experime
                   </select>
                 </div>
               )}
-
-              {/* Search Results Toggle */}
-              <div style={styles.toggleRow}>
-                <div style={styles.toggleInfo}>
-                  <div style={styles.toggleLabel}>
-                    Search Results
-                    <span style={styles.comingSoon}>Coming Soon</span>
-                  </div>
-                  <div style={styles.toggleDescription}>
-                    Display relevant search results from web sources to help raters verify factual claims.
-                  </div>
-                </div>
-                <div style={styles.toggle}>
-                  <div
-                    style={{
-                      ...styles.toggleTrack,
-                      background: assistanceMethods.searchResults ? '#4a90d9' : '#ddd',
-                    }}
-                    onClick={() => handleAssistanceToggle('searchResults')}
-                  />
-                  <div
-                    style={{
-                      ...styles.toggleThumb,
-                      left: assistanceMethods.searchResults ? '22px' : '2px',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Selected Evidence Toggle */}
-              <div style={styles.toggleRow}>
-                <div style={styles.toggleInfo}>
-                  <div style={styles.toggleLabel}>
-                    Selected Evidence
-                    <span style={styles.comingSoon}>Coming Soon</span>
-                  </div>
-                  <div style={styles.toggleDescription}>
-                    Show pre-selected evidence passages that are relevant to the question being rated.
-                  </div>
-                </div>
-                <div style={styles.toggle}>
-                  <div
-                    style={{
-                      ...styles.toggleTrack,
-                      background: assistanceMethods.selectedEvidence ? '#4a90d9' : '#ddd',
-                    }}
-                    onClick={() => handleAssistanceToggle('selectedEvidence')}
-                  />
-                  <div
-                    style={{
-                      ...styles.toggleThumb,
-                      left: assistanceMethods.selectedEvidence ? '22px' : '2px',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* AI Confidence Toggle */}
-              <div style={styles.toggleRow}>
-                <div style={styles.toggleInfo}>
-                  <div style={styles.toggleLabel}>
-                    AI Confidence Score
-                    <span style={styles.comingSoon}>Coming Soon</span>
-                  </div>
-                  <div style={styles.toggleDescription}>
-                    Display the AI model's confidence level for its response to provide additional context.
-                  </div>
-                </div>
-                <div style={styles.toggle}>
-                  <div
-                    style={{
-                      ...styles.toggleTrack,
-                      background: assistanceMethods.aiConfidence ? '#4a90d9' : '#ddd',
-                    }}
-                    onClick={() => handleAssistanceToggle('aiConfidence')}
-                  />
-                  <div
-                    style={{
-                      ...styles.toggleThumb,
-                      left: assistanceMethods.aiConfidence ? '22px' : '2px',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* AI Chat Assistant Toggle */}
-              <div style={{ ...styles.toggleRow, borderBottom: 'none' }}>
-                <div style={styles.toggleInfo}>
-                  <div style={styles.toggleLabel}>
-                    AI Chat Assistant
-                    <span style={styles.comingSoon}>Coming Soon</span>
-                  </div>
-                  <div style={styles.toggleDescription}>
-                    Allow raters to ask questions to an AI assistant for help understanding or researching topics.
-                  </div>
-                </div>
-                <div style={styles.toggle}>
-                  <div
-                    style={{
-                      ...styles.toggleTrack,
-                      background: assistanceMethods.aiChatAssistant ? '#4a90d9' : '#ddd',
-                    }}
-                    onClick={() => handleAssistanceToggle('aiChatAssistant')}
-                  />
-                  <div
-                    style={{
-                      ...styles.toggleThumb,
-                      left: assistanceMethods.aiChatAssistant ? '22px' : '2px',
-                    }}
-                  />
-                </div>
-              </div>
             </div>
           </div>
         </div>

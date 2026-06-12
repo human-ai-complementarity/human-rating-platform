@@ -76,10 +76,12 @@ from __future__ import annotations
 from .base import AssistanceMethod
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
+from .methods.top_n import TopNAssistance
 
 _REGISTRY: dict[str, type[AssistanceMethod]] = {
     "none": NoAssistance,
     "human_as_a_tool": HumanAsAToolMethod,
+    "top_n": TopNAssistance,
 }
 
 

@@ -391,6 +391,45 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
       fontSize: '13px',
       color: '#dc3545',
     },
+    topNList: {
+      display: 'flex',
+      flexDirection: 'column' as const,
+      gap: '10px',
+    },
+    topNCard: {
+      border: '1px solid #d6e6f8',
+      borderRadius: '8px',
+      padding: '14px',
+      background: '#f7fbff',
+    },
+    topNHeader: {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      gap: '12px',
+      marginBottom: '8px',
+    },
+    topNAnswer: {
+      fontSize: '14px',
+      fontWeight: 650,
+      color: '#1f3f5b',
+      lineHeight: 1.4,
+    },
+    topNBadge: {
+      flexShrink: 0,
+      fontSize: '12px',
+      fontWeight: 650,
+      color: '#2f6fae',
+      background: '#e3f2fd',
+      borderRadius: '999px',
+      padding: '3px 8px',
+    },
+    topNRationale: {
+      margin: 0,
+      fontSize: '13px',
+      lineHeight: 1.5,
+      color: '#52616f',
+    },
   };
 
   if (loading) {
@@ -420,6 +459,37 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
   }
 
   if (!step || step.type === 'none' || step.type === 'skip') return null;
+
+  if (step.type === 'display' && step.payload.kind === 'top_n') {
+    const candidates = step.payload.candidates ?? [];
+    return (
+      <div style={styles.panel}>
+        <div style={styles.panelHeader}>
+          <div style={styles.stepLabel}>AI Assistance</div>
+          <p style={styles.panelTitle}>Top {step.payload.top_n ?? candidates.length} Suggestions</p>
+        </div>
+        <div style={styles.panelBody}>
+          <div style={styles.topNList}>
+            {candidates.map(candidate => (
+              <div key={`${candidate.rank}-${candidate.answer}`} style={styles.topNCard}>
+                <div style={styles.topNHeader}>
+                  <div style={styles.topNAnswer}>
+                    {candidate.rank}. {candidate.answer}
+                  </div>
+                  {candidate.confidence !== undefined && (
+                    <span style={styles.topNBadge}>{candidate.confidence}%</span>
+                  )}
+                </div>
+                {candidate.rationale && (
+                  <p style={styles.topNRationale}>{candidate.rationale}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (step.type === 'complete') {
     const synthesis = step.payload.synthesis;

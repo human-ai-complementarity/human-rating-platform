@@ -332,7 +332,7 @@ export const api = {
     return requestJson<Upload[]>(routes.admin.uploads(experimentId));
   },
 
-  async updateExperiment(experimentId: number, data: { assistance_method: string; assistance_params?: Record<string, unknown> }): Promise<Experiment> {
+  async updateExperiment(experimentId: number, data: { assistance_method: string; assistance_params?: Record<string, unknown> | null }): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId), {
       method: 'PATCH',
       json: data,
