@@ -67,14 +67,12 @@ function rewardHintText(
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-interface AssistanceMethods {
-  searchResults: boolean;
-  selectedEvidence: boolean;
-  aiConfidence: boolean;
-  aiChatAssistant: boolean;
-}
-
-function ExperimentDetail({ experiment, onBack, onDeleted, onRefresh }: ExperimentDetailProps) {
+function ExperimentDetail({
+  experiment,
+  onBack,
+  onDeleted,
+  onRefresh,
+}: ExperimentDetailProps) {
   const [stats, setStats] = useState<ExperimentStats | null>(null);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [error, setError] = useState<string | null>(null);
