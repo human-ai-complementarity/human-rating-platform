@@ -120,6 +120,7 @@ class ExperimentResponse(BaseModel):
     question_count: int = 0
     rating_count: int = 0
     assistance_method: str = "none"
+    assistance_params: Optional[dict] = None
 
     model_config = ConfigDict(from_attributes=True)
 

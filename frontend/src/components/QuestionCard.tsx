@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import type { Question } from '../types';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
+const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 const openedLongContextDocumentKeys = new Set<string>();
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
@@ -45,6 +46,31 @@ function parseQuestionDisplay(questionText: string): QuestionDisplay {
   }
 
   return { documentText, questionText: displayQuestion };
+}
+
+function parseOptions(rawOptions: string | null): string[] {
+  if (!rawOptions) {
+    return [];
+  }
+
+  if (rawOptions.includes('|')) {
+    return rawOptions.split('|').map(option => option.trim()).filter(Boolean);
+  }
+
+  const labeledOptionStarts = Array.from(rawOptions.matchAll(OPTION_LABEL_PATTERN))
+    .map(match => match.index ?? 0);
+  if (labeledOptionStarts.length > 1) {
+    return labeledOptionStarts
+      .map((start, index) => rawOptions.slice(start, labeledOptionStarts[index + 1]).trim())
+      .filter(Boolean);
+  }
+
+  const lineOptions = rawOptions.split(/\r?\n+/).map(option => option.trim()).filter(Boolean);
+  if (lineOptions.length > 1) {
+    return lineOptions;
+  }
+
+  return rawOptions.split(',').map(option => option.trim()).filter(Boolean);
 }
 
 function buildLongContextDocumentHtml(question: Question, documentText: string): string {
@@ -145,7 +171,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
     openedLongContextDocumentKeys.add(documentKey);
 
-    const openedWindow = window.open(documentUrl, "_blank");
+    const openedWindow = window.open(documentUrl, '_blank');
     if (openedWindow) {
       openedWindow.opener = null;
     }
@@ -178,11 +204,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
   };
 
-  // Options may use '|' as delimiter (new format, supports options containing commas)
-  // or ',' (legacy format). Detect by presence of '|'.
-  const options = question.options
-    ? question.options.split(question.options.includes('|') ? '|' : ',').map(o => o.trim()).filter(o => o)
-    : [];
+  const options = parseOptions(question.options);
 
   const isMC = question.question_type === 'MC' && options.length > 0;
   const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());

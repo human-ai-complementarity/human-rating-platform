@@ -84,6 +84,15 @@ export interface AssistanceStep {
   type: AssistanceStepType;
   is_terminal: boolean;
   payload: {
+    kind?: 'top_n' | string;
+    top_n?: number;
+    candidates?: Array<{
+      rank: number;
+      answer: string;
+      confidence?: number;
+      rationale?: string;
+    }>;
+    has_options?: boolean;
     subtasks?: Subtask[];
     iteration?: number;
     max_rounds?: number;
@@ -147,6 +156,8 @@ export interface ExperimentCreate {
   num_ratings_per_question: number;
   prolific_completion_url: string;
   prolific?: ProlificStudyConfig;
+  assistance_method?: string;
+  assistance_params?: Record<string, unknown>;
 }
 
 export interface ExperimentRound {

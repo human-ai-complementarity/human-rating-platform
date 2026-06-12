@@ -121,10 +121,12 @@ async def update_experiment(
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
     experiment.assistance_method = payload.assistance_method
+
     if payload.assistance_params is not None:
         experiment.assistance_params = json.dumps(payload.assistance_params)
     if payload.internal_name is not None:
         experiment.internal_name = payload.internal_name.strip() or None
+
     await db.commit()
     await db.refresh(experiment)
 
