@@ -54,6 +54,10 @@ class Experiment(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(sa_column=Column(String(255), nullable=False))
+    internal_name: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
@@ -236,6 +240,10 @@ class ExperimentRound(SQLModel, table=True):
     device_compatibility: str = Field(
         sa_column=Column(String(256), nullable=False)
     )  # JSON-encoded list, e.g. '["desktop"]'
+    study_label: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+    )
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

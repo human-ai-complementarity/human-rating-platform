@@ -12,6 +12,7 @@ function AdminView() {
 
   const [newExperiment, setNewExperiment] = useState<ExperimentCreate>({
     name: '',
+    internal_name: '',
     num_ratings_per_question: 3,
     prolific_completion_url: '',
   });
@@ -38,9 +39,12 @@ function AdminView() {
     setSuccess(null);
 
     try {
+      // Backend normalises whitespace/empty → null for internal_name on both
+      // create and update, so we just forward the form value as-typed.
       const created = await api.createExperiment(newExperiment);
       setNewExperiment({
         name: '',
+        internal_name: '',
         num_ratings_per_question: 3,
         prolific_completion_url: '',
       });
@@ -62,6 +66,10 @@ function AdminView() {
     },
     header: {
       marginBottom: '32px',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'flex-end',
+      gap: '16px',
     },
     title: {
       margin: 0,
@@ -73,6 +81,16 @@ function AdminView() {
       margin: '8px 0 0 0',
       fontSize: '14px',
       color: '#666',
+    },
+    docsLink: {
+      color: '#4a90d9',
+      fontSize: '14px',
+      textDecoration: 'none',
+      background: 'none',
+      border: 'none',
+      cursor: 'pointer',
+      padding: 0,
+      whiteSpace: 'nowrap' as const,
     },
     grid: {
       display: 'grid',
@@ -174,8 +192,17 @@ function AdminView() {
     <div style={styles.container}>
       {/* Header */}
       <div style={styles.header}>
-        <h1 style={styles.title}>Experiments</h1>
-        <p style={styles.subtitle}>Create and manage your rating experiments</p>
+        <div>
+          <h1 style={styles.title}>Experiments</h1>
+          <p style={styles.subtitle}>Create and manage your rating experiments</p>
+        </div>
+        <button
+          type="button"
+          style={styles.docsLink}
+          onClick={() => navigate('/admin/docs')}
+        >
+          How to run an experiment →
+        </button>
       </div>
 
       {error && <div className="error" style={{ marginBottom: '16px' }}>{error}</div>}
@@ -191,17 +218,31 @@ function AdminView() {
           <div style={styles.sectionBody}>
             <form onSubmit={handleCreateExperiment}>
               <div style={styles.inputGroup}>
-                <label htmlFor="experiment-name" style={styles.label}>Experiment Name</label>
+                <label htmlFor="experiment-name" style={styles.label}>Public Name</label>
                 <input
                   id="experiment-name"
                   data-testid="experiment-name-input"
                   type="text"
                   value={newExperiment.name}
                   onChange={(e) => setNewExperiment({ ...newExperiment, name: e.target.value })}
-                  placeholder="e.g., Factuality Evaluation Round 1"
+                  placeholder="e.g., Factuality Evaluation"
                   required
                   style={styles.input}
                 />
+                <div style={styles.hint}>Shown to raters on Prolific.</div>
+              </div>
+              <div style={styles.inputGroup}>
+                <label htmlFor="experiment-internal-name" style={styles.label}>Internal Name (optional)</label>
+                <input
+                  id="experiment-internal-name"
+                  data-testid="experiment-internal-name-input"
+                  type="text"
+                  value={newExperiment.internal_name ?? ''}
+                  onChange={(e) => setNewExperiment({ ...newExperiment, internal_name: e.target.value })}
+                  placeholder="e.g., Q2 Factuality Eval — Sander"
+                  style={styles.input}
+                />
+                <div style={styles.hint}>Only visible to you and other researchers (in this dashboard and Prolific's researcher view).</div>
               </div>
               <div style={styles.inputGroup}>
                 <label htmlFor="ratings-per-question" style={styles.label}>Ratings per Question</label>
@@ -249,7 +290,12 @@ function AdminView() {
                   onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 >
                   <div>
-                    <div style={styles.experimentName}>{exp.name}</div>
+                    <div style={styles.experimentName}>{exp.internal_name || exp.name}</div>
+                    {exp.internal_name && (
+                      <div style={{ fontSize: '12px', color: '#666', marginBottom: '2px' }}>
+                        Public: {exp.name}
+                      </div>
+                    )}
                     <div style={styles.experimentMeta}>
                       {exp.question_count} questions · {exp.rating_count} ratings
                     </div>

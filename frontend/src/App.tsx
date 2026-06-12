@@ -3,6 +3,7 @@ import { AuthenticateWithRedirectCallback } from '@clerk/clerk-react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import RaterView from './components/RaterView';
 import AdminView from './components/AdminView';
+import AdminDocs from './components/AdminDocs';
 import ExperimentDetailPage from './components/ExperimentDetailPage';
 import LoginPage from './components/LoginPage';
 import LandingPage from './components/LandingPage';
@@ -40,6 +41,21 @@ function App() {
           <>
             <SignedIn>
               <AdminPage />
+            </SignedIn>
+            <SignedOut>
+              <LoginPage />
+            </SignedOut>
+          </>
+        }
+      />
+      <Route
+        path="/admin/docs"
+        element={
+          <>
+            <SignedIn>
+              <AdminPage>
+                <AdminDocs />
+              </AdminPage>
             </SignedIn>
             <SignedOut>
               <LoginPage />

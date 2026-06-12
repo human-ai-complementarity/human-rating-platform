@@ -35,6 +35,7 @@ async def create_experiment(
 
     db_experiment = Experiment(
         name=payload.name,
+        internal_name=(payload.internal_name.strip() or None) if payload.internal_name else None,
         num_ratings_per_question=payload.num_ratings_per_question,
         prolific_completion_url=payload.prolific_completion_url,
         assistance_method=payload.assistance_method,
@@ -120,9 +121,12 @@ async def update_experiment(
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
     experiment.assistance_method = payload.assistance_method
-    experiment.assistance_params = (
-        json.dumps(payload.assistance_params) if payload.assistance_params is not None else None
-    )
+    
+    if payload.assistance_params is not None:
+        experiment.assistance_params = json.dumps(payload.assistance_params)
+    if payload.internal_name is not None:
+        experiment.internal_name = payload.internal_name.strip() or None
+
     await db.commit()
     await db.refresh(experiment)
 

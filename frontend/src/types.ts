@@ -1,6 +1,7 @@
 export interface Experiment {
   id: number;
   name: string;
+  internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
   prolific_completion_url: string | null;
@@ -9,6 +10,14 @@ export interface Experiment {
   assistance_method: string;
   assistance_params: Record<string, unknown> | null;
 }
+
+export type StudyLabel =
+  | 'annotation'
+  | 'survey'
+  | 'decision_making_task'
+  | 'writing_task'
+  | 'interview'
+  | 'other';
 
 export interface Question {
   id: number;
@@ -141,6 +150,7 @@ export interface PlatformStatus {
 
 export interface ExperimentCreate {
   name: string;
+  internal_name?: string | null;
   num_ratings_per_question: number;
   prolific_completion_url: string;
   prolific?: ProlificStudyConfig;
@@ -158,6 +168,7 @@ export interface ExperimentRound {
   estimated_completion_time: number;
   reward: number;
   device_compatibility: string[];
+  study_label: StudyLabel | null;
   created_at: string;
   prolific_study_url: string;
 }
@@ -176,6 +187,7 @@ export interface PilotStudyCreate {
   reward: number;
   pilot_places: number;
   device_compatibility: string[];
+  study_label: StudyLabel;
 }
 
 export interface RecommendationResponse {
