@@ -191,6 +191,12 @@ class TestMatchOptionAnswer:
         assert _match_option_answer("A", options) == "A. Paris"
         assert _match_option_answer("b", options) == "B. London"
 
+    def test_option_with_numbered_echo_prefix(self):
+        options = ["1. Yes", "2. No", "3. Maybe"]
+        assert _match_option_answer("1", options) == "1. Yes"
+        assert _match_option_answer("2.", options) == "2. No"
+        assert _match_option_answer("3)", options) == "3. Maybe"
+
 
 # ---------------------------------------------------------------------------
 # _normalize_candidates
@@ -426,3 +432,18 @@ async def test_start_includes_parent_question_context():
     messages = mock_complete.call_args[0][0]
     user_message = next(m for m in messages if m["role"] == "user")
     assert "What is the capital of France?" in user_message["content"]
+
+
+@pytest.mark.asyncio
+async def test_start_returns_none_step_on_complete_runtime_error():
+    method = TopNAssistance()
+    question = _make_question()
+
+    with patch(
+        "services.assistance.methods.top_n.complete",
+        new=AsyncMock(side_effect=RuntimeError("LLM service unavailable")),
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.is_terminal is True
