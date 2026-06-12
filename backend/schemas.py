@@ -6,6 +6,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from models import ProlificStudyStatus, StepType
 
 
+# Allowed values for Prolific's `study_labels` field. The Prolific API also
+# accepts AI-task variants, but we expose only the data-collection set our
+# researchers actually pick from.
+StudyLabel = Literal[
+    "annotation",
+    "survey",
+    "decision_making_task",
+    "writing_task",
+    "interview",
+    "other",
+]
+
+
 # Prolific schemas
 class ProlificStudyConfig(BaseModel):
     description: str
@@ -25,6 +38,7 @@ class PilotStudyCreate(BaseModel):
     device_compatibility: list[Literal["desktop", "tablet", "mobile"]] = Field(
         default_factory=lambda: ["desktop"]
     )
+    study_label: StudyLabel = "annotation"
 
 
 class ExperimentRoundCreate(BaseModel):
@@ -69,6 +83,7 @@ class ExperimentRoundResponse(BaseModel):
     estimated_completion_time: int
     reward: int
     device_compatibility: list[str]
+    study_label: Optional[str] = None
     created_at: datetime
     prolific_study_url: str
 
@@ -84,6 +99,10 @@ class PlatformStatus(BaseModel):
 # Experiment schemas
 class ExperimentCreate(BaseModel):
     name: str
+    # `internal_name` is capped to match the DB column (`String(255)`) so an
+    # overlong value is rejected by Pydantic as a clean 422 instead of falling
+    # through to Postgres and surfacing as a 500.
+    internal_name: Optional[str] = Field(default=None, max_length=255)
     num_ratings_per_question: int = 3
     prolific_completion_url: Optional[str] = None
     prolific: Optional[ProlificStudyConfig] = None
@@ -94,6 +113,7 @@ class ExperimentCreate(BaseModel):
 class ExperimentResponse(BaseModel):
     id: int
     name: str
+    internal_name: Optional[str] = None
     created_at: datetime
     num_ratings_per_question: int
     prolific_completion_url: Optional[str] = None
@@ -107,6 +127,7 @@ class ExperimentResponse(BaseModel):
 class ExperimentUpdate(BaseModel):
     assistance_method: str
     assistance_params: Optional[dict] = None
+    internal_name: Optional[str] = Field(default=None, max_length=255)
 
 
 # Question schemas

@@ -35,6 +35,7 @@ from .prolific import (
     stop_study,
     update_study,
 )
+from .prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
@@ -107,6 +108,7 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         estimated_completion_time=round_.estimated_completion_time,
         reward=round_.reward,
         device_compatibility=_parse_device_compatibility(round_.device_compatibility),
+        study_label=round_.study_label,
         created_at=round_.created_at,
         prolific_study_url=build_study_url(study_id=round_.prolific_study_id),
     )
@@ -135,6 +137,20 @@ def _is_round_closed(round_: ExperimentRound) -> bool:
 def _build_round_study_name(experiment_name: str, round_number: int) -> str:
     suffix = "Pilot" if round_number == 0 else f"Round {round_number}"
     return f"{experiment_name} - {suffix}"
+
+
+def _build_round_internal_name(
+    experiment_internal_name: str | None, round_number: int
+) -> str | None:
+    """Per-round Prolific internal_name: includes the round suffix so the
+    researcher can disambiguate rounds of the same experiment in Prolific's
+    study list. Returns None when no internal name was set on the experiment
+    so we don't send an empty field.
+    """
+    if not experiment_internal_name or not experiment_internal_name.strip():
+        return None
+    suffix = "Pilot" if round_number == 0 else f"Round {round_number}"
+    return f"{experiment_internal_name.strip()} - {suffix}"
 
 
 async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSession) -> None:
@@ -263,6 +279,7 @@ async def _create_prolific_study_for_round(
     reward: int,
     places: int,
     device_compatibility: list[str],
+    study_label: str | None,
 ) -> dict[str, str]:
     settings = get_settings()
     completion_code = _ensure_completion_code(experiment)
@@ -274,13 +291,15 @@ async def _create_prolific_study_for_round(
     return await create_study(
         settings=settings.prolific,
         name=_build_round_study_name(experiment.name, round_number),
-        description=description,
+        internal_name=_build_round_internal_name(experiment.internal_name, round_number),
+        description=to_prolific_html(description),
         external_study_url=external_study_url,
         estimated_completion_time=estimated_completion_time,
         reward=reward,
         total_available_places=places,
         completion_code=completion_code,
         device_compatibility=device_compatibility,
+        study_label=study_label,
     )
 
 
@@ -369,6 +388,7 @@ async def run_pilot_study(
             reward=payload.reward,
             places=payload.pilot_places,
             device_compatibility=payload.device_compatibility,
+            study_label=payload.study_label,
         )
     except HTTPException:
         raise
@@ -407,6 +427,7 @@ async def run_pilot_study(
         estimated_completion_time=payload.estimated_completion_time,
         reward=payload.reward,
         device_compatibility=json.dumps(payload.device_compatibility),
+        study_label=payload.study_label,
         places_requested=payload.pilot_places,
     )
     await _commit_round_creation(
@@ -467,6 +488,7 @@ async def run_experiment_round(
             reward=pilot_round.reward,
             places=payload.places,
             device_compatibility=device_compatibility,
+            study_label=pilot_round.study_label,
         )
     except HTTPException:
         raise
@@ -511,6 +533,7 @@ async def run_experiment_round(
         estimated_completion_time=pilot_round.estimated_completion_time,
         reward=pilot_round.reward,
         device_compatibility=pilot_round.device_compatibility,
+        study_label=pilot_round.study_label,
         places_requested=payload.places,
     )
     await _commit_round_creation(
@@ -610,7 +633,6 @@ async def publish_experiment_round(
 
 
 _PROLIFIC_FIELD_MAP = {
-    "description": "description",
     "estimated_completion_time": "estimated_completion_time",
     "reward": "reward",
     "places": "total_available_places",
@@ -648,6 +670,10 @@ async def update_experiment_round(
             prolific_fields[dst] = value
     if payload.device_compatibility is not None:
         prolific_fields["device_compatibility"] = payload.device_compatibility
+    if payload.description is not None:
+        # Convert markdown to Prolific's HTML subset on the wire, but keep
+        # the raw markdown in our DB so editors see what they typed.
+        prolific_fields["description"] = to_prolific_html(payload.description)
 
     try:
         await update_study(

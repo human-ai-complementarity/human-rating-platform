@@ -1202,8 +1202,10 @@ def test_prolific_round_edit_updates_db_and_calls_prolific(client: TestClient, e
     assert route.called
 
     sent = json.loads(route.calls[0].request.content)
+    # Description is converted to Prolific's HTML subset on the wire; the raw
+    # markdown is what we store back in the DB and return in the response.
     assert sent == {
-        "description": "Updated description",
+        "description": "<p>Updated description</p>",
         "reward": 1500,
         "total_available_places": 7,
     }
@@ -1627,3 +1629,130 @@ def test_recommendation_remaining_actions_excludes_parent_rows(client: TestClien
     payload = resp.json()
     # 2 children × 2 ratings - 1 submitted = 3. (Pre-fix this was 5: 3 questions × 2 - 1.)
     assert payload["remaining_rating_actions"] == 3
+
+
+@respx.mock
+def test_prolific_create_converts_description_markdown_to_html(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={
+            **_pilot_payload(),
+            "description": "Read the article.\n\n- Be fair\n- Be quick",
+        },
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert (
+        sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
+    )
+
+
+@respx.mock
+def test_prolific_create_sends_internal_name_when_set(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("public-exp"),
+            "internal_name": "Internal Q2 Eval",
+            "num_ratings_per_question": 2,
+            "prolific_completion_url": None,
+        },
+    )
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+    assert experiment["internal_name"] == "Internal Q2 Eval"
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert sent["internal_name"] == "Internal Q2 Eval - Pilot"
+
+
+@respx.mock
+def test_prolific_create_omits_internal_name_when_unset(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+    assert experiment["internal_name"] is None
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert "internal_name" not in sent
+    # `annotation` is the schema default so we still emit study_labels.
+    assert sent["study_labels"] == ["annotation"]
+
+
+@respx.mock
+def test_prolific_create_sends_chosen_study_label(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "study_label": "survey"},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert sent["study_labels"] == ["survey"]
+
+
+@respx.mock
+def test_prolific_round_inherits_pilot_study_label(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200
+    experiment = create_resp.json()
+
+    _mock_create_study(study_id="PILOT_S")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "study_label": "decision_making_task"},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    _mock_publish_study(study_id="PILOT_S")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
+    _mock_close_study(study_id="PILOT_S")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
+
+    round_route = _mock_create_study(study_id="R1_S")
+    round_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert round_resp.status_code == 200, round_resp.text
+    sent = json.loads(round_route.calls[-1].request.content.decode())
+    assert sent["study_labels"] == ["decision_making_task"]

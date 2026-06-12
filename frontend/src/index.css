@@ -406,3 +406,11 @@ input[type="range"] {
 .admin-docs strong {
   font-weight: 600;
 }
+
+/* Prefixed-input wrapper: the inner <input> has no chrome of its own, so the
+   wrapper picks up focus styling via :focus-within. Matches the browser's
+   default focused-input look (blue border + faint outer glow). */
+.reward-input:focus-within {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.2);
+}

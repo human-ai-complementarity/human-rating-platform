@@ -18,6 +18,7 @@ def build_experiment_response(
     return ExperimentResponse(
         id=experiment.id,
         name=experiment.name,
+        internal_name=experiment.internal_name,
         created_at=experiment.created_at,
         num_ratings_per_question=experiment.num_ratings_per_question,
         prolific_completion_url=experiment.prolific_completion_url,
