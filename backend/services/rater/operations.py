@@ -29,6 +29,7 @@ from .queries import (
     fetch_existing_rater_for_experiment,
     fetch_existing_rating,
     fetch_experiment_or_404,
+    fetch_in_progress_parent_ids,
     fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rated_question_ids,
@@ -191,6 +192,7 @@ async def get_next_question(
         rated_question_ids=rated_question_ids,
         db=db,
     )
+    in_progress_parent_ids = await fetch_in_progress_parent_ids(rater_id, db)
 
     under_quota, at_quota = build_question_selection_groups(
         eligible_questions=eligible_questions,
@@ -199,6 +201,7 @@ async def get_next_question(
     selected = build_selected_question(
         under_quota=under_quota,
         at_quota=at_quota,
+        in_progress_parent_ids=in_progress_parent_ids,
     )
 
     if selected is None:

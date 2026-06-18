@@ -55,6 +55,22 @@ async def fetch_rated_question_ids(rater_id: int, db: AsyncSession) -> list[int]
     ]
 
 
+async def fetch_in_progress_parent_ids(rater_id: int, db: AsyncSession) -> set[int]:
+    """Parent ids for which this rater has already rated at least one child.
+
+    Used to keep sibling sub-questions together: once a rater starts a parent
+    group, subsequent picks prefer remaining children of that group.
+    """
+    result = await db.execute(
+        select(Question.parent_question_id)
+        .join(Rating, Rating.question_id == Question.id)
+        .where(Rating.rater_id == rater_id)
+        .where(Question.parent_question_id.is_not(None))
+        .distinct()
+    )
+    return {pid for (pid,) in result.all() if pid is not None}
+
+
 async def fetch_existing_rater_for_experiment(
     *,
     prolific_id: str,
