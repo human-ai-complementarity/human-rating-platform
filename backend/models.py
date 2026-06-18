@@ -82,6 +82,17 @@ class Experiment(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded method-specific parameters
+    description: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    system_prompt: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Per-question framing. `human_prompt_prefix` is rendered above the question text,
+    # `human_prompt_suffix` below it. Either or both may be set; the AI's analogue is
+    # the system message append handled via `system_prompt`.
+    human_prompt_prefix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    human_prompt_suffix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    prolific_pool: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
 
 
 class Question(SQLModel, table=True):
@@ -276,6 +287,10 @@ class Upload(SQLModel, table=True):
         ),
     )
     question_count: int = Field(sa_column=Column(Integer, nullable=False))
+    dataset_meta: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )  # JSON of the #META: line parsed from this CSV, if any
 
 
 class AssistanceSession(SQLModel, table=True):

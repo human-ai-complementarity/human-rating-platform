@@ -126,6 +126,21 @@ async def update_experiment(
         experiment.assistance_params = json.dumps(payload.assistance_params)
     if payload.internal_name is not None:
         experiment.internal_name = payload.internal_name.strip() or None
+    # For each dataset-meta field, None means "leave unchanged"; an explicit
+    # empty string clears the field. This keeps PATCHy edits straightforward
+    # from the admin UI (only send what the user touched).
+    for field_name in (
+        "description",
+        "system_prompt",
+        "human_prompt_prefix",
+        "human_prompt_suffix",
+        "prolific_pool",
+    ):
+        value = getattr(payload, field_name)
+        if value is None:
+            continue
+        stripped = value.strip()
+        setattr(experiment, field_name, stripped or None)
 
     await db.commit()
     await db.refresh(experiment)

@@ -19,6 +19,7 @@ import type {
   RecommendationResponse,
   Session,
   Upload,
+  UploadResponse,
 } from './types';
 
 // ── Response types ───────────────────────────────────────────────────────────
@@ -300,11 +301,11 @@ export const api = {
     return requestJson<Experiment[]>(routes.admin.experiments);
   },
 
-  async uploadQuestions(experimentId: number, file: File): Promise<MessageResponse> {
+  async uploadQuestions(experimentId: number, file: File): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
 
-    return requestJson<MessageResponse>(routes.admin.upload(experimentId), {
+    return requestJson<UploadResponse>(routes.admin.upload(experimentId), {
       method: 'POST',
       formData,
     });
@@ -332,7 +333,20 @@ export const api = {
     return requestJson<Upload[]>(routes.admin.uploads(experimentId));
   },
 
-  async updateExperiment(experimentId: number, data: { assistance_method: string; assistance_params?: Record<string, unknown> | null }): Promise<Experiment> {
+  async updateExperiment(
+    experimentId: number,
+    data: {
+      assistance_method: string;
+      assistance_params?: Record<string, unknown> | null;
+      // Dataset metadata edits. Each field uses null/undefined to mean
+      // "leave unchanged" and "" to clear. Mirrors ExperimentUpdate on the backend.
+      description?: string;
+      system_prompt?: string;
+      human_prompt_prefix?: string;
+      human_prompt_suffix?: string;
+      prolific_pool?: string;
+    },
+  ): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId), {
       method: 'PATCH',
       json: data,

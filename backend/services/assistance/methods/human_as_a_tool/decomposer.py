@@ -196,6 +196,17 @@ def _normalize_subtasks(subtasks: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
+def _append_experiment_system_prompt(base: str, extra: str | None) -> str:
+    """Append the researcher's dataset-level system prompt to a method prompt.
+
+    Kept after the method prompt so the JSON-output contract and decomposition
+    rules stay last and are least likely to be overridden by study framing.
+    """
+    if not extra or not extra.strip():
+        return base
+    return f"{base}\n\nStudy-specific context:\n{extra.strip()}"
+
+
 class SubtaskDecomposer:
     async def start(
         self,
@@ -203,9 +214,13 @@ class SubtaskDecomposer:
         options: str,
         max_subtasks: int,
         model: str | None = None,
+        experiment_system_prompt: str | None = None,
     ) -> DecompositionResult:
         settings = get_settings()
-        system = _START_SYSTEM.format(subtask_schema=_SUBTASK_SCHEMA, max_subtasks=max_subtasks)
+        system = _append_experiment_system_prompt(
+            _START_SYSTEM.format(subtask_schema=_SUBTASK_SCHEMA, max_subtasks=max_subtasks),
+            experiment_system_prompt,
+        )
         user_msg = _build_user_msg(question_text, options)
 
         raw = await complete(
@@ -236,16 +251,20 @@ class SubtaskDecomposer:
         iteration: int,
         max_rounds: int,
         model: str | None = None,
+        experiment_system_prompt: str | None = None,
     ) -> DecompositionResult:
         settings = get_settings()
         is_final = iteration >= max_rounds
         forced_note = _FORCED_NOTE if is_final else ""
 
-        system = _ADVANCE_SYSTEM.format(
-            iteration=iteration,
-            max_rounds=max_rounds,
-            forced_note=forced_note,
-            subtask_schema=_SUBTASK_SCHEMA,
+        system = _append_experiment_system_prompt(
+            _ADVANCE_SYSTEM.format(
+                iteration=iteration,
+                max_rounds=max_rounds,
+                forced_note=forced_note,
+                subtask_schema=_SUBTASK_SCHEMA,
+            ),
+            experiment_system_prompt,
         )
         user_msg = _build_user_msg(question_text, options, history)
 
@@ -273,7 +292,12 @@ class SubtaskDecomposer:
                     "advance() forced synthesis but LLM omitted it; making fallback call"
                 )
                 synthesis = await self._fallback_synthesize(
-                    question_text, options, history, model, settings.llm
+                    question_text,
+                    options,
+                    history,
+                    model,
+                    settings.llm,
+                    experiment_system_prompt,
                 )
             return DecompositionResult(done=True, synthesis=synthesis)
 
@@ -281,7 +305,12 @@ class SubtaskDecomposer:
         if not subtasks:
             logger.warning("advance() returned done=false with no subtasks; forcing synthesis")
             synthesis = await self._fallback_synthesize(
-                question_text, options, history, model, settings.llm
+                question_text,
+                options,
+                history,
+                model,
+                settings.llm,
+                experiment_system_prompt,
             )
             return DecompositionResult(done=True, synthesis=synthesis)
 
@@ -294,12 +323,18 @@ class SubtaskDecomposer:
         history: list[dict],
         model: str,
         llm_settings: LLMSettings,
+        experiment_system_prompt: str | None = None,
     ) -> dict:
         """Make a dedicated synthesis call when the LLM failed to include one."""
         user_msg = _build_user_msg(question_text, options, history)
         raw = await complete(
             [
-                {"role": "system", "content": _FALLBACK_SYNTHESIS_SYSTEM},
+                {
+                    "role": "system",
+                    "content": _append_experiment_system_prompt(
+                        _FALLBACK_SYNTHESIS_SYSTEM, experiment_system_prompt
+                    ),
+                },
                 {"role": "user", "content": user_msg},
             ],
             model=model,

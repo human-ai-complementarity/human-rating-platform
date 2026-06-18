@@ -51,6 +51,7 @@ class AssistanceMethod(ABC):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         """Begin an assistance interaction for the given question.
 
@@ -60,10 +61,22 @@ class AssistanceMethod(ABC):
             context shown to the rater above the question. Methods that pass
             the question to an LLM should incorporate this; otherwise the
             model loses the context the rater can see.
+        experiment_system_prompt:
+            Dataset-level system prompt declared by the researcher (via the
+            CSV `#META:` header or the admin UI). Methods that drive an LLM
+            should append it to their own system prompt so the model gets
+            study-specific framing on top of the method's task structure.
         """
         ...
 
-    async def advance(self, state: dict, human_input: str, params: dict) -> InteractionStep:
+    async def advance(
+        self,
+        state: dict,
+        human_input: str,
+        params: dict,
+        *,
+        experiment_system_prompt: str | None = None,
+    ) -> InteractionStep:
         """Advance a multi-turn interaction with the rater's latest input.
 
         The default implementation raises, signalling that this method is

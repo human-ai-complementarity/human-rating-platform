@@ -72,6 +72,10 @@ async def start_session(
         is_preview=is_preview,
         db=db,
     )
+    # Round-level description (set per Prolific study) takes precedence so admins
+    # can tailor each round; otherwise fall back to the dataset-level description.
+    description_for_intro = round_description or experiment.description
+
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
 
     existing_rater = await fetch_existing_rater_for_experiment(
@@ -114,7 +118,9 @@ async def start_session(
                 rater_id=existing_rater.id,
                 session_start=existing_rater.session_start,
                 experiment_name=experiment.name,
-                experiment_description=round_description,
+                experiment_description=description_for_intro,
+                human_prompt_prefix=experiment.human_prompt_prefix,
+                human_prompt_suffix=experiment.human_prompt_suffix,
                 completion_url=experiment.prolific_completion_url,
                 rater_session_token=token,
                 assistance_method=experiment.assistance_method,
@@ -128,7 +134,9 @@ async def start_session(
             rater_id=existing_rater.id,
             session_start=existing_rater.session_start,
             experiment_name=experiment.name,
-            experiment_description=round_description,
+            experiment_description=description_for_intro,
+            human_prompt_prefix=experiment.human_prompt_prefix,
+            human_prompt_suffix=experiment.human_prompt_suffix,
             completion_url=experiment.prolific_completion_url,
             rater_session_token=token,
             assistance_method=experiment.assistance_method,
@@ -168,7 +176,9 @@ async def start_session(
         rater_id=rater.id,
         session_start=rater.session_start,
         experiment_name=experiment.name,
-        experiment_description=round_description,
+        experiment_description=description_for_intro,
+        human_prompt_prefix=experiment.human_prompt_prefix,
+        human_prompt_suffix=experiment.human_prompt_suffix,
         completion_url=experiment.prolific_completion_url,
         rater_session_token=token,
         assistance_method=experiment.assistance_method,

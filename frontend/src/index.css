@@ -393,6 +393,57 @@ input[type="range"] {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
+/* Fenced code blocks (e.g. the `#META:` examples). The minified meta JSON has
+   no spaces around its commas, so `overflow-wrap: anywhere` is needed to break
+   inside long unbroken runs — without it `pre-wrap` alone still overflows. */
+.admin-docs pre {
+  background: #f3f4f6;
+  padding: 12px 14px;
+  border-radius: 6px;
+  margin: 0 0 14px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-docs pre code {
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* GFM tables (e.g. the CSV columns reference). Compact, light borders,
+   left-aligned text. `table-layout: auto` lets the column-name column shrink
+   to content and the description column take the rest of the width. */
+.admin-docs table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 14px 0;
+  font-size: 14px;
+}
+
+.admin-docs th,
+.admin-docs td {
+  text-align: left;
+  vertical-align: top;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e6e8eb;
+}
+
+.admin-docs th {
+  background: #f8fafc;
+  font-weight: 600;
+  color: #444;
+  border-bottom-width: 2px;
+}
+
+.admin-docs td code,
+.admin-docs th code {
+  font-size: 12.5px;
+}
+
 .admin-docs hr {
   border: none;
   border-top: 1px solid #eee;

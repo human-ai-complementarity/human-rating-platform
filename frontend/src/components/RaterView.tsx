@@ -38,9 +38,9 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     typeof value.session_start === 'string' &&
     typeof value.session_end_time === 'string' &&
     typeof value.experiment_name === 'string' &&
-    (value.experiment_description === null ||
-      value.experiment_description === undefined ||
-      typeof value.experiment_description === 'string') &&
+    (value.experiment_description_html === null ||
+      value.experiment_description_html === undefined ||
+      typeof value.experiment_description_html === 'string') &&
     (value.completion_url === null || typeof value.completion_url === 'string') &&
     (value.rater_session_token === undefined || typeof value.rater_session_token === 'string') &&
     (value.assistance_instructions === null ||
@@ -67,7 +67,7 @@ function parseStoredSession(raw: string): StoredSession | null {
     const session: Session = {
       ...sessionPayload,
       rater_session_token: token,
-      experiment_description: sessionPayload.experiment_description ?? null,
+      experiment_description_html: sessionPayload.experiment_description_html ?? null,
       assistance_instructions: sessionPayload.assistance_instructions ?? null,
     };
 
@@ -113,7 +113,7 @@ function getProlificSessionParams(params: {
 }
 
 function hasIntroContent(session: Session): boolean {
-  return Boolean(session.experiment_description || session.assistance_instructions);
+  return Boolean(session.experiment_description_html || session.assistance_instructions);
 }
 
 function RaterView() {
@@ -539,7 +539,7 @@ const handleSessionExpired = () => {
         )}
         <RaterIntro
           experimentName={session.experiment_name}
-          description={session.experiment_description}
+          descriptionHtml={session.experiment_description_html}
           assistanceInstructions={session.assistance_instructions}
           onContinue={handleIntroContinue}
         />
@@ -580,6 +580,8 @@ const handleSessionExpired = () => {
               onSubmit={handleSubmit}
               assistanceActive={assistanceBlocksRating}
               assistanceAnswer={assistanceStep?.payload.synthesis?.answer ?? null}
+              humanPromptPrefix={session?.human_prompt_prefix ?? null}
+              humanPromptSuffix={session?.human_prompt_suffix ?? null}
             />
           </div>
           <AssistancePanel
@@ -595,6 +597,8 @@ const handleSessionExpired = () => {
             <QuestionCard
               question={question}
               onSubmit={handleSubmit}
+              humanPromptPrefix={session?.human_prompt_prefix ?? null}
+              humanPromptSuffix={session?.human_prompt_suffix ?? null}
             />
           )}
         </>

@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import adminGuide from '../docs/admin-guide.md?raw';
 
 function AdminDocs() {
@@ -40,7 +41,7 @@ function AdminDocs() {
       </button>
       <div style={styles.card}>
         <div className="admin-docs">
-          <ReactMarkdown>{adminGuide}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{adminGuide}</ReactMarkdown>
         </div>
       </div>
     </div>
