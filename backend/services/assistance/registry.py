@@ -12,9 +12,20 @@ test different approaches and compare their effect on rating quality.
 2. Define a class that extends AssistanceMethod and implements start():
 
     class HintMethod(AssistanceMethod):
+        rater_instructions = (
+            "For each question, an AI-generated hint will be shown alongside "
+            "the question to help you reason through it."
+        )
+
         async def start(self, question: Question, params: dict) -> InteractionStep:
             hint = await generate_hint(question.question_text, params)
             return InteractionStep(type=StepType.DISPLAY, payload={"hint": hint}, is_terminal=True)
+
+   ``rater_instructions`` is a short plain-text description of how the method
+   works from the rater's perspective, shown on the intro screen before they
+   begin rating. It is required on any method that affects the rater
+   experience — leave as the empty string only if the method is invisible to
+   the rater (e.g. NoAssistance).
 
 3. Register it here:
 
@@ -100,3 +111,16 @@ def get_method(name: str) -> AssistanceMethod:
 def register(name: str, cls: type[AssistanceMethod]) -> None:
     """Register a new method at runtime (useful for tests or plugins)."""
     _REGISTRY[name] = cls
+
+
+def get_rater_instructions(name: str) -> str:
+    """Return the rater-facing instruction text for a method, or "" if none.
+
+    Reads the class attribute without instantiating the method (instantiation
+    can be expensive — HumanAsAToolMethod builds a decomposer, etc.). Unknown
+    method names return "" so the intro screen simply omits the box.
+    """
+    cls = _REGISTRY.get(name)
+    if cls is None:
+        return ""
+    return cls.rater_instructions or ""

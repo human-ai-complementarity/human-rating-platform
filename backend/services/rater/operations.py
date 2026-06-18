@@ -17,6 +17,7 @@ from schemas import (
     RatingSubmit,
     SessionStatusResponse,
 )
+from services.assistance import get_rater_instructions
 from .mappers import (
     build_question_response,
     build_rater_start_response,
@@ -33,6 +34,7 @@ from .queries import (
     fetch_rated_question_ids,
     fetch_rater_completed_count,
     fetch_rater_or_404,
+    fetch_round_description,
 )
 from .selectors import build_question_selection_groups, build_selected_question
 from .validators import (
@@ -63,6 +65,13 @@ async def start_session(
     db: AsyncSession,
 ) -> RaterStartResponse:
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    round_description = await fetch_round_description(
+        experiment_id=experiment_id,
+        prolific_study_id=study_id,
+        is_preview=is_preview,
+        db=db,
+    )
+    assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
 
     existing_rater = await fetch_existing_rater_for_experiment(
         prolific_id=prolific_pid,
@@ -104,9 +113,11 @@ async def start_session(
                 rater_id=existing_rater.id,
                 session_start=existing_rater.session_start,
                 experiment_name=experiment.name,
+                experiment_description=round_description,
                 completion_url=experiment.prolific_completion_url,
                 rater_session_token=token,
                 assistance_method=experiment.assistance_method,
+                assistance_instructions=assistance_instructions,
             )
         validate_existing_rater_can_resume(existing_rater)
         token = issue_rater_session_token(
@@ -116,9 +127,11 @@ async def start_session(
             rater_id=existing_rater.id,
             session_start=existing_rater.session_start,
             experiment_name=experiment.name,
+            experiment_description=round_description,
             completion_url=experiment.prolific_completion_url,
             rater_session_token=token,
             assistance_method=experiment.assistance_method,
+            assistance_instructions=assistance_instructions,
         )
 
     rater = Rater(
@@ -154,9 +167,11 @@ async def start_session(
         rater_id=rater.id,
         session_start=rater.session_start,
         experiment_name=experiment.name,
+        experiment_description=round_description,
         completion_url=experiment.prolific_completion_url,
         rater_session_token=token,
         assistance_method=experiment.assistance_method,
+        assistance_instructions=assistance_instructions,
     )
 
 
