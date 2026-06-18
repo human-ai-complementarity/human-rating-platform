@@ -35,7 +35,7 @@ from .prolific import (
     stop_study,
     update_study,
 )
-from .prolific_markdown import to_prolific_html
+from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment

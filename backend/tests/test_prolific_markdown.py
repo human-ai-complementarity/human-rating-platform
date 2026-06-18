@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.admin.prolific_markdown import to_prolific_html
+from services.prolific_markdown import to_prolific_html
 
 
 @pytest.mark.parametrize(

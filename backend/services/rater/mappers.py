@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from models import Question, SESSION_DURATION_MINUTES
 from schemas import QuestionResponse, RaterStartResponse
-from services.admin.prolific_markdown import to_prolific_html
+from services.prolific_markdown import to_prolific_html
 
 
 def build_session_end_time(session_start: datetime) -> datetime:
