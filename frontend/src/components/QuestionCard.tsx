@@ -13,6 +13,11 @@ interface QuestionCardProps {
   disabled?: boolean;
   assistanceAnswer?: string | null;
   assistanceActive?: boolean;
+  // Researcher-supplied framing from the dataset metadata. `humanPromptPrefix`
+  // is rendered above the question text, `humanPromptSuffix` below it. Both are
+  // constant for the session and either may be null.
+  humanPromptPrefix?: string | null;
+  humanPromptSuffix?: string | null;
 }
 
 type QuestionDisplay = {
@@ -122,7 +127,7 @@ function buildLongContextDocumentHtml(question: Question, documentText: string):
 </html>`;
 }
 
-function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false }: QuestionCardProps) {
+function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false, humanPromptPrefix = null, humanPromptSuffix = null }: QuestionCardProps) {
   const [selectedAnswer, setSelectedAnswer] = useState('');
   const [freeTextAnswer, setFreeTextAnswer] = useState('');
   const [confidence, setConfidence] = useState(3);
@@ -246,6 +251,23 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       color: '#3a4a5c',
       whiteSpace: 'pre-wrap' as const,
       margin: 0,
+    },
+    humanPromptPrefix: {
+      fontSize: '14px',
+      lineHeight: 1.5,
+      color: '#666',
+      fontStyle: 'italic' as const,
+      marginBottom: '12px',
+      whiteSpace: 'pre-wrap' as const,
+    },
+    humanPromptSuffix: {
+      fontSize: '14px',
+      lineHeight: 1.5,
+      color: '#666',
+      fontStyle: 'italic' as const,
+      marginTop: '-12px',
+      marginBottom: '24px',
+      whiteSpace: 'pre-wrap' as const,
     },
     questionText: {
       fontSize: '20px',
@@ -392,7 +414,15 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         </>
       )}
 
+      {humanPromptPrefix && humanPromptPrefix.trim() && (
+        <p style={styles.humanPromptPrefix}>{humanPromptPrefix}</p>
+      )}
+
       <p style={styles.questionText}>{display.questionText}</p>
+
+      {humanPromptSuffix && humanPromptSuffix.trim() && (
+        <p style={styles.humanPromptSuffix}>{humanPromptSuffix}</p>
+      )}
 
       {assistanceActive && assistanceAnswer == null && (
         <p style={{ fontSize: '14px', color: '#888', fontStyle: 'italic', marginBottom: '16px' }}>

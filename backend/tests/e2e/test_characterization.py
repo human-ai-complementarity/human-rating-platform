@@ -211,6 +211,214 @@ def test_upload_rejects_non_csv_file(client: TestClient):
     assert response.json()["detail"] == "File must be a CSV file"
 
 
+def _csv_with_meta(meta: dict | str) -> str:
+    meta_str = meta if isinstance(meta, str) else json.dumps(meta)
+    return (
+        f"#META: {meta_str}\n"
+        "question_id,question_text,gt_answer,options,question_type\n"
+        "q1,Is this useful?,Yes,Yes|No,MC\n"
+        "q2,Explain why,,,\n"
+    )
+
+
+def _fetch_experiment(client: TestClient, experiment_id: int) -> dict:
+    # No GET-by-id endpoint exists; pull the list and pick ours out.
+    items = client.get("/api/admin/experiments").json()
+    return next(item for item in items if item["id"] == experiment_id)
+
+
+def test_upload_with_meta_header_populates_experiment(client: TestClient):
+    experiment = _create_experiment(client)
+    meta = {
+        "description": "Pilot dataset on x.",
+        "system_prompt": "You are an evaluator.",
+        "human_prompt_prefix": "When you see the text below, do you think x or y?",
+        "human_prompt_suffix": "Pick the option that best matches.",
+        "prolific_pool": "uk_representative_sample",
+    }
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("with_meta.csv", _csv_with_meta(meta), "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert sorted(body["meta_applied"]) == sorted(meta.keys())
+    assert body["meta_conflicts"] == []
+
+    refreshed = _fetch_experiment(client, experiment["id"])
+    for key, value in meta.items():
+        assert refreshed[key] == value
+
+    uploads = client.get(f"/api/admin/experiments/{experiment['id']}/uploads").json()
+    assert uploads[0]["dataset_meta"] == meta
+
+
+def test_upload_second_csv_with_differing_meta_keeps_existing(client: TestClient):
+    experiment = _create_experiment(client)
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("first.csv", _csv_with_meta({"description": "first"}), "text/csv")},
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("second.csv", _csv_with_meta({"description": "second"}), "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    # Second upload's value disagreed — reported as a conflict, not applied.
+    assert body["meta_applied"] == []
+    assert body["meta_conflicts"] == ["description"]
+
+    refreshed = _fetch_experiment(client, experiment["id"])
+    assert refreshed["description"] == "first"
+
+
+def test_upload_second_csv_with_identical_meta_reports_neither_applied_nor_conflict(
+    client: TestClient,
+):
+    # Re-declaring the same value the experiment already has is a no-op: not a
+    # conflict (nothing disagrees) and not "applied" (nothing was written).
+    experiment = _create_experiment(client)
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("first.csv", _csv_with_meta({"description": "same"}), "text/csv")},
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("second.csv", _csv_with_meta({"description": "same"}), "text/csv")},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["meta_applied"] == []
+    assert body["meta_conflicts"] == []
+
+
+def test_upload_handles_utf8_bom_in_csv(client: TestClient):
+    # Excel "Save As CSV UTF-8" and pandas' `encoding="utf-8-sig"` both emit a
+    # leading BOM. The parser must consume it so the `#META:` line is recognised.
+    experiment = _create_experiment(client)
+    csv_body = "\ufeff" + _csv_with_meta({"description": "from bom file"})
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("bom.csv", csv_body.encode("utf-8"), "text/csv")},
+    )
+    assert response.status_code == 200
+    assert response.json()["meta_applied"] == ["description"]
+    refreshed = _fetch_experiment(client, experiment["id"])
+    assert refreshed["description"] == "from bom file"
+
+
+def test_upload_rejects_invalid_meta_json(client: TestClient):
+    experiment = _create_experiment(client)
+    csv_body = "#META: not json at all\nquestion_id,question_text\nq1,hello\n"
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("bad.csv", csv_body, "text/csv")},
+    )
+    assert response.status_code == 400
+    assert "Invalid #META: JSON" in response.json()["detail"]
+
+
+def test_upload_rejects_unknown_meta_keys(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("bad.csv", _csv_with_meta({"description": "ok", "wat": 1}), "text/csv")},
+    )
+    assert response.status_code == 400
+    assert "Unknown #META: keys" in response.json()["detail"]
+    assert "wat" in response.json()["detail"]
+
+
+def test_upload_without_meta_header_still_works(client: TestClient):
+    # Backwards-compat: legacy CSVs without a #META: line must parse exactly as before.
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    refreshed = _fetch_experiment(client, experiment["id"])
+    assert refreshed["description"] is None
+    assert refreshed["system_prompt"] is None
+    uploads = client.get(f"/api/admin/experiments/{experiment['id']}/uploads").json()
+    assert uploads[0]["dataset_meta"] is None
+
+
+def test_rater_session_exposes_prefix_and_suffix(client: TestClient):
+    # Prefix + suffix travel with the rater session (constant for the session,
+    # not per-question) so the question-fetch payload stays small.
+    experiment = _create_experiment(client)
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "with_meta.csv",
+                _csv_with_meta(
+                    {
+                        "human_prompt_prefix": "When you see the text below, do you think x or y?",
+                        "human_prompt_suffix": "Pick the option that best matches.",
+                    }
+                ),
+                "text/csv",
+            )
+        },
+    )
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_HP")
+    assert (
+        session_payload["human_prompt_prefix"]
+        == "When you see the text below, do you think x or y?"
+    )
+    assert session_payload["human_prompt_suffix"] == "Pick the option that best matches."
+
+
+def test_rater_session_prefix_suffix_null_when_unset(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_NO_HP")
+    assert session_payload["human_prompt_prefix"] is None
+    assert session_payload["human_prompt_suffix"] is None
+
+
+def test_rater_session_renders_description_markdown_to_html(client: TestClient):
+    # Markdown in `description` is converted to the same HTML subset Prolific
+    # accepts before it reaches the splash, so what raters see matches the
+    # Prolific external listing.
+    experiment = _create_experiment(client)
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "with_meta.csv",
+                _csv_with_meta({"description": "# Heading\n\n**Bold** paragraph."}),
+                "text/csv",
+            )
+        },
+    )
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_MD")
+    html = session_payload["experiment_description_html"]
+    assert html is not None
+    assert "<h1>Heading</h1>" in html
+    assert "<b>Bold</b>" in html
+
+
+def test_update_experiment_edits_dataset_metadata(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={
+            "assistance_method": "none",
+            "description": "Manually set",
+            "system_prompt": "Be precise.",
+            "prolific_pool": "us_balanced",
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["description"] == "Manually set"
+    assert body["system_prompt"] == "Be precise."
+    assert body["prolific_pool"] == "us_balanced"
+    assert body["human_prompt_prefix"] is None  # untouched fields stay null
+    assert body["human_prompt_suffix"] is None
+
+
 def test_upload_accepts_large_question_text_fields(client: TestClient):
     experiment = _create_experiment(client)
     large_question_text = "x" * 200_000

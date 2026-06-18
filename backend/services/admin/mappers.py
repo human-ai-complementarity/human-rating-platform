@@ -28,6 +28,11 @@ def build_experiment_response(
         assistance_params=json.loads(experiment.assistance_params)
         if experiment.assistance_params
         else None,
+        description=experiment.description,
+        system_prompt=experiment.system_prompt,
+        human_prompt_prefix=experiment.human_prompt_prefix,
+        human_prompt_suffix=experiment.human_prompt_suffix,
+        prolific_pool=experiment.prolific_pool,
     )
 
 
@@ -37,6 +42,7 @@ def build_upload_response(upload: Upload) -> dict[str, Any]:
         "filename": upload.filename,
         "uploaded_at": upload.uploaded_at.isoformat(),
         "question_count": upload.question_count,
+        "dataset_meta": json.loads(upload.dataset_meta) if upload.dataset_meta else None,
     }
 
 

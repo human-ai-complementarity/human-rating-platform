@@ -58,6 +58,7 @@ class HumanAsAToolMethod(AssistanceMethod):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
         model = params.get("model") or settings.llm.decomposition_model
@@ -77,7 +78,13 @@ class HumanAsAToolMethod(AssistanceMethod):
             question_text = question.question_text
         options = question.options or ""
 
-        result = await self._decomposer.start(question_text, options, max_subtasks, model)
+        result = await self._decomposer.start(
+            question_text,
+            options,
+            max_subtasks,
+            model,
+            experiment_system_prompt=experiment_system_prompt,
+        )
 
         if result.done:
             return InteractionStep(
@@ -116,7 +123,14 @@ class HumanAsAToolMethod(AssistanceMethod):
             },
         )
 
-    async def advance(self, state: dict, human_input: str, params: dict) -> InteractionStep:
+    async def advance(
+        self,
+        state: dict,
+        human_input: str,
+        params: dict,
+        *,
+        experiment_system_prompt: str | None = None,
+    ) -> InteractionStep:
         settings = get_settings()
         model = state.get("model") or params.get("model") or settings.llm.decomposition_model
 
@@ -150,6 +164,7 @@ class HumanAsAToolMethod(AssistanceMethod):
             iteration=iteration,
             max_rounds=max_rounds,
             model=model,
+            experiment_system_prompt=experiment_system_prompt,
         )
 
         if result.done:

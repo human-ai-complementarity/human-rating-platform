@@ -9,7 +9,24 @@ export interface Experiment {
   rating_count: number;
   assistance_method: string;
   assistance_params: Record<string, unknown> | null;
+  description: string | null;
+  system_prompt: string | null;
+  human_prompt_prefix: string | null;
+  human_prompt_suffix: string | null;
+  prolific_pool: string | null;
 }
+
+// Keys the CSV `#META:` header line may declare. Kept in sync with
+// DATASET_META_FIELDS in backend/services/admin/uploads.py.
+export const DATASET_META_FIELDS = [
+  'description',
+  'system_prompt',
+  'human_prompt_prefix',
+  'human_prompt_suffix',
+  'prolific_pool',
+] as const;
+export type DatasetMetaField = (typeof DATASET_META_FIELDS)[number];
+export type DatasetMeta = Partial<Record<DatasetMetaField, string>>;
 
 export type StudyLabel =
   | 'annotation'
@@ -42,6 +59,17 @@ export interface Upload {
   filename: string;
   uploaded_at: string;
   question_count: number;
+  dataset_meta: DatasetMeta | null;
+}
+
+// Response shape for POST /api/admin/experiments/{id}/upload.
+// `meta_applied` lists fields the experiment picked up from this CSV's
+// `#META:` header. `meta_conflicts` lists fields whose declared value
+// disagreed with the experiment's existing value — the existing value wins.
+export interface UploadResponse {
+  message: string;
+  meta_applied: DatasetMetaField[];
+  meta_conflicts: DatasetMetaField[];
 }
 
 export interface Session {
@@ -49,7 +77,13 @@ export interface Session {
   session_start: string;
   session_end_time: string;
   experiment_name: string;
-  experiment_description: string | null;
+  // Pre-rendered HTML (via the same Prolific-markdown converter the external
+  // study description uses). Render with dangerouslySetInnerHTML on the splash.
+  experiment_description_html: string | null;
+  // Per-question framing rendered above (prefix) and below (suffix) the
+  // question text. Constant for the session.
+  human_prompt_prefix: string | null;
+  human_prompt_suffix: string | null;
   completion_url: string | null;
   rater_session_token: string;
   assistance_method: string;

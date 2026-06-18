@@ -121,6 +121,11 @@ class ExperimentResponse(BaseModel):
     rating_count: int = 0
     assistance_method: str = "none"
     assistance_params: Optional[dict] = None
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    human_prompt_prefix: Optional[str] = None
+    human_prompt_suffix: Optional[str] = None
+    prolific_pool: Optional[str] = Field(default=None, max_length=255)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -129,6 +134,13 @@ class ExperimentUpdate(BaseModel):
     assistance_method: str
     assistance_params: Optional[dict] = None
     internal_name: Optional[str] = Field(default=None, max_length=255)
+    # Dataset metadata fields — each is sent only when the admin edits it.
+    # An explicit "" clears the value; None means "leave unchanged".
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    human_prompt_prefix: Optional[str] = None
+    human_prompt_suffix: Optional[str] = None
+    prolific_pool: Optional[str] = Field(default=None, max_length=255)
 
 
 # Question schemas
@@ -149,7 +161,14 @@ class RaterStartResponse(BaseModel):
     session_start: datetime
     session_end_time: datetime
     experiment_name: str
-    experiment_description: Optional[str] = None
+    # Pre-rendered HTML for the rater intro screen (markdown converted via
+    # `to_prolific_html` so the splash matches what Prolific shows externally).
+    # None when no description is set; "" never appears.
+    experiment_description_html: Optional[str] = None
+    # Per-question framing. `human_prompt_prefix` is rendered above each question,
+    # `human_prompt_suffix` below it. Constant for the session, sent once at start.
+    human_prompt_prefix: Optional[str] = None
+    human_prompt_suffix: Optional[str] = None
     completion_url: Optional[str] = None
     rater_session_token: str
     assistance_method: str = "none"

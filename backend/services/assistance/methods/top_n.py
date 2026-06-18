@@ -159,6 +159,17 @@ def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> li
     return candidates
 
 
+def _compose_system_prompt(extra: str | None) -> str:
+    """Append a researcher-supplied system prompt to the method's own.
+
+    Kept after the method prompt so the JSON-output contract stays last and
+    is least likely to be overridden by free-form study framing.
+    """
+    if not extra or not extra.strip():
+        return _SYSTEM_PROMPT
+    return f"{_SYSTEM_PROMPT}\n\nStudy-specific context:\n{extra.strip()}"
+
+
 class TopNAssistance(AssistanceMethod):
     async def start(
         self,
@@ -166,6 +177,7 @@ class TopNAssistance(AssistanceMethod):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
         model = params.get("model") or settings.llm.default_model
@@ -191,7 +203,7 @@ class TopNAssistance(AssistanceMethod):
 
         raw = await complete(
             [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
                 {"role": "user", "content": user_prompt},
             ],
             model=model,

@@ -117,7 +117,12 @@ async def start_assistance(
     )
 
     try:
-        step = await method.start(question, params, parent_question_text=parent_question_text)
+        step = await method.start(
+            question,
+            params,
+            parent_question_text=parent_question_text,
+            experiment_system_prompt=experiment.system_prompt,
+        )
     except RuntimeError:
         logger.error(
             "Assistance start failed with unrecoverable error; continuing without assistance",
@@ -198,8 +203,15 @@ async def advance_assistance(
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
+    experiment = await fetch_experiment_or_404(assistance_session.experiment_id, db)
+
     try:
-        step = await method.advance(state, human_input, params)
+        step = await method.advance(
+            state,
+            human_input,
+            params,
+            experiment_system_prompt=experiment.system_prompt,
+        )
     except RuntimeError:
         logger.error(
             "Assistance advance failed with unrecoverable error; skipping question for retry",

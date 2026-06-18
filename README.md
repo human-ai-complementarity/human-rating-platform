@@ -433,6 +433,42 @@ q1,"Is the sky blue?","Yes","Yes,No,Maybe",MC
 q2,"Explain photosynthesis","Plants convert sunlight...",,FT
 ```
 
+### Optional `#META:` header
+
+The CSV may start with a single `#META:` line declaring dataset-level metadata. The first upload populates these on the experiment; later uploads that disagree are reported but never overwrite. See [dataset-file-level-metadata-construction.ipynb](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) for how to produce this from a pandas DataFrame.
+
+The JSON object — pretty-printed here for readability:
+
+```json
+{
+  "description": "...",
+  "system_prompt": "...",
+  "human_prompt_prefix": "...",
+  "human_prompt_suffix": "...",
+  "prolific_pool": "uk_representative_sample"
+}
+```
+
+In your CSV, the whole object must be collapsed to one line on the `#META:` row:
+
+```csv
+#META: {"description":"...","system_prompt":"...", ...}
+question_id,question_text,gt_answer,options,question_type
+q1,...,...,...,MC
+```
+
+Allowed keys: `description` (rater intro splash + Prolific study description; supports markdown — same renderer as the Prolific description: headings, bold/italic/strike, lists, paragraphs), `system_prompt` (appended to AI prompts for Top-N / Human-as-a-Tool; plain text), `human_prompt_prefix` (rendered above every question; plain text), `human_prompt_suffix` (rendered below every question; plain text), `prolific_pool` (reference label for the target Prolific audience). All optional. Newlines inside any value must be encoded as `\n` escapes since the JSON object has to fit on one line — `json.dumps(...)` handles this automatically. Full field-by-field guide is in the admin help page in-app.
+
+A copy-pasteable example:
+
+```
+#META: {"description":"# Reading-comprehension pilot\n\nAnswer each question using **only** the passage shown.","system_prompt":"You are an evaluator. Be conservative.","human_prompt_prefix":"Based only on the passage above, answer:","prolific_pool":"uk_representative_sample"}
+question_id,question_text,gt_answer,options,question_type
+q1,Is the sky blue?,Yes,Yes|No,MC
+q2,Does the passage mention Paris?,No,Yes|No,MC
+q3,Summarise the passage in one sentence.,,,FT
+```
+
 ---
 
 ## Assistance Methods

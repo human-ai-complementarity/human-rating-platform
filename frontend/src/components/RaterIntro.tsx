@@ -1,6 +1,9 @@
 interface RaterIntroProps {
   experimentName: string;
-  description: string | null;
+  // Pre-rendered HTML from the server (markdown converted via to_prolific_html).
+  // Rendered with dangerouslySetInnerHTML — safe because the converter only
+  // emits a whitelisted set of Prolific-allowed tags with all input escaped.
+  descriptionHtml: string | null;
   assistanceInstructions: string | null;
   onContinue: () => void;
 }
@@ -26,11 +29,13 @@ const styles = {
     letterSpacing: '0.5px',
     marginBottom: '8px',
   },
+  // Hosts converter-emitted HTML (<p>, <h1>, <ul>, etc.). Default whitespace
+  // handling — the converter wraps each line in its own block element so we
+  // don't need pre-wrap.
   description: {
     fontSize: '16px',
     lineHeight: 1.6,
     color: '#444',
-    whiteSpace: 'pre-wrap' as const,
     marginBottom: '24px',
   },
   methodBox: {
@@ -69,17 +74,20 @@ const styles = {
 
 function RaterIntro({
   experimentName,
-  description,
+  descriptionHtml,
   assistanceInstructions,
   onContinue,
 }: RaterIntroProps) {
   return (
     <div style={styles.card}>
       <h1 style={styles.title}>{experimentName}</h1>
-      {description && (
+      {descriptionHtml && (
         <>
           <div style={styles.sectionLabel}>Description</div>
-          <div style={styles.description}>{description}</div>
+          <div
+            style={styles.description}
+            dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+          />
         </>
       )}
       {assistanceInstructions && (

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import Analytics from './Analytics';
 import type {
+  DatasetMetaField,
   Experiment,
   ExperimentRound,
   ExperimentStats,
@@ -9,6 +10,30 @@ import type {
   RecommendationResponse,
   Upload,
 } from '../types';
+import { DATASET_META_FIELDS } from '../types';
+
+// Labels shown to admins in the Dataset metadata section. Order matches the
+// CSV `#META:` JSON shape that researchers see in the colab guide.
+const DATASET_META_LABELS: Record<DatasetMetaField, string> = {
+  description: 'Dataset description',
+  system_prompt: 'AI system prompt',
+  human_prompt_prefix: 'Question prefix (shown above)',
+  human_prompt_suffix: 'Question suffix (shown below)',
+  prolific_pool: 'Prolific participant pool',
+};
+
+const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
+  description:
+    "Shown to raters on the intro screen, and also prefilled into the Prolific study description. Supports markdown (headings, bold/italic/strike, lists, paragraphs). A per-round description in the Prolific Workflow form overrides this for that round.",
+  system_prompt:
+    "Appended to the AI's system prompt for Top-N and Human-as-a-Tool. Plain text; line breaks are preserved. Ignored when no AI assistance is enabled.",
+  human_prompt_prefix:
+    "Rendered above every question — e.g. \"When you see the text below, do you think x or y?\". Plain text; line breaks preserved.",
+  human_prompt_suffix:
+    "Rendered below every question — e.g. \"Is the statement above true or false?\". Plain text; line breaks preserved.",
+  prolific_pool:
+    "Label for the participant pool this study targets (e.g. 'uk_representative_sample'). For your reference when configuring Prolific filters; not sent to the Prolific API.",
+};
 
 interface ExperimentDetailProps {
   experiment: Experiment;
@@ -101,12 +126,27 @@ function ExperimentDetail({
   const [rounds, setRounds] = useState<ExperimentRound[]>([]);
   const [recommendation, setRecommendation] = useState<RecommendationResponse | null>(null);
   const [pilotForm, setPilotForm] = useState<Omit<PilotStudyCreate, 'reward'>>({
-    description: '',
+    description: experiment.description ?? '',
     estimated_completion_time: 60,
     pilot_places: 5,
     device_compatibility: ['desktop'],
     study_label: 'annotation',
   });
+  // If the experiment's dataset-level description arrives after mount (e.g. via
+  // a CSV upload populating #META: description), seed the pilot form with it so
+  // the admin doesn't have to retype. Only pre-fills while the form is blank;
+  // edits the admin has typed are preserved.
+  const pilotDescriptionInitedRef = useRef(Boolean(experiment.description));
+  useEffect(() => {
+    if (
+      !pilotDescriptionInitedRef.current
+      && experiment.description
+      && !pilotForm.description
+    ) {
+      pilotDescriptionInitedRef.current = true;
+      setPilotForm((prev) => ({ ...prev, description: experiment.description ?? '' }));
+    }
+  }, [experiment.description, pilotForm.description]);
   const [pilotRewardInput, setPilotRewardInput] = useState<string>('9.00');
   // Re-format the pilot default once when the workspace currency arrives,
   // so a JPY workspace sees "900" (≈¥900) instead of "9.00" (≈¥9). Guarded
@@ -129,6 +169,68 @@ function ExperimentDetail({
   const [confidenceMethod, setConfidenceMethod] = useState<string>(
     (experiment.assistance_params?.confidence_method as string) ?? 'self_report'
   );
+
+  // Dataset metadata edits live in local form state and are committed via Save.
+  // Stored as strings (not nullable) so React can keep them controlled; converted
+  // to `null`-equivalent at the wire boundary via `.trim()`.
+  const [metaForm, setMetaForm] = useState<Record<DatasetMetaField, string>>({
+    description: experiment.description ?? '',
+    system_prompt: experiment.system_prompt ?? '',
+    human_prompt_prefix: experiment.human_prompt_prefix ?? '',
+    human_prompt_suffix: experiment.human_prompt_suffix ?? '',
+    prolific_pool: experiment.prolific_pool ?? '',
+  });
+  const [savingMeta, setSavingMeta] = useState(false);
+  // True once the admin has typed into any metadata field without saving. Used
+  // to suppress the reset effect below — without it, a CSV upload that brings
+  // new #META: values triggers an experiment refresh and silently clobbers the
+  // admin's in-progress edits.
+  const metaFormDirtyRef = useRef(false);
+
+  // Reset the form whenever a fresh `experiment` arrives (e.g. after upload
+  // applies #META: values). Without this the inputs stay frozen on whatever
+  // the admin opened the page with. Skipped while the form is dirty so an
+  // upload mid-edit doesn't discard typed-but-unsaved text.
+  useEffect(() => {
+    if (metaFormDirtyRef.current) return;
+    setMetaForm({
+      description: experiment.description ?? '',
+      system_prompt: experiment.system_prompt ?? '',
+      human_prompt_prefix: experiment.human_prompt_prefix ?? '',
+      human_prompt_suffix: experiment.human_prompt_suffix ?? '',
+      prolific_pool: experiment.prolific_pool ?? '',
+    });
+  }, [
+    experiment.description,
+    experiment.system_prompt,
+    experiment.human_prompt_prefix,
+    experiment.human_prompt_suffix,
+    experiment.prolific_pool,
+  ]);
+
+  const handleSaveMeta = async () => {
+    setError(null);
+    setSavingMeta(true);
+    try {
+      await api.updateExperiment(experiment.id, {
+        assistance_method: experiment.assistance_method,
+        assistance_params: experiment.assistance_params ?? null,
+        description: metaForm.description,
+        system_prompt: metaForm.system_prompt,
+        human_prompt_prefix: metaForm.human_prompt_prefix,
+        human_prompt_suffix: metaForm.human_prompt_suffix,
+        prolific_pool: metaForm.prolific_pool,
+      });
+      setSuccess('Dataset metadata saved.');
+      setTimeout(() => setSuccess(null), 2000);
+      metaFormDirtyRef.current = false;
+      onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save dataset metadata');
+    } finally {
+      setSavingMeta(false);
+    }
+  };
 
   const saveAssistanceMethod = async (
     method: 'none' | 'top_n' | 'human_as_a_tool',
@@ -270,11 +372,27 @@ function ExperimentDetail({
 
     try {
       const result = await api.uploadQuestions(experiment.id, uploadFile);
-      setSuccess(result.message);
+      // Compose a success line that names which #META: fields took effect and
+      // which were skipped because the experiment already had a different value.
+      const parts: string[] = [result.message];
+      if (result.meta_applied.length > 0) {
+        parts.push(
+          `Applied metadata: ${result.meta_applied.map((f) => DATASET_META_LABELS[f]).join(', ')}.`,
+        );
+      }
+      if (result.meta_conflicts.length > 0) {
+        parts.push(
+          `Kept existing values (this CSV declared different ${result.meta_conflicts
+            .map((f) => DATASET_META_LABELS[f])
+            .join(', ')}).`,
+        );
+      }
+      setSuccess(parts.join(' '));
       setUploadFile(null);
       (e.target as HTMLFormElement).reset();
       await loadStats();
       await loadUploads();
+      onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     }
@@ -1227,14 +1345,25 @@ function ExperimentDetail({
               {/* Uploaded files list */}
               {uploads.length > 0 && (
                 <div style={styles.uploadList}>
-                  {uploads.map((upload) => (
-                    <div key={upload.id} style={styles.uploadItem}>
-                      <span style={{ fontFamily: 'monospace' }}>{upload.filename}</span>
-                      <span style={{ color: '#666' }}>
-                        {upload.question_count} questions
-                      </span>
-                    </div>
-                  ))}
+                  {uploads.map((upload) => {
+                    const metaKeys = upload.dataset_meta
+                      ? (Object.keys(upload.dataset_meta) as DatasetMetaField[])
+                      : [];
+                    return (
+                      <div key={upload.id} style={styles.uploadItem}>
+                        <span style={{ fontFamily: 'monospace' }}>{upload.filename}</span>
+                        <span style={{ color: '#666' }}>
+                          {upload.question_count} questions
+                          {metaKeys.length > 0 && (
+                            <span title={`#META: declared ${metaKeys.join(', ')}`}>
+                              {' '}
+                              · meta: {metaKeys.length}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
 
@@ -1259,6 +1388,7 @@ function ExperimentDetail({
                   />
                   <div style={styles.hint}>
                     Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id. Supports long-context rows and files up to 200MB.
+                    {' '}Optional <code>#META:</code> JSON line at the top sets dataset-level fields (see below).
                   </div>
                 </div>
                 <button
@@ -1274,6 +1404,88 @@ function ExperimentDetail({
                   Upload CSV
                 </button>
               </form>
+            </div>
+          </div>
+
+          {/* Dataset Metadata */}
+          <div style={styles.section}>
+            <div style={styles.sectionHeader}>
+              <h2 style={styles.sectionTitle}>Dataset Metadata</h2>
+            </div>
+            <div style={styles.sectionBody}>
+              <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
+                Auto-populated from the first CSV that declares a <code>#META:</code> header line. Edits here always win — later uploads that disagree are noted but never overwrite. See the admin guide for the CSV format.
+              </div>
+              {DATASET_META_FIELDS.map((field) => {
+                // Highlight any upload whose declared value disagrees with the
+                // currently-saved experiment value. Helps the admin spot a CSV
+                // that brought in a different framing than the prior one.
+                const current = (experiment[field] ?? '') as string;
+                const conflicts = uploads.filter((u) => {
+                  const declared = u.dataset_meta?.[field];
+                  return declared !== undefined && declared !== current;
+                });
+                // Prolific pool is a short label; the prefix/suffix lines are
+                // typically one or two sentences. Only the description is full
+                // markdown so it gets the largest textarea.
+                const isTextarea = field !== 'prolific_pool';
+                const minHeight = field === 'description' || field === 'system_prompt'
+                  ? '100px'
+                  : '60px';
+                return (
+                  <div key={field} style={styles.inputGroup}>
+                    <label htmlFor={`meta-${field}`} style={styles.label}>
+                      {DATASET_META_LABELS[field]}
+                    </label>
+                    {isTextarea ? (
+                      <textarea
+                        id={`meta-${field}`}
+                        value={metaForm[field]}
+                        onChange={(e) => {
+                          metaFormDirtyRef.current = true;
+                          setMetaForm({ ...metaForm, [field]: e.target.value });
+                        }}
+                        style={{
+                          ...styles.input,
+                          minHeight,
+                          resize: 'vertical' as const,
+                          fontFamily: 'inherit',
+                          cursor: 'text',
+                        }}
+                      />
+                    ) : (
+                      <input
+                        id={`meta-${field}`}
+                        type="text"
+                        value={metaForm[field]}
+                        onChange={(e) => {
+                          metaFormDirtyRef.current = true;
+                          setMetaForm({ ...metaForm, [field]: e.target.value });
+                        }}
+                        style={{ ...styles.input, cursor: 'text' }}
+                      />
+                    )}
+                    <div style={styles.hint}>{DATASET_META_HINTS[field]}</div>
+                    {conflicts.length > 0 && (
+                      <div style={{ ...styles.hint, color: '#b45309' }}>
+                        Declared differently by: {conflicts.map((c) => c.filename).join(', ')}.
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              <button
+                type="button"
+                onClick={handleSaveMeta}
+                disabled={savingMeta}
+                style={{
+                  ...styles.primaryButton,
+                  opacity: savingMeta ? 0.6 : 1,
+                  cursor: savingMeta ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {savingMeta ? 'Saving…' : 'Save Metadata'}
+              </button>
             </div>
           </div>
 
