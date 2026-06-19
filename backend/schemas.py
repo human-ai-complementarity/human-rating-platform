@@ -19,6 +19,11 @@ StudyLabel = Literal[
 ]
 
 
+# Pre-screener filter keys we apply to Prolific studies. Concrete filter IDs
+# and thresholds live in services.admin.prolific.SCREENER_FILTERS.
+Screener = Literal["ai_taskers", "fact_checkers", "approval_rate"]
+
+
 # Prolific schemas
 class ProlificStudyConfig(BaseModel):
     description: str
@@ -39,6 +44,9 @@ class PilotStudyCreate(BaseModel):
         default_factory=lambda: ["desktop"]
     )
     study_label: StudyLabel = "annotation"
+    screeners: list[Screener] = Field(
+        default_factory=lambda: ["ai_taskers", "fact_checkers", "approval_rate"]
+    )
 
 
 class ExperimentRoundCreate(BaseModel):
@@ -51,6 +59,8 @@ class ExperimentRoundUpdate(BaseModel):
     reward: Optional[int] = Field(default=None, ge=1)
     places: Optional[int] = Field(default=None, ge=1)
     device_compatibility: Optional[list[Literal["desktop", "tablet", "mobile"]]] = None
+    study_label: Optional[StudyLabel] = None
+    screeners: Optional[list[Screener]] = None
 
     def has_any(self) -> bool:
         return any(
@@ -61,6 +71,8 @@ class ExperimentRoundUpdate(BaseModel):
                 "reward",
                 "places",
                 "device_compatibility",
+                "study_label",
+                "screeners",
             )
         )
 
@@ -84,6 +96,7 @@ class ExperimentRoundResponse(BaseModel):
     reward: int
     device_compatibility: list[str]
     study_label: Optional[str] = None
+    screeners: list[Screener] = Field(default_factory=list)
     created_at: datetime
     prolific_study_url: str
 

@@ -37,6 +37,8 @@ export type StudyLabel =
   | 'interview'
   | 'other';
 
+export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate';
+
 export interface Question {
   id: number;
   question_id: string;
@@ -206,6 +208,7 @@ export interface ExperimentRound {
   reward: number;
   device_compatibility: string[];
   study_label: StudyLabel | null;
+  screeners: Screener[];
   created_at: string;
   prolific_study_url: string;
 }
@@ -216,6 +219,8 @@ export interface ExperimentRoundUpdate {
   reward?: number;
   places?: number;
   device_compatibility?: string[];
+  study_label?: StudyLabel;
+  screeners?: Screener[];
 }
 
 export interface PilotStudyCreate {
@@ -225,6 +230,7 @@ export interface PilotStudyCreate {
   pilot_places: number;
   device_compatibility: string[];
   study_label: StudyLabel;
+  screeners: Screener[];
 }
 
 export interface RecommendationResponse {

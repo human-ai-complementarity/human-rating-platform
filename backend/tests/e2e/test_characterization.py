@@ -1567,6 +1567,58 @@ def test_prolific_round_edit_updates_db_and_calls_prolific(client: TestClient, e
 
 
 @respx.mock
+def test_prolific_round_edit_updates_study_label_and_screeners(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/1",
+        json={"study_label": "survey", "screeners": ["fact_checkers"]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["study_label"] == "survey"
+    assert body["screeners"] == ["fact_checkers"]
+    assert route.called
+
+    sent = json.loads(route.calls[0].request.content)
+    assert sent == {
+        "study_labels": ["survey"],
+        "filters": [{"filter_id": "fact-checkers", "selected_values": ["0"]}],
+    }
+
+    # Confirm the change persisted and is reflected on round list.
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+    assert rounds[0]["study_label"] == "survey"
+    assert rounds[0]["screeners"] == ["fact_checkers"]
+
+
+@respx.mock
+def test_prolific_round_edit_can_clear_all_screeners(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}/prolific/rounds/1",
+        json={"screeners": []},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["screeners"] == []
+    sent = json.loads(route.calls[0].request.content)
+    assert sent == {"filters": []}
+
+
+@respx.mock
 def test_prolific_round_edit_rejects_when_published(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
@@ -2156,3 +2208,79 @@ def test_prolific_round_inherits_pilot_study_label(
     assert round_resp.status_code == 200, round_resp.text
     sent = json.loads(round_route.calls[-1].request.content.decode())
     assert sent["study_labels"] == ["decision_making_task"]
+
+
+@respx.mock
+def test_prolific_create_sends_default_screeners(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    filters = sent["filters"]
+    assert {"filter_id": "ai-taskers", "selected_values": ["0"]} in filters
+    assert {"filter_id": "fact-checkers", "selected_values": ["0"]} in filters
+    assert {
+        "filter_id": "approval_rate",
+        "selected_range": {"lower": 80, "upper": 100},
+    } in filters
+
+
+@respx.mock
+def test_prolific_create_omits_filters_when_screeners_empty(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200, create_resp.text
+    experiment = create_resp.json()
+
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "screeners": []},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+    assert "filters" not in sent
+
+
+@respx.mock
+def test_prolific_round_inherits_pilot_screeners(
+    client: TestClient,
+    enable_prolific,
+):
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert create_resp.status_code == 200
+    experiment = create_resp.json()
+
+    _mock_create_study(study_id="PILOT_SCR")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "screeners": ["ai_taskers"]},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    _mock_publish_study(study_id="PILOT_SCR")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
+    _mock_close_study(study_id="PILOT_SCR")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
+
+    round_route = _mock_create_study(study_id="R1_SCR")
+    round_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert round_resp.status_code == 200, round_resp.text
+    sent = json.loads(round_route.calls[-1].request.content.decode())
+    assert sent["filters"] == [{"filter_id": "ai-taskers", "selected_values": ["0"]}]

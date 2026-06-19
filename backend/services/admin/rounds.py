@@ -26,6 +26,7 @@ from .prolific import (
     ProlificAPIError,
     build_completion_url,
     build_external_study_url,
+    build_screener_filters,
     build_study_url,
     create_study,
     delete_study,
@@ -109,6 +110,7 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         reward=round_.reward,
         device_compatibility=_parse_device_compatibility(round_.device_compatibility),
         study_label=round_.study_label,
+        screeners=_parse_screeners(round_.screeners),
         created_at=round_.created_at,
         prolific_study_url=build_study_url(study_id=round_.prolific_study_id),
     )
@@ -128,6 +130,12 @@ def _ensure_completion_code(experiment: Experiment) -> str:
 
 def _parse_device_compatibility(device_compatibility: str) -> list[str]:
     return json.loads(device_compatibility)
+
+
+def _parse_screeners(screeners: str | None) -> list[str]:
+    if not screeners:
+        return []
+    return json.loads(screeners)
 
 
 def _is_round_closed(round_: ExperimentRound) -> bool:
@@ -280,6 +288,7 @@ async def _create_prolific_study_for_round(
     places: int,
     device_compatibility: list[str],
     study_label: str | None,
+    screeners: list[str],
 ) -> dict[str, str]:
     settings = get_settings()
     completion_code = _ensure_completion_code(experiment)
@@ -300,6 +309,7 @@ async def _create_prolific_study_for_round(
         completion_code=completion_code,
         device_compatibility=device_compatibility,
         study_label=study_label,
+        screeners=screeners,
     )
 
 
@@ -389,6 +399,7 @@ async def run_pilot_study(
             places=payload.pilot_places,
             device_compatibility=payload.device_compatibility,
             study_label=payload.study_label,
+            screeners=list(payload.screeners),
         )
     except HTTPException:
         raise
@@ -428,6 +439,7 @@ async def run_pilot_study(
         reward=payload.reward,
         device_compatibility=json.dumps(payload.device_compatibility),
         study_label=payload.study_label,
+        screeners=json.dumps(list(payload.screeners)),
         places_requested=payload.pilot_places,
     )
     await _commit_round_creation(
@@ -478,6 +490,7 @@ async def run_experiment_round(
 
     next_round_number = latest_round.round_number + 1
     device_compatibility = _parse_device_compatibility(pilot_round.device_compatibility)
+    screeners = _parse_screeners(pilot_round.screeners)
 
     try:
         result = await _create_prolific_study_for_round(
@@ -489,6 +502,7 @@ async def run_experiment_round(
             places=payload.places,
             device_compatibility=device_compatibility,
             study_label=pilot_round.study_label,
+            screeners=screeners,
         )
     except HTTPException:
         raise
@@ -534,6 +548,7 @@ async def run_experiment_round(
         reward=pilot_round.reward,
         device_compatibility=pilot_round.device_compatibility,
         study_label=pilot_round.study_label,
+        screeners=pilot_round.screeners,
         places_requested=payload.places,
     )
     await _commit_round_creation(
@@ -674,6 +689,10 @@ async def update_experiment_round(
         # Convert markdown to Prolific's HTML subset on the wire, but keep
         # the raw markdown in our DB so editors see what they typed.
         prolific_fields["description"] = to_prolific_html(payload.description)
+    if payload.study_label is not None:
+        prolific_fields["study_labels"] = [payload.study_label]
+    if payload.screeners is not None:
+        prolific_fields["filters"] = build_screener_filters(list(payload.screeners))
 
     try:
         await update_study(
@@ -709,6 +728,10 @@ async def update_experiment_round(
         round_.places_requested = payload.places
     if payload.device_compatibility is not None:
         round_.device_compatibility = json.dumps(payload.device_compatibility)
+    if payload.study_label is not None:
+        round_.study_label = payload.study_label
+    if payload.screeners is not None:
+        round_.screeners = json.dumps(list(payload.screeners))
     await db.commit()
     await db.refresh(round_)
 
