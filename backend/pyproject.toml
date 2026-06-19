@@ -19,6 +19,7 @@ dependencies = [
   "cryptography==42.0.8",
   "httpx==0.28.1",
   "openai>=1.82.0,<2.0.0",
+  "pyarrow==18.1.0",
 ]
 
 [dependency-groups]

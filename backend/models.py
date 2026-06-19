@@ -290,7 +290,7 @@ class Upload(SQLModel, table=True):
     dataset_meta: Optional[str] = Field(
         default=None,
         sa_column=Column(Text, nullable=True),
-    )  # JSON of the #META: line parsed from this CSV, if any
+    )  # JSON of the dataset metadata parsed from this upload, if any
 
 
 class AssistanceSession(SQLModel, table=True):

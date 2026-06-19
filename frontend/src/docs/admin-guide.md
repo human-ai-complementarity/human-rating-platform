@@ -8,7 +8,7 @@ From the **Experiments** page, fill out the create form and submit. The main dec
 
 ## 2. Upload questions
 
-Upload a CSV in the **Questions** section. You can upload multiple CSVs into the same experiment — rows accumulate.
+Upload a CSV or Parquet file in the **Questions** section. You can upload multiple files into the same experiment — rows accumulate. The colab notebook can generate either format from a pandas DataFrame.
 
 | Column | Required | What it does |
 | --- | --- | --- |
@@ -22,9 +22,9 @@ Upload a CSV in the **Questions** section. You can upload multiple CSVs into the
 
 ### Dataset-level metadata (optional)
 
-Five optional fields frame the rater experience and the AI: a study description, a system prompt for the AI, a one-line prefix and suffix shown around every question, and a label for your Prolific audience. Set them via the **Dataset Metadata** form on the experiment page, or put them into a `#META:` line at the top of your CSV. The [dataset-metadata colab](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) generates the JSON for you. Each field in the admin form has a hover hint describing exactly where it appears.
+Five optional fields frame the rater experience and the AI: a study description, a system prompt for the AI, a one-line prefix and suffix shown around every question, and a label for your Prolific audience. Set them via the **Dataset Metadata** form on the experiment page, or attach them to the upload itself — a `#META:` line at the top of a CSV, or a `dataset_meta` key in the Parquet schema's key-value metadata. Either way, the platform reads the same JSON shape. The [dataset-metadata colab](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) generates both formats. Each field in the admin form has a hover hint describing exactly where it appears.
 
-#### Example CSV
+#### Example (CSV)
 
 ```
 #META: {"description":"# Reading-comprehension pilot\n\nAnswer using **only** the passage shown.","human_prompt_prefix":"Based only on the passage above, answer:","prolific_pool":"uk_representative_sample"}
@@ -36,11 +36,24 @@ q3,Summarise the passage in one sentence.,,,FT
 
 The `#META:` line is a single-line JSON object on the very first line. The header row and data rows follow as normal. All five keys are optional — include only what you need.
 
+#### Example (Parquet)
+
+For Parquet, attach the same JSON object as bytes under the `dataset_meta` key in the schema's key-value metadata. The colab notebook does this with:
+
+```python
+table = pa.Table.from_pandas(df)
+merged = {**(table.schema.metadata or {}), b"dataset_meta": meta_str.encode("utf-8")}
+table = table.replace_schema_metadata(merged)
+pq.write_table(table, "dataset.parquet")
+```
+
+Parquet preserves column types, so `options` can be a typed `list<string>` and `metadata` can be a struct — the platform converts these to the canonical CSV string forms on ingest (pipe-joined and JSON-encoded respectively), so the rest of the platform behaves identically regardless of upload format.
+
 #### Formatting rules
 
 - **`description`** supports markdown — same renderer as the Prolific study description: `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists, blank-line paragraphs.
 - The four other fields are plain text. Line breaks are preserved.
-- Newlines inside *any* value must be encoded as `\n` escapes, because the whole JSON has to fit on one line. `json.dumps(...)` handles this automatically.
+- **CSV only:** newlines inside any value must be encoded as `\n` escapes, because the whole JSON object has to fit on one line. `json.dumps(...)` handles this automatically. Parquet stores the metadata as bytes in the schema, so this constraint doesn't apply there.
 
 #### Multiple uploads + conflicts
 

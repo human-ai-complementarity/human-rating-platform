@@ -18,7 +18,7 @@ from .rounds import (
     run_pilot_study,
     update_experiment_round,
 )
-from .uploads import list_uploads, upload_questions_csv
+from .uploads import list_uploads, upload_questions
 
 __all__ = [
     "build_export_filename",
@@ -37,5 +37,5 @@ __all__ = [
     "stream_export_csv_chunks",
     "update_experiment",
     "update_experiment_round",
-    "upload_questions_csv",
+    "upload_questions",
 ]

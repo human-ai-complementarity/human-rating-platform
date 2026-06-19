@@ -108,7 +108,7 @@ async def upload_questions(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_session),
 ):
-    return await admin_service.upload_questions_csv(
+    return await admin_service.upload_questions(
         experiment_id=experiment_id,
         file=file,
         db=db,
