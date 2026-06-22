@@ -312,7 +312,7 @@ Use the following checklist when validating a real study against Prolific:
 
 1. Create an experiment from `/admin` with the intended name and ratings-per-question.
 2. Upload the CSV on the experiment detail page and confirm the question count matches the file.
-3. In `Prolific Study Rounds`, complete the pilot form and click `Run Pilot Study`. The default pilot size is `5` raters and is usually a reasonable starting point.
+3. In `Prolific Study Rounds`, complete the pilot form and click `Run Pilot Study`. The default pilot size is `5` raters and is usually a reasonable starting point. Two pre-screeners — **Qualified AI Taskers** and **Fact Checkers** (>=80 on the Fact Checking exam) — are checked by default; subsequent rounds inherit whatever you pick for the pilot. Uncheck them if you need a broader pool.
 4. Open the draft on Prolific and review the study details before publishing.
 5. Publish the draft manually on Prolific when you are ready for participants to start.
 6. Wait for the pilot to complete, then review the recommendation panel. If the reported average time per question looks implausible, investigate before launching another round.

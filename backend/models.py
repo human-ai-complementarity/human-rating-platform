@@ -255,6 +255,10 @@ class ExperimentRound(SQLModel, table=True):
         default=None,
         sa_column=Column(String(64), nullable=True),
     )
+    screeners: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(256), nullable=True),
+    )  # JSON-encoded list, e.g. '["ai_taskers", "fact_checkers"]'
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

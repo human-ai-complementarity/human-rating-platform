@@ -29,6 +29,35 @@ CURRENCY_SYMBOLS: dict[str, str] = {
     "GBP": "£",
 }
 
+# Screener key -> Prolific `filters` entry. Names mirror Prolific's UI labels
+# so admins recognise them in the experiment form.
+# Filter catalogue: GET https://api.prolific.com/api/v1/filters/
+# Docs: https://docs.prolific.com/docs/api-docs/public/#tag/Filters
+SCREENER_FILTERS: dict[str, dict] = {
+    # Qualified AI taskers pool (select filter; "0" = "Qualified AI taskers").
+    "ai_taskers": {"filter_id": "ai-taskers", "selected_values": ["0"]},
+    # Fact Checkers group (select filter; "0" = "Fact Checkers"). Expert network
+    # of participants with fact-checking experience — no exam score threshold.
+    "fact_checkers": {"filter_id": "fact-checkers", "selected_values": ["0"]},
+    # Overall approval rate on past Prolific submissions (integer 0–100).
+    # This is the "80%+ approval rate" filter used in the fall 2024 paper.
+    "approval_rate": {
+        "filter_id": "approval_rate",
+        "selected_range": {"lower": 80, "upper": 100},
+    },
+}
+
+
+def build_screener_filters(screeners: list[str] | None) -> list[dict]:
+    """Translate screener keys (e.g. 'ai_taskers') into Prolific filter payloads.
+
+    Used by both `create_study` and the round-update path. An empty/None input
+    yields an empty list, which callers treat as 'no filters'.
+    """
+    if not screeners:
+        return []
+    return [SCREENER_FILTERS[name] for name in screeners if name in SCREENER_FILTERS]
+
 
 def generate_completion_code() -> str:
     alphabet = string.ascii_uppercase + string.digits
@@ -113,6 +142,7 @@ async def create_study(
     device_compatibility: list[str] | None = None,
     internal_name: str | None = None,
     study_label: str | None = None,
+    screeners: list[str] | None = None,
 ) -> dict[str, str]:
     if not settings.enabled:
         raise RuntimeError("create_study called while Prolific is disabled")
@@ -138,6 +168,9 @@ async def create_study(
         payload["internal_name"] = internal_name
     if study_label:
         payload["study_labels"] = [study_label]
+    filters = build_screener_filters(screeners)
+    if filters:
+        payload["filters"] = filters
     if settings.project_id:
         payload["project"] = settings.project_id
 

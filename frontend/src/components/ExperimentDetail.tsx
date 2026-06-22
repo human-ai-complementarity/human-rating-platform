@@ -8,6 +8,7 @@ import type {
   ExperimentStats,
   PilotStudyCreate,
   RecommendationResponse,
+  Screener,
   Upload,
 } from '../types';
 import { DATASET_META_FIELDS } from '../types';
@@ -112,7 +113,9 @@ function ExperimentDetail({
     description: string;
     estimated_completion_time: number;
     places: number;
-  }>({ description: '', estimated_completion_time: 60, places: 1 });
+    study_label: PilotStudyCreate['study_label'];
+    screeners: Screener[];
+  }>({ description: '', estimated_completion_time: 60, places: 1, study_label: 'annotation', screeners: [] });
   // Reward is kept as a raw input string (not a number) so the user can type
   // "9.99" without each keystroke round-tripping through parse-then-format
   // and snapping the value back to "9.00". Converted to minor units only at
@@ -131,6 +134,7 @@ function ExperimentDetail({
     pilot_places: 5,
     device_compatibility: ['desktop'],
     study_label: 'annotation',
+    screeners: ['ai_taskers', 'fact_checkers', 'approval_rate'],
   });
   // If the experiment's dataset-level description arrives after mount (e.g. via
   // an upload populating dataset_meta.description), seed the pilot form with it so
@@ -436,6 +440,8 @@ function ExperimentDetail({
       description: round.description,
       estimated_completion_time: round.estimated_completion_time,
       places: round.places_requested,
+      study_label: round.study_label ?? 'annotation',
+      screeners: round.screeners ?? [],
     });
     setEditRewardInput(rewardMinorToInput(round.reward, currencyCode));
     setError(null);
@@ -453,8 +459,13 @@ function ExperimentDetail({
       // Treat that as "don't change the reward" rather than sending an invalid
       // value — the user can still edit the other fields without retyping it.
       const rewardMinor = rewardInputToMinor(editRewardInput, currencyCode);
+      const { description, estimated_completion_time, places, study_label, screeners } = editForm;
       await api.editExperimentRound(experiment.id, roundId, {
-        ...editForm,
+        description,
+        estimated_completion_time,
+        places,
+        study_label,
+        screeners,
         ...(rewardMinor > 0 ? { reward: rewardMinor } : {}),
       });
       setSuccess('Round updated on Prolific.');
@@ -677,6 +688,41 @@ function ExperimentDetail({
     },
     inputGroup: {
       marginBottom: '16px',
+    },
+    screenerList: {
+      display: 'flex',
+      flexDirection: 'column' as const,
+      gap: '8px',
+      padding: '10px 12px',
+      border: '1px solid #ddd',
+      borderRadius: '6px',
+      background: '#f8f9fa',
+    },
+    screenerRow: {
+      display: 'flex',
+      alignItems: 'flex-start',
+      gap: '10px',
+      fontSize: '14px',
+      fontWeight: 'normal',
+      cursor: 'pointer',
+      margin: 0,
+    },
+    // Override the global `input { width:100%; padding:10px; margin-bottom:12px }`
+    // rule so the checkbox renders at its native size instead of being stretched
+    // to fill the row.
+    screenerCheckbox: {
+      width: '16px',
+      height: '16px',
+      flex: '0 0 auto',
+      margin: '3px 0 0 0',
+      padding: 0,
+      cursor: 'pointer',
+    },
+    screenerText: {
+      lineHeight: '1.4',
+    },
+    screenerHint: {
+      color: '#555',
     },
     label: {
       display: 'block',
@@ -1125,6 +1171,54 @@ function ExperimentDetail({
                               );
                               return text ? <div style={{ ...styles.hint, marginBottom: '8px' }}>{text}</div> : null;
                             })()}
+                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
+                              <label style={{ ...styles.label, fontSize: '12px' }}>Study Label</label>
+                              <select
+                                data-testid={`edit-round-study-label-${round.round_number}`}
+                                value={editForm.study_label}
+                                onChange={(e) => setEditForm({ ...editForm, study_label: e.target.value as PilotStudyCreate['study_label'] })}
+                                style={styles.input}
+                              >
+                                <option value="annotation">Annotation</option>
+                                <option value="survey">Survey</option>
+                                <option value="decision_making_task">Decision-making task</option>
+                                <option value="writing_task">Writing task</option>
+                                <option value="interview">Interview</option>
+                                <option value="other">Other</option>
+                              </select>
+                            </div>
+                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
+                              <label style={{ ...styles.label, fontSize: '12px' }}>Pre-screeners</label>
+                              <div style={styles.screenerList}>
+                                {([
+                                  ['ai_taskers', 'Qualified AI Taskers', "Participants Prolific has vetted for AI tasks."],
+                                  ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
+                                  ['approval_rate', 'High Approval Rate (≥80%)', "80%+ approval rate on past Prolific submissions."],
+                                ] as [Screener, string, string][]).map(([key, label, hint]) => {
+                                  const checked = editForm.screeners.includes(key);
+                                  return (
+                                    <label key={key} style={styles.screenerRow}>
+                                      <input
+                                        type="checkbox"
+                                        data-testid={`edit-round-screener-${round.round_number}-${key}`}
+                                        checked={checked}
+                                        onChange={(e) => {
+                                          const next = e.target.checked
+                                            ? Array.from(new Set([...editForm.screeners, key]))
+                                            : editForm.screeners.filter((s) => s !== key);
+                                          setEditForm({ ...editForm, screeners: next });
+                                        }}
+                                        style={styles.screenerCheckbox}
+                                      />
+                                      <span style={styles.screenerText}>
+                                        <strong>{label}</strong>
+                                        <span style={styles.screenerHint}> — {hint}</span>
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                               <button
                                 data-testid={`edit-round-cancel-${round.round_number}`}
@@ -1233,6 +1327,39 @@ function ExperimentDetail({
                         <option value="other">Other</option>
                       </select>
                       <div style={styles.hint}>Categorises the study on Prolific; participants see this tag when browsing.</div>
+                    </div>
+                    <div style={styles.inputGroup}>
+                      <label style={styles.label}>Pre-screeners</label>
+                      <div style={styles.screenerList}>
+                        {([
+                          ['ai_taskers', 'Qualified AI Taskers', "Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming)."],
+                          ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
+                          ['approval_rate', 'High Approval Rate (≥80%)', "Participants with 80%+ approval rate on past Prolific submissions."],
+                        ] as [Screener, string, string][]).map(([key, label, hint]) => {
+                          const checked = pilotForm.screeners.includes(key);
+                          return (
+                            <label key={key} style={styles.screenerRow}>
+                              <input
+                                type="checkbox"
+                                data-testid={`pilot-screener-${key}`}
+                                checked={checked}
+                                onChange={(e) => {
+                                  const next = e.target.checked
+                                    ? Array.from(new Set([...pilotForm.screeners, key]))
+                                    : pilotForm.screeners.filter((s) => s !== key);
+                                  setPilotForm({ ...pilotForm, screeners: next });
+                                }}
+                                style={styles.screenerCheckbox}
+                              />
+                              <span style={styles.screenerText}>
+                                <strong>{label}</strong>
+                                <span style={styles.screenerHint}> — {hint}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div style={styles.hint}>Default on. Screeners narrow the participant pool to higher-quality raters.</div>
                     </div>
                     <div style={styles.inputGroup}>
                       <label htmlFor="pilot-estimated-completion-time" style={styles.label}>Estimated Completion Time (minutes)</label>
