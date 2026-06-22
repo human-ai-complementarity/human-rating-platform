@@ -133,7 +133,7 @@ function ExperimentDetail({
     study_label: 'annotation',
   });
   // If the experiment's dataset-level description arrives after mount (e.g. via
-  // a CSV upload populating #META: description), seed the pilot form with it so
+  // an upload populating dataset_meta.description), seed the pilot form with it so
   // the admin doesn't have to retype. Only pre-fills while the form is blank;
   // edits the admin has typed are preserved.
   const pilotDescriptionInitedRef = useRef(Boolean(experiment.description));
@@ -182,9 +182,9 @@ function ExperimentDetail({
   });
   const [savingMeta, setSavingMeta] = useState(false);
   // True once the admin has typed into any metadata field without saving. Used
-  // to suppress the reset effect below — without it, a CSV upload that brings
-  // new #META: values triggers an experiment refresh and silently clobbers the
-  // admin's in-progress edits.
+  // to suppress the reset effect below — without it, an upload that brings new
+  // dataset metadata values triggers an experiment refresh and silently clobbers
+  // the admin's in-progress edits.
   const metaFormDirtyRef = useRef(false);
 
   // Reset the form whenever a fresh `experiment` arrives (e.g. after upload
@@ -382,7 +382,7 @@ function ExperimentDetail({
       }
       if (result.meta_conflicts.length > 0) {
         parts.push(
-          `Kept existing values (this CSV declared different ${result.meta_conflicts
+          `Kept existing values (this upload declared different ${result.meta_conflicts
             .map((f) => DATASET_META_LABELS[f])
             .join(', ')}).`,
         );
@@ -1355,7 +1355,7 @@ function ExperimentDetail({
                         <span style={{ color: '#666' }}>
                           {upload.question_count} questions
                           {metaKeys.length > 0 && (
-                            <span title={`#META: declared ${metaKeys.join(', ')}`}>
+                            <span title={`upload declared metadata: ${metaKeys.join(', ')}`}>
                               {' '}
                               · meta: {metaKeys.length}
                             </span>
@@ -1377,18 +1377,18 @@ function ExperimentDetail({
               {/* Upload form */}
               <form onSubmit={handleUpload}>
                 <div style={styles.inputGroup}>
-                  <label htmlFor="upload-csv" style={styles.label}>Add Questions from CSV</label>
+                  <label htmlFor="upload-csv" style={styles.label}>Add Questions from CSV or Parquet</label>
                   <input
                     id="upload-csv"
                     data-testid="upload-csv-input"
                     type="file"
-                    accept=".csv"
+                    accept=".csv,.parquet"
                     onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
                     style={{ fontSize: '14px' }}
                   />
                   <div style={styles.hint}>
                     Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id. Supports long-context rows and files up to 200MB.
-                    {' '}Optional <code>#META:</code> JSON line at the top sets dataset-level fields (see below).
+                    {' '}Optional dataset metadata: <code>#META:</code> JSON line at the top of a CSV, or a <code>dataset_meta</code> key in the Parquet schema's key-value metadata.
                   </div>
                 </div>
                 <button
@@ -1401,7 +1401,7 @@ function ExperimentDetail({
                     cursor: uploadFile ? 'pointer' : 'not-allowed',
                   }}
                 >
-                  Upload CSV
+                  Upload
                 </button>
               </form>
             </div>
@@ -1414,12 +1414,12 @@ function ExperimentDetail({
             </div>
             <div style={styles.sectionBody}>
               <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
-                Auto-populated from the first CSV that declares a <code>#META:</code> header line. Edits here always win — later uploads that disagree are noted but never overwrite. See the admin guide for the CSV format.
+                Auto-populated from the first upload that declares dataset metadata (CSV <code>#META:</code> line or Parquet <code>dataset_meta</code> schema key). Edits here always win — later uploads that disagree are noted but never overwrite. See the admin guide for the upload format.
               </div>
               {DATASET_META_FIELDS.map((field) => {
                 // Highlight any upload whose declared value disagrees with the
-                // currently-saved experiment value. Helps the admin spot a CSV
-                // that brought in a different framing than the prior one.
+                // currently-saved experiment value. Helps the admin spot an
+                // upload that brought in a different framing than the prior one.
                 const current = (experiment[field] ?? '') as string;
                 const conflicts = uploads.filter((u) => {
                   const declared = u.dataset_meta?.[field];

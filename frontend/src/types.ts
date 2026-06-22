@@ -16,8 +16,9 @@ export interface Experiment {
   prolific_pool: string | null;
 }
 
-// Keys the CSV `#META:` header line may declare. Kept in sync with
-// DATASET_META_FIELDS in backend/services/admin/uploads.py.
+// Keys an upload may declare as dataset-level metadata (CSV `#META:` line or
+// Parquet `dataset_meta` schema key). Kept in sync with DATASET_META_FIELDS in
+// backend/services/admin/uploads.py.
 export const DATASET_META_FIELDS = [
   'description',
   'system_prompt',
@@ -63,8 +64,8 @@ export interface Upload {
 }
 
 // Response shape for POST /api/admin/experiments/{id}/upload.
-// `meta_applied` lists fields the experiment picked up from this CSV's
-// `#META:` header. `meta_conflicts` lists fields whose declared value
+// `meta_applied` lists fields the experiment picked up from this upload's
+// dataset metadata. `meta_conflicts` lists fields whose declared value
 // disagreed with the experiment's existing value — the existing value wins.
 export interface UploadResponse {
   message: string;

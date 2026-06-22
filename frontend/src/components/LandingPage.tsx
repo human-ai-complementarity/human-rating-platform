@@ -57,8 +57,8 @@ export default function LandingPage() {
           }}
         >
           <p style={{ fontSize: 14, color: '#333', lineHeight: 1.5 }}>
-            <strong>Experiment management</strong> — CSV upload, live monitoring, result
-            exports.
+            <strong>Experiment management</strong> — CSV and Parquet upload, live
+            monitoring, result exports.
           </p>
           <p style={{ fontSize: 14, color: '#333', lineHeight: 1.5 }}>
             <strong>Smart routing</strong> — questions served until each hits its target

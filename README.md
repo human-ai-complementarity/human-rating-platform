@@ -414,9 +414,9 @@ uvx yamllint==1.38.0 .
 
 ---
 
-## CSV Format
+## Upload Formats
 
-Upload questions as CSV. See `sample_questions.csv` for a working example.
+Upload questions as CSV or Parquet. Both formats accept the same columns; Parquet preserves types (e.g. `options` as a typed list, `metadata` as a struct) and is faster for large datasets. The colab notebook generates either format from a pandas DataFrame.
 
 | Column | Required | Description |
 | --- | --- | --- |
@@ -433,9 +433,12 @@ q1,"Is the sky blue?","Yes","Yes,No,Maybe",MC
 q2,"Explain photosynthesis","Plants convert sunlight...",,FT
 ```
 
-### Optional `#META:` header
+### Optional dataset-level metadata
 
-The CSV may start with a single `#META:` line declaring dataset-level metadata. The first upload populates these on the experiment; later uploads that disagree are reported but never overwrite. See [dataset-file-level-metadata-construction.ipynb](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) for how to produce this from a pandas DataFrame.
+Each upload format has a natural place for dataset-level metadata. The first upload populates these fields on the experiment; later uploads that disagree are reported but never overwrite. See [dataset-file-level-metadata-construction.ipynb](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) for how to produce both formats from a pandas DataFrame.
+
+- **CSV:** `#META: {...}` as the first line.
+- **Parquet:** JSON under the `dataset_meta` key in the schema's key-value metadata.
 
 The JSON object — pretty-printed here for readability:
 

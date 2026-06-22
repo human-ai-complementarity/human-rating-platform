@@ -56,14 +56,15 @@ class AssistanceMethod(ABC):
         """Begin an assistance interaction for the given question.
 
         parent_question_text:
-            If the question is a sub-question (CSV column parent_question_id
-            populated), this is the parent row's question_text — the same
+            If the question is a sub-question (the upload row's
+            parent_question_id is populated), this is the parent row's
+            question_text — the same
             context shown to the rater above the question. Methods that pass
             the question to an LLM should incorporate this; otherwise the
             model loses the context the rater can see.
         experiment_system_prompt:
             Dataset-level system prompt declared by the researcher (via the
-            CSV `#META:` header or the admin UI). Methods that drive an LLM
+            upload's dataset metadata or the admin UI). Methods that drive an LLM
             should append it to their own system prompt so the model gets
             study-specific framing on top of the method's task structure.
         """

@@ -208,7 +208,8 @@ def test_upload_rejects_non_csv_file(client: TestClient):
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "File must be a CSV file"
+    detail = response.json()["detail"]
+    assert "csv" in detail and "parquet" in detail
 
 
 def _csv_with_meta(meta: dict | str) -> str:
@@ -327,7 +328,7 @@ def test_upload_rejects_unknown_meta_keys(client: TestClient):
         files={"file": ("bad.csv", _csv_with_meta({"description": "ok", "wat": 1}), "text/csv")},
     )
     assert response.status_code == 400
-    assert "Unknown #META: keys" in response.json()["detail"]
+    assert "Unknown dataset metadata keys" in response.json()["detail"]
     assert "wat" in response.json()["detail"]
 
 
@@ -417,6 +418,152 @@ def test_update_experiment_edits_dataset_metadata(client: TestClient):
     assert body["prolific_pool"] == "us_balanced"
     assert body["human_prompt_prefix"] is None  # untouched fields stay null
     assert body["human_prompt_suffix"] is None
+
+
+# ── Parquet upload ───────────────────────────────────────────────────────────
+# Parquet shares the upload endpoint, the meta-conflict logic and the Question
+# writer with CSV — the tests below check the format-specific bits: schema
+# metadata parsing, typed-column serialisation, and extension dispatch.
+
+
+def _build_parquet_bytes(
+    *,
+    rows: list[dict] | None = None,
+    meta: dict | None = None,
+) -> bytes:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    if rows is None:
+        rows = [
+            {"question_id": "q1", "question_text": "Is this useful?", "question_type": "MC"},
+            {"question_id": "q2", "question_text": "Explain why", "question_type": "FT"},
+        ]
+    table = pa.Table.from_pylist(rows)
+    if meta is not None:
+        merged = {
+            **(table.schema.metadata or {}),
+            b"dataset_meta": json.dumps(meta).encode("utf-8"),
+        }
+        table = table.replace_schema_metadata(merged)
+    buf = io.BytesIO()
+    pq.write_table(table, buf)
+    return buf.getvalue()
+
+
+def test_upload_parquet_with_dataset_meta_populates_experiment(client: TestClient):
+    experiment = _create_experiment(client)
+    meta = {
+        "description": "Parquet pilot",
+        "system_prompt": "You are an evaluator.",
+        "human_prompt_prefix": "When you see the text below, do you think x or y?",
+        "prolific_pool": "uk_representative_sample",
+    }
+    parquet_bytes = _build_parquet_bytes(meta=meta)
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("with_meta.parquet", parquet_bytes, "application/octet-stream")},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert sorted(body["meta_applied"]) == sorted(meta.keys())
+    assert body["meta_conflicts"] == []
+
+    refreshed = _fetch_experiment(client, experiment["id"])
+    for key, value in meta.items():
+        assert refreshed[key] == value
+
+
+def test_upload_parquet_without_meta_still_works(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("no_meta.parquet", _build_parquet_bytes(), "application/octet-stream")},
+    )
+    assert response.status_code == 200
+    assert response.json()["meta_applied"] == []
+
+    refreshed = _fetch_experiment(client, experiment["id"])
+    assert refreshed["description"] is None
+    uploads = client.get(f"/api/admin/experiments/{experiment['id']}/uploads").json()
+    assert uploads[0]["dataset_meta"] is None
+
+
+def test_upload_parquet_serialises_list_options_and_dict_metadata(client: TestClient):
+    # The colab notebook writes `options` as a typed list and `metadata` as a
+    # struct. The reader must produce the same DB string forms a CSV upload
+    # would: pipe-joined options and JSON-encoded metadata.
+    experiment = _create_experiment(client)
+    rows = [
+        {
+            "question_id": "q1",
+            "question_text": "Is this useful?",
+            "gt_answer": "Yes",
+            "options": ["Yes", "No"],
+            "question_type": "MC",
+            "metadata": {"topic": "x", "difficulty": 2},
+        }
+    ]
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "typed.parquet",
+                _build_parquet_bytes(rows=rows),
+                "application/octet-stream",
+            )
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    session = _start_session(client, experiment["id"], prolific_pid="PID_PQ")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session),
+    ).json()
+    # Confirms the canonical pipe-separated form reached the rater payload.
+    assert question["options"] == "Yes|No"
+
+
+def test_upload_parquet_rejects_unknown_meta_keys(client: TestClient):
+    experiment = _create_experiment(client)
+    parquet_bytes = _build_parquet_bytes(meta={"description": "ok", "wat": 1})
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("bad.parquet", parquet_bytes, "application/octet-stream")},
+    )
+    assert response.status_code == 400
+    assert "wat" in response.json()["detail"]
+
+
+def test_upload_parquet_missing_required_column(client: TestClient):
+    experiment = _create_experiment(client)
+    rows = [{"question_id": "q1"}]  # no question_text
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "bad.parquet",
+                _build_parquet_bytes(rows=rows),
+                "application/octet-stream",
+            )
+        },
+    )
+    assert response.status_code == 400
+    assert "question_text" in response.json()["detail"]
+
+
+def test_upload_rejects_unsupported_extension(client: TestClient):
+    # Only `.csv` and `.parquet` are accepted; anything else gets a clean 400.
+    experiment = _create_experiment(client)
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("questions.json", "{}", "application/json")},
+    )
+    assert response.status_code == 400
+    assert "csv" in response.json()["detail"]
+    assert "parquet" in response.json()["detail"]
 
 
 def test_upload_accepts_large_question_text_fields(client: TestClient):
