@@ -14,7 +14,6 @@ def build_experiment_response(
     *,
     question_count: int,
     rating_count: int,
-    dataset_filenames: list[str] | None = None,
 ) -> ExperimentResponse:
     return ExperimentResponse(
         id=experiment.id,
@@ -34,7 +33,6 @@ def build_experiment_response(
         human_prompt_prefix=experiment.human_prompt_prefix,
         human_prompt_suffix=experiment.human_prompt_suffix,
         prolific_pool=experiment.prolific_pool,
-        dataset_filenames=list(dataset_filenames or []),
     )
 
 

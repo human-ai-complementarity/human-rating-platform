@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from models import ProlificStudyStatus, StepType
 
@@ -35,10 +35,6 @@ class ProlificStudyConfig(BaseModel):
     )
 
 
-def _dedupe_preserve_order(ids: list[int]) -> list[int]:
-    return list(dict.fromkeys(ids))
-
-
 class PilotStudyCreate(BaseModel):
     description: str
     estimated_completion_time: int = Field(ge=1)
@@ -51,12 +47,6 @@ class PilotStudyCreate(BaseModel):
     screeners: list[Screener] = Field(
         default_factory=lambda: ["ai_taskers", "fact_checkers", "approval_rate"]
     )
-    excluded_experiment_ids: list[int] = Field(default_factory=list)
-
-    @field_validator("excluded_experiment_ids")
-    @classmethod
-    def _dedupe(cls, v: list[int]) -> list[int]:
-        return _dedupe_preserve_order(v)
 
 
 class ExperimentRoundCreate(BaseModel):
@@ -71,12 +61,6 @@ class ExperimentRoundUpdate(BaseModel):
     device_compatibility: Optional[list[Literal["desktop", "tablet", "mobile"]]] = None
     study_label: Optional[StudyLabel] = None
     screeners: Optional[list[Screener]] = None
-    excluded_experiment_ids: Optional[list[int]] = None
-
-    @field_validator("excluded_experiment_ids")
-    @classmethod
-    def _dedupe(cls, v: Optional[list[int]]) -> Optional[list[int]]:
-        return None if v is None else _dedupe_preserve_order(v)
 
     def has_any(self) -> bool:
         return any(
@@ -89,7 +73,6 @@ class ExperimentRoundUpdate(BaseModel):
                 "device_compatibility",
                 "study_label",
                 "screeners",
-                "excluded_experiment_ids",
             )
         )
 
@@ -114,7 +97,6 @@ class ExperimentRoundResponse(BaseModel):
     device_compatibility: list[str]
     study_label: Optional[str] = None
     screeners: list[Screener] = Field(default_factory=list)
-    excluded_experiment_ids: list[int] = Field(default_factory=list)
     created_at: datetime
     prolific_study_url: str
 
@@ -157,10 +139,6 @@ class ExperimentResponse(BaseModel):
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
-    # Filenames of every Upload attached to this experiment. Used client-side
-    # so admins can find an experiment by its dataset filename when picking
-    # experiments to exclude from a new round.
-    dataset_filenames: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

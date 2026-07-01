@@ -38,7 +38,6 @@ const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
 
 interface ExperimentDetailProps {
   experiment: Experiment;
-  allExperiments: Experiment[];
   onBack: () => void;
   onDeleted: () => void;
   onRefresh: () => void;
@@ -94,161 +93,8 @@ function rewardHintText(
   return parts.length > 0 ? parts.join(' · ') : null;
 }
 
-function experimentSearchHaystack(exp: Experiment): string {
-  return [
-    exp.name,
-    exp.internal_name ?? '',
-    ...(exp.dataset_filenames ?? []),
-  ]
-    .join(' ')
-    .toLowerCase();
-}
-
-// Style bag for the exclusion picker. Overlaps with the in-component
-// `styles.screener*` set — kept separate here because the picker is a
-// top-level component and can't reach the component-scoped `styles` object
-// without prop plumbing.
-const exclusionStyles = {
-  wrapper: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '6px',
-    padding: '10px 12px',
-    border: '1px solid #ddd',
-    borderRadius: '6px',
-    background: '#f8f9fa',
-  },
-  search: {
-    padding: '6px 8px',
-    border: '1px solid #ccc',
-    borderRadius: '4px',
-    fontSize: '13px',
-    margin: 0,
-  },
-  list: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '6px',
-    maxHeight: '180px',
-    overflowY: 'auto' as const,
-  },
-  row: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: '10px',
-    fontSize: '13px',
-    fontWeight: 'normal',
-    cursor: 'pointer',
-    margin: 0,
-  },
-  checkbox: {
-    width: '16px',
-    height: '16px',
-    flex: '0 0 auto',
-    margin: '3px 0 0 0',
-    padding: 0,
-    cursor: 'pointer',
-  },
-  rowText: {
-    lineHeight: '1.4',
-  },
-  rowSubtitle: {
-    color: '#555',
-  },
-  empty: {
-    color: '#777',
-    fontSize: '12px',
-    fontStyle: 'italic' as const,
-    padding: '4px 0',
-  },
-  count: {
-    color: '#555',
-    fontSize: '12px',
-  },
-};
-
-interface ExclusionPickerProps {
-  experiments: Experiment[];
-  selectedIds: number[];
-  onChange: (ids: number[]) => void;
-  testIdPrefix: string;
-}
-
-function ExperimentExclusionPicker({
-  experiments,
-  selectedIds,
-  onChange,
-  testIdPrefix,
-}: ExclusionPickerProps) {
-  const [query, setQuery] = useState('');
-  const q = query.trim().toLowerCase();
-  const visible = q
-    ? experiments.filter((e) => experimentSearchHaystack(e).includes(q))
-    : experiments;
-  const toggle = (id: number, checked: boolean) => {
-    if (checked) {
-      onChange(Array.from(new Set([...selectedIds, id])));
-    } else {
-      onChange(selectedIds.filter((v) => v !== id));
-    }
-  };
-  return (
-    <div style={exclusionStyles.wrapper}>
-      <input
-        type="text"
-        data-testid={`${testIdPrefix}-search`}
-        placeholder="Search by experiment name or dataset filename"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        style={exclusionStyles.search}
-      />
-      <div style={exclusionStyles.list}>
-        {visible.length === 0 && (
-          <div style={exclusionStyles.empty}>
-            {experiments.length === 0
-              ? 'No other experiments yet.'
-              : 'No matches.'}
-          </div>
-        )}
-        {visible.map((exp) => {
-          const checked = selectedIds.includes(exp.id);
-          const subtitle = [
-            exp.internal_name && exp.internal_name !== exp.name ? exp.internal_name : null,
-            exp.dataset_filenames.length > 0 ? exp.dataset_filenames.join(', ') : null,
-          ]
-            .filter(Boolean)
-            .join(' · ');
-          return (
-            <label key={exp.id} style={exclusionStyles.row}>
-              <input
-                type="checkbox"
-                data-testid={`${testIdPrefix}-option-${exp.id}`}
-                checked={checked}
-                onChange={(e) => toggle(exp.id, e.target.checked)}
-                style={exclusionStyles.checkbox}
-              />
-              <span style={exclusionStyles.rowText}>
-                <strong>{exp.name}</strong>
-                {subtitle && (
-                  <span style={exclusionStyles.rowSubtitle}> — {subtitle}</span>
-                )}
-              </span>
-            </label>
-          );
-        })}
-      </div>
-      {selectedIds.length > 0 && (
-        <div style={exclusionStyles.count}>
-          {selectedIds.length} experiment{selectedIds.length === 1 ? '' : 's'} selected
-        </div>
-      )}
-    </div>
-  );
-}
-
 function ExperimentDetail({
   experiment,
-  allExperiments,
   onBack,
   onDeleted,
   onRefresh,
@@ -269,16 +115,7 @@ function ExperimentDetail({
     places: number;
     study_label: PilotStudyCreate['study_label'];
     screeners: Screener[];
-    excluded_experiment_ids: number[];
-  }>({
-    description: '',
-    estimated_completion_time: 60,
-    places: 1,
-    study_label: 'annotation',
-    screeners: [],
-    excluded_experiment_ids: [],
-  });
-  const otherExperiments = allExperiments.filter((e) => e.id !== experiment.id);
+  }>({ description: '', estimated_completion_time: 60, places: 1, study_label: 'annotation', screeners: [] });
   // Reward is kept as a raw input string (not a number) so the user can type
   // "9.99" without each keystroke round-tripping through parse-then-format
   // and snapping the value back to "9.00". Converted to minor units only at
@@ -298,7 +135,6 @@ function ExperimentDetail({
     device_compatibility: ['desktop'],
     study_label: 'annotation',
     screeners: ['ai_taskers', 'fact_checkers', 'approval_rate'],
-    excluded_experiment_ids: [],
   });
   // If the experiment's dataset-level description arrives after mount (e.g. via
   // an upload populating dataset_meta.description), seed the pilot form with it so
@@ -606,7 +442,6 @@ function ExperimentDetail({
       places: round.places_requested,
       study_label: round.study_label ?? 'annotation',
       screeners: round.screeners ?? [],
-      excluded_experiment_ids: round.excluded_experiment_ids ?? [],
     });
     setEditRewardInput(rewardMinorToInput(round.reward, currencyCode));
     setError(null);
@@ -624,14 +459,13 @@ function ExperimentDetail({
       // Treat that as "don't change the reward" rather than sending an invalid
       // value — the user can still edit the other fields without retyping it.
       const rewardMinor = rewardInputToMinor(editRewardInput, currencyCode);
-      const { description, estimated_completion_time, places, study_label, screeners, excluded_experiment_ids } = editForm;
+      const { description, estimated_completion_time, places, study_label, screeners } = editForm;
       await api.editExperimentRound(experiment.id, roundId, {
         description,
         estimated_completion_time,
         places,
         study_label,
         screeners,
-        excluded_experiment_ids,
         ...(rewardMinor > 0 ? { reward: rewardMinor } : {}),
       });
       setSuccess('Round updated on Prolific.');
@@ -1385,20 +1219,6 @@ function ExperimentDetail({
                                 })}
                               </div>
                             </div>
-                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
-                              <label style={{ ...styles.label, fontSize: '12px' }}>
-                                Exclude prior participants from
-                              </label>
-                              <ExperimentExclusionPicker
-                                experiments={otherExperiments}
-                                selectedIds={editForm.excluded_experiment_ids}
-                                onChange={(ids) => setEditForm({ ...editForm, excluded_experiment_ids: ids })}
-                                testIdPrefix={`edit-round-exclusion-${round.round_number}`}
-                              />
-                              <div style={styles.hint}>
-                                Participants who joined any selected experiment will not see this study on Prolific.
-                              </div>
-                            </div>
                             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
                               <button
                                 data-testid={`edit-round-cancel-${round.round_number}`}
@@ -1540,18 +1360,6 @@ function ExperimentDetail({
                         })}
                       </div>
                       <div style={styles.hint}>Default on. Screeners narrow the participant pool to higher-quality raters.</div>
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label style={styles.label}>Exclude prior participants from</label>
-                      <ExperimentExclusionPicker
-                        experiments={otherExperiments}
-                        selectedIds={pilotForm.excluded_experiment_ids}
-                        onChange={(ids) => setPilotForm({ ...pilotForm, excluded_experiment_ids: ids })}
-                        testIdPrefix="pilot-exclusion"
-                      />
-                      <div style={styles.hint}>
-                        Participants who joined any selected experiment will not see this study on Prolific. Main rounds inherit this list from the pilot.
-                      </div>
                     </div>
                     <div style={styles.inputGroup}>
                       <label htmlFor="pilot-estimated-completion-time" style={styles.label}>Estimated Completion Time (minutes)</label>

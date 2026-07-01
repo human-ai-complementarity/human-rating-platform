@@ -25,7 +25,6 @@ from schemas import (
 from .prolific import (
     ProlificAPIError,
     build_completion_url,
-    build_exclusion_filters,
     build_external_study_url,
     build_screener_filters,
     build_study_url,
@@ -37,7 +36,6 @@ from .prolific import (
     stop_study,
     update_study,
 )
-from services.participant_groups import ensure_participant_group
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
@@ -113,7 +111,6 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         device_compatibility=_parse_device_compatibility(round_.device_compatibility),
         study_label=round_.study_label,
         screeners=_parse_screeners(round_.screeners),
-        excluded_experiment_ids=_parse_excluded_experiment_ids(round_.excluded_experiment_ids),
         created_at=round_.created_at,
         prolific_study_url=build_study_url(study_id=round_.prolific_study_id),
     )
@@ -139,85 +136,6 @@ def _parse_screeners(screeners: str | None) -> list[str]:
     if not screeners:
         return []
     return json.loads(screeners)
-
-
-def _parse_excluded_experiment_ids(raw: str | None) -> list[int]:
-    if not raw:
-        return []
-    return json.loads(raw)
-
-
-async def _build_round_blocklist_group_ids(
-    experiment: Experiment,
-    excluded_experiment_ids: list[int],
-    db: AsyncSession,
-    *,
-    strict: bool,
-) -> list[str]:
-    """Full participant-group blocklist for a round of `experiment`.
-
-    Combines the experiment's own group with the resolved groups of any
-    explicitly excluded prior experiments. Blocking the own group keeps raters
-    from one round of the experiment out of every other round of the same
-    experiment — Prolific groups are dynamic, so a group that's still empty at
-    launch time (e.g. the pilot) starts filtering as soon as any rater joins.
-    """
-    own_group_id = await ensure_participant_group(experiment, db)
-    others = await _resolve_exclusion_group_ids(excluded_experiment_ids, db, strict=strict)
-    result: list[str] = []
-    if own_group_id:
-        result.append(own_group_id)
-    result.extend(others)
-    return result
-
-
-async def _resolve_exclusion_group_ids(
-    excluded_experiment_ids: list[int],
-    db: AsyncSession,
-    *,
-    strict: bool,
-) -> list[str]:
-    """For each experiment ID in the exclusion list, return its participant
-    group ID, creating the group lazily if the experiment doesn't have one yet.
-
-    Lazy creation is important: even if experiment A has never had a rater, we
-    still want to attach A's (empty) group to A*'s blocklist so future entrants
-    to A are automatically excluded from A*.
-
-    `strict=True` means an ID with no matching experiment is a hard error —
-    used on paths where the admin just picked the IDs and a silent drop would
-    ship a broken blocklist. `strict=False` logs and skips — used when the IDs
-    are inherited from an earlier round and one may have been deleted since,
-    where blocking an unrelated edit would be more annoying than useful.
-    """
-    if not excluded_experiment_ids:
-        return []
-
-    experiments_by_id = {
-        exp.id: exp
-        for exp in (
-            await db.execute(select(Experiment).where(Experiment.id.in_(excluded_experiment_ids)))
-        ).scalars()
-    }
-
-    group_ids: list[str] = []
-    for exp_id in excluded_experiment_ids:
-        experiment = experiments_by_id.get(exp_id)
-        if experiment is None:
-            if strict:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Excluded experiment {exp_id} does not exist.",
-                )
-            logger.warning(
-                "Excluded experiment not found; skipping",
-                extra={"attributes": {"excluded_experiment_id": exp_id}},
-            )
-            continue
-        group_id = await ensure_participant_group(experiment, db)
-        if group_id:
-            group_ids.append(group_id)
-    return group_ids
 
 
 def _is_round_closed(round_: ExperimentRound) -> bool:
@@ -371,7 +289,6 @@ async def _create_prolific_study_for_round(
     device_compatibility: list[str],
     study_label: str | None,
     screeners: list[str],
-    excluded_participant_group_ids: list[str],
 ) -> dict[str, str]:
     settings = get_settings()
     completion_code = _ensure_completion_code(experiment)
@@ -393,7 +310,6 @@ async def _create_prolific_study_for_round(
         device_compatibility=device_compatibility,
         study_label=study_label,
         screeners=screeners,
-        excluded_participant_group_ids=excluded_participant_group_ids,
     )
 
 
@@ -473,11 +389,6 @@ async def run_pilot_study(
             detail="A pilot study has already been run for this experiment",
         )
 
-    excluded_experiment_ids = list(payload.excluded_experiment_ids)
-    blocklist_group_ids = await _build_round_blocklist_group_ids(
-        experiment, excluded_experiment_ids, db, strict=True
-    )
-
     try:
         result = await _create_prolific_study_for_round(
             experiment,
@@ -489,7 +400,6 @@ async def run_pilot_study(
             device_compatibility=payload.device_compatibility,
             study_label=payload.study_label,
             screeners=list(payload.screeners),
-            excluded_participant_group_ids=blocklist_group_ids,
         )
     except HTTPException:
         raise
@@ -530,7 +440,6 @@ async def run_pilot_study(
         device_compatibility=json.dumps(payload.device_compatibility),
         study_label=payload.study_label,
         screeners=json.dumps(list(payload.screeners)),
-        excluded_experiment_ids=json.dumps(excluded_experiment_ids),
         places_requested=payload.pilot_places,
     )
     await _commit_round_creation(
@@ -582,10 +491,6 @@ async def run_experiment_round(
     next_round_number = latest_round.round_number + 1
     device_compatibility = _parse_device_compatibility(pilot_round.device_compatibility)
     screeners = _parse_screeners(pilot_round.screeners)
-    excluded_experiment_ids = _parse_excluded_experiment_ids(pilot_round.excluded_experiment_ids)
-    blocklist_group_ids = await _build_round_blocklist_group_ids(
-        experiment, excluded_experiment_ids, db, strict=False
-    )
 
     try:
         result = await _create_prolific_study_for_round(
@@ -598,7 +503,6 @@ async def run_experiment_round(
             device_compatibility=device_compatibility,
             study_label=pilot_round.study_label,
             screeners=screeners,
-            excluded_participant_group_ids=blocklist_group_ids,
         )
     except HTTPException:
         raise
@@ -645,7 +549,6 @@ async def run_experiment_round(
         device_compatibility=pilot_round.device_compatibility,
         study_label=pilot_round.study_label,
         screeners=pilot_round.screeners,
-        excluded_experiment_ids=pilot_round.excluded_experiment_ids,
         places_requested=payload.places,
     )
     await _commit_round_creation(
@@ -767,7 +670,7 @@ async def update_experiment_round(
             detail="Provide at least one field to update.",
         )
 
-    experiment = await fetch_experiment_or_404(experiment_id, db)
+    await fetch_experiment_or_404(experiment_id, db)
     round_ = await _fetch_round_or_404(experiment_id, round_id, db)
     if round_.prolific_study_status != ProlificStudyStatus.UNPUBLISHED:
         raise HTTPException(
@@ -788,31 +691,8 @@ async def update_experiment_round(
         prolific_fields["description"] = to_prolific_html(payload.description)
     if payload.study_label is not None:
         prolific_fields["study_labels"] = [payload.study_label]
-    # `filters` on Prolific is a full replacement, so we always rebuild the
-    # combined screener + exclusion filter list when either side changes.
-    if payload.screeners is not None or payload.excluded_experiment_ids is not None:
-        screeners = (
-            list(payload.screeners)
-            if payload.screeners is not None
-            else _parse_screeners(round_.screeners)
-        )
-        excluded_ids = (
-            list(payload.excluded_experiment_ids)
-            if payload.excluded_experiment_ids is not None
-            else _parse_excluded_experiment_ids(round_.excluded_experiment_ids)
-        )
-        # Strict only when the admin is explicitly setting the list — an
-        # inherited-and-stale ID from an earlier round shouldn't block an
-        # unrelated field edit (reward, screeners, etc.).
-        blocklist_group_ids = await _build_round_blocklist_group_ids(
-            experiment,
-            excluded_ids,
-            db,
-            strict=payload.excluded_experiment_ids is not None,
-        )
-        prolific_fields["filters"] = build_screener_filters(screeners) + build_exclusion_filters(
-            blocklist_group_ids
-        )
+    if payload.screeners is not None:
+        prolific_fields["filters"] = build_screener_filters(list(payload.screeners))
 
     try:
         await update_study(
@@ -852,8 +732,6 @@ async def update_experiment_round(
         round_.study_label = payload.study_label
     if payload.screeners is not None:
         round_.screeners = json.dumps(list(payload.screeners))
-    if payload.excluded_experiment_ids is not None:
-        round_.excluded_experiment_ids = json.dumps(list(payload.excluded_experiment_ids))
     await db.commit()
     await db.refresh(round_)
 

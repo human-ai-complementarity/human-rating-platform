@@ -17,9 +17,7 @@ from schemas import (
     RatingSubmit,
     SessionStatusResponse,
 )
-from services.admin.prolific import ProlificAPIError, add_participant_to_group
 from services.assistance import get_rater_instructions
-from services.participant_groups import ensure_participant_group
 from .mappers import (
     build_question_response,
     build_rater_start_response,
@@ -169,42 +167,6 @@ async def start_session(
             }
         },
     )
-
-    # Add to the experiment's Prolific participant group so later experiments
-    # can blocklist them. Preview raters aren't real Prolific participants, so
-    # skip them. Best-effort: never block rater entry on a Prolific failure.
-    if not is_preview and settings.prolific.enabled:
-        try:
-            group_id = await ensure_participant_group(experiment, db)
-            if group_id:
-                await add_participant_to_group(
-                    settings=settings.prolific,
-                    group_id=group_id,
-                    prolific_id=prolific_pid,
-                )
-        except ProlificAPIError as exc:
-            logger.warning(
-                "Failed to add rater to Prolific participant group",
-                extra={
-                    "attributes": {
-                        "rater_id": rater.id,
-                        "experiment_id": experiment_id,
-                        "prolific_status": exc.status_code,
-                        "prolific_body": exc.body,
-                    }
-                },
-            )
-        except Exception:
-            logger.warning(
-                "Failed to add rater to Prolific participant group",
-                exc_info=True,
-                extra={
-                    "attributes": {
-                        "rater_id": rater.id,
-                        "experiment_id": experiment_id,
-                    }
-                },
-            )
 
     token = issue_rater_session_token(
         settings=settings, rater_id=rater.id, experiment_id=experiment_id

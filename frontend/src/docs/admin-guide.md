@@ -71,16 +71,6 @@ In **Rater Assistance Methods**, decide whether the AI should help raters. Leavi
 
 Always pilot before scaling. In the **Prolific Workflow** section, create a small unpublished study (5 raters is a good default), then **Publish** it. Use the pilot to calibrate your time estimate and reward — guess high on the first round; the platform gives a tighter recommendation afterwards.
 
-### Excluding prior participants
-
-> ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form. Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.
-
-The picker searches over experiment names and dataset filenames — use the dataset filename to quickly find all experiments that share a dataset. Prolific hides the study from anyone who joined any selected experiment, so each experiment gets a clean, disjoint cohort. Main rounds automatically inherit the pilot's exclusion list.
-
-There's no downside to being over-inclusive: excluding an unrelated experiment costs nothing if its participants weren't in your pool anyway. When in doubt, add it.
-
-**Wait for a prior experiment to finish before excluding it from a new one.** The exclusion filter is one-way: raters already in the prior experiment's group can't see the new study, but raters who see the new study first are not retroactively kept out of the prior one. If both studies are open in parallel, a rater can grab the new study, then join the prior study afterwards, ending up in both. Close the prior experiment (or at least stop recruiting on it) before you publish the new one.
-
 ## 5. Launch subsequent rounds
 
 Once the pilot closes, a **Recommendation for next round** panel appears with a suggested size and reward based on the pilot's timing. Create the next round draft from there, review the prefilled values, and publish.

@@ -8,7 +8,6 @@ function ExperimentDetailPage() {
   const { experimentId } = useParams<{ experimentId: string }>();
   const navigate = useNavigate();
   const [experiment, setExperiment] = useState<Experiment | null>(null);
-  const [allExperiments, setAllExperiments] = useState<Experiment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -16,7 +15,6 @@ function ExperimentDetailPage() {
     try {
       setLoading(true);
       const experiments = await api.listExperiments();
-      setAllExperiments(experiments);
       const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
       if (exp) {
         setExperiment(exp);
@@ -69,7 +67,6 @@ function ExperimentDetailPage() {
   return (
     <ExperimentDetail
       experiment={experiment}
-      allExperiments={allExperiments}
       onBack={handleBack}
       onDeleted={handleDeleted}
       onRefresh={loadExperiment}

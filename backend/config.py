@@ -100,9 +100,6 @@ class ProlificSettings(_StrictModel):
     api_token: str = ""
     base_url: str = "https://api.prolific.com/api/v1"
     project_id: str = ""
-    # Prefix applied to any Prolific-visible names we create (e.g. participant
-    # groups) so dev and prod stay distinguishable when they share a project.
-    env_label: str = ""
 
     @property
     def enabled(self) -> bool:
