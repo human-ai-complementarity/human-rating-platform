@@ -262,6 +262,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `SEEDING__*` — local seed generation (`enabled`, `experiment_name`, `question_count`, etc.)
 - `PROLIFIC__API_TOKEN` — Prolific API token (optional; enables automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under. If unset, Prolific uses the API user's `current_project_id`, which can land studies in the wrong workspace on multi-workspace accounts. The project's workspace and currency are derived automatically.
+- `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 
 Top‑level convenience envs (not nested):
@@ -379,6 +380,7 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 - `APP__SITE_URL` — public frontend URL, e.g. `https://human-rating-platform-web.onrender.com`
 - `PROLIFIC__API_TOKEN` — Prolific API token (set to enable automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under (recommended on multi-workspace accounts to avoid wrong-currency studies; workspace and currency are auto-derived)
+- `PROLIFIC__ENV_LABEL` — leave unset in prod (dev sets it to `dev` to distinguish participant groups created locally from prod ones)
 
 **Web service** (set in Render Dashboard → Web service → Environment):
 - `VITE_API_HOST` — public API origin, e.g. `https://human-rating-platform-api-uxnt.onrender.com`
@@ -515,6 +517,10 @@ Typical workflow:
 5. **Preview** the rater experience using **Preview as Participant**.
 6. **Publish** the study from the experiment detail page when ready.
 7. **Delete** an experiment and the linked Prolific study is cleaned up automatically.
+
+### Excluding prior participants
+
+Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
 
 ### Study URL format
 

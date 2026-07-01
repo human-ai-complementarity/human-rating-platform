@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
-from models import Experiment, ExperimentRound, Question, Rating, Rater
+from models import Experiment, ExperimentRound, Question, Rating, Rater, Upload
 from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
@@ -99,11 +99,25 @@ async def list_experiments(
         )
     ).all()
 
+    experiment_ids = [experiment.id for experiment, _, _ in rows]
+    filenames_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
+    if experiment_ids:
+        upload_rows = (
+            await db.execute(
+                select(Upload.experiment_id, Upload.filename)
+                .where(Upload.experiment_id.in_(experiment_ids))
+                .order_by(Upload.uploaded_at)
+            )
+        ).all()
+        for exp_id, filename in upload_rows:
+            filenames_by_experiment.setdefault(exp_id, []).append(filename)
+
     return [
         build_experiment_response(
             experiment,
             question_count=int(question_count or 0),
             rating_count=int(rating_count or 0),
+            dataset_filenames=filenames_by_experiment.get(experiment.id, []),
         )
         for experiment, question_count, rating_count in rows
     ]

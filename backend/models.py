@@ -93,6 +93,13 @@ class Experiment(SQLModel, table=True):
         default=None,
         sa_column=Column(String(255), nullable=True),
     )
+    # Prolific participant group ID that collects everyone who joins this
+    # experiment. Populated lazily on first rater entry. Used as the source
+    # for `excluded_experiment_ids` blocklists on later experiments.
+    prolific_participant_group_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(64), nullable=True),
+    )
 
 
 class Question(SQLModel, table=True):
@@ -259,6 +266,10 @@ class ExperimentRound(SQLModel, table=True):
         default=None,
         sa_column=Column(String(256), nullable=True),
     )  # JSON-encoded list, e.g. '["ai_taskers", "fact_checkers"]'
+    excluded_experiment_ids: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )  # JSON-encoded list of experiment IDs whose participant groups block this round
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

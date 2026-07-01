@@ -59,6 +59,20 @@ def build_screener_filters(screeners: list[str] | None) -> list[dict]:
     return [SCREENER_FILTERS[name] for name in screeners if name in SCREENER_FILTERS]
 
 
+def build_exclusion_filters(participant_group_ids: list[str] | None) -> list[dict]:
+    """Wrap participant group IDs in a `participant_group_blocklist` filter entry.
+
+    Returns a single-element list (for composition with `build_screener_filters`)
+    or empty when there are no groups to block. Group IDs come from prior
+    experiments the round should exclude — Prolific will hide the study from
+    anyone in any of the listed groups.
+    """
+    ids = [gid for gid in (participant_group_ids or []) if gid]
+    if not ids:
+        return []
+    return [{"filter_id": "participant_group_blocklist", "selected_values": ids}]
+
+
 def generate_completion_code() -> str:
     alphabet = string.ascii_uppercase + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(COMPLETION_CODE_LENGTH))
@@ -143,6 +157,7 @@ async def create_study(
     internal_name: str | None = None,
     study_label: str | None = None,
     screeners: list[str] | None = None,
+    excluded_participant_group_ids: list[str] | None = None,
 ) -> dict[str, str]:
     if not settings.enabled:
         raise RuntimeError("create_study called while Prolific is disabled")
@@ -168,7 +183,9 @@ async def create_study(
         payload["internal_name"] = internal_name
     if study_label:
         payload["study_labels"] = [study_label]
-    filters = build_screener_filters(screeners)
+    filters = build_screener_filters(screeners) + build_exclusion_filters(
+        excluded_participant_group_ids
+    )
     if filters:
         payload["filters"] = filters
     if settings.project_id:
@@ -284,6 +301,56 @@ async def update_study(
         response = await client.patch(f"/studies/{study_id}/", json=fields)
         _raise_for_status(response)
         return response.json()
+
+
+async def create_participant_group(
+    *,
+    settings: ProlificSettings,
+    name: str,
+) -> dict:
+    """Create a Prolific participant group under the configured project.
+
+    The returned dict includes an `id` we persist on the Experiment so future
+    rounds can reference this group as a blocklist. Groups are dynamic — adding
+    a participant later automatically updates eligibility on already-launched
+    studies that reference the group.
+    """
+    if not settings.enabled:
+        raise RuntimeError("create_participant_group called while Prolific is disabled")
+    if not settings.project_id:
+        raise RuntimeError("PROLIFIC__PROJECT_ID must be set to create participant groups")
+
+    async with _build_client(settings) as client:
+        response = await client.post(
+            "/participant-groups/",
+            json={"name": name, "project_id": settings.project_id},
+        )
+        _raise_for_status(response)
+        return response.json()
+
+
+async def add_participant_to_group(
+    *,
+    settings: ProlificSettings,
+    group_id: str,
+    prolific_id: str,
+) -> None:
+    """Add a single Prolific participant to a group.
+
+    Idempotent from the caller's perspective — Prolific returns 400 for unknown
+    participant IDs (error_code 140003) and treats already-present participants
+    as a no-op. Errors are surfaced; callers wrap in try/except and log-and-
+    continue when the add is best-effort (e.g. rater start_session).
+    """
+    if not settings.enabled:
+        raise RuntimeError("add_participant_to_group called while Prolific is disabled")
+
+    async with _build_client(settings) as client:
+        response = await client.post(
+            f"/participant-groups/{group_id}/participants/",
+            json={"participant_ids": [prolific_id]},
+        )
+        _raise_for_status(response)
 
 
 # Workspace currency lookup is cached for the process lifetime once resolved
