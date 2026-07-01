@@ -37,7 +37,7 @@ from .prolific import (
     stop_study,
     update_study,
 )
-from services.participant_groups import ensure_participant_group
+from services.participant_groups import ensure_participant_group_and_commit
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
@@ -162,13 +162,16 @@ async def _build_round_blocklist_group_ids(
     experiment — Prolific groups are dynamic, so a group that's still empty at
     launch time (e.g. the pilot) starts filtering as soon as any rater joins.
     """
-    own_group_id = await ensure_participant_group(experiment, db)
+    own_group_id = await ensure_participant_group_and_commit(experiment, db)
     others = await _resolve_exclusion_group_ids(excluded_experiment_ids, db, strict=strict)
+    # Dedupe while preserving order: if the admin somehow ends up with the
+    # current experiment in its own exclusion list, we still send Prolific a
+    # single blocklist entry per group.
     result: list[str] = []
     if own_group_id:
         result.append(own_group_id)
     result.extend(others)
-    return result
+    return list(dict.fromkeys(result))
 
 
 async def _resolve_exclusion_group_ids(
@@ -214,7 +217,7 @@ async def _resolve_exclusion_group_ids(
                 extra={"attributes": {"excluded_experiment_id": exp_id}},
             )
             continue
-        group_id = await ensure_participant_group(experiment, db)
+        group_id = await ensure_participant_group_and_commit(experiment, db)
         if group_id:
             group_ids.append(group_id)
     return group_ids
