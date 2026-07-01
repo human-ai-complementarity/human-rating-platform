@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from models import ExperimentRound
+from services.participant_groups import _slugify_for_prolific
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
@@ -895,12 +896,20 @@ PROLIFIC_STUDY_ID = "65abc123def456"
 
 @pytest.fixture()
 def enable_prolific():
-    """Temporarily enable Prolific by setting an API token on the cached settings."""
+    """Temporarily enable Prolific by setting an API token on the cached settings.
+
+    Also sets a project_id since participant-group creation requires it; without
+    this the fixture is non-hermetic and passes locally only when the dev .env
+    happens to set PROLIFIC__PROJECT_ID.
+    """
     settings = get_settings()
-    original = settings.prolific.api_token
+    original_token = settings.prolific.api_token
+    original_project_id = settings.prolific.project_id
     settings.prolific.api_token = "test-token"
+    settings.prolific.project_id = "test-project"
     yield settings
-    settings.prolific.api_token = original
+    settings.prolific.api_token = original_token
+    settings.prolific.project_id = original_project_id
 
 
 def _prolific_experiment_payload() -> dict:
@@ -923,7 +932,24 @@ def _pilot_payload() -> dict:
 
 def _mock_create_study(*, status: int = 200, study_id: str = PROLIFIC_STUDY_ID) -> respx.Route:
     body = {"id": study_id, "status": "UNPUBLISHED"} if status == 200 else {}
+    # Every round launch (including pilot) now ensures the experiment's own
+    # participant group exists — attach a default mock so tests that don't
+    # care about groups don't have to register one explicitly.
+    _install_default_participant_group_mock()
     return respx.post(f"{PROLIFIC_BASE}/studies/").mock(return_value=Response(status, json=body))
+
+
+def _install_default_participant_group_mock() -> respx.Route:
+    """Register a side-effect mock that echoes each request's `name` field as
+    the returned group ID. Lets tests that need to distinguish groups derive
+    expected IDs from the experiment they belong to."""
+
+    def responder(request):
+        body = json.loads(request.content.decode())
+        name = body.get("name", "test-group")
+        return Response(200, json={"id": name, "name": name, "project_id": "p"})
+
+    return respx.post(f"{PROLIFIC_BASE}/participant-groups/").mock(side_effect=responder)
 
 
 def _mock_publish_study(*, study_id: str = PROLIFIC_STUDY_ID) -> respx.Route:
@@ -1188,6 +1214,10 @@ def test_prolific_create_failure_propagates_message(client: TestClient, enable_p
     assert create_resp.status_code == 200, create_resp.text
     experiment = create_resp.json()
 
+    # Pilot launch now ensures the experiment's own participant group before
+    # creating the study — mock the group create so the study POST is what
+    # actually returns the 400 we want to test.
+    _install_default_participant_group_mock()
     respx.post(f"{PROLIFIC_BASE}/studies/").mock(
         return_value=Response(
             400,
@@ -1587,10 +1617,16 @@ def test_prolific_round_edit_updates_study_label_and_screeners(
     assert route.called
 
     sent = json.loads(route.calls[0].request.content)
-    assert sent == {
-        "study_labels": ["survey"],
-        "filters": [{"filter_id": "fact-checkers", "selected_values": ["0"]}],
-    }
+    assert sent["study_labels"] == ["survey"]
+    # The filter list always carries the experiment's own participant group so
+    # raters from one round can't take another round of the same experiment.
+    assert sent["filters"] == [
+        {"filter_id": "fact-checkers", "selected_values": ["0"]},
+        {
+            "filter_id": "participant_group_blocklist",
+            "selected_values": [_expected_group_id(experiment)],
+        },
+    ]
 
     # Confirm the change persisted and is reflected on round list.
     rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
@@ -1615,7 +1651,14 @@ def test_prolific_round_edit_can_clear_all_screeners(
     assert resp.status_code == 200, resp.text
     assert resp.json()["screeners"] == []
     sent = json.loads(route.calls[0].request.content)
-    assert sent == {"filters": []}
+    # Clearing screeners leaves the own-group blocklist filter in place — the
+    # own-group filter is independent of screener config.
+    assert sent["filters"] == [
+        {
+            "filter_id": "participant_group_blocklist",
+            "selected_values": [_expected_group_id(experiment)],
+        },
+    ]
 
 
 @respx.mock
@@ -2237,10 +2280,12 @@ def test_prolific_create_sends_default_screeners(
 
 
 @respx.mock
-def test_prolific_create_omits_filters_when_screeners_empty(
+def test_prolific_create_sends_only_own_group_when_screeners_empty(
     client: TestClient,
     enable_prolific,
 ):
+    """With no screeners and no explicit exclusions, the round still ships a
+    filter list containing the experiment's own participant group."""
     create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     assert create_resp.status_code == 200, create_resp.text
     experiment = create_resp.json()
@@ -2253,7 +2298,12 @@ def test_prolific_create_omits_filters_when_screeners_empty(
     assert pilot_resp.status_code == 200, pilot_resp.text
 
     sent = json.loads(route.calls[-1].request.content.decode())
-    assert "filters" not in sent
+    assert sent["filters"] == [
+        {
+            "filter_id": "participant_group_blocklist",
+            "selected_values": [_expected_group_id(experiment)],
+        },
+    ]
 
 
 @respx.mock
@@ -2283,4 +2333,342 @@ def test_prolific_round_inherits_pilot_screeners(
     )
     assert round_resp.status_code == 200, round_resp.text
     sent = json.loads(round_route.calls[-1].request.content.decode())
-    assert sent["filters"] == [{"filter_id": "ai-taskers", "selected_values": ["0"]}]
+    assert sent["filters"] == [
+        {"filter_id": "ai-taskers", "selected_values": ["0"]},
+        {
+            "filter_id": "participant_group_blocklist",
+            "selected_values": [_expected_group_id(experiment)],
+        },
+    ]
+
+
+def _expected_group_id(experiment: dict) -> str:
+    """Reproduces the ID that `_install_default_participant_group_mock`
+    returns for `experiment` — the participant group name as computed by
+    services.participant_groups.participant_group_name, including the
+    PROLIFIC__ENV_LABEL prefix that dev environments set."""
+    prefix = get_settings().prolific.env_label.strip()
+    parts = [prefix] if prefix else []
+    parts.extend(["exp", str(experiment["id"]), _slugify_for_prolific(experiment["name"])])
+    return "-".join(parts)
+
+
+def _blocklist_values(filters: list[dict]) -> list[str]:
+    for entry in filters:
+        if entry.get("filter_id") == "participant_group_blocklist":
+            return entry.get("selected_values", [])
+    return []
+
+
+@respx.mock
+def test_prolific_pilot_with_exclusion_creates_group_and_sends_blocklist(
+    client: TestClient,
+    enable_prolific,
+):
+    """Launching a pilot with `excluded_experiment_ids` should create groups
+    for both the current experiment and the excluded one, and include both
+    in the `participant_group_blocklist` filter on the create-study payload."""
+    excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert excluded_resp.status_code == 200, excluded_resp.text
+    excluded = excluded_resp.json()
+
+    new_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    assert new_resp.status_code == 200, new_resp.text
+    new = new_resp.json()
+
+    study_route = _mock_create_study(study_id="PILOT_EXCL")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{new['id']}/prolific/pilot",
+        json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    sent = json.loads(study_route.calls[-1].request.content.decode())
+    # Blocklist should contain the current experiment's own group (so raters
+    # of one round can't take another round of the same experiment) plus the
+    # explicitly excluded experiment's group.
+    assert set(_blocklist_values(sent["filters"])) == {
+        _expected_group_id(new),
+        _expected_group_id(excluded),
+    }
+    assert pilot_resp.json()["excluded_experiment_ids"] == [excluded["id"]]
+
+
+@respx.mock
+def test_prolific_pilot_reuses_existing_group_no_duplicate_creation(
+    client: TestClient,
+    enable_prolific,
+):
+    """Second pilot referencing the same excluded experiment should not create
+    a new participant group for that experiment — its group ID is persisted on
+    first use and reused thereafter."""
+    excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    excluded = excluded_resp.json()
+
+    exp1_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    exp1 = exp1_resp.json()
+    exp2_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    exp2 = exp2_resp.json()
+
+    # Record every requested group name so we can distinguish per-experiment
+    # creates from reuses. Register the spy AFTER `_mock_create_study` (which
+    # installs a default group mock as a companion) so the spy takes precedence
+    # for the subsequent calls — respx resolves later-registered routes first.
+    created_names: list[str] = []
+
+    def _spy(request):
+        body = json.loads(request.content.decode())
+        name = body.get("name", "test-group")
+        created_names.append(name)
+        return Response(200, json={"id": name, "name": name, "project_id": "p"})
+
+    _mock_create_study(study_id="PILOT_A")
+    respx.post(f"{PROLIFIC_BASE}/participant-groups/").mock(side_effect=_spy)
+    resp1 = client.post(
+        f"/api/admin/experiments/{exp1['id']}/prolific/pilot",
+        json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert resp1.status_code == 200, resp1.text
+
+    _mock_create_study(study_id="PILOT_B")
+    respx.post(f"{PROLIFIC_BASE}/participant-groups/").mock(side_effect=_spy)
+    resp2 = client.post(
+        f"/api/admin/experiments/{exp2['id']}/prolific/pilot",
+        json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert resp2.status_code == 200, resp2.text
+
+    # Expected group creations across both pilots: exp1's own, excluded's own
+    # (created on first use as an exclusion source), exp2's own. The excluded
+    # experiment's group must not be re-created for pilot 2.
+    assert created_names == [
+        _expected_group_id(exp1),
+        _expected_group_id(excluded),
+        _expected_group_id(exp2),
+    ]
+
+
+@respx.mock
+def test_prolific_round_edit_adds_exclusion(
+    client: TestClient,
+    enable_prolific,
+):
+    """Adding exclusions to an unpublished round should PATCH the study with
+    combined screener + participant-group filters, including the current
+    experiment's own group."""
+    excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    excluded = excluded_resp.json()
+
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    update_route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["excluded_experiment_ids"] == [excluded["id"]]
+
+    sent = json.loads(update_route.calls[0].request.content.decode())
+    assert set(_blocklist_values(sent["filters"])) == {
+        _expected_group_id(experiment),
+        _expected_group_id(excluded),
+    }
+
+
+@respx.mock
+def test_prolific_main_round_inherits_pilot_exclusions(
+    client: TestClient,
+    enable_prolific,
+):
+    excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    excluded = excluded_resp.json()
+
+    new_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    new = new_resp.json()
+
+    _mock_create_study(study_id="PILOT_INH")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{new['id']}/prolific/pilot",
+        json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    _mock_publish_study(study_id="PILOT_INH")
+    client.post(f"/api/admin/experiments/{new['id']}/prolific/rounds/1/publish")
+    _mock_close_study(study_id="PILOT_INH")
+    client.post(f"/api/admin/experiments/{new['id']}/prolific/rounds/1/close")
+
+    round_route = _mock_create_study(study_id="R1_INH")
+    round_resp = client.post(
+        f"/api/admin/experiments/{new['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert round_resp.status_code == 200, round_resp.text
+    sent = json.loads(round_route.calls[-1].request.content.decode())
+    assert set(_blocklist_values(sent["filters"])) == {
+        _expected_group_id(new),
+        _expected_group_id(excluded),
+    }
+    assert round_resp.json()["excluded_experiment_ids"] == [excluded["id"]]
+
+
+@respx.mock
+def test_prolific_pilot_blocks_own_group_by_default(
+    client: TestClient,
+    enable_prolific,
+):
+    """Even without any explicit exclusions, every round launch should include
+    the experiment's own group in the blocklist. Groups are dynamic, so this
+    is what keeps raters from one round out of every other round of the same
+    experiment."""
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    experiment = create_resp.json()
+
+    study_route = _mock_create_study(study_id="PILOT_OWN")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "screeners": []},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    sent = json.loads(study_route.calls[-1].request.content.decode())
+    assert _blocklist_values(sent["filters"]) == [_expected_group_id(experiment)]
+
+
+@respx.mock
+def test_prolific_pilot_dedupes_excluded_ids(
+    client: TestClient,
+    enable_prolific,
+):
+    """Duplicate IDs in `excluded_experiment_ids` should be collapsed at the
+    API boundary — the study payload must not repeat a group in its blocklist,
+    and the round response echoes the deduped list."""
+    excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    excluded = excluded_resp.json()
+
+    new_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    new = new_resp.json()
+
+    study_route = _mock_create_study(study_id="PILOT_DEDUP")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{new['id']}/prolific/pilot",
+        json={
+            **_pilot_payload(),
+            "excluded_experiment_ids": [excluded["id"], excluded["id"]],
+        },
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    assert pilot_resp.json()["excluded_experiment_ids"] == [excluded["id"]]
+    sent = json.loads(study_route.calls[-1].request.content.decode())
+    values = _blocklist_values(sent["filters"])
+    assert len(values) == len(set(values))
+
+
+@respx.mock
+def test_rater_start_session_adds_participant_to_group(
+    client: TestClient,
+    enable_prolific,
+):
+    """A non-preview rater starting a session should be POSTed to the
+    experiment's participant group so later experiments can blocklist them."""
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    experiment = create_resp.json()
+    _upload_questions(client, experiment["id"])
+
+    _mock_create_study(study_id="PILOT_ADD")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    expected_group = _expected_group_id(experiment)
+    add_route = respx.post(
+        f"{PROLIFIC_BASE}/participant-groups/{expected_group}/participants/"
+    ).mock(return_value=Response(200, json={"participant_ids": ["PID_R1"]}))
+
+    start_resp = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment["id"],
+            "PROLIFIC_PID": "PID_R1",
+            "STUDY_ID": "STUDY_ADD",
+            "SESSION_ID": "SESSION_R1",
+        },
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    assert add_route.called, "expected rater to be POSTed to the participant group"
+    body = json.loads(add_route.calls[-1].request.content.decode())
+    assert body == {"participant_ids": ["PID_R1"]}
+
+
+@respx.mock
+def test_rater_start_session_tolerates_prolific_add_failure(
+    client: TestClient,
+    enable_prolific,
+):
+    """Adding a rater to the participant group is best-effort — a failure from
+    Prolific must never block rater entry, and the rater must still get a
+    valid session token back."""
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    experiment = create_resp.json()
+    _upload_questions(client, experiment["id"])
+
+    _mock_create_study(study_id="PILOT_ADDFAIL")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    expected_group = _expected_group_id(experiment)
+    respx.post(f"{PROLIFIC_BASE}/participant-groups/{expected_group}/participants/").mock(
+        return_value=Response(400, json={"error": {"error_code": 140003}}),
+    )
+
+    start_resp = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment["id"],
+            "PROLIFIC_PID": "PID_R_BAD",
+            "STUDY_ID": "STUDY_ADDFAIL",
+            "SESSION_ID": "SESSION_R_BAD",
+        },
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    assert start_resp.json().get("rater_session_token")
+
+
+@respx.mock
+def test_rater_start_session_skips_group_add_for_preview(
+    client: TestClient,
+    enable_prolific,
+):
+    """Preview raters aren't real Prolific participants — the group-add call
+    would 400 with an unknown participant ID, so we skip it entirely."""
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    experiment = create_resp.json()
+    _upload_questions(client, experiment["id"])
+
+    _mock_create_study(study_id="PILOT_PREVIEW")
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json=_pilot_payload(),
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    expected_group = _expected_group_id(experiment)
+    add_route = respx.post(
+        f"{PROLIFIC_BASE}/participant-groups/{expected_group}/participants/"
+    ).mock(return_value=Response(200, json={"participant_ids": []}))
+
+    start_resp = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment["id"],
+            "PROLIFIC_PID": "PID_PREVIEW",
+            "STUDY_ID": "STUDY_PREVIEW",
+            "SESSION_ID": "SESSION_PREVIEW",
+            "preview": "true",
+        },
+    )
+    assert start_resp.status_code == 200, start_resp.text
+    assert not add_route.called, "preview raters should not be added to the group"

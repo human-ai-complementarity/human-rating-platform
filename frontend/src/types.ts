@@ -14,6 +14,7 @@ export interface Experiment {
   human_prompt_prefix: string | null;
   human_prompt_suffix: string | null;
   prolific_pool: string | null;
+  dataset_filenames: string[];
 }
 
 // Keys an upload may declare as dataset-level metadata (CSV `#META:` line or
@@ -209,6 +210,7 @@ export interface ExperimentRound {
   device_compatibility: string[];
   study_label: StudyLabel | null;
   screeners: Screener[];
+  excluded_experiment_ids: number[];
   created_at: string;
   prolific_study_url: string;
 }
@@ -221,6 +223,7 @@ export interface ExperimentRoundUpdate {
   device_compatibility?: string[];
   study_label?: StudyLabel;
   screeners?: Screener[];
+  excluded_experiment_ids?: number[];
 }
 
 export interface PilotStudyCreate {
@@ -231,6 +234,7 @@ export interface PilotStudyCreate {
   device_compatibility: string[];
   study_label: StudyLabel;
   screeners: Screener[];
+  excluded_experiment_ids: number[];
 }
 
 export interface RecommendationResponse {
