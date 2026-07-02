@@ -176,7 +176,7 @@ Sign in with a Clerk account whose email appears in `ADMIN_ALLOWLIST`. The admin
 make up          # start db + migrations + api (hot reload)
 make ps          # show service status
 make logs        # follow db/api logs
-make test        # characterization tests (real db + migrations)
+make test        # backend test suite (unit + e2e) in an isolated compose stack
 make fmt         # format backend with ruff
 make down        # stop stack
 ```
@@ -258,7 +258,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `APP__LOG_LEVEL` — log verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default: `INFO`). Logs are emitted as structured JSON with OpenTelemetry-compatible field names (`timestamp`, `severity`, `body`, `attributes`).
 - `DATABASE__URL` — Postgres connection string
 - `EXPORTS__STREAM_BATCH_SIZE` — CSV export chunking (memory/throughput tradeoff)
-- `TESTING__EXPORT_SEED_ROW_COUNT` — characterization test dataset volume
+- `TESTING__EXPORT_SEED_ROW_COUNT` — export-path e2e test dataset volume
 - `SEEDING__*` — local seed generation (`enabled`, `experiment_name`, `question_count`, etc.)
 - `PROLIFIC__API_TOKEN` — Prolific API token (optional; enables automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under. If unset, Prolific uses the API user's `current_project_id`, which can land studies in the wrong workspace on multi-workspace accounts. The project's workspace and currency are derived automatically.
@@ -284,7 +284,7 @@ Frontend env (`frontend/.env`):
 
 This project uses three complementary end-to-end testing layers:
 
-- `make test` runs the backend characterization suite against a real Postgres database with Alembic migrations applied. It exercises the API and service layer, including experiment creation, CSV uploads, rater sessions, analytics, exports, and Prolific study management with mocked Prolific HTTP responses.
+- `make test` runs the full backend test suite (`tests/unit` + `tests/e2e`) inside an isolated compose stack defined by `docker-compose.test.yml`. The stack has its own Postgres (no host port publish), so `make test` is safe to run alongside `make up`. Unit tests are pure Python; e2e tests apply Alembic migrations and exercise the API and service layer, including experiment creation, CSV uploads, rater sessions, analytics, exports, and Prolific study management with mocked Prolific HTTP responses.
 - `cd frontend && npm run test:e2e` runs Playwright browser smoke tests against the local frontend. These tests mock `/api` responses and verify key admin and rater flows in the UI.
 - A small number of Prolific-facing checks remain manual because they depend on an external platform, human participation, and spending real money.
 
@@ -387,7 +387,7 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 
 ### Deploy flow
 
-1. CI workflow (`✅ CI Checks`) runs lint + characterization tests.
+1. CI workflow (`✅ CI Checks`) runs lint + backend tests + frontend Playwright tests.
 2. Deploy workflow (`🚀 Deploy Render`) gates on CI success for the same SHA.
 3. Target resolution (`api`, `web`, `both`, `none`) is handled by `scripts/resolve_deploy_target.sh`.
 4. Deploy execution and polling is handled by `scripts/deploy.sh`.
