@@ -4,9 +4,9 @@ SHELL := /bin/sh
 
 COMPOSE ?= docker compose
 TEST_COMPOSE_PROJECT ?= human-rating-platform-test
-COMPOSE_TEST = $(COMPOSE) -p $(TEST_COMPOSE_PROJECT)
-TEST_PROFILE ?= test
-TEST_SERVICE ?= e2e
+TEST_COMPOSE_FILE ?= docker-compose.test.yml
+COMPOSE_TEST = $(COMPOSE) -f $(TEST_COMPOSE_FILE) -p $(TEST_COMPOSE_PROJECT)
+TEST_SERVICE ?= test
 KEEP_TEST_STACK ?= 0
 MIGRATION_NAME ?= schema_update
 MIGRATION_REVISION ?= -1
@@ -157,28 +157,28 @@ db.seed: ## Seed local dataset from backend/config.toml
 	$(call _ok,Seed command finished)
 
 ##@ Testing
-test: ## Run characterization tests with DB+migrations as dependencies
-	$(call _title,==> Running characterization tests)
-	$(call _info,Using docker compose profile: $(TEST_PROFILE))
+test: ## Run backend test suite in an isolated compose stack (safe alongside make up)
+	$(call _title,==> Running backend tests)
+	$(call _info,Using isolated compose file: $(TEST_COMPOSE_FILE))
 	$(call _info,Using isolated compose project: $(TEST_COMPOSE_PROJECT))
 	$(call _info,Preparing db)
 	@set +e; \
-	$(COMPOSE_TEST) --profile $(TEST_PROFILE) up -d db > /dev/null; \
-	until $(COMPOSE_TEST) --profile $(TEST_PROFILE) exec -T db pg_isready -U postgres -d human_rating_platform > /dev/null 2>&1; do sleep 1; done; \
+	$(COMPOSE_TEST) up -d db > /dev/null; \
+	until $(COMPOSE_TEST) exec -T db pg_isready -U postgres -d human_rating_platform > /dev/null 2>&1; do sleep 1; done; \
 	printf "$(C_INFO)::$(C_RESET) Applying migrations synchronously\n"; \
-	$(COMPOSE_TEST) --profile $(TEST_PROFILE) run --rm --no-deps migrate > /dev/null; \
+	$(COMPOSE_TEST) run --rm --no-deps migrate > /dev/null; \
 	printf "$(C_INFO)::$(C_RESET) Executing test service: $(TEST_SERVICE)\n"; \
-	$(COMPOSE_TEST) --profile $(TEST_PROFILE) run --rm --no-deps $(TEST_SERVICE); \
+	$(COMPOSE_TEST) run --rm --no-deps $(TEST_SERVICE); \
 	exit_code=$$?; \
 	if [ "$(KEEP_TEST_STACK)" != "1" ]; then \
-		$(COMPOSE_TEST) --profile $(TEST_PROFILE) down --remove-orphans > /dev/null; \
+		$(COMPOSE_TEST) down --remove-orphans > /dev/null; \
 	else \
 		printf "$(C_WARN)!!$(C_RESET) Keeping compose test stack up (KEEP_TEST_STACK=1)\n"; \
 	fi; \
 	if [ $$exit_code -eq 0 ]; then \
-		printf "$(C_OK)++$(C_RESET) Characterization tests passed\n"; \
+		printf "$(C_OK)++$(C_RESET) Tests passed\n"; \
 	else \
-		printf "$(C_ERR)xx$(C_RESET) Characterization tests failed (exit=$$exit_code)\n"; \
+		printf "$(C_ERR)xx$(C_RESET) Tests failed (exit=$$exit_code)\n"; \
 	fi; \
 	exit $$exit_code
 
