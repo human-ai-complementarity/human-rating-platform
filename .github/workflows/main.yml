@@ -76,8 +76,8 @@ jobs:
       - name: Yamllint
         run: uvx yamllint==1.38.0 .
 
-  test-characterization:
-    name: Characterization Tests (docker compose)
+  test-backend:
+    name: Backend Tests (docker compose)
     runs-on: ubuntu-latest
     env:
       ADMIN_AUTH_ENABLED: "false"
@@ -91,8 +91,8 @@ jobs:
           docker --version
           docker compose version
 
-      - name: Run characterization tests
-        id: characterization
+      - name: Run backend tests
+        id: backend
         continue-on-error: true
         env:
           NO_COLOR: "1"
@@ -100,25 +100,59 @@ jobs:
         run: |
           mkdir -p artifacts
           set -o pipefail
-          make test 2>&1 | tee artifacts/characterization-output.txt
+          make test 2>&1 | tee artifacts/backend-output.txt
 
       - name: Capture docker compose logs on failure
-        if: steps.characterization.outcome == 'failure'
+        if: steps.backend.outcome == 'failure'
         run: |
-          docker compose --profile test ps -a > artifacts/compose-ps.txt || true
-          docker compose --profile test logs --no-color db migrate e2e > artifacts/compose-logs.txt || true
+          docker compose -f docker-compose.test.yml -p human-rating-platform-test ps -a > artifacts/compose-ps.txt || true
+          docker compose -f docker-compose.test.yml -p human-rating-platform-test logs --no-color db migrate test > artifacts/compose-logs.txt || true
 
-      - name: Upload characterization artifacts on failure
-        if: steps.characterization.outcome == 'failure'
+      - name: Upload backend artifacts on failure
+        if: steps.backend.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: characterization-failure-artifacts
+          name: backend-failure-artifacts
           path: artifacts/
 
       - name: Tear down test stack
         if: always()
-        run: docker compose --profile test down --remove-orphans || true
+        run: docker compose -f docker-compose.test.yml -p human-rating-platform-test down --remove-orphans || true
 
-      - name: Fail if characterization tests failed
-        if: steps.characterization.outcome == 'failure'
+      - name: Fail if backend tests failed
+        if: steps.backend.outcome == 'failure'
         run: exit 1
+
+  test-frontend:
+    name: Frontend Tests (playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        working-directory: frontend
+        run: npm run test:e2e
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: frontend/test-results/
+          if-no-files-found: error

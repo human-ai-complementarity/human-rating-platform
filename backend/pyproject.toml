@@ -25,8 +25,12 @@ dependencies = [
 [dependency-groups]
 dev = [
   "pytest==9.0.2",
+  "pytest-asyncio==1.4.0",
   "respx>=0.22.0",
 ]
 
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
