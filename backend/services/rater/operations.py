@@ -19,7 +19,7 @@ from schemas import (
 )
 from services.admin.prolific import ProlificAPIError, add_participant_to_group
 from services.assistance import get_rater_instructions
-from services.participant_groups import ensure_participant_group
+from services.participant_groups import ensure_participant_group_and_commit
 from .mappers import (
     build_question_response,
     build_rater_start_response,
@@ -175,7 +175,7 @@ async def start_session(
     # skip them. Best-effort: never block rater entry on a Prolific failure.
     if not is_preview and settings.prolific.enabled:
         try:
-            group_id = await ensure_participant_group(experiment, db)
+            group_id = await ensure_participant_group_and_commit(experiment, db)
             if group_id:
                 await add_participant_to_group(
                     settings=settings.prolific,

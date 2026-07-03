@@ -45,20 +45,34 @@ def participant_group_name(experiment: Experiment) -> str:
     return "-".join(parts)
 
 
-async def ensure_participant_group(
+async def ensure_participant_group_and_commit(
     experiment: Experiment,
     db: AsyncSession,
 ) -> str | None:
-    """Return the Prolific participant group ID for `experiment`, creating it if
-    needed and persisting the ID.
+    """Return the Prolific participant group ID for `experiment`, creating it
+    if needed and persisting the ID via `db.commit()`.
 
     Returns None when Prolific is disabled — callers treat that as "no group,
-    proceed without exclusion."
+    proceed without exclusion." Name suffixed with `_and_commit` because
+    callers must not rely on pending, uncommitted writes surviving this call.
+    Existing callers either commit their own writes first (`start_session`)
+    or only read before invoking (`_build_round_blocklist_group_ids`).
 
-    Warning: on the create path this issues `db.commit()` to persist the new
-    group ID. Callers must not rely on pending, uncommitted writes surviving
-    this call. Existing callers either commit their own writes first
-    (`start_session`) or only read before invoking (`_build_round_blocklist_group_ids`).
+    Concurrency: the Prolific create call is made *before* acquiring the
+    Experiment row lock. Two concurrent lazy-creates on the same experiment
+    will both call Prolific and get separate group IDs, then serialize on the
+    row lock — the first writes its ID, the second sees the winner's value
+    and returns it, leaving its own group orphaned (empty, harmless). This
+    avoids holding a row lock across an unbounded API call.
+
+    The SELECT ... FOR UPDATE below uses `populate_existing=True` because the
+    caller already loaded `experiment` earlier in this session, putting it in
+    the identity map with a cached `prolific_participant_group_id=None`.
+    Without `populate_existing`, SQLAlchemy would return the identity-mapped
+    instance and discard the freshly-fetched row values — the "did the other
+    side win?" check would keep reading the cached None, and the second writer
+    would silently overwrite the winner's group ID (leaving the winner's
+    already-added raters stranded in an orphaned group).
     """
     if experiment.prolific_participant_group_id:
         return experiment.prolific_participant_group_id
@@ -72,21 +86,22 @@ async def ensure_participant_group(
         # until an admin sets PROLIFIC__PROJECT_ID.
         return None
 
-    # Serialize the lazy-create path with a row lock. Without it, two
-    # concurrent start_session calls on a group-less experiment can each
-    # create a Prolific group, and the losing DB commit leaves an orphan
-    # group on Prolific with a rater silently attached to it. Lock is
-    # released on the commit below (or on exception).
-    locked = (
-        await db.execute(select(Experiment).where(Experiment.id == experiment.id).with_for_update())
-    ).scalar_one()
-    if locked.prolific_participant_group_id:
-        return locked.prolific_participant_group_id
-
     group = await create_participant_group(
         settings=settings.prolific,
         name=participant_group_name(experiment),
     )
+
+    # Serialize the DB write with a short row lock. Any concurrent caller that
+    # also created a Prolific group will now see this row's ID and return it,
+    # leaving its own group orphaned.
+    locked = (
+        await db.execute(
+            select(Experiment).where(Experiment.id == experiment.id).with_for_update(),
+            execution_options={"populate_existing": True},
+        )
+    ).scalar_one()
+    if locked.prolific_participant_group_id:
+        return locked.prolific_participant_group_id
     locked.prolific_participant_group_id = group["id"]
     await db.commit()
     return group["id"]
