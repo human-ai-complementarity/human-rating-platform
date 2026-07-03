@@ -3,7 +3,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from models import ProlificStudyStatus, StepType
+from models import ExperimentStatus, ProlificStudyStatus, StepType
 
 
 # Allowed values for Prolific's `study_labels` field. The Prolific API also
@@ -157,6 +157,7 @@ class ExperimentResponse(BaseModel):
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
+    status: ExperimentStatus = ExperimentStatus.DRAFT
     # Filenames of every Upload attached to this experiment. Used client-side
     # so admins can find an experiment by its dataset filename when picking
     # experiments to exclude from a new round.

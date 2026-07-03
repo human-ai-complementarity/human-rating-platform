@@ -168,6 +168,14 @@ async def delete_experiment(
     return await admin_service.delete_experiment(experiment_id=experiment_id, db=db)
 
 
+@secure_router.post("/experiments/{experiment_id}/finish", response_model=ExperimentResponse)
+async def finish_experiment(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.finish_experiment(experiment_id=experiment_id, db=db)
+
+
 @secure_router.get("/experiments/{experiment_id}/stats")
 async def get_experiment_stats(
     experiment_id: int,

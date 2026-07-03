@@ -43,6 +43,18 @@ def _create_experiment(client: TestClient, *, completion_url: str | None = None)
     return response.json()
 
 
+def _mark_experiment_status(sync_engine, experiment_id: int, status: str) -> None:
+    """Force an experiment's `status` column for tests that need to bypass
+    the natural lifecycle (e.g. setting up a FINISHED experiment to reference
+    as an exclusion target without running the full pilot -> launch -> close
+    -> finish sequence)."""
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET status = :status WHERE id = :id"),
+            {"status": status, "id": experiment_id},
+        )
+
+
 def _upload_questions(client: TestClient, experiment_id: int) -> None:
     csv_data = (
         "question_id,question_text,gt_answer,options,question_type\n"
@@ -2364,6 +2376,7 @@ def _blocklist_values(filters: list[dict]) -> list[str]:
 def test_prolific_pilot_with_exclusion_creates_group_and_sends_blocklist(
     client: TestClient,
     enable_prolific,
+    sync_engine,
 ):
     """Launching a pilot with `excluded_experiment_ids` should create groups
     for both the current experiment and the excluded one, and include both
@@ -2371,6 +2384,7 @@ def test_prolific_pilot_with_exclusion_creates_group_and_sends_blocklist(
     excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     assert excluded_resp.status_code == 200, excluded_resp.text
     excluded = excluded_resp.json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
 
     new_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     assert new_resp.status_code == 200, new_resp.text
@@ -2397,12 +2411,14 @@ def test_prolific_pilot_with_exclusion_creates_group_and_sends_blocklist(
 def test_prolific_pilot_reuses_existing_group_no_duplicate_creation(
     client: TestClient,
     enable_prolific,
+    sync_engine,
 ):
     """Second pilot referencing the same excluded experiment should not create
     a new participant group for that experiment — its group ID is persisted on
     first use and reused thereafter."""
     excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     excluded = excluded_resp.json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
 
     exp1_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     exp1 = exp1_resp.json()
@@ -2451,12 +2467,14 @@ def test_prolific_pilot_reuses_existing_group_no_duplicate_creation(
 def test_prolific_round_edit_adds_exclusion(
     client: TestClient,
     enable_prolific,
+    sync_engine,
 ):
     """Adding exclusions to an unpublished round should PATCH the study with
     combined screener + participant-group filters, including the current
     experiment's own group."""
     excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     excluded = excluded_resp.json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
 
     experiment, _pilot = _create_prolific_experiment(client)
 
@@ -2479,9 +2497,11 @@ def test_prolific_round_edit_adds_exclusion(
 def test_prolific_main_round_inherits_pilot_exclusions(
     client: TestClient,
     enable_prolific,
+    sync_engine,
 ):
     excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     excluded = excluded_resp.json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
 
     new_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     new = new_resp.json()
@@ -2537,12 +2557,14 @@ def test_prolific_pilot_blocks_own_group_by_default(
 def test_prolific_pilot_dedupes_excluded_ids(
     client: TestClient,
     enable_prolific,
+    sync_engine,
 ):
     """Duplicate IDs in `excluded_experiment_ids` should be collapsed at the
     API boundary — the study payload must not repeat a group in its blocklist,
     and the round response echoes the deduped list."""
     excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     excluded = excluded_resp.json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
 
     new_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     new = new_resp.json()
@@ -2672,3 +2694,281 @@ def test_rater_start_session_skips_group_add_for_preview(
     )
     assert start_resp.status_code == 200, start_resp.text
     assert not add_route.called, "preview raters should not be added to the group"
+
+
+# ── Experiment lifecycle state machine ───────────────────────────────────────
+# DRAFT -> LAUNCH (auto, on first main round) -> FINISHED (manual). Delete
+# stays legal in every state. Once past DRAFT, experiment-level config is
+# locked; exclusion targets must be FINISHED (with grandfathering for IDs
+# already on a round when its target's status changed).
+
+
+def test_new_experiment_starts_in_draft(client: TestClient):
+    experiment = _create_experiment(client)
+    assert experiment["status"] == "DRAFT"
+
+
+@respx.mock
+def test_experiment_transitions_to_launch_on_first_main_round(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, _pilot = _create_prolific_experiment(client)
+    stored = next(
+        item
+        for item in client.get("/api/admin/experiments").json()
+        if item["id"] == experiment["id"]
+    )
+    # Pilot alone keeps the experiment in DRAFT.
+    assert stored["status"] == "DRAFT"
+
+    _mock_publish_study()
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
+    _mock_close_study()
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
+
+    _mock_create_study(study_id="R1")
+    round_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert round_resp.status_code == 200, round_resp.text
+
+    stored = next(
+        item
+        for item in client.get("/api/admin/experiments").json()
+        if item["id"] == experiment["id"]
+    )
+    assert stored["status"] == "LAUNCH"
+
+
+def test_update_experiment_locked_after_launch(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "top_n", "assistance_params": {"n": 4}},
+    )
+    assert resp.status_code == 400
+    assert "assistance_method" in resp.json()["detail"]
+
+
+def test_update_experiment_allows_unchanged_locked_fields(
+    client: TestClient,
+    sync_engine,
+):
+    """The frontend often re-sends unchanged locked fields alongside the one
+    field it's editing. Only actual value changes should trip the lock."""
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={
+            "assistance_method": experiment["assistance_method"],
+            "assistance_params": experiment["assistance_params"],
+            "internal_name": "renamed",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["internal_name"] == "renamed"
+
+
+def test_upload_questions_locked_after_launch(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    csv_data = "question_id,question_text\nq1,Is this ok?"
+    resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("questions.csv", csv_data, "text/csv")},
+    )
+    assert resp.status_code == 400
+    assert "LAUNCH" in resp.json()["detail"]
+
+
+def test_delete_allowed_in_every_state(client: TestClient, sync_engine):
+    for status in ("DRAFT", "LAUNCH", "FINISHED"):
+        experiment = _create_experiment(client)
+        _mark_experiment_status(sync_engine, experiment["id"], status)
+        resp = client.delete(f"/api/admin/experiments/{experiment['id']}")
+        assert resp.status_code == 200, f"delete failed in {status}: {resp.text}"
+
+
+@respx.mock
+def test_finish_experiment_requires_all_rounds_terminal(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    # LAUNCH the experiment by hand — we don't need a real round for the
+    # finish-precondition check itself, just the state transition.
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    # Pilot is still UNPUBLISHED → non-terminal → cannot finish.
+    resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert resp.status_code == 400
+    assert "Non-terminal" in resp.json()["detail"]
+
+    _mock_publish_study()
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish")
+    _mock_close_study()
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/close")
+
+    resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "FINISHED"
+
+
+def test_finish_requires_launch_state(client: TestClient):
+    experiment = _create_experiment(client)  # still DRAFT
+    resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert resp.status_code == 400
+
+
+def test_finish_is_terminal(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "FINISHED")
+    resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert resp.status_code == 400
+    assert "already finished" in resp.json()["detail"].lower()
+
+
+@respx.mock
+def test_pilot_exclusion_rejects_non_finished_target(
+    client: TestClient,
+    enable_prolific,
+):
+    """Fresh DRAFT target must be rejected as an exclusion source; only
+    FINISHED experiments are valid pickers on new writes."""
+    draft_target = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+
+    new = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+    _mock_create_study(study_id="PILOT_REJ")
+    resp = client.post(
+        f"/api/admin/experiments/{new['id']}/prolific/pilot",
+        json={**_pilot_payload(), "excluded_experiment_ids": [draft_target["id"]]},
+    )
+    assert resp.status_code == 400
+    assert "finished" in resp.json()["detail"].lower()
+
+
+@respx.mock
+def test_round_update_grandfathers_existing_exclusion(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    """A target that was FINISHED when added to a round stays valid even if
+    its status later changes — grandfathering keeps unrelated edits from
+    tripping on stale IDs."""
+    target = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+    _mark_experiment_status(sync_engine, target["id"], "FINISHED")
+
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    _mock_update_study()
+    add_resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [target["id"]]},
+    )
+    assert add_resp.status_code == 200, add_resp.text
+
+    # Target regresses out of FINISHED — a re-write of the same list must
+    # still succeed for the grandfathered ID.
+    _mark_experiment_status(sync_engine, target["id"], "DRAFT")
+    keep_resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [target["id"]]},
+    )
+    assert keep_resp.status_code == 200, keep_resp.text
+
+
+@respx.mock
+def test_round_update_rejects_newly_added_non_finished_target(
+    client: TestClient,
+    enable_prolific,
+):
+    draft_target = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [draft_target["id"]]},
+    )
+    assert resp.status_code == 400
+    assert "finished" in resp.json()["detail"].lower()
+
+
+@respx.mock
+def test_cannot_launch_new_round_after_finished(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    experiment, _pilot = _create_prolific_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "FINISHED")
+
+    resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert resp.status_code == 400
+    assert "finished" in resp.json()["detail"].lower()
+
+
+@respx.mock
+def test_finish_end_to_end_from_draft(
+    client: TestClient,
+    enable_prolific,
+):
+    """Full lifecycle without `_mark_experiment_status`: pilot → publish →
+    close → main round (natural DRAFT to LAUNCH) → publish → close → finish.
+    Guards the transition invariants that the shortcut bypasses."""
+    experiment, pilot = _create_prolific_experiment(client)
+
+    _mock_publish_study()
+    publish_pilot = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish"
+    )
+    assert publish_pilot.status_code == 200, publish_pilot.text
+    _mock_close_study()
+    close_pilot = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/close"
+    )
+    assert close_pilot.status_code == 200, close_pilot.text
+
+    _mock_create_study(study_id="MAIN")
+    main_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    )
+    assert main_resp.status_code == 200, main_resp.text
+    main_round = main_resp.json()
+
+    stored = next(
+        item
+        for item in client.get("/api/admin/experiments").json()
+        if item["id"] == experiment["id"]
+    )
+    assert stored["status"] == "LAUNCH"
+
+    # Main round still UNPUBLISHED — finish must reject.
+    early_finish = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert early_finish.status_code == 400
+    assert "Non-terminal" in early_finish.json()["detail"]
+
+    _mock_publish_study(study_id="MAIN")
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{main_round['id']}/publish"
+    )
+    _mock_close_study(study_id="MAIN")
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{main_round['id']}/close"
+    )
+
+    finish_resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert finish_resp.status_code == 200, finish_resp.text
+    assert finish_resp.json()["status"] == "FINISHED"

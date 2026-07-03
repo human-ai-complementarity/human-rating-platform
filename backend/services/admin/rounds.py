@@ -13,7 +13,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
-from models import Experiment, ExperimentRound, ProlificStudyStatus, Question
+from models import (
+    ROUND_TERMINAL_STATUSES,
+    Experiment,
+    ExperimentRound,
+    ExperimentStatus,
+    ProlificStudyStatus,
+    Question,
+)
 from schemas import (
     ExperimentRoundCreate,
     ExperimentRoundResponse,
@@ -42,6 +49,7 @@ from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
+from .status import validate_new_exclusion_targets
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +95,6 @@ def _extract_prolific_message(body: str) -> str | None:
 
 SESSION_DURATION_SECONDS = 3600  # 1 hour per Prolific place
 ROUND_BUFFER_FACTOR = 0.8
-ROUND_TERMINAL_STATUSES = {
-    ProlificStudyStatus.AWAITING_REVIEW,
-    ProlificStudyStatus.COMPLETED,
-}
 ROUND_SYNC_STATUSES = {
     ProlificStudyStatus.UNPUBLISHED,
     ProlificStudyStatus.PUBLISHING,
@@ -477,6 +481,14 @@ async def run_pilot_study(
         )
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
+    # Pilot creation is the first write for this experiment's exclusion list —
+    # every listed target is "new", so all must be FINISHED. Grandfathering
+    # only kicks in on subsequent edits when IDs were already present.
+    await validate_new_exclusion_targets(
+        excluded_experiment_ids,
+        previously_allowed_ids=[],
+        db=db,
+    )
     blocklist_group_ids = await _build_round_blocklist_group_ids(
         experiment, excluded_experiment_ids, db, strict=True
     )
@@ -567,6 +579,11 @@ async def run_experiment_round(
         raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    if experiment.status == ExperimentStatus.FINISHED:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot launch new rounds: experiment is finished.",
+        )
     rounds = await _list_round_models(experiment_id, db)
     if not rounds:
         raise HTTPException(
@@ -651,6 +668,12 @@ async def run_experiment_round(
         excluded_experiment_ids=pilot_round.excluded_experiment_ids,
         places_requested=payload.places,
     )
+    # First main round transitions the experiment into LAUNCH and freezes its
+    # config. Set here so the status flip and the round insert land in one
+    # commit — a failed insert rolls the status back too. Idempotent: LAUNCH
+    # stays LAUNCH on subsequent rounds.
+    if experiment.status == ExperimentStatus.DRAFT:
+        experiment.status = ExperimentStatus.LAUNCH
     await _commit_round_creation(
         db,
         round_,
@@ -799,11 +822,22 @@ async def update_experiment_round(
             if payload.screeners is not None
             else _parse_screeners(round_.screeners)
         )
+        previously_allowed_ids = _parse_excluded_experiment_ids(round_.excluded_experiment_ids)
         excluded_ids = (
             list(payload.excluded_experiment_ids)
             if payload.excluded_experiment_ids is not None
-            else _parse_excluded_experiment_ids(round_.excluded_experiment_ids)
+            else previously_allowed_ids
         )
+        # New targets on this write must be FINISHED. IDs already present on
+        # this round are grandfathered: they were legal when set and the target
+        # experiment's later state change shouldn't retroactively invalidate
+        # them.
+        if payload.excluded_experiment_ids is not None:
+            await validate_new_exclusion_targets(
+                excluded_ids,
+                previously_allowed_ids=previously_allowed_ids,
+                db=db,
+            )
         # Strict only when the admin is explicitly setting the list — an
         # inherited-and-stale ID from an earlier round shouldn't block an
         # unrelated field edit (reward, screeners, etc.).

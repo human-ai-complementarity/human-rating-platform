@@ -1,3 +1,5 @@
+export type ExperimentStatus = 'DRAFT' | 'LAUNCH' | 'FINISHED';
+
 export interface Experiment {
   id: number;
   name: string;
@@ -14,6 +16,7 @@ export interface Experiment {
   human_prompt_prefix: string | null;
   human_prompt_suffix: string | null;
   prolific_pool: string | null;
+  status: ExperimentStatus;
   dataset_filenames: string[];
 }
 

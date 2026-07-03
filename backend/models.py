@@ -39,6 +39,25 @@ class ProlificStudyStatus(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+ROUND_TERMINAL_STATUSES = frozenset(
+    {ProlificStudyStatus.AWAITING_REVIEW, ProlificStudyStatus.COMPLETED}
+)
+
+
+class ExperimentStatus(str, Enum):
+    """Experiment lifecycle states.
+
+    DRAFT     — freshly created or piloting; all config editable.
+    LAUNCH    — first main round created; experiment-level config is frozen.
+    FINISHED  — terminal (no more rounds); becomes selectable as an exclusion
+                source for other experiments.
+    """
+
+    DRAFT = "DRAFT"
+    LAUNCH = "LAUNCH"
+    FINISHED = "FINISHED"
+
+
 class StepType(str, Enum):
     """Assistance interaction step types."""
 
@@ -99,6 +118,14 @@ class Experiment(SQLModel, table=True):
     prolific_participant_group_id: Optional[str] = Field(
         default=None,
         sa_column=Column(String(64), nullable=True),
+    )
+    status: ExperimentStatus = Field(
+        default=ExperimentStatus.DRAFT,
+        sa_column=Column(
+            String(16),
+            nullable=False,
+            server_default=text("'DRAFT'"),
+        ),
     )
 
 

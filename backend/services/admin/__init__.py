@@ -4,6 +4,7 @@ from .analytics import get_experiment_analytics
 from .experiments import (
     create_experiment,
     delete_experiment,
+    finish_experiment,
     get_experiment_stats,
     list_experiments,
     update_experiment,
@@ -25,6 +26,7 @@ __all__ = [
     "calculate_recommendation",
     "create_experiment",
     "delete_experiment",
+    "finish_experiment",
     "get_experiment_analytics",
     "get_experiment_stats",
     "list_experiments",

@@ -62,6 +62,7 @@ const routes = {
   admin: {
     experiments: '/admin/experiments',
     experiment: (id: number) => `/admin/experiments/${id}`,
+    finishExperiment: (id: number) => `/admin/experiments/${id}/finish`,
     upload: (id: number) => `/admin/experiments/${id}/upload`,
     uploads: (id: number) => `/admin/experiments/${id}/uploads`,
     stats: (id: number) => `/admin/experiments/${id}/stats`,
@@ -356,6 +357,12 @@ export const api = {
   async deleteExperiment(experimentId: number): Promise<MessageResponse> {
     return requestJson<MessageResponse>(routes.admin.experiment(experimentId), {
       method: 'DELETE',
+    });
+  },
+
+  async finishExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.finishExperiment(experimentId), {
+      method: 'POST',
     });
   },
 

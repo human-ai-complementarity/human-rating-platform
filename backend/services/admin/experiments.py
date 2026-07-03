@@ -8,11 +8,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
-from models import Experiment, ExperimentRound, Question, Rating, Rater, Upload
+from models import Experiment, ExperimentRound, ExperimentStatus, Question, Rating, Rater, Upload
 from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .prolific import delete_study
+from .status import assert_can_finish, is_locked
 from services.assistance.registry import get_method
 from services.queries import parent_question_ids_subquery
 from .queries import (
@@ -123,6 +124,47 @@ async def list_experiments(
     ]
 
 
+_LOCKED_META_FIELDS = (
+    "description",
+    "system_prompt",
+    "human_prompt_prefix",
+    "human_prompt_suffix",
+    "prolific_pool",
+)
+
+
+def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpdate) -> list[str]:
+    """Names of locked-experiment fields whose payload value would change the row.
+
+    Callers use this to reject a PATCH that mutates a locked field once the
+    experiment is past DRAFT. Fields that match the current value are treated as
+    no-ops — the frontend commonly re-sends unchanged fields alongside the one
+    edit it wants (e.g. dataset-meta save also re-sends assistance_method), and
+    those pass-through sends shouldn't spuriously trip the lock.
+    """
+    changes: list[str] = []
+    if payload.assistance_method != experiment.assistance_method:
+        changes.append("assistance_method")
+    # `assistance_params is None` is "leave unchanged" in the update path
+    # (mirrors the meta-field loop below), so treat it as a no-op here too —
+    # otherwise a PATCH that omits the field trips the lock on any experiment
+    # that has params set.
+    if payload.assistance_params is not None:
+        current_params = (
+            json.loads(experiment.assistance_params) if experiment.assistance_params else None
+        )
+        if payload.assistance_params != current_params:
+            changes.append("assistance_params")
+    for field_name in _LOCKED_META_FIELDS:
+        proposed = getattr(payload, field_name)
+        if proposed is None:
+            continue
+        normalized = proposed.strip() or None
+        if normalized != getattr(experiment, field_name):
+            changes.append(field_name)
+    return changes
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -134,6 +176,19 @@ async def update_experiment(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
+
+    if is_locked(experiment):
+        locked_changes = _collect_locked_field_changes(experiment, payload)
+        if locked_changes:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot edit {', '.join(locked_changes)}: experiment is "
+                    f"{experiment.status}. Config is locked once the first "
+                    "main round is launched."
+                ),
+            )
+
     experiment.assistance_method = payload.assistance_method
 
     if payload.assistance_params is not None:
@@ -143,13 +198,7 @@ async def update_experiment(
     # For each dataset-meta field, None means "leave unchanged"; an explicit
     # empty string clears the field. This keeps PATCHy edits straightforward
     # from the admin UI (only send what the user touched).
-    for field_name in (
-        "description",
-        "system_prompt",
-        "human_prompt_prefix",
-        "human_prompt_suffix",
-        "prolific_pool",
-    ):
+    for field_name in _LOCKED_META_FIELDS:
         value = getattr(payload, field_name)
         if value is None:
             continue
@@ -158,6 +207,29 @@ async def update_experiment(
 
     await db.commit()
     await db.refresh(experiment)
+
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
+    return build_experiment_response(
+        experiment, question_count=question_count, rating_count=rating_count
+    )
+
+
+async def finish_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    await assert_can_finish(experiment, db)
+
+    experiment.status = ExperimentStatus.FINISHED
+    await db.commit()
+    await db.refresh(experiment)
+
+    logger.info(
+        "Experiment marked finished",
+        extra={"attributes": {"experiment_id": experiment_id}},
+    )
 
     question_count = await fetch_total_questions_for_experiment(experiment_id, db)
     rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
