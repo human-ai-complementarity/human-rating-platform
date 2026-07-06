@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 import logging
 
+import openai
+
 from config import get_settings
 from models import Question
 
@@ -78,28 +80,32 @@ class HumanAsAToolMethod(AssistanceMethod):
             question_text = question.question_text
         options = question.options or ""
 
-        result = await self._decomposer.start(
-            question_text,
-            options,
-            max_subtasks,
-            model,
-            experiment_system_prompt=experiment_system_prompt,
-        )
-
-        if result.done:
-            return InteractionStep(
-                type=StepType.COMPLETE,
-                payload={
-                    "history": [],
-                    "synthesis": {
-                        "answer": result.synthesis.get("answer", ""),
-                        "reasoning": result.synthesis.get("reasoning", ""),
-                    },
-                },
-                is_terminal=True,
+        try:
+            result = await self._decomposer.start(
+                question_text,
+                options,
+                max_subtasks,
+                model,
+                experiment_system_prompt=experiment_system_prompt,
             )
 
-        subtasks = await self._score_subtasks(question_text, result.subtasks, params)
+            if result.done:
+                return InteractionStep(
+                    type=StepType.COMPLETE,
+                    payload={
+                        "history": [],
+                        "synthesis": {
+                            "answer": result.synthesis.get("answer", ""),
+                            "reasoning": result.synthesis.get("reasoning", ""),
+                        },
+                    },
+                    is_terminal=True,
+                )
+
+            subtasks = await self._score_subtasks(question_text, result.subtasks, params)
+        except (RuntimeError, ValueError, openai.OpenAIError):
+            logger.exception("human_as_a_tool start() failed; returning no-assistance step")
+            return InteractionStep(type=StepType.NONE, is_terminal=True)
 
         return InteractionStep(
             type=StepType.ASK_INPUT,
@@ -157,30 +163,34 @@ class HumanAsAToolMethod(AssistanceMethod):
             {"subtasks": state.get("subtasks", []), "answers": answers},
         ]
 
-        result = await self._decomposer.advance(
-            question_text,
-            options,
-            history,
-            iteration=iteration,
-            max_rounds=max_rounds,
-            model=model,
-            experiment_system_prompt=experiment_system_prompt,
-        )
-
-        if result.done:
-            return InteractionStep(
-                type=StepType.COMPLETE,
-                payload={
-                    "history": history,
-                    "synthesis": {
-                        "answer": result.synthesis.get("answer", ""),
-                        "reasoning": result.synthesis.get("reasoning", ""),
-                    },
-                },
-                is_terminal=True,
+        try:
+            result = await self._decomposer.advance(
+                question_text,
+                options,
+                history,
+                iteration=iteration,
+                max_rounds=max_rounds,
+                model=model,
+                experiment_system_prompt=experiment_system_prompt,
             )
 
-        subtasks = await self._score_subtasks(question_text, result.subtasks, params)
+            if result.done:
+                return InteractionStep(
+                    type=StepType.COMPLETE,
+                    payload={
+                        "history": history,
+                        "synthesis": {
+                            "answer": result.synthesis.get("answer", ""),
+                            "reasoning": result.synthesis.get("reasoning", ""),
+                        },
+                    },
+                    is_terminal=True,
+                )
+
+            subtasks = await self._score_subtasks(question_text, result.subtasks, params)
+        except (RuntimeError, ValueError, openai.OpenAIError):
+            logger.exception("human_as_a_tool advance() failed; returning no-assistance step")
+            return InteractionStep(type=StepType.NONE, is_terminal=True)
 
         return InteractionStep(
             type=StepType.ASK_INPUT,
