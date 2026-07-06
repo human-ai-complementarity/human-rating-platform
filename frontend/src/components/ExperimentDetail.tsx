@@ -42,7 +42,7 @@ interface ExperimentDetailProps {
   allExperiments: Experiment[];
   onBack: () => void;
   onDeleted: () => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<unknown>;
 }
 
 // Prolific's API stores reward in the minor unit of the workspace currency.
@@ -327,21 +327,16 @@ function ExperimentDetail({
     screeners: ['ai_taskers', 'fact_checkers', 'approval_rate'],
     excluded_experiment_ids: [],
   });
-  // If the experiment's dataset-level description arrives after mount (e.g. via
-  // an upload populating dataset_meta.description), seed the pilot form with it so
-  // the admin doesn't have to retype. Only pre-fills while the form is blank;
-  // edits the admin has typed are preserved.
-  const pilotDescriptionInitedRef = useRef(Boolean(experiment.description));
+  // Keep the pilot description in sync with the experiment's dataset-level
+  // description while the admin hasn't typed their own version. Set true on
+  // any admin edit to the pilot description field; unset on a successful pilot
+  // launch (the form is hidden after that anyway, but the reset lets a future
+  // re-open pick up prop changes again).
+  const pilotDescriptionDirtyRef = useRef(false);
   useEffect(() => {
-    if (
-      !pilotDescriptionInitedRef.current
-      && experiment.description
-      && !pilotForm.description
-    ) {
-      pilotDescriptionInitedRef.current = true;
-      setPilotForm((prev) => ({ ...prev, description: experiment.description ?? '' }));
-    }
-  }, [experiment.description, pilotForm.description]);
+    if (pilotDescriptionDirtyRef.current) return;
+    setPilotForm((prev) => ({ ...prev, description: experiment.description ?? '' }));
+  }, [experiment.description]);
   const [pilotRewardInput, setPilotRewardInput] = useState<string>('9.00');
   // Re-format the pilot default once when the workspace currency arrives,
   // so a JPY workspace sees "900" (≈¥900) instead of "9.00" (≈¥9). Guarded
@@ -364,6 +359,19 @@ function ExperimentDetail({
   const [confidenceMethod, setConfidenceMethod] = useState<string>(
     (experiment.assistance_params?.confidence_method as string) ?? 'self_report'
   );
+
+  // Resync toggles when the experiment prop changes. Without this the useState
+  // initializers only run at mount, so any refresh path that keeps the component
+  // mounted (e.g. the CSV upload flow, saveAssistanceMethod's own refresh) would
+  // let local state drift from the server-side assistance_method.
+  useEffect(() => {
+    setHumanAsATool(experiment.assistance_method === 'human_as_a_tool');
+    setTopNEnabled(experiment.assistance_method === 'top_n');
+    setTopNValue(Number(experiment.assistance_params?.n ?? 3));
+    setConfidenceMethod(
+      (experiment.assistance_params?.confidence_method as string) ?? 'self_report'
+    );
+  }, [experiment.assistance_method, experiment.assistance_params]);
 
   // Dataset metadata edits live in local form state and are committed via Save.
   // Stored as strings (not nullable) so React can keep them controlled; converted
@@ -437,6 +445,12 @@ function ExperimentDetail({
     });
     setTopNEnabled(method === 'top_n');
     setHumanAsATool(method === 'human_as_a_tool');
+    // Refresh so the `experiment` prop reflects the new assistance state before
+    // any follow-up handler runs. handleSaveMeta re-sends
+    // `experiment.assistance_method` alongside its own fields; without an
+    // awaited refresh, a Save Metadata click right after a toggle would send
+    // the pre-toggle value and reset the server.
+    await onRefresh();
   };
 
   const handleTopNToggle = async () => {
@@ -583,10 +597,12 @@ function ExperimentDetail({
         );
       }
       setSuccess(parts.join(' '));
+      setTimeout(() => setSuccess(null), 3000);
       setUploadFile(null);
       (e.target as HTMLFormElement).reset();
       await loadStats();
       await loadUploads();
+      if (prolificEnabled === true) await loadRecommendation();
       onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -724,6 +740,7 @@ function ExperimentDetail({
       });
       setSuccess('Pilot draft created on Prolific. Publish it when ready.');
       setTimeout(() => setSuccess(null), 4000);
+      pilotDescriptionDirtyRef.current = false;
       onRefresh();
       await loadRounds();
       await loadRecommendation();
@@ -1570,7 +1587,10 @@ function ExperimentDetail({
                         id="pilot-description"
                         data-testid="pilot-description-input"
                         value={pilotForm.description}
-                        onChange={(e) => setPilotForm({ ...pilotForm, description: e.target.value })}
+                        onChange={(e) => {
+                          pilotDescriptionDirtyRef.current = true;
+                          setPilotForm({ ...pilotForm, description: e.target.value });
+                        }}
                         placeholder={"Describe the task for Prolific participants...\n\nMarkdown is supported: # heading, ## subheading, **bold**, *italic*, ~~strike~~, -/1. lists. Blank lines separate paragraphs."}
                         required
                         style={{ ...styles.input, minHeight: '120px', resize: 'vertical' as const, fontFamily: 'inherit' }}
