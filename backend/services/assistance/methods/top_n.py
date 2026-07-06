@@ -16,6 +16,8 @@ import logging
 import re
 from typing import Any
 
+import openai
+
 from config import get_settings
 from models import Question
 
@@ -33,7 +35,13 @@ You help human raters answer evaluation questions. Rank the most likely answers
 without hiding uncertainty. Use only the question and options provided by the
 user; do not invent options for multiple-choice questions.
 
-Return JSON only, with this shape:
+Return JSON only, matching one of these shapes.
+
+Multiple-choice (options were provided in the user prompt):
+{"candidates":[{"option_index":<int>,"confidence":0-100,"rationale":"short reason"}]}
+option_index is 1-based and must match the numbering shown in the user prompt.
+
+Free-response (no options):
 {"candidates":[{"answer":"...","confidence":0-100,"rationale":"short reason"}]}
 """
 
@@ -91,29 +99,6 @@ def _parse_top_n_response(raw: str) -> dict:
     raise json.JSONDecodeError("No top-N candidates JSON object found", content, 0)
 
 
-def _match_option_answer(answer: str, options: list[str]) -> str | None:
-    normalized_answer = answer.casefold().strip()
-    option_lookup = {option.casefold(): option for option in options}
-    if normalized_answer in option_lookup:
-        return option_lookup[normalized_answer]
-
-    if normalized_answer.isdigit():
-        index = int(normalized_answer) - 1
-        if 0 <= index < len(options):
-            return options[index]
-
-    for index, option in enumerate(options):
-        option_label = chr(ord("a") + index)
-        if normalized_answer in {option_label, f"{option_label}.", f"{option_label})"}:
-            return option
-
-        option_prefix = option.split(maxsplit=1)[0].casefold().rstrip(".):")
-        if normalized_answer == option_prefix:
-            return option
-
-    return None
-
-
 def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> list[dict[str, Any]]:
     if not isinstance(raw_candidates, list):
         return []
@@ -124,16 +109,23 @@ def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> li
     for item in raw_candidates:
         if not isinstance(item, dict):
             continue
-        answer = str(item.get("answer", "")).strip()
-        if not answer:
-            continue
 
         if options:
-            matched_answer = _match_option_answer(answer, options)
-            if matched_answer is None:
-                logger.info("Dropping top-N candidate not present in options: %r", answer)
+            try:
+                option_index = int(item["option_index"])
+            except (KeyError, TypeError, ValueError):
+                logger.info("Dropping top-N candidate with missing/invalid option_index: %r", item)
                 continue
-            answer = matched_answer
+            if not 1 <= option_index <= len(options):
+                logger.info(
+                    "Dropping top-N candidate with out-of-range option_index: %r", option_index
+                )
+                continue
+            answer = options[option_index - 1]
+        else:
+            answer = str(item.get("answer", "")).strip()
+            if not answer:
+                continue
 
         dedupe_key = answer.casefold()
         if dedupe_key in seen:
@@ -193,24 +185,34 @@ class TopNAssistance(AssistanceMethod):
         context_block = (
             f"Parent question/context:\n{parent_question_text}\n\n" if parent_question_text else ""
         )
+        return_instruction = (
+            f"Return exactly the top {n} candidate(s) as option_index values "
+            f"(1-based, matching the numbering above), ordered best first."
+            if options
+            else f"Return exactly the top {n} candidate answer(s) as free text, ordered best first."
+        )
         user_prompt = (
             f"{context_block}"
             f"Question:\n{question.question_text}\n\n"
             f"Question type: {question.question_type}\n"
             f"Options:\n{option_block}\n\n"
-            f"Return exactly the top {n} candidate answer(s), ordered best first."
+            f"{return_instruction}"
         )
 
-        raw = await complete(
-            [
-                {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
-                {"role": "user", "content": user_prompt},
-            ],
-            model=model,
-            settings=settings.llm,
-            response_format={"type": "json_object"},
-            temperature=0,
-        )
+        try:
+            raw = await complete(
+                [
+                    {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=model,
+                settings=settings.llm,
+                response_format={"type": "json_object"},
+                temperature=0,
+            )
+        except (RuntimeError, ValueError, openai.OpenAIError):
+            logger.exception("Top-N LLM call failed; returning no-assistance step")
+            return InteractionStep(type=StepType.NONE, is_terminal=True)
 
         try:
             parsed = _parse_top_n_response(raw)
