@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import Analytics from './Analytics';
+import StatusLabel from './StatusLabel';
 import type {
   DatasetMetaField,
   Experiment,
@@ -174,6 +175,11 @@ interface ExclusionPickerProps {
   testIdPrefix: string;
 }
 
+// Only FINISHED experiments are valid new picks (rater set is fixed).
+// Any already-selected non-FINISHED experiment is grandfathered: kept
+// visible with a tag so admins can preserve prior selections but not
+// add new non-FINISHED targets. Matches backend validation in
+// services/admin/status.py:validate_new_exclusion_targets.
 function ExperimentExclusionPicker({
   experiments,
   selectedIds,
@@ -182,9 +188,12 @@ function ExperimentExclusionPicker({
 }: ExclusionPickerProps) {
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
+  const selectable = experiments.filter(
+    (e) => e.status === 'FINISHED' || selectedIds.includes(e.id),
+  );
   const visible = q
-    ? experiments.filter((e) => experimentSearchHaystack(e).includes(q))
-    : experiments;
+    ? selectable.filter((e) => experimentSearchHaystack(e).includes(q))
+    : selectable;
   const toggle = (id: number, checked: boolean) => {
     if (checked) {
       onChange(Array.from(new Set([...selectedIds, id])));
@@ -205,13 +214,14 @@ function ExperimentExclusionPicker({
       <div style={exclusionStyles.list}>
         {visible.length === 0 && (
           <div style={exclusionStyles.empty}>
-            {experiments.length === 0
-              ? 'No other experiments yet.'
+            {selectable.length === 0
+              ? 'No finished experiments yet.'
               : 'No matches.'}
           </div>
         )}
         {visible.map((exp) => {
           const checked = selectedIds.includes(exp.id);
+          const grandfathered = checked && exp.status !== 'FINISHED';
           const subtitle = [
             exp.internal_name && exp.internal_name !== exp.name ? exp.internal_name : null,
             exp.dataset_filenames.length > 0 ? exp.dataset_filenames.join(', ') : null,
@@ -229,6 +239,23 @@ function ExperimentExclusionPicker({
               />
               <span style={exclusionStyles.rowText}>
                 <strong>{exp.name}</strong>
+                {grandfathered && (
+                  <span
+                    style={{
+                      marginLeft: '6px',
+                      padding: '1px 6px',
+                      borderRadius: '999px',
+                      background: '#fef3c7',
+                      color: '#92400e',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.3px',
+                    }}
+                  >
+                    Kept from prior round
+                  </span>
+                )}
                 {subtitle && (
                   <span style={exclusionStyles.rowSubtitle}> — {subtitle}</span>
                 )}
@@ -580,6 +607,29 @@ function ExperimentDetail({
     }
   };
 
+  const [finishing, setFinishing] = useState(false);
+  const handleFinish = async () => {
+    if (!window.confirm(
+      `Mark "${experiment.name}" as finished? This is permanent — no more rounds ` +
+      'can be launched, and this experiment becomes selectable by others as an ' +
+      'exclusion source.'
+    )) {
+      return;
+    }
+    setError(null);
+    setFinishing(true);
+    try {
+      await api.finishExperiment(experiment.id);
+      setSuccess('Experiment marked as finished.');
+      setTimeout(() => setSuccess(null), 3000);
+      onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to mark experiment as finished');
+    } finally {
+      setFinishing(false);
+    }
+  };
+
   const handlePublishRound = async (roundId: number, roundNumber: number) => {
     if (!window.confirm('Publish this study on Prolific? Participants will be able to start immediately.')) {
       return;
@@ -706,6 +756,18 @@ function ExperimentDetail({
   const roundLaunchBlockedMessage = !latestRoundClosed && latestRound
     ? `Waiting for ${latestRound.round_number === 0 ? 'the pilot round' : `Round ${latestRound.round_number}`} to close. Current status: ${latestRound.prolific_study_status}.`
     : null;
+  const isLocked = experiment.status !== 'DRAFT';
+  const isFinished = experiment.status === 'FINISHED';
+  const canFinish = useMemo(
+    () =>
+      experiment.status === 'LAUNCH'
+      && rounds.length > 0
+      && rounds.every((r) => ['AWAITING_REVIEW', 'COMPLETED'].includes(r.prolific_study_status)),
+    [experiment.status, rounds],
+  );
+  const lockedHint = isFinished
+    ? 'Locked — experiment is finished.'
+    : 'Locked — config freezes once the first main round is launched.';
 
 
   if (showAnalytics) {
@@ -1066,14 +1128,41 @@ function ExperimentDetail({
       {/* Header */}
       <div style={styles.header}>
         <button onClick={onBack} style={styles.backButton}>← Back</button>
-        <div>
-          <h1 style={styles.title}>{experiment.internal_name || experiment.name}</h1>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <h1 style={styles.title}>{experiment.internal_name || experiment.name}</h1>
+            <StatusLabel status={experiment.status} />
+          </div>
           {experiment.internal_name && (
             <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
               Public name (shown to raters): {experiment.name}
             </div>
           )}
         </div>
+        {experiment.status === 'LAUNCH' && (
+          <button
+            data-testid="finish-experiment-button"
+            onClick={handleFinish}
+            disabled={!canFinish || finishing}
+            title={
+              canFinish
+                ? 'Marks the experiment as finished. Permanent.'
+                : 'All rounds must be closed on Prolific before finishing.'
+            }
+            style={{
+              ...styles.secondaryButton,
+              flex: 'none',
+              padding: '8px 16px',
+              opacity: canFinish && !finishing ? 1 : 0.5,
+              cursor: canFinish && !finishing ? 'pointer' : 'not-allowed',
+              color: '#166534',
+              borderColor: '#86efac',
+              background: '#dcfce7',
+            }}
+          >
+            {finishing ? 'Finishing…' : 'Mark as Finished'}
+          </button>
+        )}
       </div>
 
       {error && <div className="error" style={{ marginBottom: '16px' }}>{error}</div>}
@@ -1687,9 +1776,14 @@ function ExperimentDetail({
               )}
 
               {/* Warning if ratings exist */}
-              {experiment.rating_count > 0 && (
+              {experiment.rating_count > 0 && !isLocked && (
                 <div style={styles.warning}>
                   <strong>Note:</strong> Uploading adds questions, doesn't replace existing ones.
+                </div>
+              )}
+              {isLocked && (
+                <div style={styles.warning}>
+                  <strong>Locked:</strong> the item set is frozen — no more questions can be added.
                 </div>
               )}
 
@@ -1702,8 +1796,9 @@ function ExperimentDetail({
                     data-testid="upload-csv-input"
                     type="file"
                     accept=".csv,.parquet"
+                    disabled={isLocked}
                     onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                    style={{ fontSize: '14px' }}
+                    style={{ fontSize: '14px', opacity: isLocked ? 0.5 : 1 }}
                   />
                   <div style={styles.hint}>
                     Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id. Supports long-context rows and files up to 200MB.
@@ -1713,11 +1808,11 @@ function ExperimentDetail({
                 <button
                   data-testid="upload-csv-button"
                   type="submit"
-                  disabled={!uploadFile}
+                  disabled={!uploadFile || isLocked}
                   style={{
                     ...styles.primaryButton,
-                    opacity: uploadFile ? 1 : 0.5,
-                    cursor: uploadFile ? 'pointer' : 'not-allowed',
+                    opacity: uploadFile && !isLocked ? 1 : 0.5,
+                    cursor: uploadFile && !isLocked ? 'pointer' : 'not-allowed',
                   }}
                 >
                   Upload
@@ -1735,6 +1830,11 @@ function ExperimentDetail({
               <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
                 Auto-populated from the first upload that declares dataset metadata (CSV <code>#META:</code> line or Parquet <code>dataset_meta</code> schema key). Edits here always win — later uploads that disagree are noted but never overwrite. See the admin guide for the upload format.
               </div>
+              {isLocked && (
+                <div style={{ ...styles.infoBanner, background: '#fef3c7', border: '1px solid #fcd34d', color: '#92400e' }}>
+                  {lockedHint}
+                </div>
+              )}
               {DATASET_META_FIELDS.map((field) => {
                 // Highlight any upload whose declared value disagrees with the
                 // currently-saved experiment value. Helps the admin spot an
@@ -1760,6 +1860,7 @@ function ExperimentDetail({
                       <textarea
                         id={`meta-${field}`}
                         value={metaForm[field]}
+                        disabled={isLocked}
                         onChange={(e) => {
                           metaFormDirtyRef.current = true;
                           setMetaForm({ ...metaForm, [field]: e.target.value });
@@ -1769,7 +1870,8 @@ function ExperimentDetail({
                           minHeight,
                           resize: 'vertical' as const,
                           fontFamily: 'inherit',
-                          cursor: 'text',
+                          cursor: isLocked ? 'not-allowed' : 'text',
+                          opacity: isLocked ? 0.6 : 1,
                         }}
                       />
                     ) : (
@@ -1777,11 +1879,16 @@ function ExperimentDetail({
                         id={`meta-${field}`}
                         type="text"
                         value={metaForm[field]}
+                        disabled={isLocked}
                         onChange={(e) => {
                           metaFormDirtyRef.current = true;
                           setMetaForm({ ...metaForm, [field]: e.target.value });
                         }}
-                        style={{ ...styles.input, cursor: 'text' }}
+                        style={{
+                          ...styles.input,
+                          cursor: isLocked ? 'not-allowed' : 'text',
+                          opacity: isLocked ? 0.6 : 1,
+                        }}
                       />
                     )}
                     <div style={styles.hint}>{DATASET_META_HINTS[field]}</div>
@@ -1796,11 +1903,11 @@ function ExperimentDetail({
               <button
                 type="button"
                 onClick={handleSaveMeta}
-                disabled={savingMeta}
+                disabled={savingMeta || isLocked}
                 style={{
                   ...styles.primaryButton,
-                  opacity: savingMeta ? 0.6 : 1,
-                  cursor: savingMeta ? 'not-allowed' : 'pointer',
+                  opacity: savingMeta || isLocked ? 0.6 : 1,
+                  cursor: savingMeta || isLocked ? 'not-allowed' : 'pointer',
                 }}
               >
                 {savingMeta ? 'Saving…' : 'Save Metadata'}
@@ -1817,9 +1924,14 @@ function ExperimentDetail({
               <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
                 Choose one assistance mode for this experiment. Changes apply to new participant assistance sessions.
               </div>
+              {isLocked && (
+                <div style={{ ...styles.infoBanner, background: '#fef3c7', border: '1px solid #fcd34d', color: '#92400e' }}>
+                  {lockedHint}
+                </div>
+              )}
 
               {/* Top N Toggle */}
-              <div style={styles.toggleRow}>
+              <div style={{ ...styles.toggleRow, opacity: isLocked ? 0.6 : 1 }}>
                 <div style={styles.toggleInfo}>
                   <div style={styles.toggleLabel}>Top N Suggestions</div>
                   <div style={styles.toggleDescription}>
@@ -1831,8 +1943,9 @@ function ExperimentDetail({
                     style={{
                       ...styles.toggleTrack,
                       background: topNEnabled ? '#4a90d9' : '#ddd',
+                      cursor: isLocked ? 'not-allowed' : 'pointer',
                     }}
-                    onClick={handleTopNToggle}
+                    onClick={() => { if (!isLocked) handleTopNToggle(); }}
                   />
                   <div
                     style={{
@@ -1844,7 +1957,7 @@ function ExperimentDetail({
               </div>
 
               {topNEnabled && (
-                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px' }}>
+                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px', opacity: isLocked ? 0.6 : 1 }}>
                   <label htmlFor="top-n-input" style={{ fontSize: '13px', fontWeight: 500, color: '#555', display: 'block', marginBottom: '8px' }}>
                     Suggestions to show
                   </label>
@@ -1854,6 +1967,7 @@ function ExperimentDetail({
                     min="1"
                     max="10"
                     value={topNValue}
+                    disabled={isLocked}
                     onChange={e => handleTopNChange(parseInt(e.target.value) || 1)}
                     style={{
                       padding: '8px 12px',
@@ -1871,7 +1985,7 @@ function ExperimentDetail({
               )}
 
               {/* Human-as-a-Tool Toggle */}
-              <div style={styles.toggleRow}>
+              <div style={{ ...styles.toggleRow, opacity: isLocked ? 0.6 : 1 }}>
                 <div style={styles.toggleInfo}>
                   <div style={styles.toggleLabel}>Human-as-a-Tool</div>
                   <div style={styles.toggleDescription}>
@@ -1883,8 +1997,9 @@ function ExperimentDetail({
                     style={{
                       ...styles.toggleTrack,
                       background: humanAsATool ? '#4a90d9' : '#ddd',
+                      cursor: isLocked ? 'not-allowed' : 'pointer',
                     }}
-                    onClick={handleHumanAsAToolToggle}
+                    onClick={() => { if (!isLocked) handleHumanAsAToolToggle(); }}
                   />
                   <div
                     style={{
@@ -1897,12 +2012,13 @@ function ExperimentDetail({
 
               {/* Confidence method sub-selector (shown when Human-as-a-Tool is on) */}
               {humanAsATool && (
-                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px' }}>
+                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px', opacity: isLocked ? 0.6 : 1 }}>
                   <label style={{ fontSize: '13px', fontWeight: 500, color: '#555', display: 'block', marginBottom: '8px' }}>
                     Confidence method
                   </label>
                   <select
                     value={confidenceMethod}
+                    disabled={isLocked}
                     onChange={e => handleConfidenceMethodChange(e.target.value)}
                     style={{
                       padding: '8px 12px',

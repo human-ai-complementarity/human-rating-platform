@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Experiment, ExperimentCreate } from '../types';
+import StatusLabel from './StatusLabel';
 
 function AdminView() {
   const navigate = useNavigate();
@@ -290,7 +291,12 @@ function AdminView() {
                   onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                 >
                   <div>
-                    <div style={styles.experimentName}>{exp.internal_name || exp.name}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                      <div style={{ ...styles.experimentName, marginBottom: 0 }}>
+                        {exp.internal_name || exp.name}
+                      </div>
+                      <StatusLabel status={exp.status} size="sm" />
+                    </div>
                     {exp.internal_name && (
                       <div style={{ fontSize: '12px', color: '#666', marginBottom: '2px' }}>
                         Public: {exp.name}

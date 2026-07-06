@@ -9,6 +9,7 @@ type ExperimentRecord = {
   prolific_completion_url: string | null;
   question_count: number;
   rating_count: number;
+  status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
 };
 
 type UploadRecord = {
@@ -84,6 +85,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     prolific_completion_url: null,
     question_count: 0,
     rating_count: 0,
+    status: 'DRAFT',
     ...partial,
   };
 }
