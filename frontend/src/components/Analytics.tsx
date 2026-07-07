@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Analytics as AnalyticsType } from '../types';
+import { Banner } from './experiment-detail/ui';
 
 interface AnalyticsProps {
   experimentId: number;
@@ -202,7 +203,9 @@ function Analytics({ experimentId, experimentName, onBack }: AnalyticsProps) {
   if (error) {
     return (
       <div style={styles.container}>
-        <div className="error" style={{ marginBottom: '16px' }}>{error}</div>
+        <div style={{ marginBottom: 16 }}>
+          <Banner tone="danger">{error}</Banner>
+        </div>
         <button onClick={onBack} style={styles.backButton}>Back</button>
       </div>
     );

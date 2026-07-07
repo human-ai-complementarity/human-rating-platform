@@ -668,12 +668,6 @@ async def run_experiment_round(
         excluded_experiment_ids=pilot_round.excluded_experiment_ids,
         places_requested=payload.places,
     )
-    # First main round transitions the experiment into LAUNCH and freezes its
-    # config. Set here so the status flip and the round insert land in one
-    # commit — a failed insert rolls the status back too. Idempotent: LAUNCH
-    # stays LAUNCH on subsequent rounds.
-    if experiment.status == ExperimentStatus.DRAFT:
-        experiment.status = ExperimentStatus.LAUNCH
     await _commit_round_creation(
         db,
         round_,
@@ -705,7 +699,7 @@ async def publish_experiment_round(
     if not settings.prolific.enabled:
         raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
 
-    await fetch_experiment_or_404(experiment_id, db)
+    experiment = await fetch_experiment_or_404(experiment_id, db)
     round_ = await _fetch_round_or_404(experiment_id, round_id, db)
     if round_.prolific_study_status != ProlificStudyStatus.UNPUBLISHED:
         raise HTTPException(
@@ -755,6 +749,12 @@ async def publish_experiment_round(
     round_.prolific_study_status = ProlificStudyStatus(
         result.get("status", ProlificStudyStatus.ACTIVE.value)
     )
+    # First published round transitions the experiment out of DRAFT and freezes
+    # its config — participants may start rating any moment. Applies uniformly
+    # to pilot and main rounds; the pilot IS the first "we're live" study.
+    # Idempotent: LAUNCH stays LAUNCH on subsequent publishes.
+    if experiment.status == ExperimentStatus.DRAFT:
+        experiment.status = ExperimentStatus.LAUNCH
     await db.commit()
 
     logger.info(
@@ -768,6 +768,52 @@ async def publish_experiment_round(
         },
     )
     return {"message": "Study published on Prolific", "status": round_.prolific_study_status}
+
+
+async def discard_experiment_round(
+    experiment_id: int,
+    round_id: int,
+    db: AsyncSession,
+) -> dict[str, str]:
+    """Delete an UNPUBLISHED round + its Prolific draft study.
+
+    Guards to UNPUBLISHED only — published/active/closed rounds have
+    participant data or history and shouldn't be silently removed. If the
+    researcher wants those gone they can delete the whole experiment.
+    """
+    settings = get_settings()
+    if not settings.prolific.enabled:
+        raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
+
+    await fetch_experiment_or_404(experiment_id, db)
+    round_ = await _fetch_round_or_404(experiment_id, round_id, db)
+    if round_.prolific_study_status != ProlificStudyStatus.UNPUBLISHED:
+        raise HTTPException(
+            status_code=400,
+            detail="Only unpublished rounds can be discarded",
+        )
+
+    study_id = round_.prolific_study_id
+    await db.delete(round_)
+    await db.commit()
+
+    # Best-effort: remove the orphan draft study from Prolific too. Local
+    # delete already committed, so a Prolific failure is only a manual cleanup
+    # in the researcher's dashboard.
+    try:
+        await delete_study(settings=settings.prolific, study_id=study_id)
+        logger.info(
+            "Prolific draft study deleted",
+            extra={"attributes": {"study_id": study_id}},
+        )
+    except Exception:
+        logger.warning(
+            "Failed to delete Prolific draft study after discard",
+            exc_info=True,
+            extra={"attributes": {"study_id": study_id}},
+        )
+
+    return {"message": "Round discarded"}
 
 
 _PROLIFIC_FIELD_MAP = {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import type { Question } from '../types';
+import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
@@ -89,32 +90,35 @@ function buildLongContextDocumentHtml(question: Question, documentText: string):
   <style>
     body {
       margin: 0;
-      background: #f6f7f9;
-      color: #222;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f7f5ef;
+      color: #282420;
+      font-family: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     }
     main {
       max-width: 960px;
       margin: 0 auto;
-      padding: 32px 24px;
+      padding: 40px 24px;
     }
     h1 {
       margin: 0 0 20px;
-      font-size: 22px;
-      line-height: 1.3;
-      font-weight: 650;
+      font-family: "Source Serif 4", Georgia, serif;
+      font-size: 26px;
+      line-height: 1.25;
+      font-weight: 600;
+      letter-spacing: -0.01em;
     }
     pre {
       box-sizing: border-box;
       width: 100%;
       margin: 0;
       padding: 24px;
-      border: 1px solid #dfe3e8;
-      border-radius: 8px;
-      background: #fff;
+      border: 1px solid #e6e1d5;
+      border-radius: 9px;
+      background: #ffffff;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
-      font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font: 14px/1.6 "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #282420;
     }
   </style>
 </head>
@@ -214,185 +218,60 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   const isMC = question.question_type === 'MC' && options.length > 0;
   const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
 
-  const styles = {
-    card: {
-      background: '#fff',
-      borderRadius: '12px',
-      border: '1px solid #e0e0e0',
-      padding: '32px',
-      boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-    },
-    questionId: {
-      fontSize: '12px',
-      fontWeight: 500,
-      color: '#888',
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      marginBottom: '12px',
-    },
-    parentBox: {
-      background: '#f0f4f8',
-      border: '1px solid #d6e0ea',
-      borderRadius: '8px',
-      padding: '16px 20px',
-      marginBottom: '20px',
-    },
-    parentLabel: {
-      fontSize: '11px',
-      fontWeight: 600,
-      color: '#5a7896',
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      marginBottom: '6px',
-    },
-    parentText: {
-      fontSize: '15px',
-      lineHeight: 1.5,
-      color: '#3a4a5c',
-      whiteSpace: 'pre-wrap' as const,
-      margin: 0,
-    },
-    humanPromptPrefix: {
-      fontSize: '14px',
-      lineHeight: 1.5,
-      color: '#666',
-      fontStyle: 'italic' as const,
-      marginBottom: '12px',
-      whiteSpace: 'pre-wrap' as const,
-    },
-    humanPromptSuffix: {
-      fontSize: '14px',
-      lineHeight: 1.5,
-      color: '#666',
-      fontStyle: 'italic' as const,
-      marginTop: '-12px',
-      marginBottom: '24px',
-      whiteSpace: 'pre-wrap' as const,
-    },
-    questionText: {
-      fontSize: '20px',
-      lineHeight: 1.5,
-      color: '#333',
-      marginBottom: '28px',
-      whiteSpace: 'pre-wrap' as const,
-    },
-    documentLink: {
-      display: 'inline-flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '10px 14px',
-      background: '#f8f9fa',
-      border: '1px solid #d6dce2',
-      borderRadius: '8px',
-      color: '#2f6fae',
-      fontSize: '14px',
-      fontWeight: 500,
-      textDecoration: 'none',
-      marginBottom: '20px',
-    },
-    documentNotice: {
-      fontSize: '14px',
-      color: '#666',
-      marginTop: '-8px',
-      marginBottom: '16px',
-    },
-    optionsGrid: {
-      display: 'flex',
-      flexDirection: 'column' as const,
-      gap: '10px',
-      marginBottom: '24px',
-    },
-    option: {
-      padding: '16px 20px',
-      background: '#f8f9fa',
-      border: '2px solid transparent',
-      borderRadius: '8px',
-      cursor: 'pointer',
-      fontSize: '15px',
-      textAlign: 'left' as const,
-      transition: 'all 0.15s',
-      color: '#333',
-    },
-    optionSelected: {
-      background: '#e3f2fd',
-      borderColor: '#4a90d9',
-      color: '#333',
-    },
-    textarea: {
-      width: '100%',
-      padding: '16px',
-      border: '1px solid #ddd',
-      borderRadius: '8px',
-      fontSize: '15px',
-      lineHeight: 1.5,
-      resize: 'vertical' as const,
-      marginBottom: '24px',
-      boxSizing: 'border-box' as const,
-    },
-    confidenceSection: {
-      marginBottom: '24px',
-      padding: '20px',
-      background: '#f8f9fa',
-      borderRadius: '8px',
-    },
-    confidenceLabel: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: '12px',
-    },
-    confidenceTitle: {
-      fontSize: '14px',
-      fontWeight: 500,
-      color: '#333',
-    },
-    confidenceValue: {
-      fontSize: '18px',
-      fontWeight: 600,
-      color: '#4a90d9',
-    },
-    slider: {
-      width: '100%',
-      height: '8px',
-      borderRadius: '4px',
-      appearance: 'none' as const,
-      background: '#ddd',
-      outline: 'none',
-      cursor: 'pointer',
-    },
-    sliderLabels: {
-      position: 'relative' as const,
-      height: '14px',
-      marginTop: '8px',
-      fontSize: '11px',
-      color: '#888',
-    },
-    sliderLabel: {
-      position: 'absolute' as const,
-      whiteSpace: 'nowrap' as const,
-    },
-    submitButton: {
-      width: '100%',
-      padding: '16px',
-      background: canSubmit ? '#4a90d9' : '#ccc',
-      color: '#fff',
-      border: 'none',
-      borderRadius: '8px',
-      fontSize: '16px',
-      fontWeight: 500,
-      cursor: canSubmit ? 'pointer' : 'not-allowed',
-      transition: 'background 0.15s',
-    },
-  };
-
   return (
-    <div style={styles.card}>
-      <div style={styles.questionId}>Question {question.question_id}</div>
+    <div
+      style={{
+        background: 'var(--surface)',
+        borderRadius: 'var(--radius)',
+        border: '1px solid var(--faint)',
+        boxShadow: 'var(--shadow)',
+        padding: 32,
+      }}
+    >
+      <div
+        style={{
+          font: '600 11px/1 var(--font-mono)',
+          letterSpacing: '0.16em',
+          textTransform: 'uppercase',
+          color: 'var(--muted)',
+          marginBottom: 16,
+        }}
+      >
+        Question {question.question_id}
+      </div>
 
       {question.parent_question_text && (
-        <div style={styles.parentBox}>
-          <div style={styles.parentLabel}>Context</div>
-          <p style={styles.parentText}>{question.parent_question_text}</p>
+        <div
+          style={{
+            background: 'var(--surface-2)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '14px 18px',
+            marginBottom: 22,
+          }}
+        >
+          <div
+            style={{
+              font: '600 10px/1 var(--font-mono)',
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+              marginBottom: 8,
+            }}
+          >
+            Context
+          </div>
+          <p
+            style={{
+              fontSize: 15,
+              lineHeight: 1.55,
+              color: 'var(--ink)',
+              whiteSpace: 'pre-wrap',
+              margin: 0,
+            }}
+          >
+            {question.parent_question_text}
+          </p>
         </div>
       )}
 
@@ -402,12 +281,24 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             href={documentUrl}
             target="_blank"
             rel="noreferrer"
-            style={styles.documentLink}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              padding: '9px 14px',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--faint)',
+              borderRadius: 'var(--radius-sm)',
+              color: 'var(--accent-soft-ink)',
+              fontSize: 13,
+              fontWeight: 600,
+              textDecoration: 'none',
+              marginBottom: 18,
+            }}
           >
-            Open document in new tab
+            Open document in new tab ↗
           </a>
           {documentOpenBlocked && (
-            <p style={styles.documentNotice}>
+            <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: -6, marginBottom: 16 }}>
               Your browser blocked the automatic document tab. Use the document link before answering.
             </p>
           )}
@@ -415,45 +306,126 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {humanPromptPrefix && humanPromptPrefix.trim() && (
-        <p style={styles.humanPromptPrefix}>{humanPromptPrefix}</p>
+        <p
+          style={{
+            fontSize: 14,
+            lineHeight: 1.55,
+            color: 'var(--muted)',
+            fontStyle: 'italic',
+            marginBottom: 12,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {humanPromptPrefix}
+        </p>
       )}
 
-      <p style={styles.questionText}>{display.questionText}</p>
+      <p
+        style={{
+          fontFamily: 'var(--font-head)',
+          fontSize: 22,
+          lineHeight: 1.35,
+          letterSpacing: '-0.005em',
+          color: 'var(--ink)',
+          marginTop: 0,
+          marginBottom: 24,
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {display.questionText}
+      </p>
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
-        <p style={styles.humanPromptSuffix}>{humanPromptSuffix}</p>
+        <p
+          style={{
+            fontSize: 14,
+            lineHeight: 1.55,
+            color: 'var(--muted)',
+            fontStyle: 'italic',
+            marginTop: -12,
+            marginBottom: 24,
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {humanPromptSuffix}
+        </p>
       )}
 
       {assistanceActive && assistanceAnswer == null && (
-        <p style={{ fontSize: '14px', color: '#888', fontStyle: 'italic', marginBottom: '16px' }}>
+        <p style={{ fontSize: 14, color: 'var(--muted)', fontStyle: 'italic', marginBottom: 16 }}>
           Answer the questions on the right to help inform your response.
         </p>
       )}
 
       {!assistanceActive && (isMC ? (
-        <div style={styles.optionsGrid}>
-          {options.map((option, index) => (
-            <button
-              key={index}
-              style={{
-                ...styles.option,
-                ...(selectedAnswer === option ? styles.optionSelected : {}),
-              }}
-              onClick={() => setSelectedAnswer(option)}
-              onMouseEnter={(e) => {
-                if (selectedAnswer !== option) {
-                  e.currentTarget.style.background = '#f0f0f0';
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (selectedAnswer !== option) {
-                  e.currentTarget.style.background = '#f8f9fa';
-                }
-              }}
-            >
-              {option}
-            </button>
-          ))}
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            marginBottom: 26,
+          }}
+        >
+          {options.map((option, index) => {
+            const selected = selectedAnswer === option;
+            return (
+              <button
+                key={index}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => setSelectedAnswer(option)}
+                onMouseEnter={(e) => {
+                  if (!selected) e.currentTarget.style.background = 'var(--surface-2)';
+                }}
+                onMouseLeave={(e) => {
+                  if (!selected) e.currentTarget.style.background = 'var(--surface)';
+                }}
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 12,
+                  padding: '14px 18px',
+                  background: selected ? 'var(--accent-soft)' : 'var(--surface)',
+                  border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+                  borderRadius: 'var(--radius-sm)',
+                  cursor: 'pointer',
+                  fontSize: 15,
+                  textAlign: 'left',
+                  color: 'var(--ink)',
+                  font: '500 15px/1.5 var(--font-body)',
+                  transition: 'background 0.12s, border-color 0.12s',
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: '50%',
+                    border: `2px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+                    background: 'var(--surface)',
+                    flex: '0 0 auto',
+                    marginTop: 2,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {selected && (
+                    <span
+                      style={{
+                        width: 8,
+                        height: 8,
+                        borderRadius: '50%',
+                        background: 'var(--accent)',
+                      }}
+                    />
+                  )}
+                </span>
+                <span style={{ flex: 1 }}>{option}</span>
+              </button>
+            );
+          })}
         </div>
       ) : (
         <textarea
@@ -461,15 +433,47 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           onChange={(e) => setFreeTextAnswer(e.target.value)}
           placeholder="Type your answer here..."
           rows={4}
-          style={styles.textarea}
+          style={{ ...textareaStyle, marginBottom: 26 }}
         />
       ))}
 
       {!assistanceActive && (
-        <div style={styles.confidenceSection}>
-          <div style={styles.confidenceLabel}>
-            <span style={styles.confidenceTitle}>How confident are you?</span>
-            <span style={styles.confidenceValue}>{CONFIDENCE_LABELS[confidence - 1]} confident</span>
+        <div
+          style={{
+            marginBottom: 24,
+            padding: '18px 20px',
+            background: 'var(--surface-2)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius-sm)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'baseline',
+              marginBottom: 14,
+            }}
+          >
+            <span
+              style={{
+                font: '600 10px/1 var(--font-mono)',
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: 'var(--muted)',
+              }}
+            >
+              Confidence
+            </span>
+            <span
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                color: 'var(--accent-soft-ink)',
+              }}
+            >
+              {CONFIDENCE_LABELS[confidence - 1]}
+            </span>
           </div>
           <input
             type="range"
@@ -477,22 +481,42 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             max="5"
             value={confidence}
             onChange={(e) => setConfidence(parseInt(e.target.value))}
-            style={styles.slider}
+            style={{
+              width: '100%',
+              height: 6,
+              borderRadius: 4,
+              appearance: 'none',
+              background: 'var(--faint)',
+              outline: 'none',
+              cursor: 'pointer',
+            }}
           />
-          <div style={styles.sliderLabels}>
+          <div
+            style={{
+              position: 'relative',
+              height: 14,
+              marginTop: 10,
+              fontSize: 11,
+            }}
+          >
             {CONFIDENCE_LABELS.map((label, i) => {
               const pct = (i / (CONFIDENCE_LABELS.length - 1)) * 100;
               const isFirst = i === 0;
               const isLast = i === CONFIDENCE_LABELS.length - 1;
+              const isActive = confidence === i + 1;
               return (
                 <span
                   key={label}
                   style={{
-                    ...styles.sliderLabel,
+                    position: 'absolute',
+                    whiteSpace: 'nowrap',
                     left: `${pct}%`,
                     transform: isFirst ? 'none' : isLast ? 'translateX(-100%)' : 'translateX(-50%)',
-                    fontWeight: confidence === i + 1 ? 600 : 400,
-                    color: confidence === i + 1 ? '#4a90d9' : '#888',
+                    fontWeight: isActive ? 700 : 500,
+                    color: isActive ? 'var(--accent-soft-ink)' : 'var(--muted)',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: 10,
+                    letterSpacing: '0.04em',
                   }}
                 >
                   {label}
@@ -505,11 +529,20 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
 
       {(!assistanceActive) && (
         <button
+          type="button"
           onClick={handleSubmit}
           disabled={submitting || !canSubmit}
-          style={styles.submitButton}
+          style={{
+            ...primaryButton,
+            width: '100%',
+            padding: '14px 22px',
+            fontSize: 15,
+            background: canSubmit ? 'var(--accent)' : 'var(--faint)',
+            color: canSubmit ? 'var(--accent-ink)' : 'var(--muted)',
+            cursor: canSubmit ? 'pointer' : 'not-allowed',
+          }}
         >
-          {submitting ? 'Submitting...' : 'Submit Answer'}
+          {submitting ? 'Submitting…' : 'Submit answer'}
         </button>
       )}
     </div>

@@ -2709,7 +2709,7 @@ def test_new_experiment_starts_in_draft(client: TestClient):
 
 
 @respx.mock
-def test_experiment_transitions_to_launch_on_first_main_round(
+def test_experiment_transitions_to_launch_on_first_publish(
     client: TestClient,
     enable_prolific,
 ):
@@ -2719,20 +2719,45 @@ def test_experiment_transitions_to_launch_on_first_main_round(
         for item in client.get("/api/admin/experiments").json()
         if item["id"] == experiment["id"]
     )
-    # Pilot alone keeps the experiment in DRAFT.
+    # Creating the pilot alone leaves the experiment in DRAFT — nothing is live
+    # on Prolific until publish, so config stays editable.
     assert stored["status"] == "DRAFT"
 
+    _mock_publish_study()
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish",
+    )
+    assert publish_resp.status_code == 200, publish_resp.text
+
+    # Publishing the first round — even the pilot — flips DRAFT to LAUNCH:
+    # participants may start rating any moment, so config freezes.
+    stored = next(
+        item
+        for item in client.get("/api/admin/experiments").json()
+        if item["id"] == experiment["id"]
+    )
+    assert stored["status"] == "LAUNCH"
+
+
+@respx.mock
+def test_experiment_launch_is_idempotent_on_subsequent_publishes(
+    client: TestClient,
+    enable_prolific,
+):
+    """Second and later publishes must not disturb an already-LAUNCH status."""
+    experiment, _pilot = _create_prolific_experiment(client)
     _mock_publish_study()
     client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
     _mock_close_study()
     client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
 
     _mock_create_study(study_id="R1")
-    round_resp = client.post(
+    client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
         json={"places": 3},
     )
-    assert round_resp.status_code == 200, round_resp.text
+    _mock_publish_study(study_id="R1")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/2/publish")
 
     stored = next(
         item

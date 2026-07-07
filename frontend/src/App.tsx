@@ -1,6 +1,6 @@
 import React from 'react';
 import { AuthenticateWithRedirectCallback } from '@clerk/clerk-react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import RaterView from './components/RaterView';
 import AdminView from './components/AdminView';
 import AdminDocs from './components/AdminDocs';
@@ -171,16 +171,111 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
 }
 
 function AdminShell({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
+  const { pathname } = useLocation();
+  // Highlight the top-nav item that owns this route. `/admin/docs` is its own
+  // section; everything else under `/admin` (list + experiment detail) belongs
+  // to the "Experiments" tab.
+  const isDocs = pathname.startsWith('/admin/docs');
+  const isExperiments = pathname.startsWith('/admin') && !isDocs;
+
   return (
-    <>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: 12 }}>
-        <UserButton afterSignOutUrl="/" />
-      </div>
+    <div style={{ minHeight: '100vh', background: 'var(--page-bg)' }}>
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 11,
+          padding: '14px 30px',
+          background: 'var(--surface)',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => navigate('/admin')}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 11,
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            cursor: 'pointer',
+            color: 'var(--ink)',
+          }}
+        >
+          <span
+            aria-hidden
+            style={{
+              width: 15,
+              height: 15,
+              background: 'var(--accent)',
+              transform: 'rotate(45deg)',
+              borderRadius: 3,
+            }}
+          />
+          <span style={{ font: '600 16px/1 var(--font-head)' }}>Complementarities Platform</span>
+        </button>
+        <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
+        <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+          <UserButton afterSignOutUrl="/" />
+        </div>
+      </header>
       <SignedOut>
         <BackendLogoutOnSignedOut />
       </SignedOut>
       {children}
-    </>
+    </div>
+  );
+}
+
+function NavTab({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        position: 'relative',
+        background: 'none',
+        border: 'none',
+        padding: '6px 2px',
+        marginLeft: 22,
+        fontSize: 14,
+        fontFamily: 'var(--font-body)',
+        fontWeight: active ? 600 : 400,
+        color: active ? 'var(--ink)' : 'var(--muted)',
+        cursor: 'pointer',
+        lineHeight: 1,
+      }}
+    >
+      {label}
+      {active && (
+        <span
+          aria-hidden
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            // Header has `padding: '14px 30px'` and a 1px bottom border;
+            // -15 lands the accent line flush on top of that border so the
+            // underline "hangs" from the tab down to the header edge.
+            bottom: -15,
+            height: 2,
+            background: 'var(--accent)',
+          }}
+        />
+      )}
+    </button>
   );
 }
 
@@ -202,14 +297,28 @@ type InfoCardProps = {
 
 function InfoCard({ title, body, align = 'center' }: InfoCardProps) {
   return (
-    <div className="container">
-      <div className="card" style={{ textAlign: align }}>
-        <p style={{ fontSize: 20, marginBottom: body ? 8 : 0 }}>{title}</p>
-        {body && (
-          <p style={{ color: '#666', margin: 0 }}>
-            {body}
-          </p>
-        )}
+    <div style={{ maxWidth: 800, margin: '0 auto', padding: '40px 24px' }}>
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius)',
+          padding: '32px 28px',
+          boxShadow: 'var(--shadow)',
+          textAlign: align,
+        }}
+      >
+        <p
+          style={{
+            fontFamily: 'var(--font-head)',
+            fontSize: 20,
+            fontWeight: 600,
+            marginBottom: body ? 8 : 0,
+          }}
+        >
+          {title}
+        </p>
+        {body && <p style={{ color: 'var(--muted)', margin: 0, fontSize: 14 }}>{body}</p>}
       </div>
     </div>
   );

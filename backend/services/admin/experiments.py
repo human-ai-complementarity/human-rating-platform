@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -238,6 +239,9 @@ async def finish_experiment(
     )
 
 
+_PROLIFIC_CLEANUP_TIMEOUT_SECONDS = 3.0
+
+
 async def delete_experiment(
     experiment_id: int,
     db: AsyncSession,
@@ -246,8 +250,10 @@ async def delete_experiment(
     experiment = await fetch_experiment_or_404(experiment_id, db)
     experiment_name = experiment.name
 
+    # Snapshot linked Prolific study IDs before deleting the local rows.
+    round_study_ids: list[str] = []
     if settings.prolific.enabled:
-        round_study_ids = (
+        round_study_ids = list(
             (
                 await db.execute(
                     select(ExperimentRound.prolific_study_id).where(
@@ -258,22 +264,6 @@ async def delete_experiment(
             .scalars()
             .all()
         )
-        for study_id in round_study_ids:
-            try:
-                await delete_study(
-                    settings=settings.prolific,
-                    study_id=study_id,
-                )
-                logger.info(
-                    "Prolific study deleted",
-                    extra={"attributes": {"study_id": study_id}},
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to delete Prolific study (continuing with local delete)",
-                    exc_info=True,
-                    extra={"attributes": {"study_id": study_id}},
-                )
 
     await db.delete(experiment)
     await db.commit()
@@ -287,7 +277,45 @@ async def delete_experiment(
             }
         },
     )
+
+    # Best-effort Prolific cleanup: fired in parallel and bounded to a short
+    # timeout per study. The local delete already committed above, so any
+    # Prolific-side failure just leaves an orphan study for the researcher to
+    # clean up manually from the Prolific dashboard. This keeps the response
+    # snappy even when Prolific is slow or unreachable (their DELETE calls
+    # can take ~30s in the worst case).
+    if round_study_ids:
+        await asyncio.gather(
+            *(
+                _delete_prolific_study_best_effort(settings.prolific, study_id)
+                for study_id in round_study_ids
+            ),
+        )
+
     return {"message": "Experiment deleted successfully"}
+
+
+async def _delete_prolific_study_best_effort(prolific_settings: Any, study_id: str) -> None:
+    try:
+        await asyncio.wait_for(
+            delete_study(settings=prolific_settings, study_id=study_id),
+            timeout=_PROLIFIC_CLEANUP_TIMEOUT_SECONDS,
+        )
+        logger.info(
+            "Prolific study deleted",
+            extra={"attributes": {"study_id": study_id}},
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Prolific study delete timed out; leaving orphan on Prolific",
+            extra={"attributes": {"study_id": study_id}},
+        )
+    except Exception:
+        logger.warning(
+            "Failed to delete Prolific study after local delete",
+            exc_info=True,
+            extra={"attributes": {"study_id": study_id}},
+        )
 
 
 async def get_experiment_stats(
