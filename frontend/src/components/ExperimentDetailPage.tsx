@@ -14,7 +14,6 @@ function ExperimentDetailPage() {
 
   const loadExperiment = useCallback(async () => {
     try {
-      setLoading(true);
       const experiments = await api.listExperiments();
       setAllExperiments(experiments);
       const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
@@ -31,6 +30,9 @@ function ExperimentDetailPage() {
   }, [experimentId]);
 
   useEffect(() => {
+    setLoading(true);
+    setExperiment(null);
+    setError(null);
     loadExperiment();
   }, [loadExperiment]);
 

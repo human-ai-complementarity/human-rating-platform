@@ -413,12 +413,6 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {
-  // ExperimentDetailPage.onRefresh triggers loadExperiment which sets loading=true,
-  // unmounting ExperimentDetail and wiping its local success toast state. The
-  // 'Uploaded 2 questions' toast flickers on every upload. Tracked as a follow-up;
-  // when the underlying bug is fixed this fixme should XPASS and be unmarked.
-  test.fixme();
-
   const state = createMockState();
   await installApiMocks(page, state);
 
