@@ -62,6 +62,7 @@ const routes = {
   admin: {
     experiments: '/admin/experiments',
     experiment: (id: number) => `/admin/experiments/${id}`,
+    finishExperiment: (id: number) => `/admin/experiments/${id}/finish`,
     upload: (id: number) => `/admin/experiments/${id}/upload`,
     uploads: (id: number) => `/admin/experiments/${id}/uploads`,
     stats: (id: number) => `/admin/experiments/${id}/stats`,
@@ -359,6 +360,12 @@ export const api = {
     });
   },
 
+  async finishExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.finishExperiment(experimentId), {
+      method: 'POST',
+    });
+  },
+
   async getPlatformStatus(): Promise<PlatformStatus> {
     return requestJson<PlatformStatus>(routes.admin.platformStatus);
   },
@@ -410,6 +417,12 @@ export const api = {
   async closeExperimentRound(experimentId: number, roundId: number): Promise<MessageResponse> {
     return requestJson<MessageResponse>(routes.admin.prolificRoundClose(experimentId, roundId), {
       method: 'POST',
+    });
+  },
+
+  async discardExperimentRound(experimentId: number, roundId: number): Promise<MessageResponse> {
+    return requestJson<MessageResponse>(routes.admin.prolificRound(experimentId, roundId), {
+      method: 'DELETE',
     });
   },
 

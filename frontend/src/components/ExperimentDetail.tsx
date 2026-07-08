@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import Analytics from './Analytics';
+import StatusLabel from './StatusLabel';
 import type {
   DatasetMetaField,
   Experiment,
@@ -11,10 +12,28 @@ import type {
   Screener,
   Upload,
 } from '../types';
-import { DATASET_META_FIELDS } from '../types';
+import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
+import {
+  StepperTabs,
+  type StepDef,
+  type StepStatus,
+  type TabKey,
+} from './experiment-detail/StepperTabs';
+import {
+  Banner,
+  Field,
+  SectionCard,
+  Toast,
+  ToggleSwitch,
+  inputStyle,
+  primaryButton,
+  secondaryButton,
+  textareaStyle,
+} from './experiment-detail/ui';
+import { rewardHintText, rewardInputToMinor, rewardMinorToInput } from './experiment-detail/reward';
 
-// Labels shown to admins in the Dataset metadata section. Order matches the
-// CSV `#META:` JSON shape that researchers see in the colab guide.
+// Labels shown to admins in the Instructions & prompts panel. Order matches
+// the CSV `#META:` JSON shape that researchers see in the colab guide.
 const DATASET_META_LABELS: Record<DatasetMetaField, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
@@ -25,226 +44,68 @@ const DATASET_META_LABELS: Record<DatasetMetaField, string> = {
 
 const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
   description:
-    "Shown to raters on the intro screen, and also prefilled into the Prolific study description. Supports markdown (headings, bold/italic/strike, lists, paragraphs). A per-round description in the Prolific Workflow form overrides this for that round.",
+    'Shown to raters on the intro screen and inherited as the default by each round on Launch on Prolific. Edit a round in Launch to override for that round only. Supports markdown.',
   system_prompt:
-    "Appended to the AI's system prompt for Top-N and Human-as-a-Tool. Plain text; line breaks are preserved. Ignored when no AI assistance is enabled.",
-  human_prompt_prefix:
-    "Rendered above every question — e.g. \"When you see the text below, do you think x or y?\". Plain text; line breaks preserved.",
-  human_prompt_suffix:
-    "Rendered below every question — e.g. \"Is the statement above true or false?\". Plain text; line breaks preserved.",
+    'Used to generate AI answers and assistance. Plain text; line breaks preserved.',
+  human_prompt_prefix: 'Rendered above every question. Plain text; line breaks preserved.',
+  human_prompt_suffix: 'Rendered below every question. Plain text; line breaks preserved.',
   prolific_pool:
-    "Label for the participant pool this study targets (e.g. 'uk_representative_sample'). For your reference when configuring Prolific filters; not sent to the Prolific API.",
+    'For your reference when configuring Prolific filters; not sent to the Prolific API.',
 };
+
+// Placeholder text shown inside empty fields — matches the mock's design of
+// letting the field's example serve as its own hint before the user types.
+const DATASET_META_PLACEHOLDERS: Partial<Record<DatasetMetaField, string>> = {
+  human_prompt_prefix: 'e.g. When you see the text below, do you think x or y?',
+  human_prompt_suffix: 'e.g. Is the statement above true or false?',
+  prolific_pool: 'e.g. uk_representative_sample',
+};
+
+// Fields grouped by *where they surface* — a researcher editing the tab is
+// usually thinking "how do I change what raters see on the splash?" or "the
+// prompt around each question", not "the ordering the CSV uses". Group names
+// answer that question; single-field groups (system prompt, pool) still get a
+// header so someone with assistance off knows they can skip the AI row.
+const META_FIELD_GROUPS: {
+  header: string;
+  fields: { field: DatasetMetaField; kind: 'input' | 'textarea'; minHeight?: number }[];
+}[] = [
+  {
+    header: 'Instructions',
+    fields: [
+      { field: 'description', kind: 'textarea', minHeight: 140 },
+      { field: 'system_prompt', kind: 'textarea', minHeight: 140 },
+    ],
+  },
+  {
+    header: 'Per-question framing',
+    fields: [
+      { field: 'human_prompt_prefix', kind: 'textarea', minHeight: 90 },
+      { field: 'human_prompt_suffix', kind: 'textarea', minHeight: 90 },
+    ],
+  },
+  {
+    header: 'Deployment',
+    fields: [{ field: 'prolific_pool', kind: 'input' }],
+  },
+];
 
 interface ExperimentDetailProps {
   experiment: Experiment;
   allExperiments: Experiment[];
   onBack: () => void;
   onDeleted: () => void;
-  onRefresh: () => void;
+  onRefresh: () => Promise<unknown>;
 }
 
-// Prolific's API stores reward in the minor unit of the workspace currency.
-// For 2-decimal currencies (USD, GBP, EUR, …) that's cents; for zero-decimal
-// currencies (JPY, KRW, VND, …) the minor unit IS the major unit, so dividing
-// by 100 would render ¥900 as "9.00" and a user typing "900" would send
-// ¥90,000 — a silent 100× overpayment. We branch on the workspace currency.
-const ZERO_DECIMAL_CURRENCIES = new Set(['JPY', 'KRW', 'VND', 'CLP', 'ISK']);
-
-function rewardDecimals(currencyCode: string | null): number {
-  return currencyCode !== null && ZERO_DECIMAL_CURRENCIES.has(currencyCode) ? 0 : 2;
-}
-
-function rewardMinorToInput(minorUnits: number, currencyCode: string | null): string {
-  if (!Number.isFinite(minorUnits) || minorUnits <= 0) return '';
-  const decimals = rewardDecimals(currencyCode);
-  return (minorUnits / 10 ** decimals).toFixed(decimals);
-}
-
-function rewardInputToMinor(value: string, currencyCode: string | null): number {
-  const parsed = parseFloat(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return 0;
-  return Math.round(parsed * 10 ** rewardDecimals(currencyCode));
-}
-
-// Live derived-info under the reward field: per-hour rate (matches Prolific's
-// own UI cue for whether the reward meets their minimum) and the participant
-// subtotal. Returns null when nothing meaningful can be shown yet.
-function rewardHintText(
-  rewardInput: string,
-  currencyCode: string | null,
-  currencySymbol: string | null,
-  durationMinutes: number,
-  places: number,
-): string | null {
-  const minor = rewardInputToMinor(rewardInput, currencyCode);
-  if (minor <= 0) return null;
-  const decimals = rewardDecimals(currencyCode);
-  const major = minor / 10 ** decimals;
-  const symbol = currencySymbol ?? '';
-  const parts: string[] = [];
-  if (durationMinutes > 0) {
-    const hourly = major / (durationMinutes / 60);
-    parts.push(`${symbol}${hourly.toFixed(decimals)}/hour`);
-  }
-  if (places > 0) {
-    const total = major * places;
-    parts.push(`Total: ${symbol}${total.toFixed(decimals)} for ${places} ${places === 1 ? 'rater' : 'raters'}`);
-  }
-  return parts.length > 0 ? parts.join(' · ') : null;
-}
-
-function experimentSearchHaystack(exp: Experiment): string {
-  return [
-    exp.name,
-    exp.internal_name ?? '',
-    ...(exp.dataset_filenames ?? []),
-  ]
-    .join(' ')
-    .toLowerCase();
-}
-
-// Style bag for the exclusion picker. Overlaps with the in-component
-// `styles.screener*` set — kept separate here because the picker is a
-// top-level component and can't reach the component-scoped `styles` object
-// without prop plumbing.
-const exclusionStyles = {
-  wrapper: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '6px',
-    padding: '10px 12px',
-    border: '1px solid #ddd',
-    borderRadius: '6px',
-    background: '#f8f9fa',
-  },
-  search: {
-    padding: '6px 8px',
-    border: '1px solid #ccc',
-    borderRadius: '4px',
-    fontSize: '13px',
-    margin: 0,
-  },
-  list: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '6px',
-    maxHeight: '180px',
-    overflowY: 'auto' as const,
-  },
-  row: {
-    display: 'flex',
-    alignItems: 'flex-start',
-    gap: '10px',
-    fontSize: '13px',
-    fontWeight: 'normal',
-    cursor: 'pointer',
-    margin: 0,
-  },
-  checkbox: {
-    width: '16px',
-    height: '16px',
-    flex: '0 0 auto',
-    margin: '3px 0 0 0',
-    padding: 0,
-    cursor: 'pointer',
-  },
-  rowText: {
-    lineHeight: '1.4',
-  },
-  rowSubtitle: {
-    color: '#555',
-  },
-  empty: {
-    color: '#777',
-    fontSize: '12px',
-    fontStyle: 'italic' as const,
-    padding: '4px 0',
-  },
-  count: {
-    color: '#555',
-    fontSize: '12px',
-  },
-};
-
-interface ExclusionPickerProps {
-  experiments: Experiment[];
-  selectedIds: number[];
-  onChange: (ids: number[]) => void;
-  testIdPrefix: string;
-}
-
-function ExperimentExclusionPicker({
-  experiments,
-  selectedIds,
-  onChange,
-  testIdPrefix,
-}: ExclusionPickerProps) {
-  const [query, setQuery] = useState('');
-  const q = query.trim().toLowerCase();
-  const visible = q
-    ? experiments.filter((e) => experimentSearchHaystack(e).includes(q))
-    : experiments;
-  const toggle = (id: number, checked: boolean) => {
-    if (checked) {
-      onChange(Array.from(new Set([...selectedIds, id])));
-    } else {
-      onChange(selectedIds.filter((v) => v !== id));
-    }
-  };
-  return (
-    <div style={exclusionStyles.wrapper}>
-      <input
-        type="text"
-        data-testid={`${testIdPrefix}-search`}
-        placeholder="Search by experiment name or dataset filename"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        style={exclusionStyles.search}
-      />
-      <div style={exclusionStyles.list}>
-        {visible.length === 0 && (
-          <div style={exclusionStyles.empty}>
-            {experiments.length === 0
-              ? 'No other experiments yet.'
-              : 'No matches.'}
-          </div>
-        )}
-        {visible.map((exp) => {
-          const checked = selectedIds.includes(exp.id);
-          const subtitle = [
-            exp.internal_name && exp.internal_name !== exp.name ? exp.internal_name : null,
-            exp.dataset_filenames.length > 0 ? exp.dataset_filenames.join(', ') : null,
-          ]
-            .filter(Boolean)
-            .join(' · ');
-          return (
-            <label key={exp.id} style={exclusionStyles.row}>
-              <input
-                type="checkbox"
-                data-testid={`${testIdPrefix}-option-${exp.id}`}
-                checked={checked}
-                onChange={(e) => toggle(exp.id, e.target.checked)}
-                style={exclusionStyles.checkbox}
-              />
-              <span style={exclusionStyles.rowText}>
-                <strong>{exp.name}</strong>
-                {subtitle && (
-                  <span style={exclusionStyles.rowSubtitle}> — {subtitle}</span>
-                )}
-              </span>
-            </label>
-          );
-        })}
-      </div>
-      {selectedIds.length > 0 && (
-        <div style={exclusionStyles.count}>
-          {selectedIds.length} experiment{selectedIds.length === 1 ? '' : 's'} selected
-        </div>
-      )}
-    </div>
-  );
-}
+// The four setup steps, in the order the user should complete them. Overview
+// and Danger sit outside this sequence.
+const SETUP_STEPS: { key: TabKey; label: string }[] = [
+  { key: 'questions', label: 'Questions' },
+  { key: 'instructions', label: 'Instructions & prompts' },
+  { key: 'assistance', label: 'Rater assistance' },
+  { key: 'launch', label: 'Launch on Prolific' },
+];
 
 function ExperimentDetail({
   experiment,
@@ -253,13 +114,43 @@ function ExperimentDetail({
   onDeleted,
   onRefresh,
 }: ExperimentDetailProps) {
+  // ── Data state ─────────────────────────────────────────────────────────
   const [stats, setStats] = useState<ExperimentStats | null>(null);
   const [uploads, setUploads] = useState<Upload[]>([]);
+  const [rounds, setRounds] = useState<ExperimentRound[]>([]);
+  const [recommendation, setRecommendation] = useState<RecommendationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  // Success toasts auto-dismiss. Track the pending timer so rapid-fire actions
+  // don't let an earlier timer clear a later toast prematurely.
+  const successTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (successTimerRef.current !== null) window.clearTimeout(successTimerRef.current);
+    };
+  }, []);
+  const clearSuccess = useCallback(() => {
+    if (successTimerRef.current !== null) {
+      window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = null;
+    }
+    setSuccess(null);
+  }, []);
+  const showSuccess = useCallback((message: string, durationMs: number = 3000) => {
+    if (successTimerRef.current !== null) window.clearTimeout(successTimerRef.current);
+    setSuccess(message);
+    successTimerRef.current = window.setTimeout(() => {
+      setSuccess(null);
+      successTimerRef.current = null;
+    }, durationMs);
+  }, []);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [includePreview, setIncludePreview] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [tab, setTab] = useState<TabKey>('overview');
+
   const [publishingRoundId, setPublishingRoundId] = useState<number | null>(null);
   const [closingRoundId, setClosingRoundId] = useState<number | null>(null);
   const [editingRoundId, setEditingRoundId] = useState<number | null>(null);
@@ -289,8 +180,6 @@ function ExperimentDetail({
   const [platformStatusMessage, setPlatformStatusMessage] = useState<string | null>(null);
   const [currencyCode, setCurrencyCode] = useState<string | null>(null);
   const [currencySymbol, setCurrencySymbol] = useState<string | null>(null);
-  const [rounds, setRounds] = useState<ExperimentRound[]>([]);
-  const [recommendation, setRecommendation] = useState<RecommendationResponse | null>(null);
   const [pilotForm, setPilotForm] = useState<Omit<PilotStudyCreate, 'reward'>>({
     description: experiment.description ?? '',
     estimated_completion_time: 60,
@@ -300,21 +189,16 @@ function ExperimentDetail({
     screeners: ['ai_taskers', 'fact_checkers', 'approval_rate'],
     excluded_experiment_ids: [],
   });
-  // If the experiment's dataset-level description arrives after mount (e.g. via
-  // an upload populating dataset_meta.description), seed the pilot form with it so
-  // the admin doesn't have to retype. Only pre-fills while the form is blank;
-  // edits the admin has typed are preserved.
-  const pilotDescriptionInitedRef = useRef(Boolean(experiment.description));
+  // Keep the pilot description in sync with the experiment's dataset-level
+  // description while the admin hasn't typed their own version. Set true on
+  // any admin edit to the pilot description field; unset on a successful pilot
+  // launch (the form is hidden after that anyway, but the reset lets a future
+  // re-open pick up prop changes again).
+  const pilotDescriptionDirtyRef = useRef(false);
   useEffect(() => {
-    if (
-      !pilotDescriptionInitedRef.current
-      && experiment.description
-      && !pilotForm.description
-    ) {
-      pilotDescriptionInitedRef.current = true;
-      setPilotForm((prev) => ({ ...prev, description: experiment.description ?? '' }));
-    }
-  }, [experiment.description, pilotForm.description]);
+    if (pilotDescriptionDirtyRef.current) return;
+    setPilotForm((prev) => ({ ...prev, description: experiment.description ?? '' }));
+  }, [experiment.description]);
   const [pilotRewardInput, setPilotRewardInput] = useState<string>('9.00');
   // Re-format the pilot default once when the workspace currency arrives,
   // so a JPY workspace sees "900" (≈¥900) instead of "9.00" (≈¥9). Guarded
@@ -338,9 +222,34 @@ function ExperimentDetail({
     (experiment.assistance_params?.confidence_method as string) ?? 'self_report'
   );
 
+  // Resync toggles when the experiment prop changes. Without this the useState
+  // initializers only run at mount, so any refresh path that keeps the component
+  // mounted (e.g. the CSV upload flow, saveAssistanceMethod's own refresh) would
+  // let local state drift from the server-side assistance_method.
+  useEffect(() => {
+    setHumanAsATool(experiment.assistance_method === 'human_as_a_tool');
+    setTopNEnabled(experiment.assistance_method === 'top_n');
+    setTopNValue(Number(experiment.assistance_params?.n ?? 3));
+    setConfidenceMethod(
+      (experiment.assistance_params?.confidence_method as string) ?? 'self_report'
+    );
+  }, [experiment.assistance_method, experiment.assistance_params]);
+
+  // Assistance step is considered "done" once the user has opened the panel
+  // and made an explicit choice (even if that choice is "None"). We track
+  // this per-experiment in sessionStorage so the stepper doesn't nag on
+  // repeat visits within a session; the model's assistance_method itself
+  // doesn't distinguish "default none" from "explicitly picked none".
+  const assistanceSessionKey = `assist-visited-${experiment.id}`;
+  const [assistanceTouched, setAssistanceTouched] = useState<boolean>(
+    () => sessionStorage.getItem(assistanceSessionKey) === '1',
+  );
+  const markAssistanceTouched = () => {
+    sessionStorage.setItem(assistanceSessionKey, '1');
+    setAssistanceTouched(true);
+  };
+
   // Dataset metadata edits live in local form state and are committed via Save.
-  // Stored as strings (not nullable) so React can keep them controlled; converted
-  // to `null`-equivalent at the wire boundary via `.trim()`.
   const [metaForm, setMetaForm] = useState<Record<DatasetMetaField, string>>({
     description: experiment.description ?? '',
     system_prompt: experiment.system_prompt ?? '',
@@ -349,16 +258,8 @@ function ExperimentDetail({
     prolific_pool: experiment.prolific_pool ?? '',
   });
   const [savingMeta, setSavingMeta] = useState(false);
-  // True once the admin has typed into any metadata field without saving. Used
-  // to suppress the reset effect below — without it, an upload that brings new
-  // dataset metadata values triggers an experiment refresh and silently clobbers
-  // the admin's in-progress edits.
   const metaFormDirtyRef = useRef(false);
 
-  // Reset the form whenever a fresh `experiment` arrives (e.g. after upload
-  // applies #META: values). Without this the inputs stay frozen on whatever
-  // the admin opened the page with. Skipped while the form is dirty so an
-  // upload mid-edit doesn't discard typed-but-unsaved text.
   useEffect(() => {
     if (metaFormDirtyRef.current) return;
     setMetaForm({
@@ -376,91 +277,7 @@ function ExperimentDetail({
     experiment.prolific_pool,
   ]);
 
-  const handleSaveMeta = async () => {
-    setError(null);
-    setSavingMeta(true);
-    try {
-      await api.updateExperiment(experiment.id, {
-        assistance_method: experiment.assistance_method,
-        assistance_params: experiment.assistance_params ?? null,
-        description: metaForm.description,
-        system_prompt: metaForm.system_prompt,
-        human_prompt_prefix: metaForm.human_prompt_prefix,
-        human_prompt_suffix: metaForm.human_prompt_suffix,
-        prolific_pool: metaForm.prolific_pool,
-      });
-      setSuccess('Dataset metadata saved.');
-      setTimeout(() => setSuccess(null), 2000);
-      metaFormDirtyRef.current = false;
-      onRefresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save dataset metadata');
-    } finally {
-      setSavingMeta(false);
-    }
-  };
-
-  const saveAssistanceMethod = async (
-    method: 'none' | 'top_n' | 'human_as_a_tool',
-    params?: Record<string, unknown>
-  ) => {
-    await api.updateExperiment(experiment.id, {
-      assistance_method: method,
-      assistance_params: params,
-    });
-    setTopNEnabled(method === 'top_n');
-    setHumanAsATool(method === 'human_as_a_tool');
-  };
-
-  const handleTopNToggle = async () => {
-    const next = !topNEnabled;
-    try {
-      await saveAssistanceMethod(next ? 'top_n' : 'none', next ? { n: topNValue } : undefined);
-      setSuccess(`Top N assistance ${next ? 'enabled' : 'disabled'}`);
-      setTimeout(() => setSuccess(null), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update assistance method');
-    }
-  };
-
-  const handleTopNChange = async (value: number) => {
-    const nextValue = Math.max(1, Math.min(10, value));
-    setTopNValue(nextValue);
-    if (!topNEnabled) return;
-    try {
-      await saveAssistanceMethod('top_n', { n: nextValue });
-      setSuccess('Top N setting updated');
-      setTimeout(() => setSuccess(null), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update Top N setting');
-    }
-  };
-
-  const handleHumanAsAToolToggle = async () => {
-    const next = !humanAsATool;
-    try {
-      await saveAssistanceMethod(
-        next ? 'human_as_a_tool' : 'none',
-        next ? { confidence_method: confidenceMethod } : undefined
-      );
-      setSuccess(`Human-as-a-tool ${next ? 'enabled' : 'disabled'}`);
-      setTimeout(() => setSuccess(null), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update assistance method');
-    }
-  };
-
-  const handleConfidenceMethodChange = async (method: string) => {
-    setConfidenceMethod(method);
-    try {
-      await saveAssistanceMethod('human_as_a_tool', { confidence_method: method });
-      setSuccess('Confidence method updated');
-      setTimeout(() => setSuccess(null), 2000);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update confidence method');
-    }
-  };
-
+  // ── Data-loading effects ───────────────────────────────────────────────
   const loadStats = useCallback(async () => {
     try {
       const data = await api.getExperimentStats(experiment.id, { includePreview });
@@ -522,6 +339,103 @@ function ExperimentDetail({
     }
   }, [prolificEnabled, loadRounds, loadRecommendation]);
 
+  // ── Handlers ───────────────────────────────────────────────────────────
+  const handleSaveMeta = async () => {
+    setError(null);
+    setSavingMeta(true);
+    try {
+      await api.updateExperiment(experiment.id, {
+        assistance_method: experiment.assistance_method,
+        assistance_params: experiment.assistance_params ?? null,
+        description: metaForm.description,
+        system_prompt: metaForm.system_prompt,
+        human_prompt_prefix: metaForm.human_prompt_prefix,
+        human_prompt_suffix: metaForm.human_prompt_suffix,
+        prolific_pool: metaForm.prolific_pool,
+      });
+      showSuccess('Instructions & prompts saved.', 2000);
+      metaFormDirtyRef.current = false;
+      onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save instructions & prompts');
+    } finally {
+      setSavingMeta(false);
+    }
+  };
+
+  const saveAssistanceMethod = async (
+    method: 'none' | 'top_n' | 'human_as_a_tool',
+    params?: Record<string, unknown>
+  ) => {
+    await api.updateExperiment(experiment.id, {
+      assistance_method: method,
+      assistance_params: params,
+    });
+    setTopNEnabled(method === 'top_n');
+    setHumanAsATool(method === 'human_as_a_tool');
+    markAssistanceTouched();
+    // Refresh so the `experiment` prop reflects the new assistance state
+    // before any follow-up handler runs. handleSaveMeta re-sends
+    // `experiment.assistance_method` alongside its own fields; without an
+    // awaited refresh, a Save-metadata click right after a toggle would send
+    // the pre-toggle value and reset the server.
+    await onRefresh();
+  };
+
+  const handleTopNToggle = async () => {
+    const next = !topNEnabled;
+    try {
+      await saveAssistanceMethod(next ? 'top_n' : 'none', next ? { n: topNValue } : undefined);
+      showSuccess(`Top-N assistance ${next ? 'enabled' : 'disabled'}`, 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update assistance method');
+    }
+  };
+
+  const handleTopNChange = async (value: number) => {
+    const nextValue = Math.max(1, Math.min(10, value));
+    setTopNValue(nextValue);
+    if (!topNEnabled) return;
+    try {
+      await saveAssistanceMethod('top_n', { n: nextValue });
+      showSuccess('Top-N setting updated', 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update Top-N setting');
+    }
+  };
+
+  const handleHumanAsAToolToggle = async () => {
+    const next = !humanAsATool;
+    try {
+      await saveAssistanceMethod(
+        next ? 'human_as_a_tool' : 'none',
+        next ? { confidence_method: confidenceMethod } : undefined
+      );
+      showSuccess(`Human-as-a-Tool ${next ? 'enabled' : 'disabled'}`, 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update assistance method');
+    }
+  };
+
+  const handleNoAssistance = async () => {
+    try {
+      await saveAssistanceMethod('none');
+      showSuccess('Assistance disabled — raters answer unaided.', 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update assistance method');
+    }
+  };
+
+  const handleConfidenceMethodChange = async (method: string) => {
+    setConfidenceMethod(method);
+    try {
+      await saveAssistanceMethod('human_as_a_tool', { confidence_method: method });
+      showSuccess('Confidence method updated', 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update confidence method');
+    }
+  };
+
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadFile) return;
@@ -536,12 +450,10 @@ function ExperimentDetail({
     }
 
     setError(null);
-    setSuccess(null);
+    clearSuccess();
 
     try {
       const result = await api.uploadQuestions(experiment.id, uploadFile);
-      // Compose a success line that names which #META: fields took effect and
-      // which were skipped because the experiment already had a different value.
       const parts: string[] = [result.message];
       if (result.meta_applied.length > 0) {
         parts.push(
@@ -555,11 +467,12 @@ function ExperimentDetail({
             .join(', ')}).`,
         );
       }
-      setSuccess(parts.join(' '));
+      showSuccess(parts.join(' '));
       setUploadFile(null);
       (e.target as HTMLFormElement).reset();
       await loadStats();
       await loadUploads();
+      if (prolificEnabled === true) await loadRecommendation();
       onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
@@ -567,16 +480,41 @@ function ExperimentDetail({
   };
 
   const handleDelete = async () => {
+    if (deleting) return;
     const prolificWarning = rounds.length > 0
       ? ' Linked Prolific studies for every round will also be deleted.'
       : '';
-    if (window.confirm(`Delete "${experiment.name}"? This cannot be undone.${prolificWarning}`)) {
-      try {
-        await api.deleteExperiment(experiment.id);
-        onDeleted();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      }
+    if (!window.confirm(`Delete "${experiment.name}"? This cannot be undone.${prolificWarning}`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api.deleteExperiment(experiment.id);
+      onDeleted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+      setDeleting(false);
+    }
+  };
+
+  const handleFinish = async () => {
+    if (!window.confirm(
+      `Mark "${experiment.name}" as finished? This is permanent — no more rounds ` +
+      'can be launched, and this experiment becomes selectable by others as an ' +
+      'exclusion source.'
+    )) {
+      return;
+    }
+    setError(null);
+    setFinishing(true);
+    try {
+      await api.finishExperiment(experiment.id);
+      showSuccess('Experiment marked as finished.');
+      onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to mark experiment as finished');
+    } finally {
+      setFinishing(false);
     }
   };
 
@@ -588,8 +526,7 @@ function ExperimentDetail({
     setPublishingRoundId(roundId);
     try {
       await api.publishExperimentRound(experiment.id, roundId);
-      setSuccess(`Round ${roundNumber === 0 ? 'pilot' : roundNumber} published on Prolific!`);
-      setTimeout(() => setSuccess(null), 3000);
+      showSuccess(`Round ${roundNumber === 0 ? 'pilot' : roundNumber} published on Prolific!`);
       await loadRounds();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to publish study');
@@ -620,9 +557,6 @@ function ExperimentDetail({
     setError(null);
     setSavingEdit(true);
     try {
-      // A blank reward input converts to 0, which the backend rejects (ge=1).
-      // Treat that as "don't change the reward" rather than sending an invalid
-      // value — the user can still edit the other fields without retyping it.
       const rewardMinor = rewardInputToMinor(editRewardInput, currencyCode);
       const { description, estimated_completion_time, places, study_label, screeners, excluded_experiment_ids } = editForm;
       await api.editExperimentRound(experiment.id, roundId, {
@@ -634,8 +568,7 @@ function ExperimentDetail({
         excluded_experiment_ids,
         ...(rewardMinor > 0 ? { reward: rewardMinor } : {}),
       });
-      setSuccess('Round updated on Prolific.');
-      setTimeout(() => setSuccess(null), 3000);
+      showSuccess('Round updated on Prolific.');
       setEditingRoundId(null);
       await loadRounds();
     } catch (err) {
@@ -653,14 +586,36 @@ function ExperimentDetail({
     setClosingRoundId(roundId);
     try {
       await api.closeExperimentRound(experiment.id, roundId);
-      setSuccess(`Round ${roundNumber === 0 ? 'pilot' : roundNumber} closed on Prolific!`);
-      setTimeout(() => setSuccess(null), 3000);
+      showSuccess(`Round ${roundNumber === 0 ? 'pilot' : roundNumber} closed on Prolific!`);
       await loadRounds();
       await loadRecommendation();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to close round');
     } finally {
       setClosingRoundId(null);
+    }
+  };
+
+  const [discardingRoundId, setDiscardingRoundId] = useState<number | null>(null);
+
+  const handleDiscardRound = async (roundId: number, roundNumber: number) => {
+    const label = roundNumber === 0 ? 'pilot' : `Round ${roundNumber}`;
+    if (!window.confirm(
+      `Discard the ${label} draft? This deletes the unpublished Prolific study and lets you rebuild the round from scratch.`
+    )) {
+      return;
+    }
+    setError(null);
+    setDiscardingRoundId(roundId);
+    try {
+      await api.discardExperimentRound(experiment.id, roundId);
+      showSuccess(`${label.charAt(0).toUpperCase() + label.slice(1)} draft discarded.`);
+      await loadRounds();
+      await loadRecommendation();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to discard round');
+    } finally {
+      setDiscardingRoundId(null);
     }
   };
 
@@ -672,8 +627,8 @@ function ExperimentDetail({
         ...pilotForm,
         reward: rewardInputToMinor(pilotRewardInput, currencyCode),
       });
-      setSuccess('Pilot draft created on Prolific. Publish it when ready.');
-      setTimeout(() => setSuccess(null), 4000);
+      showSuccess('Pilot draft created on Prolific. Publish it when ready.', 4000);
+      pilotDescriptionDirtyRef.current = false;
       onRefresh();
       await loadRounds();
       await loadRecommendation();
@@ -685,12 +640,10 @@ function ExperimentDetail({
   const handleRunRound = async () => {
     if (!recommendation) return;
     const places = recommendation.recommended_places;
-    if (!window.confirm(`Launch a new round with ${places} Prolific places?`)) return;
     setError(null);
     try {
       await api.runExperimentRound(experiment.id, places);
-      setSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`);
-      setTimeout(() => setSuccess(null), 4000);
+      showSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`, 4000);
       await loadRounds();
       await loadRecommendation();
     } catch (err) {
@@ -698,6 +651,7 @@ function ExperimentDetail({
     }
   };
 
+  // ── Derived state ──────────────────────────────────────────────────────
   const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
   const latestRoundClosed = latestRound
     ? ['AWAITING_REVIEW', 'COMPLETED'].includes(latestRound.prolific_study_status)
@@ -706,8 +660,46 @@ function ExperimentDetail({
   const roundLaunchBlockedMessage = !latestRoundClosed && latestRound
     ? `Waiting for ${latestRound.round_number === 0 ? 'the pilot round' : `Round ${latestRound.round_number}`} to close. Current status: ${latestRound.prolific_study_status}.`
     : null;
+  const isLocked = experiment.status !== 'DRAFT';
+  const isFinished = experiment.status === 'FINISHED';
+  const canFinish = useMemo(
+    () =>
+      experiment.status === 'LAUNCH'
+      && rounds.length > 0
+      && rounds.every((r) => ['AWAITING_REVIEW', 'COMPLETED'].includes(r.prolific_study_status)),
+    [experiment.status, rounds],
+  );
+  const lockedHint = isFinished
+    ? 'Locked — experiment is finished.'
+    : 'Locked — config freezes once the first round is published on Prolific.';
 
+  // Setup checklist state. Each step's "done"-ness is derived; the "current"
+  // step is the first non-done step in sequence. Everything after `current`
+  // is "todo".
+  const stepDone = {
+    questions: experiment.question_count > 0,
+    instructions: Boolean(experiment.description?.trim()),
+    assistance: assistanceTouched || experiment.assistance_method !== 'none',
+    launch: experiment.status !== 'DRAFT',
+  } as const;
+  const currentStepKey = ((): TabKey | null => {
+    for (const s of SETUP_STEPS) {
+      if (!stepDone[s.key as keyof typeof stepDone]) return s.key;
+    }
+    return null;
+  })();
+  const stepDefs: StepDef[] = SETUP_STEPS.map((s, i) => {
+    const done = stepDone[s.key as keyof typeof stepDone];
+    const status: StepStatus = done
+      ? 'done'
+      : s.key === currentStepKey
+        ? 'current'
+        : 'todo';
+    return { key: s.key, index: i + 1, label: s.label, status };
+  });
+  const stepsCompletedCount = stepDefs.filter((s) => s.status === 'done').length;
 
+  // Analytics is a separate full-screen surface; opening it swaps the whole page.
   if (showAnalytics) {
     return (
       <Analytics
@@ -718,1213 +710,2090 @@ function ExperimentDetail({
     );
   }
 
-  const styles = {
-    container: {
-      maxWidth: '1200px',
-      margin: '0 auto',
-      padding: '24px',
-    },
-    header: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '16px',
-      marginBottom: '24px',
-      paddingBottom: '16px',
-      borderBottom: '1px solid #e0e0e0',
-    },
-    backButton: {
-      background: 'none',
-      border: '1px solid #ddd',
-      padding: '8px 16px',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      color: '#666',
-    },
-    title: {
-      margin: 0,
-      fontSize: '24px',
-      fontWeight: 600,
-    },
-    grid: {
-      display: 'grid',
-      gridTemplateColumns: '1fr 1fr',
-      gap: '24px',
-    },
-    column: {
-      display: 'flex',
-      flexDirection: 'column' as const,
-      gap: '20px',
-    },
-    section: {
-      background: '#fff',
-      borderRadius: '8px',
-      border: '1px solid #e0e0e0',
-      overflow: 'hidden',
-    },
-    sectionHeader: {
-      padding: '16px 20px',
-      borderBottom: '1px solid #e0e0e0',
-      background: '#fafafa',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      gap: '12px',
-    },
-    sectionTitle: {
-      margin: 0,
-      fontSize: '14px',
-      fontWeight: 600,
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      color: '#555',
-    },
-    statusBadge: {
-      display: 'inline-flex',
-      alignItems: 'center',
-      borderRadius: '999px',
-      padding: '4px 10px',
-      fontSize: '12px',
-      fontWeight: 600,
-      letterSpacing: '0.2px',
-    },
-    sectionBody: {
-      padding: '20px',
-    },
-    infoBanner: {
-      borderRadius: '8px',
-      padding: '12px 14px',
-      marginBottom: '16px',
-      fontSize: '13px',
-      lineHeight: 1.5,
-    },
-    statsGrid: {
-      display: 'grid',
-      gridTemplateColumns: 'repeat(2, 1fr)',
-      gap: '16px',
-    },
-    statItem: {
-      textAlign: 'center' as const,
-      padding: '16px',
-      background: '#f8f9fa',
-      borderRadius: '6px',
-    },
-    statValue: {
-      fontSize: '28px',
-      fontWeight: 700,
-      color: '#333',
-    },
-    statLabel: {
-      fontSize: '12px',
-      color: '#666',
-      marginTop: '4px',
-    },
-    buttonGroup: {
-      display: 'flex',
-      gap: '10px',
-      marginTop: '16px',
-    },
-    primaryButton: {
-      flex: 1,
-      padding: '12px 16px',
-      background: '#4a90d9',
-      color: '#fff',
-      border: 'none',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-      fontWeight: 500,
-    },
-    secondaryButton: {
-      flex: 1,
-      padding: '12px 16px',
-      background: '#fff',
-      color: '#333',
-      border: '1px solid #ddd',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-      fontWeight: 500,
-    },
-    disabledButton: {
-      background: '#cbd5e1',
-      color: '#475569',
-      cursor: 'not-allowed',
-      opacity: 0.7,
-      boxShadow: 'none',
-    },
-    inputGroup: {
-      marginBottom: '16px',
-    },
-    screenerList: {
-      display: 'flex',
-      flexDirection: 'column' as const,
-      gap: '8px',
-      padding: '10px 12px',
-      border: '1px solid #ddd',
-      borderRadius: '6px',
-      background: '#f8f9fa',
-    },
-    screenerRow: {
-      display: 'flex',
-      alignItems: 'flex-start',
-      gap: '10px',
-      fontSize: '14px',
-      fontWeight: 'normal',
-      cursor: 'pointer',
-      margin: 0,
-    },
-    // Override the global `input { width:100%; padding:10px; margin-bottom:12px }`
-    // rule so the checkbox renders at its native size instead of being stretched
-    // to fill the row.
-    screenerCheckbox: {
-      width: '16px',
-      height: '16px',
-      flex: '0 0 auto',
-      margin: '3px 0 0 0',
-      padding: 0,
-      cursor: 'pointer',
-    },
-    screenerText: {
-      lineHeight: '1.4',
-    },
-    screenerHint: {
-      color: '#555',
-    },
-    label: {
-      display: 'block',
-      fontSize: '13px',
-      fontWeight: 500,
-      color: '#333',
-      marginBottom: '6px',
-    },
-    input: {
-      width: '100%',
-      padding: '10px 12px',
-      border: '1px solid #ddd',
-      borderRadius: '6px',
-      fontSize: '14px',
-      fontFamily: 'monospace',
-      background: '#f8f9fa',
-      cursor: 'pointer',
-      boxSizing: 'border-box' as const,
-    },
-    // Prefixed input. The wrapper carries the input's visual chrome (border,
-    // padding, background) and uses flex with `alignItems: 'baseline'` so the
-    // prefix glyph and the input text share a single text baseline — no
-    // absolute positioning, no line-box math. The inner <input> is stripped
-    // of its own chrome so the wrapper is the only thing the user sees.
-    rewardInputWrapper: {
-      display: 'flex',
-      alignItems: 'baseline',
-      gap: '4px',
-      width: '100%',
-      padding: '10px 12px',
-      border: '1px solid #ddd',
-      borderRadius: '6px',
-      background: '#f8f9fa',
-      fontSize: '14px',
-      fontFamily: 'monospace',
-      boxSizing: 'border-box' as const,
-    },
-    rewardInputPrefix: {
-      color: '#666',
-      flexShrink: 0,
-      pointerEvents: 'none' as const,
-    },
-    rewardInputField: {
-      flex: 1,
-      minWidth: 0,
-      border: 'none',
-      background: 'transparent',
-      padding: 0,
-      margin: 0,
-      fontSize: 'inherit',
-      fontFamily: 'inherit',
-      lineHeight: 'inherit',
-      color: '#333',
-      outline: 'none',
-    },
-    hint: {
-      fontSize: '12px',
-      color: '#888',
-      marginTop: '6px',
-    },
-    uploadList: {
-      marginBottom: '16px',
-    },
-    uploadItem: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '10px 12px',
-      background: '#f8f9fa',
-      borderRadius: '4px',
-      marginBottom: '8px',
-      fontSize: '13px',
-    },
-    warning: {
-      background: '#fff3cd',
-      border: '1px solid #ffc107',
-      borderRadius: '6px',
-      padding: '12px',
-      marginBottom: '16px',
-      fontSize: '13px',
-    },
-    dangerSection: {
-      borderColor: '#f5c6cb',
-    },
-    dangerHeader: {
-      background: '#fff5f5',
-    },
-    dangerButton: {
-      background: '#dc3545',
-      color: '#fff',
-      border: 'none',
-      padding: '10px 20px',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-    },
-    toggleRow: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      padding: '16px 0',
-      borderBottom: '1px solid #eee',
-    },
-    toggleInfo: {
-      flex: 1,
-      paddingRight: '16px',
-    },
-    toggleLabel: {
-      fontSize: '14px',
-      fontWeight: 500,
-      color: '#333',
-      marginBottom: '4px',
-    },
-    toggleDescription: {
-      fontSize: '12px',
-      color: '#888',
-      lineHeight: 1.4,
-    },
-    toggle: {
-      position: 'relative' as const,
-      width: '44px',
-      height: '24px',
-      flexShrink: 0,
-    },
-    toggleTrack: {
-      width: '44px',
-      height: '24px',
-      borderRadius: '12px',
-      cursor: 'pointer',
-      transition: 'background 0.2s',
-    },
-    toggleThumb: {
-      position: 'absolute' as const,
-      top: '2px',
-      width: '20px',
-      height: '20px',
-      borderRadius: '50%',
-      background: '#fff',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-      transition: 'left 0.2s',
-    },
-    comingSoon: {
-      fontSize: '10px',
-      color: '#888',
-      background: '#f0f0f0',
-      padding: '2px 6px',
-      borderRadius: '4px',
-      marginLeft: '8px',
-    },
-  };
-
-  const prolificStatusMeta = prolificEnabled === true
-    ? {
-        badgeLabel: 'Enabled',
-        badgeStyle: { background: '#e8f6ed', color: '#166534' },
-        bannerStyle: { ...styles.infoBanner, background: '#eefbf3', border: '1px solid #72c08f', color: '#166534' },
-        message: 'Prolific is enabled. Each launch creates an unpublished Prolific draft: start with the pilot, then close each round before creating the next one.',
-      }
-    : prolificEnabled === 'loading'
-      ? {
-          badgeLabel: 'Checking...',
-          badgeStyle: { background: '#f1f3f5', color: '#495057' },
-          bannerStyle: { ...styles.infoBanner, background: '#f8f9fa', border: '1px solid #d0d7de', color: '#495057' },
-          message: 'Checking Prolific mode for this environment...',
-        }
-      : {
-          badgeLabel: 'Disabled',
-          badgeStyle: { background: '#f8f0f0', color: '#9f1239' },
-          bannerStyle: { ...styles.infoBanner, background: '#fff5f5', border: '1px solid #f1b8be', color: '#9f1239' },
-          message: 'Prolific is disabled for this environment. Configure a Prolific API token to enable paid rounds.',
-        };
-
+  // ── Render ─────────────────────────────────────────────────────────────
   return (
-    <div style={styles.container}>
-      {/* Header */}
-      <div style={styles.header}>
-        <button onClick={onBack} style={styles.backButton}>← Back</button>
-        <div>
-          <h1 style={styles.title}>{experiment.internal_name || experiment.name}</h1>
+    <div className="admin-page">
+      {/* Header row: back button, title, status pill, launch action shortcut. */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 26 }}>
+        <button
+          type="button"
+          onClick={onBack}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '8px 14px',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--surface)',
+            fontSize: 13.5,
+            fontWeight: 600,
+            color: 'var(--muted)',
+            whiteSpace: 'nowrap',
+            marginTop: 4,
+            cursor: 'pointer',
+          }}
+        >
+          ← Back
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <h1
+              style={{
+                fontFamily: 'var(--font-head)',
+                fontWeight: 600,
+                fontSize: 28,
+                letterSpacing: '-0.01em',
+                margin: 0,
+              }}
+            >
+              {experiment.internal_name || experiment.name}
+            </h1>
+            <StatusLabel status={experiment.status} />
+          </div>
           {experiment.internal_name && (
-            <div style={{ fontSize: '13px', color: '#666', marginTop: '4px' }}>
+            <p style={{ margin: '6px 0 0', fontSize: 14, color: 'var(--muted)' }}>
               Public name (shown to raters): {experiment.name}
-            </div>
+            </p>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, marginTop: 2 }}>
+          <a
+            data-testid="export-link"
+            href={api.getExportUrl(experiment.id, { includePreview })}
+            download
+            style={{ ...secondaryButton, textDecoration: 'none' }}
+          >
+            Export CSV
+          </a>
+          <button
+            type="button"
+            onClick={() => setShowAnalytics(true)}
+            style={primaryButton}
+          >
+            View analytics
+          </button>
+          {experiment.status === 'LAUNCH' && (
+            <button
+              data-testid="finish-experiment-button"
+              onClick={handleFinish}
+              disabled={!canFinish || finishing}
+              title={
+                canFinish
+                  ? 'Marks the experiment as finished. Permanent.'
+                  : 'All rounds must be closed on Prolific before finishing.'
+              }
+              style={{
+                ...secondaryButton,
+                color: 'var(--accent-soft-ink)',
+                background: 'var(--accent-soft)',
+                borderColor: 'var(--accent-soft)',
+                opacity: canFinish && !finishing ? 1 : 0.5,
+                cursor: canFinish && !finishing ? 'pointer' : 'not-allowed',
+              }}
+            >
+              {finishing ? 'Finishing…' : 'Mark as finished'}
+            </button>
           )}
         </div>
       </div>
 
-      {error && <div className="error" style={{ marginBottom: '16px' }}>{error}</div>}
-      {success && <div className="success" style={{ marginBottom: '16px' }}>{success}</div>}
+      <StepperTabs
+        active={tab}
+        onChange={setTab}
+        steps={stepDefs}
+        onDeleteClick={handleDelete}
+        deleting={deleting}
+      />
 
-      {/* Two Column Grid */}
-      <div style={styles.grid}>
-        {/* Left Column */}
-        <div style={styles.column}>
-          {/* Overview Stats */}
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>Overview</h2>
+      {/* Toasts float over the layout so they don't shove panel content down
+          when they appear/disappear. Anchored top-center so they land in the
+          researcher's line of sight after a save/upload without occluding the
+          bottom action row. */}
+      {(error || success) && (
+        <div
+          style={{
+            position: 'fixed',
+            // AdminShell header is ~48px tall (14px padding × 2 + ~20px content
+            // + 1px border). 68px leaves ~20px of breathing room below it.
+            top: 68,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 40,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            width: 'min(520px, calc(100vw - 32px))',
+            pointerEvents: 'none',
+          }}
+        >
+          {error && (
+            <div style={{ pointerEvents: 'auto' }}>
+              <Toast tone="danger" onDismiss={() => setError(null)}>{error}</Toast>
             </div>
-            <div style={styles.sectionBody}>
-              {stats && (
-                <>
-                  <div style={styles.statsGrid}>
-                    <div style={styles.statItem}>
-                      <div style={styles.statValue}>{stats.total_questions}</div>
-                      <div style={styles.statLabel}>Questions</div>
-                    </div>
-                    <div style={styles.statItem}>
-                      <div style={styles.statValue}>{stats.questions_complete}</div>
-                      <div style={styles.statLabel}>Complete</div>
-                    </div>
-                    <div style={styles.statItem}>
-                      <div style={styles.statValue}>{stats.total_ratings}</div>
-                      <div style={styles.statLabel}>Ratings</div>
-                    </div>
-                    <div style={styles.statItem}>
-                      <div style={styles.statValue}>{stats.total_raters}</div>
-                      <div style={styles.statLabel}>Raters</div>
-                    </div>
-                  </div>
-                  <div style={{ ...styles.toggleRow, borderBottom: 'none', paddingBottom: '8px' }}>
-                    <div style={styles.toggleInfo}>
-                      <div style={styles.toggleLabel}>Include preview data</div>
-                      <div style={styles.toggleDescription}>
-                        Show data from preview sessions in stats, analytics, exports, and round recommendations.
-                      </div>
-                    </div>
-                    <div style={styles.toggle}>
-                      <div
-                        data-testid="include-preview-toggle"
-                        style={{
-                          ...styles.toggleTrack,
-                          background: includePreview ? '#4a90d9' : '#ddd',
-                        }}
-                        onClick={() => setIncludePreview(!includePreview)}
-                      />
-                      <div
-                        style={{
-                          ...styles.toggleThumb,
-                          left: includePreview ? '22px' : '2px',
-                        }}
-                      />
-                    </div>
-                  </div>
-                  <div style={styles.buttonGroup}>
-                    <button style={styles.primaryButton} onClick={() => setShowAnalytics(true)}>
-                      View Analytics
-                    </button>
-                    <a
-                      data-testid="export-link"
-                      href={api.getExportUrl(experiment.id, { includePreview })}
-                      download
-                      style={{ flex: 1 }}
-                    >
-                      <button style={{ ...styles.secondaryButton, width: '100%' }}>
-                        Export CSV
-                      </button>
-                    </a>
-                  </div>
-                </>
-              )}
+          )}
+          {success && (
+            <div style={{ pointerEvents: 'auto' }}>
+              <Toast tone="ok" onDismiss={clearSuccess}>{success}</Toast>
             </div>
-          </div>
-
-          {/* Prolific Study Rounds */}
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>Prolific Workflow</h2>
-              <span
-                data-testid="prolific-mode-badge"
-                style={{ ...styles.statusBadge, ...prolificStatusMeta.badgeStyle }}
-              >
-                {prolificStatusMeta.badgeLabel}
-              </span>
-            </div>
-            <div style={styles.sectionBody}>
-              <div
-                data-testid="prolific-mode-notice"
-                style={prolificStatusMeta.bannerStyle}
-              >
-                {prolificStatusMeta.message}
-                {platformStatusMessage && (
-                  <div style={{ marginTop: '8px' }}>
-                    {platformStatusMessage}
-                  </div>
-                )}
-              </div>
-
-              {/* Preview link always available */}
-              <div style={{ ...styles.inputGroup, marginBottom: '20px' }}>
-                <button
-                  data-testid="preview-participant-button"
-                  onClick={() => {
-                    const previewId = `preview_${Date.now()}`;
-                    const url = `${window.location.origin}/rate?experiment_id=${experiment.id}&PROLIFIC_PID=${previewId}&STUDY_ID=preview&SESSION_ID=preview&preview=true`;
-                    window.open(url, '_blank');
-                  }}
-                  style={styles.secondaryButton}
-                >
-                  Preview as Participant
-                </button>
-              </div>
-
-              {prolificEnabled === true && (
-                <>
-                  {/* Existing rounds list */}
-                  {rounds.length > 0 && (
-                  <div data-testid="study-rounds-list" style={{ marginBottom: '20px' }}>
-                    {rounds.map((round) => (
-                      <div key={round.id} style={{
-                        padding: '12px',
-                        background: '#f8f9fa',
-                        borderRadius: '6px',
-                        marginBottom: '8px',
-                        border: '1px solid #e0e0e0',
-                      }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div>
-                            <span style={{ fontWeight: 600, fontSize: '14px' }}>
-                              {round.round_number === 0 ? 'Pilot Round' : `Round ${round.round_number}`}
-                            </span>
-                            <span style={{ marginLeft: '8px', fontSize: '12px', color: '#666' }}>
-                              {round.places_requested} places
-                            </span>
-                          </div>
-                          <span style={{
-                            padding: '3px 8px',
-                            borderRadius: '4px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            background: round.prolific_study_status === 'ACTIVE' ? '#d4edda'
-                              : ['COMPLETED', 'AWAITING_REVIEW'].includes(round.prolific_study_status) ? '#d1ecf1'
-                              : '#fff3cd',
-                            color: round.prolific_study_status === 'ACTIVE' ? '#155724'
-                              : ['COMPLETED', 'AWAITING_REVIEW'].includes(round.prolific_study_status) ? '#0c5460'
-                              : '#856404',
-                          }}>
-                            {round.prolific_study_status}
-                          </span>
-                        </div>
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                          <button
-                            onClick={() => window.open(round.prolific_study_url, '_blank')}
-                            style={{ ...styles.secondaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
-                          >
-                            Open on Prolific
-                          </button>
-                          {round.prolific_study_status === 'UNPUBLISHED' && editingRoundId !== round.id && (
-                            <button
-                              data-testid={`edit-round-${round.round_number}`}
-                              onClick={() => handleStartEditRound(round)}
-                              style={{ ...styles.secondaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
-                            >
-                              Edit
-                            </button>
-                          )}
-                          {round.prolific_study_status === 'UNPUBLISHED' && (
-                            <button
-                              data-testid={`publish-round-${round.round_number}`}
-                              onClick={() => handlePublishRound(round.id, round.round_number)}
-                              disabled={publishingRoundId === round.id || editingRoundId === round.id}
-                              style={{ ...styles.primaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
-                            >
-                              {publishingRoundId === round.id ? 'Publishing...' : 'Publish'}
-                            </button>
-                          )}
-                          {!['UNPUBLISHED', 'AWAITING_REVIEW', 'COMPLETED'].includes(round.prolific_study_status) && (
-                            <button
-                              data-testid={`close-round-${round.round_number}`}
-                              onClick={() => handleCloseRound(round.id, round.round_number)}
-                              disabled={closingRoundId === round.id}
-                              style={{ ...styles.primaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px', background: '#5f6b7a' }}
-                            >
-                              {closingRoundId === round.id ? 'Closing...' : 'Close Round'}
-                            </button>
-                          )}
-                        </div>
-                        {editingRoundId === round.id && (
-                          <div
-                            data-testid={`edit-round-form-${round.round_number}`}
-                            style={{ marginTop: '12px', padding: '12px', background: '#f8f9fa', borderRadius: '6px', border: '1px solid #e0e0e0' }}
-                          >
-                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
-                              <label style={{ ...styles.label, fontSize: '12px' }}>Description</label>
-                              <textarea
-                                data-testid={`edit-round-description-${round.round_number}`}
-                                value={editForm.description}
-                                onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                                rows={3}
-                                style={{ ...styles.input, fontFamily: 'inherit', resize: 'vertical' as const }}
-                              />
-                            </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '8px', marginBottom: '8px' }}>
-                              <div>
-                                <label style={{ ...styles.label, fontSize: '12px' }}>Time (min)</label>
-                                <input
-                                  data-testid={`edit-round-time-${round.round_number}`}
-                                  type="number"
-                                  min="1"
-                                  value={editForm.estimated_completion_time}
-                                  onChange={(e) => setEditForm({ ...editForm, estimated_completion_time: parseInt(e.target.value) || 0 })}
-                                  style={styles.input}
-                                />
-                              </div>
-                              <div>
-                                <label style={{ ...styles.label, fontSize: '12px' }}>
-                                  Reward{currencyCode ? ` (${currencyCode})` : ''}
-                                </label>
-                                <div className="reward-input" style={styles.rewardInputWrapper}>
-                                  {currencySymbol && (
-                                    <span style={styles.rewardInputPrefix}>{currencySymbol}</span>
-                                  )}
-                                  <input
-                                    data-testid={`edit-round-reward-${round.round_number}`}
-                                    type="text"
-                                    inputMode="decimal"
-                                    value={editRewardInput}
-                                    onChange={(e) => {
-                                      if (e.target.value === '' || /^[0-9]*\.?[0-9]*$/.test(e.target.value)) {
-                                        setEditRewardInput(e.target.value);
-                                      }
-                                    }}
-                                    style={styles.rewardInputField}
-                                  />
-                                </div>
-                              </div>
-                              <div>
-                                <label style={{ ...styles.label, fontSize: '12px' }}>Places</label>
-                                <input
-                                  data-testid={`edit-round-places-${round.round_number}`}
-                                  type="number"
-                                  min="1"
-                                  value={editForm.places}
-                                  onChange={(e) => setEditForm({ ...editForm, places: parseInt(e.target.value) || 0 })}
-                                  style={styles.input}
-                                />
-                              </div>
-                            </div>
-                            {(() => {
-                              const text = rewardHintText(
-                                editRewardInput,
-                                currencyCode,
-                                currencySymbol,
-                                editForm.estimated_completion_time,
-                                editForm.places,
-                              );
-                              return text ? <div style={{ ...styles.hint, marginBottom: '8px' }}>{text}</div> : null;
-                            })()}
-                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
-                              <label style={{ ...styles.label, fontSize: '12px' }}>Study Label</label>
-                              <select
-                                data-testid={`edit-round-study-label-${round.round_number}`}
-                                value={editForm.study_label}
-                                onChange={(e) => setEditForm({ ...editForm, study_label: e.target.value as PilotStudyCreate['study_label'] })}
-                                style={styles.input}
-                              >
-                                <option value="annotation">Annotation</option>
-                                <option value="survey">Survey</option>
-                                <option value="decision_making_task">Decision-making task</option>
-                                <option value="writing_task">Writing task</option>
-                                <option value="interview">Interview</option>
-                                <option value="other">Other</option>
-                              </select>
-                            </div>
-                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
-                              <label style={{ ...styles.label, fontSize: '12px' }}>Pre-screeners</label>
-                              <div style={styles.screenerList}>
-                                {([
-                                  ['ai_taskers', 'Qualified AI Taskers', "Participants Prolific has vetted for AI tasks."],
-                                  ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
-                                  ['approval_rate', 'High Approval Rate (≥80%)', "80%+ approval rate on past Prolific submissions."],
-                                ] as [Screener, string, string][]).map(([key, label, hint]) => {
-                                  const checked = editForm.screeners.includes(key);
-                                  return (
-                                    <label key={key} style={styles.screenerRow}>
-                                      <input
-                                        type="checkbox"
-                                        data-testid={`edit-round-screener-${round.round_number}-${key}`}
-                                        checked={checked}
-                                        onChange={(e) => {
-                                          const next = e.target.checked
-                                            ? Array.from(new Set([...editForm.screeners, key]))
-                                            : editForm.screeners.filter((s) => s !== key);
-                                          setEditForm({ ...editForm, screeners: next });
-                                        }}
-                                        style={styles.screenerCheckbox}
-                                      />
-                                      <span style={styles.screenerText}>
-                                        <strong>{label}</strong>
-                                        <span style={styles.screenerHint}> — {hint}</span>
-                                      </span>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                            <div style={{ ...styles.inputGroup, marginBottom: '8px' }}>
-                              <label style={{ ...styles.label, fontSize: '12px' }}>
-                                Exclude prior participants from
-                              </label>
-                              <ExperimentExclusionPicker
-                                experiments={otherExperiments}
-                                selectedIds={editForm.excluded_experiment_ids}
-                                onChange={(ids) => setEditForm({ ...editForm, excluded_experiment_ids: ids })}
-                                testIdPrefix={`edit-round-exclusion-${round.round_number}`}
-                              />
-                              <div style={styles.hint}>
-                                Participants who joined any selected experiment will not see this study on Prolific.
-                              </div>
-                            </div>
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                              <button
-                                data-testid={`edit-round-cancel-${round.round_number}`}
-                                onClick={handleCancelEditRound}
-                                disabled={savingEdit}
-                                style={{ ...styles.secondaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
-                              >
-                                Cancel
-                              </button>
-                              <button
-                                data-testid={`edit-round-save-${round.round_number}`}
-                                onClick={() => handleSaveEditRound(round.id)}
-                                disabled={savingEdit}
-                                style={{ ...styles.primaryButton, flex: 'none', padding: '6px 12px', fontSize: '12px' }}
-                              >
-                                {savingEdit ? 'Saving...' : 'Save'}
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  )}
-
-                  {/* Recommendation panel (when pilot has data) */}
-                  {recommendation && recommendation.avg_time_per_question_seconds > 0 && (
-                  <div data-testid="recommendation-panel" style={{
-                    padding: '12px',
-                    background: recommendation.is_complete ? '#d4edda' : '#f0f7ff',
-                    borderRadius: '6px',
-                    marginBottom: '16px',
-                    fontSize: '13px',
-                  }}>
-                    {recommendation.is_complete ? (
-                      <strong style={{ color: '#155724' }}>All questions have enough ratings!</strong>
-                    ) : (
-                      <>
-                        <div style={{ marginBottom: '6px' }}>
-                          <strong>Recommendation for next round</strong>
-                        </div>
-                        <div style={{ color: '#444', lineHeight: 1.6 }}>
-                          Avg time/question: <strong>{recommendation.avg_time_per_question_seconds.toFixed(0)}s</strong>
-                          {' · '}Remaining actions: <strong>{recommendation.remaining_rating_actions}</strong>
-                          {' · '}Hours left: <strong>{recommendation.total_hours_remaining.toFixed(1)}</strong>
-                        </div>
-                        <button
-                          data-testid="launch-round-button"
-                          onClick={handleRunRound}
-                          disabled={!latestRoundClosed}
-                          style={{
-                            ...styles.primaryButton,
-                            ...(!latestRoundClosed ? styles.disabledButton : {}),
-                            marginTop: '10px',
-                            width: 'auto',
-                            padding: '8px 16px',
-                          }}
-                        >
-                          Create Round {nextRoundNumber} Draft ({recommendation.recommended_places} places)
-                        </button>
-                        {roundLaunchBlockedMessage && (
-                          <div style={{ marginTop: '8px', color: '#666', lineHeight: 1.5 }}>
-                            {roundLaunchBlockedMessage}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                  )}
-
-                  {/* Pilot form — shown when no pilot exists yet */}
-                  {rounds.length === 0 && (
-                  <form onSubmit={handleRunPilot}>
-                    <div style={{ fontSize: '13px', color: '#555', marginBottom: '12px' }}>
-                      Create the first unpublished round with the study configuration you want to reuse. Pilot timing data drives the recommended size for later rounds.
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-description" style={styles.label}>Study Description</label>
-                      <textarea
-                        id="pilot-description"
-                        data-testid="pilot-description-input"
-                        value={pilotForm.description}
-                        onChange={(e) => setPilotForm({ ...pilotForm, description: e.target.value })}
-                        placeholder={"Describe the task for Prolific participants...\n\nMarkdown is supported: # heading, ## subheading, **bold**, *italic*, ~~strike~~, -/1. lists. Blank lines separate paragraphs."}
-                        required
-                        style={{ ...styles.input, minHeight: '120px', resize: 'vertical' as const, fontFamily: 'inherit' }}
-                      />
-                      <div style={styles.hint}>
-                        Markdown is converted to Prolific's HTML subset (headings, bold/italic/strike, lists, paragraphs). Links and images are not supported by Prolific.
-                      </div>
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-study-label" style={styles.label}>Study Label</label>
-                      <select
-                        id="pilot-study-label"
-                        data-testid="pilot-study-label-select"
-                        value={pilotForm.study_label}
-                        onChange={(e) => setPilotForm({ ...pilotForm, study_label: e.target.value as PilotStudyCreate['study_label'] })}
-                        style={styles.input}
-                      >
-                        <option value="annotation">Annotation</option>
-                        <option value="survey">Survey</option>
-                        <option value="decision_making_task">Decision-making task</option>
-                        <option value="writing_task">Writing task</option>
-                        <option value="interview">Interview</option>
-                        <option value="other">Other</option>
-                      </select>
-                      <div style={styles.hint}>Categorises the study on Prolific; participants see this tag when browsing.</div>
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label style={styles.label}>Pre-screeners</label>
-                      <div style={styles.screenerList}>
-                        {([
-                          ['ai_taskers', 'Qualified AI Taskers', "Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming)."],
-                          ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
-                          ['approval_rate', 'High Approval Rate (≥80%)', "Participants with 80%+ approval rate on past Prolific submissions."],
-                        ] as [Screener, string, string][]).map(([key, label, hint]) => {
-                          const checked = pilotForm.screeners.includes(key);
-                          return (
-                            <label key={key} style={styles.screenerRow}>
-                              <input
-                                type="checkbox"
-                                data-testid={`pilot-screener-${key}`}
-                                checked={checked}
-                                onChange={(e) => {
-                                  const next = e.target.checked
-                                    ? Array.from(new Set([...pilotForm.screeners, key]))
-                                    : pilotForm.screeners.filter((s) => s !== key);
-                                  setPilotForm({ ...pilotForm, screeners: next });
-                                }}
-                                style={styles.screenerCheckbox}
-                              />
-                              <span style={styles.screenerText}>
-                                <strong>{label}</strong>
-                                <span style={styles.screenerHint}> — {hint}</span>
-                              </span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                      <div style={styles.hint}>Default on. Screeners narrow the participant pool to higher-quality raters.</div>
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label style={styles.label}>Exclude prior participants from</label>
-                      <ExperimentExclusionPicker
-                        experiments={otherExperiments}
-                        selectedIds={pilotForm.excluded_experiment_ids}
-                        onChange={(ids) => setPilotForm({ ...pilotForm, excluded_experiment_ids: ids })}
-                        testIdPrefix="pilot-exclusion"
-                      />
-                      <div style={styles.hint}>
-                        Participants who joined any selected experiment will not see this study on Prolific. Main rounds inherit this list from the pilot.
-                      </div>
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-estimated-completion-time" style={styles.label}>Estimated Completion Time (minutes)</label>
-                      <input
-                        id="pilot-estimated-completion-time"
-                        data-testid="pilot-estimated-completion-time-input"
-                        type="number"
-                        value={pilotForm.estimated_completion_time}
-                        onChange={(e) => setPilotForm({ ...pilotForm, estimated_completion_time: parseInt(e.target.value) || 0 })}
-                        min="1"
-                        required
-                        style={styles.input}
-                      />
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-reward" style={styles.label}>
-                        Reward{currencyCode ? ` (${currencyCode})` : ''}
-                      </label>
-                      <div className="reward-input" style={styles.rewardInputWrapper}>
-                        {currencySymbol && (
-                          <span style={styles.rewardInputPrefix}>{currencySymbol}</span>
-                        )}
-                        <input
-                          id="pilot-reward"
-                          data-testid="pilot-reward-input"
-                          type="text"
-                          inputMode="decimal"
-                          value={pilotRewardInput}
-                          onChange={(e) => {
-                            if (e.target.value === '' || /^[0-9]*\.?[0-9]*$/.test(e.target.value)) {
-                              setPilotRewardInput(e.target.value);
-                            }
-                          }}
-                          required
-                          style={styles.rewardInputField}
-                        />
-                      </div>
-                      <div style={styles.hint}>
-                        {rewardHintText(
-                          pilotRewardInput,
-                          currencyCode,
-                          currencySymbol,
-                          pilotForm.estimated_completion_time,
-                          pilotForm.pilot_places,
-                        ) ?? "Enter the amount as you'd see it on Prolific."}
-                      </div>
-                    </div>
-                    <div style={styles.inputGroup}>
-                      <label htmlFor="pilot-places" style={styles.label}>Number of Raters</label>
-                      <input
-                        id="pilot-places"
-                        data-testid="pilot-places-input"
-                        type="number"
-                        value={pilotForm.pilot_places}
-                        onChange={(e) => setPilotForm({ ...pilotForm, pilot_places: parseInt(e.target.value) || 0 })}
-                        min="1"
-                        required
-                        style={styles.input}
-                      />
-                      <div style={styles.hint}>Each rater does 1 hour. 5 is a good default for timing calibration.</div>
-                    </div>
-                    <button data-testid="run-pilot-button" type="submit" style={styles.primaryButton}>
-                      Create Pilot Draft
-                    </button>
-                  </form>
-                  )}
-
-                  {experiment.prolific_completion_url && (
-                  <div style={{ ...styles.inputGroup, marginTop: rounds.length === 0 ? '16px' : '0' }}>
-                    <label style={styles.label}>Completion URL</label>
-                    <input
-                      data-testid="completion-url-input"
-                      type="text"
-                      value={experiment.prolific_completion_url}
-                      readOnly
-                      style={styles.input}
-                    />
-                    <div style={styles.hint}>Raters redirect here when finished.</div>
-                  </div>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Danger Zone */}
-          <div style={{ ...styles.section, ...styles.dangerSection }}>
-            <div style={{ ...styles.sectionHeader, ...styles.dangerHeader }}>
-              <h2 style={{ ...styles.sectionTitle, color: '#dc3545' }}>Danger Zone</h2>
-            </div>
-            <div style={styles.sectionBody}>
-              <p style={{ fontSize: '13px', color: '#666', marginBottom: '12px' }}>
-                Permanently delete this experiment and all associated data.
-              </p>
-              <button onClick={handleDelete} style={styles.dangerButton}>
-                Delete Experiment
-              </button>
-            </div>
-          </div>
+          )}
         </div>
+      )}
 
-        {/* Right Column */}
-        <div style={styles.column}>
-          {/* Questions */}
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>Questions</h2>
-            </div>
-            <div style={styles.sectionBody}>
-              {/* Uploaded files list */}
-              {uploads.length > 0 && (
-                <div style={styles.uploadList}>
-                  {uploads.map((upload) => {
-                    const metaKeys = upload.dataset_meta
-                      ? (Object.keys(upload.dataset_meta) as DatasetMetaField[])
-                      : [];
-                    return (
-                      <div key={upload.id} style={styles.uploadItem}>
-                        <span style={{ fontFamily: 'monospace' }}>{upload.filename}</span>
-                        <span style={{ color: '#666' }}>
-                          {upload.question_count} questions
-                          {metaKeys.length > 0 && (
-                            <span title={`upload declared metadata: ${metaKeys.join(', ')}`}>
-                              {' '}
-                              · meta: {metaKeys.length}
-                            </span>
-                          )}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+      <div style={{ paddingTop: 20, minHeight: 520 }}>
+        {tab === 'overview' && (
+          <OverviewPanel
+            experiment={experiment}
+            stats={stats}
+            includePreview={includePreview}
+            onTogglePreview={setIncludePreview}
+            steps={stepDefs}
+            currentStepKey={currentStepKey}
+            stepsCompletedCount={stepsCompletedCount}
+            onGoto={setTab}
+          />
+        )}
+        {tab === 'questions' && (
+          <QuestionsPanel
+            experiment={experiment}
+            uploads={uploads}
+            uploadFile={uploadFile}
+            onFileChange={setUploadFile}
+            onSubmit={handleUpload}
+            isLocked={isLocked}
+            onBack={() => setTab('overview')}
+            onNext={() => setTab('instructions')}
+          />
+        )}
+        {tab === 'instructions' && (
+          <MetadataPanel
+            experiment={experiment}
+            uploads={uploads}
+            metaForm={metaForm}
+            onMetaChange={(field, value) => {
+              metaFormDirtyRef.current = true;
+              setMetaForm({ ...metaForm, [field]: value });
+            }}
+            onSave={handleSaveMeta}
+            savingMeta={savingMeta}
+            isLocked={isLocked}
+            lockedHint={lockedHint}
+            onBack={() => setTab('questions')}
+            onNext={() => setTab('assistance')}
+          />
+        )}
+        {tab === 'assistance' && (
+          <AssistanceModePanel
+            method={
+              humanAsATool ? 'human_as_a_tool' : topNEnabled ? 'top_n' : 'none'
+            }
+            topNValue={topNValue}
+            confidenceMethod={confidenceMethod}
+            systemPrompt={metaForm.system_prompt}
+            onSystemPromptChange={(v) => {
+              metaFormDirtyRef.current = true;
+              setMetaForm({ ...metaForm, system_prompt: v });
+            }}
+            onSaveSystemPrompt={handleSaveMeta}
+            onPickNone={handleNoAssistance}
+            onToggleTopN={handleTopNToggle}
+            onTopNChange={handleTopNChange}
+            onToggleHumanAsATool={handleHumanAsAToolToggle}
+            onConfidenceMethodChange={handleConfidenceMethodChange}
+            isLocked={isLocked}
+            lockedHint={lockedHint}
+            onBack={() => setTab('instructions')}
+            onNext={() => setTab('launch')}
+          />
+        )}
+        {tab === 'launch' && (
+          <LaunchPanel
+            experiment={experiment}
+            prolificEnabled={prolificEnabled}
+            platformStatusMessage={platformStatusMessage}
+            currencyCode={currencyCode}
+            currencySymbol={currencySymbol}
+            rounds={rounds}
+            recommendation={recommendation}
+            latestRoundClosed={latestRoundClosed}
+            nextRoundNumber={nextRoundNumber}
+            roundLaunchBlockedMessage={roundLaunchBlockedMessage}
+            editingRoundId={editingRoundId}
+            editForm={editForm}
+            editRewardInput={editRewardInput}
+            savingEdit={savingEdit}
+            publishingRoundId={publishingRoundId}
+            closingRoundId={closingRoundId}
+            discardingRoundId={discardingRoundId}
+            onEditFormChange={setEditForm}
+            onEditRewardChange={setEditRewardInput}
+            onStartEditRound={handleStartEditRound}
+            onCancelEditRound={handleCancelEditRound}
+            onSaveEditRound={handleSaveEditRound}
+            onPublishRound={handlePublishRound}
+            onCloseRound={handleCloseRound}
+            onDiscardRound={handleDiscardRound}
+            pilotForm={pilotForm}
+            onPilotChange={setPilotForm}
+            pilotRewardInput={pilotRewardInput}
+            onPilotRewardChange={setPilotRewardInput}
+            onRunPilot={handleRunPilot}
+            onRunRound={handleRunRound}
+            otherExperiments={otherExperiments}
+            onBack={() => setTab('assistance')}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
 
-              {/* Warning if ratings exist */}
-              {experiment.rating_count > 0 && (
-                <div style={styles.warning}>
-                  <strong>Note:</strong> Uploading adds questions, doesn't replace existing ones.
-                </div>
-              )}
+// ── Overview ────────────────────────────────────────────────────────────
 
-              {/* Upload form */}
-              <form onSubmit={handleUpload}>
-                <div style={styles.inputGroup}>
-                  <label htmlFor="upload-csv" style={styles.label}>Add Questions from CSV or Parquet</label>
-                  <input
-                    id="upload-csv"
-                    data-testid="upload-csv-input"
-                    type="file"
-                    accept=".csv,.parquet"
-                    onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
-                    style={{ fontSize: '14px' }}
-                  />
-                  <div style={styles.hint}>
-                    Required: question_id, question_text. Optional: gt_answer, options, question_type, metadata, parent_question_id. Supports long-context rows and files up to 200MB.
-                    {' '}Optional dataset metadata: <code>#META:</code> JSON line at the top of a CSV, or a <code>dataset_meta</code> key in the Parquet schema's key-value metadata.
-                  </div>
-                </div>
-                <button
-                  data-testid="upload-csv-button"
-                  type="submit"
-                  disabled={!uploadFile}
-                  style={{
-                    ...styles.primaryButton,
-                    opacity: uploadFile ? 1 : 0.5,
-                    cursor: uploadFile ? 'pointer' : 'not-allowed',
-                  }}
-                >
-                  Upload
-                </button>
-              </form>
-            </div>
-          </div>
-
-          {/* Dataset Metadata */}
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>Dataset Metadata</h2>
-            </div>
-            <div style={styles.sectionBody}>
-              <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
-                Auto-populated from the first upload that declares dataset metadata (CSV <code>#META:</code> line or Parquet <code>dataset_meta</code> schema key). Edits here always win — later uploads that disagree are noted but never overwrite. See the admin guide for the upload format.
-              </div>
-              {DATASET_META_FIELDS.map((field) => {
-                // Highlight any upload whose declared value disagrees with the
-                // currently-saved experiment value. Helps the admin spot an
-                // upload that brought in a different framing than the prior one.
-                const current = (experiment[field] ?? '') as string;
-                const conflicts = uploads.filter((u) => {
-                  const declared = u.dataset_meta?.[field];
-                  return declared !== undefined && declared !== current;
-                });
-                // Prolific pool is a short label; the prefix/suffix lines are
-                // typically one or two sentences. Only the description is full
-                // markdown so it gets the largest textarea.
-                const isTextarea = field !== 'prolific_pool';
-                const minHeight = field === 'description' || field === 'system_prompt'
-                  ? '100px'
-                  : '60px';
-                return (
-                  <div key={field} style={styles.inputGroup}>
-                    <label htmlFor={`meta-${field}`} style={styles.label}>
-                      {DATASET_META_LABELS[field]}
-                    </label>
-                    {isTextarea ? (
-                      <textarea
-                        id={`meta-${field}`}
-                        value={metaForm[field]}
-                        onChange={(e) => {
-                          metaFormDirtyRef.current = true;
-                          setMetaForm({ ...metaForm, [field]: e.target.value });
-                        }}
-                        style={{
-                          ...styles.input,
-                          minHeight,
-                          resize: 'vertical' as const,
-                          fontFamily: 'inherit',
-                          cursor: 'text',
-                        }}
-                      />
-                    ) : (
-                      <input
-                        id={`meta-${field}`}
-                        type="text"
-                        value={metaForm[field]}
-                        onChange={(e) => {
-                          metaFormDirtyRef.current = true;
-                          setMetaForm({ ...metaForm, [field]: e.target.value });
-                        }}
-                        style={{ ...styles.input, cursor: 'text' }}
-                      />
-                    )}
-                    <div style={styles.hint}>{DATASET_META_HINTS[field]}</div>
-                    {conflicts.length > 0 && (
-                      <div style={{ ...styles.hint, color: '#b45309' }}>
-                        Declared differently by: {conflicts.map((c) => c.filename).join(', ')}.
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-              <button
-                type="button"
-                onClick={handleSaveMeta}
-                disabled={savingMeta}
+function OverviewPanel({
+  experiment,
+  stats,
+  includePreview,
+  onTogglePreview,
+  steps,
+  currentStepKey,
+  stepsCompletedCount,
+  onGoto,
+}: {
+  experiment: Experiment;
+  stats: ExperimentStats | null;
+  includePreview: boolean;
+  onTogglePreview: (v: boolean) => void;
+  steps: StepDef[];
+  currentStepKey: TabKey | null;
+  stepsCompletedCount: number;
+  onGoto: (t: TabKey) => void;
+}) {
+  const completePct = stats && stats.total_questions > 0
+    ? Math.round((stats.questions_complete / stats.total_questions) * 100)
+    : 0;
+  // Once a main round has launched the experiment leaves DRAFT and setup is
+  // no longer the user's job — the Overview becomes a monitoring dashboard.
+  // Hide the checklist entirely rather than showing a stale "Setup complete"
+  // card that competes with live stats for attention.
+  const showSetupCard = experiment.status === 'DRAFT';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {showSetupCard && (
+        <div
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            padding: '24px 26px',
+            boxShadow: 'var(--shadow)',
+          }}
+        >
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              justifyContent: 'space-between',
+              gap: 24,
+            }}
+          >
+            <div>
+              <div
                 style={{
-                  ...styles.primaryButton,
-                  opacity: savingMeta ? 0.6 : 1,
-                  cursor: savingMeta ? 'not-allowed' : 'pointer',
+                  font: '600 12px/1 var(--font-mono)',
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                  color: 'var(--muted)',
                 }}
               >
-                {savingMeta ? 'Saving…' : 'Save Metadata'}
+                Setup · {stepsCompletedCount} of {steps.length} steps done
+              </div>
+              <h2
+                style={{
+                  fontFamily: 'var(--font-head)',
+                  fontWeight: 600,
+                  fontSize: 20,
+                  margin: '8px 0 3px',
+                }}
+              >
+                {currentStepKey === null
+                  ? 'Setup complete — launch when ready'
+                  : 'Finish setup, then launch on Prolific'}
+              </h2>
+              <p style={{ margin: 0, fontSize: 13.5, color: 'var(--muted)' }}>
+                Complete each step in order. Launch is the final step.
+              </p>
+            </div>
+            {currentStepKey && (
+              <button
+                type="button"
+                onClick={() => onGoto(currentStepKey)}
+                style={{
+                  ...primaryButton,
+                  padding: '12px 22px',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Resume setup →
               </button>
-            </div>
+            )}
           </div>
-
-          {/* Rater Assistance Methods */}
-          <div style={styles.section}>
-            <div style={styles.sectionHeader}>
-              <h2 style={styles.sectionTitle}>Rater Assistance Methods</h2>
-            </div>
-            <div style={styles.sectionBody}>
-              <div style={{ ...styles.infoBanner, background: '#f8fafc', border: '1px solid #dbe3ec', color: '#475569' }}>
-                Choose one assistance mode for this experiment. Changes apply to new participant assistance sessions.
-              </div>
-
-              {/* Top N Toggle */}
-              <div style={styles.toggleRow}>
-                <div style={styles.toggleInfo}>
-                  <div style={styles.toggleLabel}>Top N Suggestions</div>
-                  <div style={styles.toggleDescription}>
-                    AI ranks the most likely answers and shows raters a short ordered list before they submit their own rating.
-                  </div>
-                </div>
-                <div style={styles.toggle}>
-                  <div
-                    style={{
-                      ...styles.toggleTrack,
-                      background: topNEnabled ? '#4a90d9' : '#ddd',
-                    }}
-                    onClick={handleTopNToggle}
-                  />
-                  <div
-                    style={{
-                      ...styles.toggleThumb,
-                      left: topNEnabled ? '22px' : '2px',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {topNEnabled && (
-                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px' }}>
-                  <label htmlFor="top-n-input" style={{ fontSize: '13px', fontWeight: 500, color: '#555', display: 'block', marginBottom: '8px' }}>
-                    Suggestions to show
-                  </label>
-                  <input
-                    id="top-n-input"
-                    type="number"
-                    min="1"
-                    max="10"
-                    value={topNValue}
-                    onChange={e => handleTopNChange(parseInt(e.target.value) || 1)}
-                    style={{
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '6px',
-                      fontSize: '13px',
-                      color: '#333',
-                      background: '#fff',
-                      width: '120px',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                  <div style={styles.hint}>For multiple-choice questions, this is capped by the number of available options.</div>
-                </div>
-              )}
-
-              {/* Human-as-a-Tool Toggle */}
-              <div style={styles.toggleRow}>
-                <div style={styles.toggleInfo}>
-                  <div style={styles.toggleLabel}>Human-as-a-Tool</div>
-                  <div style={styles.toggleDescription}>
-                    AI decomposes each question into subtasks. Raters answer each subtask, then the AI synthesises a final recommendation.
-                  </div>
-                </div>
-                <div style={styles.toggle}>
-                  <div
-                    style={{
-                      ...styles.toggleTrack,
-                      background: humanAsATool ? '#4a90d9' : '#ddd',
-                    }}
-                    onClick={handleHumanAsAToolToggle}
-                  />
-                  <div
-                    style={{
-                      ...styles.toggleThumb,
-                      left: humanAsATool ? '22px' : '2px',
-                    }}
-                  />
-                </div>
-              </div>
-
-              {/* Confidence method sub-selector (shown when Human-as-a-Tool is on) */}
-              {humanAsATool && (
-                <div style={{ padding: '12px 0 16px 0', borderBottom: '1px solid #f0f0f0', marginBottom: '4px' }}>
-                  <label style={{ fontSize: '13px', fontWeight: 500, color: '#555', display: 'block', marginBottom: '8px' }}>
-                    Confidence method
-                  </label>
-                  <select
-                    value={confidenceMethod}
-                    onChange={e => handleConfidenceMethodChange(e.target.value)}
-                    style={{
-                      padding: '8px 12px',
-                      border: '1px solid #ddd',
-                      borderRadius: '6px',
-                      fontSize: '13px',
-                      color: '#333',
-                      background: '#fff',
-                      cursor: 'pointer',
-                      width: '100%',
-                      maxWidth: '320px',
-                    }}
-                  >
-                    <option value="self_report">Self-report — single call, fastest</option>
-                    <option value="sampling">Sampling — K samples + clustering, most accurate</option>
-                    <option value="self_consistency">Self-consistency — K samples, majority vote</option>
-                  </select>
-                </div>
-              )}
-            </div>
+          <div style={{ height: 1, background: 'var(--line)', margin: '20px 0' }} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+            {steps.map((s) => (
+              <StepChip key={s.key} step={s} onClick={() => onGoto(s.key)} />
+            ))}
           </div>
         </div>
+      )}
+
+      {/* Stats grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+        <StatTile label="Questions" value={stats?.total_questions ?? 0} />
+        <StatTile label="Complete" value={stats?.questions_complete ?? 0} />
+        <StatTile label="Ratings" value={stats?.total_ratings ?? 0} />
+        <StatTile label="Raters" value={stats?.total_raters ?? 0} />
+      </div>
+
+      {/* Progress + preview toggle */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20, alignItems: 'start' }}>
+        <div
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            padding: 24,
+            boxShadow: 'var(--shadow)',
+          }}
+        >
+          <div
+            style={{
+              font: '600 12px/1 var(--font-mono)',
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+              marginBottom: 16,
+            }}
+          >
+            Completion progress
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              fontSize: 13.5,
+              marginBottom: 8,
+            }}
+          >
+            <span style={{ color: 'var(--muted)' }}>
+              {stats?.questions_complete ?? 0} of {stats?.total_questions ?? 0} questions
+              reached target ({experiment.num_ratings_per_question} ratings each)
+            </span>
+            <span style={{ font: '600 13px var(--font-mono)' }}>{completePct}%</span>
+          </div>
+          <div
+            style={{
+              height: 10,
+              borderRadius: 99,
+              background: 'var(--surface-2)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${Math.max(2, completePct)}%`,
+                height: '100%',
+                background: 'var(--accent)',
+              }}
+            />
+          </div>
+          <div style={{ height: 1, background: 'var(--line)', margin: '22px 0' }} />
+          <div style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
+            {stats && stats.total_ratings > 0
+              ? `Live data from ${stats.total_raters} raters. Toggle preview data below to include preview sessions in stats and exports.`
+              : 'No ratings collected yet. Finish setup and publish the pilot on the Launch step to begin recruiting.'}
+          </div>
+        </div>
+        <div
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            padding: '22px 24px',
+            boxShadow: 'var(--shadow)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>Include preview data</div>
+            </div>
+            <ToggleSwitch
+              testId="include-preview-toggle"
+              checked={includePreview}
+              onChange={() => onTogglePreview(!includePreview)}
+            />
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+            Show data from preview sessions in stats, analytics, exports, and round
+            recommendations.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StepChip({ step, onClick }: { step: StepDef; onClick: () => void }) {
+  const isDone = step.status === 'done';
+  const isCurrent = step.status === 'current';
+  const bg = isDone ? 'var(--accent-soft)' : 'var(--surface)';
+  const border = isDone
+    ? '1px solid var(--accent-soft)'
+    : isCurrent
+      ? '2px solid var(--accent)'
+      : '1px solid var(--faint)';
+  const labelColor = isDone ? 'var(--accent-soft-ink)' : 'var(--ink)';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        textAlign: 'left',
+        background: bg,
+        border,
+        borderRadius: 'var(--radius-sm)',
+        padding: isCurrent ? '13px 15px' : '14px 16px',
+        cursor: 'pointer',
+        font: 'inherit',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+        <StepDot status={step.status} index={step.index} />
+        <span
+          style={{
+            font: '600 10px var(--font-mono)',
+            letterSpacing: '0.1em',
+            color: isCurrent ? 'var(--accent)' : isDone ? 'var(--accent-soft-ink)' : 'var(--muted)',
+          }}
+        >
+          {isCurrent ? `STEP ${step.index} · NEXT` : `STEP ${step.index}`}
+        </span>
+      </div>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: labelColor }}>{step.label}</div>
+    </button>
+  );
+}
+
+function StepDot({ status, index }: { status: StepStatus; index: number }) {
+  if (status === 'done') {
+    return (
+      <span
+        aria-hidden
+        style={{
+          width: 19,
+          height: 19,
+          borderRadius: '50%',
+          background: 'var(--accent)',
+          color: '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 11,
+        }}
+      >
+        ✓
+      </span>
+    );
+  }
+  return (
+    <span
+      aria-hidden
+      style={{
+        width: 19,
+        height: 19,
+        borderRadius: '50%',
+        background: 'var(--surface-2)',
+        border: '1px solid var(--faint)',
+        color: 'var(--muted)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 11,
+      }}
+    >
+      {index}
+    </span>
+  );
+}
+
+function StatTile({ label, value }: { label: string; value: number }) {
+  return (
+    <div
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        padding: '22px 24px',
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <div style={{ font: '600 34px/1 var(--font-head)' }}>{value}</div>
+      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 5 }}>{label}</div>
+    </div>
+  );
+}
+
+// ── Questions panel ─────────────────────────────────────────────────────
+
+function QuestionsPanel({
+  experiment,
+  uploads,
+  uploadFile,
+  onFileChange,
+  onSubmit,
+  isLocked,
+  onBack,
+  onNext,
+}: {
+  experiment: Experiment;
+  uploads: Upload[];
+  uploadFile: File | null;
+  onFileChange: (f: File | null) => void;
+  onSubmit: (e: React.FormEvent) => void;
+  isLocked: boolean;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {uploads.length > 0 && (
+        <div
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            overflow: 'hidden',
+            boxShadow: 'var(--shadow)',
+          }}
+        >
+          {uploads.map((upload, idx) => {
+            const metaKeys = upload.dataset_meta
+              ? (Object.keys(upload.dataset_meta) as DatasetMetaField[])
+              : [];
+            return (
+              <div
+                key={upload.id}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 12,
+                  padding: '14px 20px',
+                  borderBottom: idx === uploads.length - 1 ? 'none' : '1px solid var(--line)',
+                }}
+              >
+                <span
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 8,
+                    background: 'var(--accent-soft)',
+                    color: 'var(--accent-soft-ink)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    font: '600 10px var(--font-mono)',
+                    flex: '0 0 auto',
+                  }}
+                >
+                  {upload.filename.endsWith('.parquet') ? 'PQT' : 'CSV'}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div
+                    style={{
+                      font: '500 14px var(--font-mono)',
+                      color: 'var(--ink)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {upload.filename}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 3 }}>
+                    {upload.question_count} questions
+                    {metaKeys.length > 0 && (
+                      <span title={`upload declared metadata: ${metaKeys.join(', ')}`}>
+                        {' · '}
+                        {metaKeys.length} metadata field{metaKeys.length === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {experiment.rating_count > 0 && !isLocked && (
+        <Banner tone="warn">
+          <strong>Note:</strong> Uploading adds questions, doesn't replace existing ones.
+        </Banner>
+      )}
+      {isLocked && (
+        <Banner tone="warn">
+          <strong>Locked:</strong> the item set is frozen — no more questions can be added.
+        </Banner>
+      )}
+
+      <form
+        onSubmit={onSubmit}
+        style={{
+          border: '1px dashed var(--faint)',
+          borderRadius: 'var(--radius)',
+          padding: '20px 22px',
+          background: 'var(--surface)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 16 }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+              Add questions from CSV or Parquet
+            </div>
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 10 }}>
+              Required: <span style={{ fontFamily: 'var(--font-mono)' }}>question_id</span>,{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>question_text</span>. Optional:{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>
+                gt_answer, options, question_type, metadata, parent_question_id
+              </span>
+              . Supports long-context rows and files up to 200 MB. Optional dataset metadata:{' '}
+              <span style={{ fontFamily: 'var(--font-mono)' }}>#META:</span> JSON line at the top of
+              a CSV, or a <span style={{ fontFamily: 'var(--font-mono)' }}>dataset_meta</span> key
+              in the Parquet schema's key-value metadata.
+            </div>
+            <input
+              id="upload-csv"
+              data-testid="upload-csv-input"
+              type="file"
+              accept=".csv,.parquet"
+              disabled={isLocked}
+              onChange={(e) => onFileChange(e.target.files?.[0] || null)}
+              style={{ fontSize: 14, opacity: isLocked ? 0.5 : 1 }}
+            />
+          </div>
+          <button
+            data-testid="upload-csv-button"
+            type="submit"
+            disabled={!uploadFile || isLocked}
+            style={{
+              ...primaryButton,
+              opacity: uploadFile && !isLocked ? 1 : 0.55,
+              cursor: uploadFile && !isLocked ? 'pointer' : 'not-allowed',
+            }}
+          >
+            Upload
+          </button>
+        </div>
+      </form>
+
+      <StepNav
+        stepIndex={1}
+        totalSteps={4}
+        onBack={onBack}
+        backLabel="← Overview"
+        onNext={onNext}
+        nextLabel="Continue: Instructions & prompts →"
+      />
+    </div>
+  );
+}
+
+// ── Instructions & prompts panel ─────────────────────────────────────────
+
+function MetadataPanel({
+  experiment,
+  uploads,
+  metaForm,
+  onMetaChange,
+  onSave,
+  savingMeta,
+  isLocked,
+  lockedHint,
+  onBack,
+  onNext,
+}: {
+  experiment: Experiment;
+  uploads: Upload[];
+  metaForm: Record<DatasetMetaField, string>;
+  onMetaChange: (field: DatasetMetaField, value: string) => void;
+  onSave: () => void;
+  savingMeta: boolean;
+  isLocked: boolean;
+  lockedHint: string;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const renderFieldCard = (
+    field: DatasetMetaField,
+    kind: 'input' | 'textarea',
+    options: { minHeight?: number; trailing?: React.ReactNode } = {},
+  ) => {
+    const current = (experiment[field] ?? '') as string;
+    const conflicts = uploads.filter((u) => {
+      const declared = u.dataset_meta?.[field];
+      return declared !== undefined && declared !== current;
+    });
+    return (
+      <section
+        key={field}
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius)',
+          boxShadow: 'var(--shadow)',
+          padding: '22px 24px',
+        }}
+      >
+        <Field
+          id={`meta-${field}`}
+          label={DATASET_META_LABELS[field]}
+          disabled={isLocked}
+          hint={
+            <>
+              {DATASET_META_HINTS[field]}
+              {conflicts.length > 0 && (
+                <div style={{ color: 'var(--warn)', marginTop: 6 }}>
+                  Declared differently by: {conflicts.map((c) => c.filename).join(', ')}.
+                </div>
+              )}
+            </>
+          }
+        >
+          {kind === 'textarea' ? (
+            <textarea
+              id={`meta-${field}`}
+              value={metaForm[field]}
+              placeholder={DATASET_META_PLACEHOLDERS[field]}
+              disabled={isLocked}
+              onChange={(e) => onMetaChange(field, e.target.value)}
+              style={{
+                ...textareaStyle,
+                minHeight: options.minHeight,
+                cursor: isLocked ? 'not-allowed' : 'text',
+                opacity: isLocked ? 0.7 : 1,
+              }}
+            />
+          ) : (
+            <input
+              id={`meta-${field}`}
+              type="text"
+              value={metaForm[field]}
+              placeholder={DATASET_META_PLACEHOLDERS[field]}
+              disabled={isLocked}
+              onChange={(e) => onMetaChange(field, e.target.value)}
+              style={{
+                ...inputStyle,
+                fontFamily: 'var(--font-mono)',
+                cursor: isLocked ? 'not-allowed' : 'text',
+                opacity: isLocked ? 0.7 : 1,
+              }}
+            />
+          )}
+        </Field>
+        {options.trailing}
+      </section>
+    );
+  };
+
+  const saveButton = (
+    <button
+      type="button"
+      onClick={onSave}
+      disabled={savingMeta || isLocked}
+      style={{
+        ...primaryButton,
+        marginLeft: 'auto',
+        opacity: savingMeta || isLocked ? 0.6 : 1,
+        cursor: savingMeta || isLocked ? 'not-allowed' : 'pointer',
+      }}
+    >
+      {savingMeta ? 'Saving…' : 'Save instructions & prompts'}
+    </button>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <Banner tone="info">
+        Auto-populated from the first upload that declares dataset metadata. Edits here
+        always win — later uploads that disagree are noted but never overwrite.
+      </Banner>
+      {isLocked && <Banner tone="warn">{lockedHint}</Banner>}
+
+      {META_FIELD_GROUPS.map((group, groupIdx) => {
+        const isLastGroup = groupIdx === META_FIELD_GROUPS.length - 1;
+        return (
+          <div key={group.header} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div
+              style={{
+                font: '600 11px/1 var(--font-mono)',
+                letterSpacing: '0.16em',
+                textTransform: 'uppercase',
+                color: 'var(--muted)',
+                marginTop: groupIdx === 0 ? 0 : 6,
+              }}
+            >
+              {group.header}
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns:
+                  group.fields.length === 1 ? '1fr' : '1fr 1fr',
+                gap: 18,
+              }}
+            >
+              {group.fields.map(({ field, kind, minHeight }) =>
+                renderFieldCard(field, kind, {
+                  minHeight,
+                  trailing:
+                    isLastGroup && field === group.fields[group.fields.length - 1].field
+                      ? <div style={{ display: 'flex', marginTop: -8 }}>{saveButton}</div>
+                      : undefined,
+                }),
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      <StepNav
+        stepIndex={2}
+        totalSteps={4}
+        onBack={onBack}
+        backLabel="← Questions"
+        onNext={onNext}
+        nextLabel="Continue: Rater assistance →"
+      />
+    </div>
+  );
+}
+
+// ── Rater assistance panel ───────────────────────────────────────────────
+
+function AssistanceModePanel({
+  method,
+  topNValue,
+  confidenceMethod,
+  systemPrompt,
+  onSystemPromptChange,
+  onSaveSystemPrompt,
+  onPickNone,
+  onToggleTopN,
+  onTopNChange,
+  onToggleHumanAsATool,
+  onConfidenceMethodChange,
+  isLocked,
+  lockedHint,
+  onBack,
+  onNext,
+}: {
+  method: 'none' | 'top_n' | 'human_as_a_tool';
+  topNValue: number;
+  confidenceMethod: string;
+  systemPrompt: string;
+  onSystemPromptChange: (v: string) => void;
+  onSaveSystemPrompt: () => void;
+  onPickNone: () => void;
+  onToggleTopN: () => void;
+  onTopNChange: (v: number) => void;
+  onToggleHumanAsATool: () => void;
+  onConfidenceMethodChange: (v: string) => void;
+  isLocked: boolean;
+  lockedHint: string;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <p
+        style={{
+          margin: 0,
+          fontSize: 14,
+          color: 'var(--muted)',
+          maxWidth: 640,
+          lineHeight: 1.6,
+        }}
+      >
+        Choose one assistance mode for this experiment. Changes apply to new participant
+        assistance sessions.
+      </p>
+      {isLocked && <Banner tone="warn">{lockedHint}</Banner>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+        <ModeCard
+          selected={method === 'none'}
+          disabled={isLocked}
+          title="None"
+          body="Raters answer unaided. The clean baseline condition."
+          onClick={() => {
+            if (isLocked) return;
+            if (method !== 'none') onPickNone();
+          }}
+        />
+        <ModeCard
+          selected={method === 'top_n'}
+          disabled={isLocked}
+          title="Top-N suggestions"
+          body="AI ranks the most likely answers and shows a short ordered list before the rater submits."
+          onClick={() => {
+            if (isLocked) return;
+            if (method !== 'top_n') onToggleTopN();
+          }}
+        />
+        <ModeCard
+          selected={method === 'human_as_a_tool'}
+          disabled={isLocked}
+          title="Human-as-a-Tool"
+          body="AI decomposes each question into subtasks. Raters answer each, then the AI synthesises a recommendation."
+          onClick={() => {
+            if (isLocked) return;
+            if (method !== 'human_as_a_tool') onToggleHumanAsATool();
+          }}
+        />
+      </div>
+
+      {method === 'top_n' && (
+        <SectionCard header="Top-N configuration">
+          <Field
+            id="top-n-input"
+            label="Suggestions to show"
+            hint="For multiple-choice questions, this is capped by the number of available options."
+            disabled={isLocked}
+          >
+            <input
+              id="top-n-input"
+              type="number"
+              min={1}
+              max={10}
+              value={topNValue}
+              disabled={isLocked}
+              onChange={(e) => onTopNChange(parseInt(e.target.value, 10) || 1)}
+              style={{ ...inputStyle, width: 140 }}
+            />
+          </Field>
+        </SectionCard>
+      )}
+
+      {method === 'human_as_a_tool' && (
+        <SectionCard header="Human-as-a-Tool configuration">
+          <Field label="Confidence method" disabled={isLocked}>
+            <select
+              value={confidenceMethod}
+              disabled={isLocked}
+              onChange={(e) => onConfidenceMethodChange(e.target.value)}
+              style={{ ...inputStyle, maxWidth: 380, cursor: 'pointer' }}
+            >
+              <option value="self_report">Self-report — single call, fastest</option>
+              <option value="sampling">Sampling — K samples + clustering, most accurate</option>
+              <option value="self_consistency">Self-consistency — K samples, majority vote</option>
+            </select>
+          </Field>
+        </SectionCard>
+      )}
+
+      <SectionCard padded={false}>
+        <div style={{ padding: '22px 24px' }}>
+          <div
+            style={{
+              font: '600 12px/1 var(--font-mono)',
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+              marginBottom: 6,
+            }}
+          >
+            Assistance prompt suffix
+          </div>
+          <p style={{ margin: '0 0 12px', fontSize: 12.5, color: 'var(--muted)' }}>
+            Appended to the AI's system prompt for Top-N and Human-as-a-Tool. Ignored when no
+            assistance is enabled.
+          </p>
+          <textarea
+            value={systemPrompt}
+            disabled={isLocked}
+            onChange={(e) => onSystemPromptChange(e.target.value)}
+            placeholder="e.g. Prefer the option that draws no distinction when the rule applies equally to both people."
+            style={{
+              ...textareaStyle,
+              background: 'var(--surface-2)',
+              height: 90,
+              opacity: isLocked ? 0.6 : 1,
+              cursor: isLocked ? 'not-allowed' : 'text',
+            }}
+          />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+            <button
+              type="button"
+              onClick={onSaveSystemPrompt}
+              disabled={isLocked}
+              style={{
+                ...secondaryButton,
+                opacity: isLocked ? 0.6 : 1,
+                cursor: isLocked ? 'not-allowed' : 'pointer',
+              }}
+            >
+              Save prompt suffix
+            </button>
+          </div>
+        </div>
+      </SectionCard>
+
+      <StepNav
+        stepIndex={3}
+        totalSteps={4}
+        onBack={onBack}
+        backLabel="← Instructions & prompts"
+        onNext={onNext}
+        nextLabel="Continue to launch →"
+        highlightNext
+      />
+    </div>
+  );
+}
+
+function ModeCard({
+  selected,
+  disabled,
+  title,
+  body,
+  onClick,
+}: {
+  selected: boolean;
+  disabled?: boolean;
+  title: string;
+  body: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        textAlign: 'left',
+        border: selected ? '2px solid var(--accent)' : '1px solid var(--faint)',
+        background: selected ? 'var(--accent-soft)' : 'var(--surface)',
+        borderRadius: 'var(--radius)',
+        padding: 20,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.7 : 1,
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+        <span
+          aria-hidden
+          style={{
+            width: 16,
+            height: 16,
+            borderRadius: '50%',
+            border: selected ? '5px solid var(--accent)' : '1px solid var(--faint)',
+            background: 'var(--surface)',
+          }}
+        />
+        <span
+          style={{
+            fontWeight: 700,
+            fontSize: 15,
+            color: selected ? 'var(--accent-soft-ink)' : 'var(--ink)',
+          }}
+        >
+          {title}
+        </span>
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          lineHeight: 1.55,
+          color: selected ? 'var(--accent-soft-ink)' : 'var(--muted)',
+        }}
+      >
+        {body}
+      </div>
+    </button>
+  );
+}
+
+// ── Launch on Prolific panel ─────────────────────────────────────────────
+
+function LaunchPanel(props: {
+  experiment: Experiment;
+  prolificEnabled: boolean | 'loading';
+  platformStatusMessage: string | null;
+  currencyCode: string | null;
+  currencySymbol: string | null;
+  rounds: ExperimentRound[];
+  recommendation: RecommendationResponse | null;
+  latestRoundClosed: boolean;
+  nextRoundNumber: number;
+  roundLaunchBlockedMessage: string | null;
+  editingRoundId: number | null;
+  editForm: {
+    description: string;
+    estimated_completion_time: number;
+    places: number;
+    study_label: PilotStudyCreate['study_label'];
+    screeners: Screener[];
+    excluded_experiment_ids: number[];
+  };
+  editRewardInput: string;
+  savingEdit: boolean;
+  publishingRoundId: number | null;
+  closingRoundId: number | null;
+  discardingRoundId: number | null;
+  onEditFormChange: (form: any) => void;
+  onEditRewardChange: (v: string) => void;
+  onStartEditRound: (r: ExperimentRound) => void;
+  onCancelEditRound: () => void;
+  onSaveEditRound: (id: number) => void;
+  onPublishRound: (id: number, num: number) => void;
+  onCloseRound: (id: number, num: number) => void;
+  onDiscardRound: (id: number, num: number) => void;
+  pilotForm: Omit<PilotStudyCreate, 'reward'>;
+  onPilotChange: (form: Omit<PilotStudyCreate, 'reward'>) => void;
+  pilotRewardInput: string;
+  onPilotRewardChange: (v: string) => void;
+  onRunPilot: (e: React.FormEvent) => void;
+  onRunRound: () => void;
+  otherExperiments: Experiment[];
+  onBack: () => void;
+}) {
+  const {
+    experiment,
+    prolificEnabled,
+    platformStatusMessage,
+    currencyCode,
+    currencySymbol,
+    rounds,
+    recommendation,
+    latestRoundClosed,
+    nextRoundNumber,
+    roundLaunchBlockedMessage,
+    editingRoundId,
+    editForm,
+    editRewardInput,
+    savingEdit,
+    publishingRoundId,
+    closingRoundId,
+    discardingRoundId,
+    onEditFormChange,
+    onEditRewardChange,
+    onStartEditRound,
+    onCancelEditRound,
+    onSaveEditRound,
+    onPublishRound,
+    onCloseRound,
+    onDiscardRound,
+    pilotForm,
+    onPilotChange,
+    pilotRewardInput,
+    onPilotRewardChange,
+    onRunPilot,
+    onRunRound,
+    otherExperiments,
+    onBack,
+  } = props;
+
+  // Only surface the Prolific-mode banner when it tells the researcher
+  // something they need to act on. In prod Prolific is always enabled and
+  // the "Prolific is enabled" copy is just noise; hide it in that case.
+  const bannerContent =
+    prolificEnabled === 'loading'
+      ? {
+          tone: 'info' as const,
+          badgeText: 'Checking',
+          text: 'Checking Prolific mode for this environment…',
+        }
+      : prolificEnabled === false
+        ? {
+            tone: 'danger' as const,
+            badgeText: 'Disabled',
+            text: 'Prolific is disabled for this environment. Configure a Prolific API token to enable paid rounds.',
+          }
+        : null;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      {/* Hero banner marking this as the final step */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 20,
+          background: 'var(--accent)',
+          color: 'var(--accent-ink)',
+          borderRadius: 'var(--radius)',
+          padding: '22px 26px',
+          boxShadow: 'var(--shadow)',
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: '50%',
+            background: 'rgba(255,255,255,0.16)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            font: '600 16px var(--font-mono)',
+            flex: '0 0 auto',
+          }}
+        >
+          4
+        </span>
+        <div style={{ flex: 1 }}>
+          <div
+            style={{
+              font: '600 11px/1 var(--font-mono)',
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              opacity: 0.85,
+            }}
+          >
+            Final step
+          </div>
+          <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 20, marginTop: 5 }}>
+            Launch on Prolific
+          </div>
+          <div style={{ fontSize: 13.5, opacity: 0.9, marginTop: 3 }}>
+            Start with the pilot, review results, then launch full rounds.
+          </div>
+        </div>
+      </div>
+
+      {bannerContent && (
+        <div data-testid="prolific-mode-notice">
+          <Banner tone={bannerContent.tone}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span
+                data-testid="prolific-mode-badge"
+                style={{
+                  font: '600 10px/1 var(--font-mono)',
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                  padding: '4px 8px',
+                  borderRadius: 999,
+                  background: 'rgba(0,0,0,0.08)',
+                  color: 'inherit',
+                }}
+              >
+                {bannerContent.badgeText}
+              </span>
+              <span>{bannerContent.text}</span>
+            </div>
+            {platformStatusMessage && (
+              <div style={{ marginTop: 8 }}>{platformStatusMessage}</div>
+            )}
+          </Banner>
+        </div>
+      )}
+      {prolificEnabled === true && platformStatusMessage && (
+        <Banner tone="warn">{platformStatusMessage}</Banner>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 20, alignItems: 'start' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {/* Preview link is always available regardless of Prolific mode. */}
+          <button
+            data-testid="preview-participant-button"
+            onClick={() => {
+              const previewId = `preview_${Date.now()}`;
+              const url = `${window.location.origin}/rate?experiment_id=${experiment.id}&PROLIFIC_PID=${previewId}&STUDY_ID=preview&SESSION_ID=preview&preview=true`;
+              window.open(url, '_blank');
+            }}
+            style={{ ...secondaryButton, alignSelf: 'flex-start' }}
+          >
+            Preview as participant
+          </button>
+
+          {prolificEnabled === true && (
+            <>
+              {rounds.length > 0 && (
+                <div data-testid="study-rounds-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  {rounds.map((round) => (
+                    <RoundCard
+                      key={round.id}
+                      round={round}
+                      currencyCode={currencyCode}
+                      currencySymbol={currencySymbol}
+                      isEditing={editingRoundId === round.id}
+                      editForm={editForm}
+                      editRewardInput={editRewardInput}
+                      savingEdit={savingEdit}
+                      publishing={publishingRoundId === round.id}
+                      closing={closingRoundId === round.id}
+                      discarding={discardingRoundId === round.id}
+                      onStartEdit={() => onStartEditRound(round)}
+                      onCancelEdit={onCancelEditRound}
+                      onSaveEdit={() => onSaveEditRound(round.id)}
+                      onEditFormChange={onEditFormChange}
+                      onEditRewardChange={onEditRewardChange}
+                      onPublish={() => onPublishRound(round.id, round.round_number)}
+                      onClose={() => onCloseRound(round.id, round.round_number)}
+                      onDiscard={() => onDiscardRound(round.id, round.round_number)}
+                      otherExperiments={otherExperiments}
+                    />
+                  ))}
+                </div>
+              )}
+
+              {recommendation && recommendation.avg_time_per_question_seconds > 0 && (
+                <RecommendationCard
+                  recommendation={recommendation}
+                  nextRoundNumber={nextRoundNumber}
+                  latestRoundClosed={latestRoundClosed}
+                  roundLaunchBlockedMessage={roundLaunchBlockedMessage}
+                  onRunRound={onRunRound}
+                />
+              )}
+
+              {rounds.length === 0 && (
+                <PilotForm
+                  pilotForm={pilotForm}
+                  onPilotChange={onPilotChange}
+                  pilotRewardInput={pilotRewardInput}
+                  onPilotRewardChange={onPilotRewardChange}
+                  currencyCode={currencyCode}
+                  currencySymbol={currencySymbol}
+                  onSubmit={onRunPilot}
+                  otherExperiments={otherExperiments}
+                  datasetDescription={experiment.description}
+                />
+              )}
+            </>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {experiment.prolific_completion_url && (
+            <SectionCard header="Completion URL">
+              <div
+                data-testid="completion-url-input"
+                style={{
+                  font: '400 12.5px var(--font-mono)',
+                  color: 'var(--ink)',
+                  background: 'var(--surface-2)',
+                  border: '1px solid var(--faint)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '11px 13px',
+                  wordBreak: 'break-all',
+                }}
+              >
+                {experiment.prolific_completion_url}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 8 }}>
+                Raters redirect here when finished.
+              </div>
+            </SectionCard>
+          )}
+        </div>
+      </div>
+
+      <StepNav
+        stepIndex={4}
+        totalSteps={4}
+        onBack={onBack}
+        backLabel="← Rater assistance"
+        onNext={null}
+        nextLabel=""
+      />
+    </div>
+  );
+}
+
+function RoundStatusPill({ status }: { status: string }) {
+  const map: Record<string, { bg: string; ink: string }> = {
+    ACTIVE: { bg: 'var(--accent-soft)', ink: 'var(--accent-soft-ink)' },
+    COMPLETED: { bg: 'var(--accent-soft)', ink: 'var(--accent-soft-ink)' },
+    AWAITING_REVIEW: { bg: 'var(--accent-soft)', ink: 'var(--accent-soft-ink)' },
+    UNPUBLISHED: { bg: 'var(--warn-soft)', ink: 'var(--warn)' },
+  };
+  const c = map[status] ?? { bg: 'var(--surface-2)', ink: 'var(--muted)' };
+  return (
+    <span
+      style={{
+        padding: '3px 8px',
+        borderRadius: 5,
+        font: '600 10px var(--font-mono)',
+        letterSpacing: '0.06em',
+        background: c.bg,
+        color: c.ink,
+      }}
+    >
+      {status}
+    </span>
+  );
+}
+
+function RoundCard(props: {
+  round: ExperimentRound;
+  currencyCode: string | null;
+  currencySymbol: string | null;
+  isEditing: boolean;
+  editForm: any;
+  editRewardInput: string;
+  savingEdit: boolean;
+  publishing: boolean;
+  closing: boolean;
+  discarding: boolean;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+  onEditFormChange: (form: any) => void;
+  onEditRewardChange: (v: string) => void;
+  onPublish: () => void;
+  onClose: () => void;
+  onDiscard: () => void;
+  otherExperiments: Experiment[];
+}) {
+  const {
+    round,
+    currencyCode,
+    currencySymbol,
+    isEditing,
+    editForm,
+    editRewardInput,
+    savingEdit,
+    publishing,
+    closing,
+    discarding,
+    onStartEdit,
+    onCancelEdit,
+    onSaveEdit,
+    onEditFormChange,
+    onEditRewardChange,
+    onPublish,
+    onClose,
+    onDiscard,
+    otherExperiments,
+  } = props;
+
+  return (
+    <SectionCard padded={false}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '16px 20px',
+          background: 'var(--surface-2)',
+          borderBottom: '1px solid var(--faint)',
+        }}
+      >
+        <div style={{ flex: 1 }}>
+          <span style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 16 }}>
+            {round.round_number === 0 ? 'Pilot Round' : `Round ${round.round_number}`}
+          </span>
+          <span style={{ fontSize: 13, color: 'var(--muted)', marginLeft: 8 }}>
+            {round.places_requested} places
+          </span>
+        </div>
+        <RoundStatusPill status={round.prolific_study_status} />
+        <button
+          type="button"
+          onClick={() => window.open(round.prolific_study_url, '_blank')}
+          style={{ ...secondaryButton, padding: '7px 14px', fontSize: 13 }}
+        >
+          Open on Prolific
+        </button>
+        {round.prolific_study_status === 'UNPUBLISHED' && !isEditing && (
+          <button
+            type="button"
+            data-testid={`edit-round-${round.round_number}`}
+            onClick={onStartEdit}
+            style={{ ...secondaryButton, padding: '7px 14px', fontSize: 13 }}
+          >
+            Edit
+          </button>
+        )}
+        {round.prolific_study_status === 'UNPUBLISHED' && (
+          <>
+            <button
+              type="button"
+              data-testid={`discard-round-${round.round_number}`}
+              onClick={onDiscard}
+              disabled={discarding || isEditing || publishing}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: '7px 6px',
+                cursor: discarding ? 'wait' : 'pointer',
+                color: 'var(--danger)',
+                font: '600 13px var(--font-body)',
+                opacity: discarding ? 0.6 : 1,
+              }}
+            >
+              {discarding ? 'Discarding…' : 'Discard draft'}
+            </button>
+            <button
+              type="button"
+              data-testid={`publish-round-${round.round_number}`}
+              onClick={onPublish}
+              disabled={publishing || isEditing || discarding}
+              style={{ ...primaryButton, padding: '7px 16px', fontSize: 13 }}
+            >
+              {publishing ? 'Publishing…' : 'Publish'}
+            </button>
+          </>
+        )}
+        {!['UNPUBLISHED', 'AWAITING_REVIEW', 'COMPLETED'].includes(
+          round.prolific_study_status,
+        ) && (
+          <button
+            type="button"
+            data-testid={`close-round-${round.round_number}`}
+            onClick={onClose}
+            disabled={closing}
+            style={{ ...secondaryButton, padding: '7px 16px', fontSize: 13 }}
+          >
+            {closing ? 'Closing…' : 'Close round'}
+          </button>
+        )}
+      </div>
+      {isEditing && (
+        <div
+          data-testid={`edit-round-form-${round.round_number}`}
+          style={{ padding: 20 }}
+        >
+          <Field
+            label="Study description"
+            id={`edit-round-description-${round.round_number}`}
+            hint="Sent to Prolific and shown on the rater intro for anyone entering via this round's link. Overrides the dataset description for this round only."
+          >
+            <textarea
+              data-testid={`edit-round-description-${round.round_number}`}
+              value={editForm.description}
+              onChange={(e) => onEditFormChange({ ...editForm, description: e.target.value })}
+              style={{ ...textareaStyle, height: 88 }}
+            />
+          </Field>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+            <Field id={`edit-round-time-${round.round_number}`} label="Time (min)">
+              <input
+                data-testid={`edit-round-time-${round.round_number}`}
+                type="number"
+                min={1}
+                value={editForm.estimated_completion_time}
+                onChange={(e) =>
+                  onEditFormChange({
+                    ...editForm,
+                    estimated_completion_time: parseInt(e.target.value, 10) || 0,
+                  })
+                }
+                style={inputStyle}
+              />
+            </Field>
+            <Field label={`Reward${currencyCode ? ` (${currencyCode})` : ''}`}>
+              <div
+                className="reward-input"
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 4,
+                  width: '100%',
+                  padding: '11px 13px',
+                  border: '1px solid var(--faint)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--surface)',
+                  fontSize: 15,
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                {currencySymbol && (
+                  <span style={{ color: 'var(--muted)', flexShrink: 0 }}>{currencySymbol}</span>
+                )}
+                <input
+                  data-testid={`edit-round-reward-${round.round_number}`}
+                  type="text"
+                  inputMode="decimal"
+                  value={editRewardInput}
+                  onChange={(e) => {
+                    if (e.target.value === '' || /^[0-9]*\.?[0-9]*$/.test(e.target.value)) {
+                      onEditRewardChange(e.target.value);
+                    }
+                  }}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    padding: 0,
+                    fontSize: 'inherit',
+                    fontFamily: 'inherit',
+                    color: 'var(--ink)',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+            </Field>
+            <Field id={`edit-round-places-${round.round_number}`} label="Places">
+              <input
+                data-testid={`edit-round-places-${round.round_number}`}
+                type="number"
+                min={1}
+                value={editForm.places}
+                onChange={(e) =>
+                  onEditFormChange({ ...editForm, places: parseInt(e.target.value, 10) || 0 })
+                }
+                style={inputStyle}
+              />
+            </Field>
+          </div>
+          {(() => {
+            const text = rewardHintText(
+              editRewardInput,
+              currencyCode,
+              currencySymbol,
+              editForm.estimated_completion_time,
+              editForm.places,
+            );
+            return text ? (
+              <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 12 }}>{text}</div>
+            ) : null;
+          })()}
+          <Field label="Study label">
+            <select
+              data-testid={`edit-round-study-label-${round.round_number}`}
+              value={editForm.study_label}
+              onChange={(e) =>
+                onEditFormChange({
+                  ...editForm,
+                  study_label: e.target.value as PilotStudyCreate['study_label'],
+                })
+              }
+              style={{ ...inputStyle, cursor: 'pointer' }}
+            >
+              <option value="annotation">Annotation</option>
+              <option value="survey">Survey</option>
+              <option value="decision_making_task">Decision-making task</option>
+              <option value="writing_task">Writing task</option>
+              <option value="interview">Interview</option>
+              <option value="other">Other</option>
+            </select>
+          </Field>
+          <Field label="Pre-screeners">
+            <ScreenerCheckboxes
+              value={editForm.screeners}
+              onChange={(next) => onEditFormChange({ ...editForm, screeners: next })}
+              testIdPrefix={`edit-round-screener-${round.round_number}`}
+            />
+          </Field>
+          <Field
+            label="Exclude prior participants from"
+            hint="Participants who joined any selected experiment will not see this study on Prolific."
+          >
+            <ExperimentExclusionPicker
+              experiments={otherExperiments}
+              selectedIds={editForm.excluded_experiment_ids}
+              onChange={(ids) => onEditFormChange({ ...editForm, excluded_experiment_ids: ids })}
+              testIdPrefix={`edit-round-exclusion-${round.round_number}`}
+            />
+          </Field>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button
+              type="button"
+              data-testid={`edit-round-cancel-${round.round_number}`}
+              onClick={onCancelEdit}
+              disabled={savingEdit}
+              style={secondaryButton}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid={`edit-round-save-${round.round_number}`}
+              onClick={onSaveEdit}
+              disabled={savingEdit}
+              style={primaryButton}
+            >
+              {savingEdit ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function RecommendationCard({
+  recommendation,
+  nextRoundNumber,
+  latestRoundClosed,
+  roundLaunchBlockedMessage,
+  onRunRound,
+}: {
+  recommendation: RecommendationResponse;
+  nextRoundNumber: number;
+  latestRoundClosed: boolean;
+  roundLaunchBlockedMessage: string | null;
+  onRunRound: () => void;
+}) {
+  if (recommendation.is_complete) {
+    return (
+      <Banner tone="ok">
+        <strong>All questions have enough ratings!</strong>
+      </Banner>
+    );
+  }
+  return (
+    <div data-testid="recommendation-panel">
+    <SectionCard header="Recommendation for next round">
+      <div style={{ fontSize: 13.5, color: 'var(--ink)', lineHeight: 1.7, marginBottom: 12 }}>
+        Avg time/question: <strong>{recommendation.avg_time_per_question_seconds.toFixed(0)}s</strong>
+        {' · '}Remaining actions: <strong>{recommendation.remaining_rating_actions}</strong>
+        {' · '}Hours left: <strong>{recommendation.total_hours_remaining.toFixed(1)}</strong>
+      </div>
+      {latestRoundClosed ? (
+        <button
+          data-testid="launch-round-button"
+          onClick={onRunRound}
+          style={primaryButton}
+        >
+          Create Round {nextRoundNumber} Draft ({recommendation.recommended_places} places)
+        </button>
+      ) : (
+        roundLaunchBlockedMessage && (
+          <div style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
+            {roundLaunchBlockedMessage}
+          </div>
+        )
+      )}
+    </SectionCard>
+    </div>
+  );
+}
+
+function PilotForm(props: {
+  pilotForm: Omit<PilotStudyCreate, 'reward'>;
+  onPilotChange: (form: Omit<PilotStudyCreate, 'reward'>) => void;
+  pilotRewardInput: string;
+  onPilotRewardChange: (v: string) => void;
+  currencyCode: string | null;
+  currencySymbol: string | null;
+  onSubmit: (e: React.FormEvent) => void;
+  otherExperiments: Experiment[];
+  datasetDescription: string | null;
+}) {
+  const {
+    pilotForm,
+    onPilotChange,
+    pilotRewardInput,
+    onPilotRewardChange,
+    currencyCode,
+    currencySymbol,
+    onSubmit,
+    otherExperiments,
+    datasetDescription,
+  } = props;
+  const prefilledFromDataset =
+    !!datasetDescription && pilotForm.description === datasetDescription;
+  return (
+    <SectionCard header="Pilot round">
+      <p style={{ fontSize: 13.5, color: 'var(--muted)', margin: '0 0 16px' }}>
+        Create the first unpublished round with the study configuration you want to reuse. Pilot
+        timing data drives the recommended size for later rounds.
+      </p>
+      <form onSubmit={onSubmit}>
+        <Field
+          id="pilot-description"
+          label="Study description"
+          hint={
+            <>
+              Sent to Prolific as this pilot's public description and shown on the rater intro.
+              Overrides the dataset description for this pilot only. Markdown is converted to
+              Prolific's HTML subset (headings, bold/italic/strike, lists, paragraphs). Links and
+              images are not supported by Prolific.
+              {prefilledFromDataset && (
+                <div style={{ color: 'var(--accent-soft-ink)', marginTop: 6 }}>
+                  Prefilled from the dataset description on Instructions &amp; prompts. Edit to
+                  override for this pilot.
+                </div>
+              )}
+            </>
+          }
+        >
+          <textarea
+            id="pilot-description"
+            data-testid="pilot-description-input"
+            value={pilotForm.description}
+            onChange={(e) => onPilotChange({ ...pilotForm, description: e.target.value })}
+            placeholder={
+              "Describe the task for Prolific participants…\n\nMarkdown is supported: # heading, ## subheading, **bold**, *italic*, ~~strike~~, -/1. lists. Blank lines separate paragraphs."
+            }
+            required
+            style={{ ...textareaStyle, minHeight: 120 }}
+          />
+        </Field>
+        <Field
+          id="pilot-study-label"
+          label="Study label"
+          hint="Categorises the study on Prolific; participants see this tag when browsing."
+        >
+          <select
+            id="pilot-study-label"
+            data-testid="pilot-study-label-select"
+            value={pilotForm.study_label}
+            onChange={(e) =>
+              onPilotChange({
+                ...pilotForm,
+                study_label: e.target.value as PilotStudyCreate['study_label'],
+              })
+            }
+            style={{ ...inputStyle, cursor: 'pointer' }}
+          >
+            <option value="annotation">Annotation</option>
+            <option value="survey">Survey</option>
+            <option value="decision_making_task">Decision-making task</option>
+            <option value="writing_task">Writing task</option>
+            <option value="interview">Interview</option>
+            <option value="other">Other</option>
+          </select>
+        </Field>
+        <Field label="Pre-screeners" hint="Default on. Screeners narrow the participant pool to higher-quality raters.">
+          <ScreenerCheckboxes
+            value={pilotForm.screeners}
+            onChange={(next) => onPilotChange({ ...pilotForm, screeners: next })}
+            testIdPrefix="pilot-screener"
+          />
+        </Field>
+        <Field
+          label="Exclude prior participants from"
+          hint="Participants who joined any selected experiment will not see this study on Prolific. Main rounds inherit this list from the pilot."
+        >
+          <ExperimentExclusionPicker
+            experiments={otherExperiments}
+            selectedIds={pilotForm.excluded_experiment_ids}
+            onChange={(ids) => onPilotChange({ ...pilotForm, excluded_experiment_ids: ids })}
+            testIdPrefix="pilot-exclusion"
+          />
+        </Field>
+        <Field id="pilot-estimated-completion-time" label="Estimated completion time (minutes)">
+          <input
+            id="pilot-estimated-completion-time"
+            data-testid="pilot-estimated-completion-time-input"
+            type="number"
+            value={pilotForm.estimated_completion_time}
+            onChange={(e) =>
+              onPilotChange({
+                ...pilotForm,
+                estimated_completion_time: parseInt(e.target.value, 10) || 0,
+              })
+            }
+            min={1}
+            required
+            style={inputStyle}
+          />
+        </Field>
+        <Field
+          id="pilot-reward"
+          label={`Reward${currencyCode ? ` (${currencyCode})` : ''}`}
+          hint={
+            rewardHintText(
+              pilotRewardInput,
+              currencyCode,
+              currencySymbol,
+              pilotForm.estimated_completion_time,
+              pilotForm.pilot_places,
+            ) ?? "Enter the amount as you'd see it on Prolific."
+          }
+        >
+          <div
+            className="reward-input"
+            style={{
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 4,
+              width: '100%',
+              padding: '11px 13px',
+              border: '1px solid var(--faint)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface)',
+              fontSize: 15,
+              fontFamily: 'var(--font-mono)',
+            }}
+          >
+            {currencySymbol && (
+              <span style={{ color: 'var(--muted)', flexShrink: 0 }}>{currencySymbol}</span>
+            )}
+            <input
+              id="pilot-reward"
+              data-testid="pilot-reward-input"
+              type="text"
+              inputMode="decimal"
+              value={pilotRewardInput}
+              onChange={(e) => {
+                if (e.target.value === '' || /^[0-9]*\.?[0-9]*$/.test(e.target.value)) {
+                  onPilotRewardChange(e.target.value);
+                }
+              }}
+              required
+              style={{
+                flex: 1,
+                minWidth: 0,
+                border: 'none',
+                background: 'transparent',
+                padding: 0,
+                fontSize: 'inherit',
+                fontFamily: 'inherit',
+                color: 'var(--ink)',
+                outline: 'none',
+              }}
+            />
+          </div>
+        </Field>
+        <Field
+          id="pilot-places"
+          label="Number of raters"
+          hint="Each rater does 1 hour. 5 is a good default for timing calibration."
+        >
+          <input
+            id="pilot-places"
+            data-testid="pilot-places-input"
+            type="number"
+            value={pilotForm.pilot_places}
+            onChange={(e) =>
+              onPilotChange({ ...pilotForm, pilot_places: parseInt(e.target.value, 10) || 0 })
+            }
+            min={1}
+            required
+            style={inputStyle}
+          />
+        </Field>
+        <button data-testid="run-pilot-button" type="submit" style={{ ...primaryButton, width: '100%' }}>
+          Create pilot draft
+        </button>
+      </form>
+    </SectionCard>
+  );
+}
+
+function ScreenerCheckboxes({
+  value,
+  onChange,
+  testIdPrefix,
+}: {
+  value: Screener[];
+  onChange: (next: Screener[]) => void;
+  testIdPrefix: string;
+}) {
+  const items: [Screener, string, string][] = [
+    ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
+    ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
+    ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
+  ];
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 9,
+        padding: '10px 12px',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--surface-2)',
+      }}
+    >
+      {items.map(([key, label, hint]) => {
+        const checked = value.includes(key);
+        return (
+          <label
+            key={key}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13.5 }}
+          >
+            <input
+              type="checkbox"
+              data-testid={`${testIdPrefix}-${key}`}
+              checked={checked}
+              onChange={(e) => {
+                const next = e.target.checked
+                  ? Array.from(new Set([...value, key]))
+                  : value.filter((s) => s !== key);
+                onChange(next);
+              }}
+              style={{ width: 16, height: 16, flex: '0 0 auto', margin: '2px 0 0 0', padding: 0, cursor: 'pointer' }}
+            />
+            <span style={{ lineHeight: 1.4 }}>
+              <strong>{label}</strong>
+              <span style={{ color: 'var(--muted)' }}> — {hint}</span>
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+
+// ── Shared step-navigation footer ────────────────────────────────────────
+
+function StepNav({
+  stepIndex,
+  totalSteps,
+  onBack,
+  backLabel,
+  onNext,
+  nextLabel,
+  highlightNext,
+}: {
+  stepIndex: number;
+  totalSteps: number;
+  onBack?: () => void;
+  backLabel: string;
+  onNext: (() => void) | null;
+  nextLabel: string;
+  highlightNext?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        borderTop: '1px solid var(--line)',
+        paddingTop: 18,
+        marginTop: 8,
+      }}
+    >
+      {onBack ? (
+        <button
+          type="button"
+          onClick={onBack}
+          style={{ ...secondaryButton, color: 'var(--muted)' }}
+        >
+          {backLabel}
+        </button>
+      ) : (
+        <span />
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+        <span
+          style={{
+            font: '600 11px var(--font-mono)',
+            letterSpacing: '0.1em',
+            color: 'var(--muted)',
+          }}
+        >
+          STEP {stepIndex} OF {totalSteps}
+          {highlightNext && ' · LAST BEFORE LAUNCH'}
+        </span>
+        {onNext && (
+          <button type="button" onClick={onNext} style={primaryButton}>
+            {nextLabel}
+          </button>
+        )}
       </div>
     </div>
   );

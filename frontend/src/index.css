@@ -1,245 +1,194 @@
+@import "./styles/tokens.css";
+
 * {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
 }
 
+html,
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  font-weight: 400;
   line-height: 1.6;
-  color: #333;
-  background-color: #f5f5f5;
+  color: var(--ink);
+  background-color: var(--page-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-head);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 16px;
+}
+
+/* Native form controls — kept minimal; components set their own inline styles. */
+input,
+textarea,
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--surface);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
+}
+
+textarea {
+  font-family: var(--font-body);
+  line-height: 1.55;
+  resize: vertical;
+}
+
+/* Range slider — matches the Fieldbook design (olive thumb w/ white ring). */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--faint);
+  outline: none;
+  padding: 0;
+  margin: 0;
+  border: none;
+  box-shadow: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--surface);
+  box-shadow: 0 1px 3px rgba(40, 36, 32, 0.25);
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--surface);
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font-family: var(--font-body);
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .container {
-  max-width: 800px;
+  max-width: 1300px;
   margin: 0 auto;
   padding: 20px;
 }
 
-.card {
-  background: white;
-  border-radius: 8px;
-  padding: 24px;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-  margin-bottom: 20px;
+/* Shared outer shell for every admin-authenticated page (list, detail, docs).
+   Unifies the max-width and horizontal gutter so surfaces don't drift. */
+.admin-page {
+  max-width: 1300px;
+  margin: 0 auto;
+  padding: 40px 44px 60px;
 }
 
-h1, h2, h3 {
-  margin-bottom: 16px;
-}
-
-button {
-  background-color: #4a90d9;
-  color: white;
-  border: none;
-  padding: 12px 24px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 16px;
-  transition: background-color 0.2s;
-}
-
-button:hover {
-  background-color: #357abd;
-}
-
-button:disabled {
-  background-color: #ccc;
-  cursor: not-allowed;
-}
-
-input, textarea, select {
-  width: 100%;
-  padding: 10px;
-  border: 1px solid #ddd;
-  border-radius: 4px;
-  font-size: 16px;
-  margin-bottom: 12px;
-}
-
-.form-group {
-  margin-bottom: 16px;
-}
-
-label {
-  display: block;
-  margin-bottom: 6px;
-  font-weight: 500;
-}
-
+/* Rater-view floating timer. */
 .timer {
   position: fixed;
   top: 20px;
   right: 20px;
-  background: #333;
-  color: white;
+  background: var(--ink);
+  color: var(--bg);
   padding: 10px 16px;
-  border-radius: 8px;
-  font-size: 18px;
-  font-weight: bold;
+  border-radius: var(--radius-sm);
+  font: 600 15px var(--font-mono);
+  letter-spacing: 0.02em;
+  z-index: 30;
 }
 
 .timer.warning {
-  background: #e74c3c;
+  background: var(--danger);
   animation: pulse 1s infinite;
 }
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
 }
 
-.progress {
-  color: #666;
-  font-size: 14px;
-  margin-bottom: 16px;
-}
-
-.options-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 16px 0;
-}
-
-.option-button {
-  background: #f0f0f0;
-  color: #333;
-  text-align: left;
-  padding: 16px;
-  border: 2px solid transparent;
-}
-
-.option-button:hover {
-  background: #e0e0e0;
-}
-
-.option-button.selected {
-  background: #e3f2fd;
-  border-color: #4a90d9;
-}
-
-.confidence-slider {
-  margin: 24px 0;
-}
-
-.confidence-labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 12px;
-  color: #666;
-  margin-top: 4px;
-}
-
-input[type="range"] {
-  width: 100%;
-  margin: 8px 0;
-}
-
-.admin-nav {
-  margin-bottom: 20px;
-}
-
-.admin-nav a {
-  margin-right: 16px;
-  color: #4a90d9;
-  text-decoration: none;
-}
-
-.experiment-list {
-  margin-top: 20px;
-}
-
-.experiment-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px;
-  border-bottom: 1px solid #eee;
-}
-
-.experiment-item:last-child {
-  border-bottom: none;
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 16px;
-  margin-top: 16px;
-}
-
-.stat-box {
-  background: #f8f9fa;
-  padding: 16px;
-  border-radius: 8px;
-  text-align: center;
-}
-
-.stat-value {
-  font-size: 24px;
-  font-weight: bold;
-  color: #4a90d9;
-}
-
-.stat-label {
-  font-size: 12px;
-  color: #666;
-}
-
-.error {
-  background: #fee;
-  color: #c00;
-  padding: 12px;
-  border-radius: 4px;
-  margin-bottom: 16px;
-}
-
-.success {
-  background: #efe;
-  color: #060;
-  padding: 12px;
-  border-radius: 4px;
-  margin-bottom: 16px;
-}
-
-.completion-screen {
-  text-align: center;
-  padding: 40px;
-}
-
-.completion-screen h1 {
-  color: #27ae60;
-  font-size: 32px;
-}
-
-/* ── Login page ──────────────────────────────────────────────────────────── */
-
+/* Full-viewport centered pages (unauthenticated landing, callbacks). */
 .login-page {
   display: flex;
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  background: var(--bg);
 }
 
+/* LoginPage (Clerk-backed sign-in / sign-up) — restyled on the token set.
+   The component uses these classes directly; the previous blue theme lived
+   here. Kept as CSS (not inline) so the multiple form stages share styling. */
 .login-card {
-  background: white;
-  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
   padding: 40px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow);
   width: 100%;
   max-width: 400px;
   text-align: center;
 }
 
 .login-card h1 {
+  font-family: var(--font-head);
   font-size: 24px;
+  font-weight: 600;
   margin-bottom: 8px;
 }
 
 .login-subtitle {
-  color: #666;
+  color: var(--muted);
   margin-bottom: 28px;
   font-size: 15px;
 }
@@ -253,55 +202,57 @@ input[type="range"] {
 .login-btn {
   width: 100%;
   padding: 12px 20px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 15px;
-  font-weight: 500;
+  font-weight: 600;
+  font-family: var(--font-body);
   cursor: pointer;
   border: none;
   transition: background-color 0.15s, box-shadow 0.15s;
 }
 
 .login-btn-google {
-  background: white;
-  color: #333;
-  border: 1px solid #ddd;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--faint);
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .login-btn-google:hover {
-  background: #f8f8f8;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  background: var(--surface-2);
 }
 
 .login-btn-email {
-  background: #f5f5f5;
-  color: #333;
+  background: var(--surface-2);
+  color: var(--ink);
 }
 
 .login-btn-email:hover {
-  background: #eee;
+  background: var(--faint);
 }
 
 .login-btn-primary {
-  background: #4a90d9;
-  color: white;
+  background: var(--accent);
+  color: var(--accent-ink);
 }
 
 .login-btn-primary:hover {
-  background: #357abd;
+  background: #345c50;
 }
 
 .login-btn-primary:disabled {
-  background: #ccc;
+  background: var(--faint);
+  color: var(--muted);
   cursor: not-allowed;
 }
 
 .login-btn-link {
   background: none;
-  color: #4a90d9;
+  color: var(--accent);
   font-size: 14px;
+  font-weight: 500;
   margin-top: 12px;
   padding: 8px;
 }
@@ -313,55 +264,59 @@ input[type="range"] {
 
 .login-input {
   width: 100%;
-  padding: 12px;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  font-size: 16px;
+  padding: 12px 13px;
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  font-size: 15px;
   margin-bottom: 16px;
   text-align: center;
+  background: var(--surface);
+  color: var(--ink);
 }
 
 .login-input:focus {
   outline: none;
-  border-color: #4a90d9;
-  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.2);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }
 
 .login-error {
-  color: #c00;
+  color: var(--danger);
   font-size: 14px;
   margin-bottom: 12px;
 }
 
-/* Hide Clerk's development mode banner and footer branding */
+/* Clerk chrome we hide across the app. */
 .cl-internal-b3fm6y,
 .cl-userButtonPopoverFooter {
   display: none !important;
 }
 
-/* ── Admin docs (markdown-rendered guide) ────────────────────────────────── */
-
+/* Admin docs (markdown-rendered guide) — restyled onto the token set. */
 .admin-docs {
-  color: #333;
+  color: var(--ink);
   font-size: 15px;
-  line-height: 1.65;
+  line-height: 1.7;
 }
 
 .admin-docs h1 {
+  font-family: var(--font-head);
   font-size: 28px;
   font-weight: 600;
   margin: 0 0 16px 0;
   padding-bottom: 12px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--line);
 }
 
 .admin-docs h2 {
+  font-family: var(--font-head);
   font-size: 20px;
   font-weight: 600;
   margin: 32px 0 12px 0;
 }
 
 .admin-docs h3 {
+  font-family: var(--font-head);
   font-size: 16px;
   font-weight: 600;
   margin: 24px 0 8px 0;
@@ -386,25 +341,25 @@ input[type="range"] {
 }
 
 .admin-docs code {
-  background: #f3f4f6;
+  background: var(--surface-2);
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 13px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
-/* Fenced code blocks (e.g. the `#META:` examples). The minified meta JSON has
-   no spaces around its commas, so `overflow-wrap: anywhere` is needed to break
-   inside long unbroken runs — without it `pre-wrap` alone still overflows. */
+/* Fenced code blocks. The minified META JSON runs without spaces, so
+   `overflow-wrap: anywhere` is needed to break inside long unbroken tokens. */
 .admin-docs pre {
-  background: #f3f4f6;
+  background: var(--surface-2);
   padding: 12px 14px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   margin: 0 0 14px 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.5;
+  font-family: var(--font-mono);
 }
 
 .admin-docs pre code {
@@ -414,9 +369,6 @@ input[type="range"] {
   font-size: inherit;
 }
 
-/* GFM tables (e.g. the CSV columns reference). Compact, light borders,
-   left-aligned text. `table-layout: auto` lets the column-name column shrink
-   to content and the description column take the rest of the width. */
 .admin-docs table {
   width: 100%;
   border-collapse: collapse;
@@ -429,13 +381,13 @@ input[type="range"] {
   text-align: left;
   vertical-align: top;
   padding: 8px 12px;
-  border-bottom: 1px solid #e6e8eb;
+  border-bottom: 1px solid var(--line);
 }
 
 .admin-docs th {
-  background: #f8fafc;
+  background: var(--surface-2);
   font-weight: 600;
-  color: #444;
+  color: var(--ink);
   border-bottom-width: 2px;
 }
 
@@ -446,22 +398,20 @@ input[type="range"] {
 
 .admin-docs hr {
   border: none;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--line);
   margin: 32px 0;
 }
 
 .admin-docs a {
-  color: #4a90d9;
+  color: var(--accent);
 }
 
 .admin-docs strong {
   font-weight: 600;
 }
 
-/* Prefixed-input wrapper: the inner <input> has no chrome of its own, so the
-   wrapper picks up focus styling via :focus-within. Matches the browser's
-   default focused-input look (blue border + faint outer glow). */
+/* Prefixed-input wrapper (reward field) picks up focus via :focus-within. */
 .reward-input:focus-within {
-  border-color: #4a90d9;
-  box-shadow: 0 0 0 2px rgba(74, 144, 217, 0.2);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }

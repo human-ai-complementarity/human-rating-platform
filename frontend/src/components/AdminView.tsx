@@ -2,13 +2,19 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Experiment, ExperimentCreate } from '../types';
+import StatusLabel from './StatusLabel';
 
+/**
+ * Admin dashboard: create-new panel on the left, existing experiments on the
+ * right. Clicking a row navigates into ExperimentDetail. The `internal_name`
+ * (researcher-facing) is preferred as the row label — the public name still
+ * shows underneath so the two aren't confused.
+ */
 function AdminView() {
   const navigate = useNavigate();
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
 
   const [newExperiment, setNewExperiment] = useState<ExperimentCreate>({
     name: '',
@@ -36,8 +42,6 @@ function AdminView() {
   const handleCreateExperiment = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccess(null);
-
     try {
       // Backend normalises whitespace/empty → null for internal_name on both
       // create and update, so we just forward the form value as-typed.
@@ -54,259 +58,334 @@ function AdminView() {
     }
   };
 
-  const handleSelectExperiment = (exp: Experiment) => {
-    navigate(`/admin/experiments/${exp.id}`);
-  };
-
-  const styles = {
-    container: {
-      maxWidth: '1200px',
-      margin: '0 auto',
-      padding: '24px',
-    },
-    header: {
-      marginBottom: '32px',
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-end',
-      gap: '16px',
-    },
-    title: {
-      margin: 0,
-      fontSize: '28px',
-      fontWeight: 600,
-      color: '#333',
-    },
-    subtitle: {
-      margin: '8px 0 0 0',
-      fontSize: '14px',
-      color: '#666',
-    },
-    docsLink: {
-      color: '#4a90d9',
-      fontSize: '14px',
-      textDecoration: 'none',
-      background: 'none',
-      border: 'none',
-      cursor: 'pointer',
-      padding: 0,
-      whiteSpace: 'nowrap' as const,
-    },
-    grid: {
-      display: 'grid',
-      gridTemplateColumns: '1fr 1fr',
-      gap: '24px',
-    },
-    section: {
-      background: '#fff',
-      borderRadius: '8px',
-      border: '1px solid #e0e0e0',
-      overflow: 'hidden',
-    },
-    sectionHeader: {
-      padding: '16px 20px',
-      borderBottom: '1px solid #e0e0e0',
-      background: '#fafafa',
-    },
-    sectionTitle: {
-      margin: 0,
-      fontSize: '14px',
-      fontWeight: 600,
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      color: '#555',
-    },
-    sectionBody: {
-      padding: '20px',
-    },
-    inputGroup: {
-      marginBottom: '16px',
-    },
-    label: {
-      display: 'block',
-      fontSize: '13px',
-      fontWeight: 500,
-      color: '#333',
-      marginBottom: '6px',
-    },
-    input: {
-      width: '100%',
-      padding: '10px 12px',
-      border: '1px solid #ddd',
-      borderRadius: '6px',
-      fontSize: '14px',
-      boxSizing: 'border-box' as const,
-    },
-    hint: {
-      fontSize: '12px',
-      color: '#888',
-      marginTop: '6px',
-    },
-    primaryButton: {
-      width: '100%',
-      padding: '12px 16px',
-      background: '#4a90d9',
-      color: '#fff',
-      border: 'none',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-      fontWeight: 500,
-    },
-    experimentList: {
-      listStyle: 'none',
-      margin: 0,
-      padding: 0,
-    },
-    experimentItem: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      padding: '16px 20px',
-      borderBottom: '1px solid #eee',
-      cursor: 'pointer',
-      transition: 'background 0.15s',
-    },
-    experimentName: {
-      fontWeight: 500,
-      color: '#333',
-      marginBottom: '4px',
-    },
-    experimentMeta: {
-      fontSize: '12px',
-      color: '#888',
-    },
-    viewLink: {
-      color: '#4a90d9',
-      fontSize: '14px',
-      fontWeight: 500,
-    },
-    emptyState: {
-      padding: '40px 20px',
-      textAlign: 'center' as const,
-      color: '#888',
-    },
-  };
-
   return (
-    <div style={styles.container}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div>
-          <h1 style={styles.title}>Experiments</h1>
-          <p style={styles.subtitle}>Create and manage your rating experiments</p>
+    <div className="admin-page">
+      <div style={{ marginBottom: 28 }}>
+        <h1
+          style={{
+            fontFamily: 'var(--font-head)',
+            fontWeight: 600,
+            fontSize: 30,
+            letterSpacing: '-0.01em',
+            margin: 0,
+          }}
+        >
+          Experiments
+        </h1>
+        <p
+          style={{ margin: '6px 0 0', fontSize: 15, color: 'var(--muted)' }}
+        >
+          Create and manage your rating experiments.
+        </p>
+      </div>
+
+      {error && <ErrorBanner text={error} />}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}>
+        <CreatePanel
+          value={newExperiment}
+          onChange={setNewExperiment}
+          onSubmit={handleCreateExperiment}
+        />
+        <ListPanel
+          experiments={experiments}
+          loading={loading}
+          onSelect={(exp) => navigate(`/admin/experiments/${exp.id}`)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ErrorBanner({ text }: { text: string }) {
+  return (
+    <div
+      role="alert"
+      style={{
+        background: 'var(--danger-soft)',
+        border: '1px solid var(--danger)',
+        color: 'var(--danger)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '11px 14px',
+        marginBottom: 20,
+        fontSize: 13.5,
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+function CreatePanel({
+  value,
+  onChange,
+  onSubmit,
+}: {
+  value: ExperimentCreate;
+  onChange: (v: ExperimentCreate) => void;
+  onSubmit: (e: React.FormEvent) => void;
+}) {
+  return (
+    <section
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <SectionHeader label="Create new" />
+      <form onSubmit={onSubmit} style={{ padding: 24 }}>
+        <Field
+          id="experiment-name"
+          testId="experiment-name-input"
+          label="Public name"
+          hint="Shown to raters on Prolific."
+          value={value.name}
+          onChange={(v) => onChange({ ...value, name: v })}
+          placeholder="e.g., Factuality Evaluation"
+          required
+        />
+        <Field
+          id="experiment-internal-name"
+          testId="experiment-internal-name-input"
+          label={
+            <>
+              Internal name{' '}
+              <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
+            </>
+          }
+          hint="Only visible to you and other researchers (in this dashboard and Prolific's researcher view)."
+          value={value.internal_name ?? ''}
+          onChange={(v) => onChange({ ...value, internal_name: v })}
+          placeholder="e.g., Q2 Factuality Eval — Sander"
+        />
+        <Field
+          id="ratings-per-question"
+          testId="ratings-per-question-input"
+          type="number"
+          label="Ratings per question"
+          hint="How many different raters should evaluate each question."
+          value={String(value.num_ratings_per_question)}
+          onChange={(v) => onChange({ ...value, num_ratings_per_question: parseInt(v, 10) || 0 })}
+          min={1}
+          required
+        />
+        <div
+          style={{
+            background: 'var(--accent-soft)',
+            color: 'var(--accent-soft-ink)',
+            borderRadius: 'var(--radius-sm)',
+            padding: '13px 15px',
+            fontSize: 13,
+            lineHeight: 1.5,
+            marginBottom: 20,
+          }}
+        >
+          After creating the experiment and uploading questions, use the Prolific section
+          to run a pilot study and launch rating rounds.
         </div>
         <button
-          type="button"
-          style={styles.docsLink}
-          onClick={() => navigate('/admin/docs')}
+          type="submit"
+          style={{
+            width: '100%',
+            padding: 13,
+            background: 'var(--accent)',
+            color: 'var(--accent-ink)',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            fontWeight: 600,
+            fontSize: 15,
+            cursor: 'pointer',
+          }}
         >
-          How to run an experiment →
+          Create experiment
         </button>
-      </div>
+      </form>
+    </section>
+  );
+}
 
-      {error && <div className="error" style={{ marginBottom: '16px' }}>{error}</div>}
-      {success && <div className="success" style={{ marginBottom: '16px' }}>{success}</div>}
-
-      {/* Two Column Grid */}
-      <div style={styles.grid}>
-        {/* Create Experiment */}
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Create New</h2>
-          </div>
-          <div style={styles.sectionBody}>
-            <form onSubmit={handleCreateExperiment}>
-              <div style={styles.inputGroup}>
-                <label htmlFor="experiment-name" style={styles.label}>Public Name</label>
-                <input
-                  id="experiment-name"
-                  data-testid="experiment-name-input"
-                  type="text"
-                  value={newExperiment.name}
-                  onChange={(e) => setNewExperiment({ ...newExperiment, name: e.target.value })}
-                  placeholder="e.g., Factuality Evaluation"
-                  required
-                  style={styles.input}
-                />
-                <div style={styles.hint}>Shown to raters on Prolific.</div>
-              </div>
-              <div style={styles.inputGroup}>
-                <label htmlFor="experiment-internal-name" style={styles.label}>Internal Name (optional)</label>
-                <input
-                  id="experiment-internal-name"
-                  data-testid="experiment-internal-name-input"
-                  type="text"
-                  value={newExperiment.internal_name ?? ''}
-                  onChange={(e) => setNewExperiment({ ...newExperiment, internal_name: e.target.value })}
-                  placeholder="e.g., Q2 Factuality Eval — Sander"
-                  style={styles.input}
-                />
-                <div style={styles.hint}>Only visible to you and other researchers (in this dashboard and Prolific's researcher view).</div>
-              </div>
-              <div style={styles.inputGroup}>
-                <label htmlFor="ratings-per-question" style={styles.label}>Ratings per Question</label>
-                <input
-                  id="ratings-per-question"
-                  data-testid="ratings-per-question-input"
-                  type="number"
-                  value={newExperiment.num_ratings_per_question}
-                  onChange={(e) => setNewExperiment({ ...newExperiment, num_ratings_per_question: parseInt(e.target.value) })}
-                  min="1"
-                  required
-                  style={styles.input}
-                />
-                <div style={styles.hint}>How many different raters should evaluate each question.</div>
-              </div>
-              <div style={{ marginBottom: '16px', padding: '12px', background: '#f0f7ff', borderRadius: '6px', fontSize: '13px', color: '#555' }}>
-                After creating the experiment and uploading questions, use the Prolific section to run a pilot study and launch rating rounds.
-              </div>
-              <button type="submit" style={styles.primaryButton}>
-                Create Experiment
-              </button>
-            </form>
-          </div>
+function ListPanel({
+  experiments,
+  loading,
+  onSelect,
+}: {
+  experiments: Experiment[];
+  loading: boolean;
+  onSelect: (exp: Experiment) => void;
+}) {
+  return (
+    <section
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <SectionHeader label="Your experiments" />
+      {loading ? (
+        <EmptyState text="Loading…" />
+      ) : experiments.length === 0 ? (
+        <EmptyState text="No experiments yet. Create one to get started." />
+      ) : (
+        <div>
+          {experiments.map((exp, idx) => (
+            <ExperimentRow
+              key={exp.id}
+              exp={exp}
+              onClick={() => onSelect(exp)}
+              isLast={idx === experiments.length - 1}
+            />
+          ))}
         </div>
+      )}
+    </section>
+  );
+}
 
-        {/* Experiments List */}
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Your Experiments</h2>
+function ExperimentRow({
+  exp,
+  onClick,
+  isLast,
+}: {
+  exp: Experiment;
+  onClick: () => void;
+  isLast: boolean;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
+      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 18,
+        padding: '18px 24px',
+        borderBottom: isLast ? 'none' : '1px solid var(--line)',
+        cursor: 'pointer',
+        transition: 'background 0.15s',
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <span
+            style={{
+              fontWeight: 700,
+              fontSize: 15.5,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {exp.internal_name || exp.name}
+          </span>
+          <StatusLabel status={exp.status} size="sm" />
+        </div>
+        {exp.internal_name && (
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 2 }}>
+            Public: {exp.name}
           </div>
-          {loading ? (
-            <div style={styles.emptyState}>Loading...</div>
-          ) : experiments.length === 0 ? (
-            <div style={styles.emptyState}>
-              No experiments yet.<br />Create one to get started.
-            </div>
-          ) : (
-            <div style={styles.experimentList}>
-              {experiments.map((exp) => (
-                <div
-                  key={exp.id}
-                  style={styles.experimentItem}
-                  onClick={() => handleSelectExperiment(exp)}
-                  onMouseEnter={(e) => e.currentTarget.style.background = '#f8f9fa'}
-                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                >
-                  <div>
-                    <div style={styles.experimentName}>{exp.internal_name || exp.name}</div>
-                    {exp.internal_name && (
-                      <div style={{ fontSize: '12px', color: '#666', marginBottom: '2px' }}>
-                        Public: {exp.name}
-                      </div>
-                    )}
-                    <div style={styles.experimentMeta}>
-                      {exp.question_count} questions · {exp.rating_count} ratings
-                    </div>
-                  </div>
-                  <span style={styles.viewLink}>View →</span>
-                </div>
-              ))}
-            </div>
-          )}
+        )}
+        <div style={{ fontSize: 13, color: 'var(--muted)' }}>
+          {exp.question_count} questions · {exp.rating_count} ratings
         </div>
       </div>
+      <span
+        style={{
+          fontSize: 13.5,
+          fontWeight: 600,
+          color: 'var(--accent)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        View →
+      </span>
+    </div>
+  );
+}
+
+function SectionHeader({ label }: { label: string }) {
+  return (
+    <div
+      style={{
+        padding: '18px 24px',
+        borderBottom: '1px solid var(--line)',
+        font: '600 11px/1 var(--font-mono)',
+        letterSpacing: '0.16em',
+        textTransform: 'uppercase',
+        color: 'var(--muted)',
+      }}
+    >
+      {label}
+    </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
+      {text}
+    </div>
+  );
+}
+
+/** Small labelled input used inside the create panel. */
+function Field({
+  id,
+  testId,
+  label,
+  hint,
+  value,
+  onChange,
+  placeholder,
+  required,
+  type = 'text',
+  min,
+}: {
+  id: string;
+  testId?: string;
+  label: React.ReactNode;
+  hint?: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  required?: boolean;
+  type?: 'text' | 'number';
+  min?: number;
+}) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label
+        htmlFor={id}
+        style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
+      >
+        {label}
+      </label>
+      <input
+        id={id}
+        data-testid={testId}
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        required={required}
+        min={min}
+        style={{
+          width: '100%',
+          padding: '11px 13px',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--surface)',
+          font: '400 15px var(--font-body)',
+          color: 'var(--ink)',
+        }}
+      />
+      {hint && (
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>{hint}</div>
+      )}
     </div>
   );
 }

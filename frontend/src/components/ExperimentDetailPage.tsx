@@ -12,9 +12,12 @@ function ExperimentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Deliberately does NOT flip `loading` — that would unmount ExperimentDetail
+  // and blow away its local UI state (the active tab, unsaved metaForm edits,
+  // etc.) on every post-mutation refresh. The initial-mount effect below owns
+  // the loading spinner. See 65d14ac.
   const loadExperiment = useCallback(async () => {
     try {
-      setLoading(true);
       const experiments = await api.listExperiments();
       setAllExperiments(experiments);
       const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
@@ -31,6 +34,9 @@ function ExperimentDetailPage() {
   }, [experimentId]);
 
   useEffect(() => {
+    setLoading(true);
+    setExperiment(null);
+    setError(null);
     loadExperiment();
   }, [loadExperiment]);
 
@@ -44,9 +50,19 @@ function ExperimentDetailPage() {
 
   if (loading) {
     return (
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
-        <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #e0e0e0', padding: '40px', textAlign: 'center', color: '#666' }}>
-          Loading...
+      <div className="admin-page">
+        <div
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            padding: 40,
+            textAlign: 'center',
+            color: 'var(--muted)',
+            boxShadow: 'var(--shadow)',
+          }}
+        >
+          Loading…
         </div>
       </div>
     );
@@ -54,8 +70,18 @@ function ExperimentDetailPage() {
 
   if (error) {
     return (
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
-        <div style={{ background: '#fff', borderRadius: '8px', border: '1px solid #f5c6cb', padding: '40px', textAlign: 'center', color: '#dc3545' }}>
+      <div className="admin-page">
+        <div
+          style={{
+            background: 'var(--danger-soft)',
+            border: '1px solid var(--danger)',
+            borderRadius: 'var(--radius)',
+            padding: 40,
+            textAlign: 'center',
+            color: 'var(--danger)',
+            boxShadow: 'var(--shadow)',
+          }}
+        >
           {error}
         </div>
       </div>

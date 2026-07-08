@@ -1,12 +1,80 @@
 import { useState, useEffect } from 'react';
 import { api } from '../api';
 import type { AssistanceStep, Subtask } from '../types';
+import { Banner, textareaStyle } from './experiment-detail/ui';
 
 interface AssistancePanelProps {
   sessionToken: string;
   questionId: number;
   onSessionId: (sessionId: number) => void;
   onStepChange: (step: AssistanceStep | null) => void;
+}
+
+const monoLabel = {
+  font: '600 10px/1 var(--font-mono)',
+  letterSpacing: '0.16em',
+  textTransform: 'uppercase' as const,
+  color: 'var(--muted)',
+};
+
+function OptionTile({
+  selected,
+  children,
+  onClick,
+}: {
+  selected: boolean;
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      onClick={onClick}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 14px',
+        background: selected ? 'var(--accent-soft)' : 'var(--surface)',
+        border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+        borderRadius: 'var(--radius-sm)',
+        cursor: 'pointer',
+        fontSize: 14,
+        textAlign: 'left',
+        color: 'var(--ink)',
+        font: '500 14px/1.4 var(--font-body)',
+        width: '100%',
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          width: 15,
+          height: 15,
+          borderRadius: '50%',
+          border: `2px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+          flex: '0 0 auto',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'var(--surface)',
+        }}
+      >
+        {selected && (
+          <span
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: '50%',
+              background: 'var(--accent)',
+            }}
+          />
+        )}
+      </span>
+      <span style={{ flex: 1 }}>{children}</span>
+    </button>
+  );
 }
 
 function SubtaskInput({
@@ -22,95 +90,41 @@ function SubtaskInput({
   onChange: (value: string) => void;
   onConfidenceChange: (value: number) => void;
 }) {
-  const styles = {
-    prompt: {
-      fontSize: '14px',
-      fontWeight: 500 as const,
-      color: '#333',
-      marginBottom: '10px',
-      lineHeight: 1.4,
-    },
-    binaryGroup: {
-      display: 'flex',
-      gap: '8px',
-    },
-    binaryBtn: (selected: boolean) => ({
-      flex: 1,
-      padding: '10px',
-      border: `2px solid ${selected ? '#4a90d9' : '#ddd'}`,
-      borderRadius: '8px',
-      background: selected ? '#e3f2fd' : '#f8f9fa',
-      color: '#333',
-      fontSize: '14px',
-      fontWeight: selected ? 600 : 400,
-      cursor: 'pointer',
-      textAlign: 'center' as const,
-    }),
-    radioOption: (selected: boolean) => ({
-      display: 'flex',
-      alignItems: 'center',
-      gap: '8px',
-      padding: '10px 14px',
-      border: `2px solid ${selected ? '#4a90d9' : '#ddd'}`,
-      borderRadius: '8px',
-      background: selected ? '#e3f2fd' : '#f8f9fa',
-      cursor: 'pointer',
-      marginBottom: '6px',
-      fontSize: '14px',
-      color: '#333',
-      textAlign: 'left' as const,
-    }),
-    textarea: {
-      width: '100%',
-      padding: '10px',
-      border: '1px solid #ddd',
-      borderRadius: '8px',
-      fontSize: '14px',
-      lineHeight: 1.5,
-      resize: 'vertical' as const,
-      boxSizing: 'border-box' as const,
-    },
-    sliderRow: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '12px',
-    },
-    sliderValue: {
-      fontSize: '16px',
-      fontWeight: 600,
-      color: '#4a90d9',
-      minWidth: '24px',
-    },
-  };
-
   return (
     <div>
-      <p style={styles.prompt}>{subtask.question}</p>
+      <p
+        style={{
+          fontSize: 14,
+          fontWeight: 600,
+          color: 'var(--ink)',
+          margin: '0 0 10px',
+          lineHeight: 1.45,
+        }}
+      >
+        {subtask.question}
+      </p>
       {subtask.my_answer && subtask.confidence !== undefined && (
-        <p style={{ fontSize: '12px', color: '#aaa', marginBottom: '8px' }}>
+        <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 10px', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
           AI confidence: {subtask.confidence}%
         </p>
       )}
       {subtask.type === 'binary' && (
-        <div style={styles.binaryGroup}>
+        <div style={{ display: 'flex', gap: 8 }}>
           {['Yes', 'No'].map(opt => (
-            <button
-              key={opt}
-              style={styles.binaryBtn(value === opt.toLowerCase())}
-              onClick={() => onChange(opt.toLowerCase())}
-            >
-              {opt}
-            </button>
+            <div key={opt} style={{ flex: 1 }}>
+              <OptionTile selected={value === opt.toLowerCase()} onClick={() => onChange(opt.toLowerCase())}>
+                {opt}
+              </OptionTile>
+            </div>
           ))}
         </div>
       )}
       {subtask.type === 'multiple_choice' && (
-        <div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {(subtask.options ?? []).map(opt => (
-            <div key={opt} style={styles.radioOption(value === opt)} onClick={() => onChange(opt)}>
-              <input type="radio" readOnly checked={value === opt} style={{ accentColor: '#4a90d9', width: 'auto', marginBottom: 0 }} />
+            <OptionTile key={opt} selected={value === opt} onClick={() => onChange(opt)}>
               {opt}
-            </div>
+            </OptionTile>
           ))}
         </div>
       )}
@@ -120,26 +134,34 @@ function SubtaskInput({
           onChange={e => onChange(e.target.value)}
           rows={3}
           placeholder="Your answer..."
-          style={styles.textarea}
+          style={{ ...textareaStyle, fontSize: 14, padding: '10px 12px' }}
         />
       )}
       {subtask.type === 'rating_scale' && (
-        <div style={styles.sliderRow}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <input
             type="range"
             min="1"
             max="5"
             value={value || '3'}
             onChange={e => onChange(e.target.value)}
-            style={{ flex: 1, accentColor: '#4a90d9' }}
+            style={{ flex: 1, accentColor: 'var(--accent)' }}
           />
-          <span style={styles.sliderValue}>{value || '3'}/5</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-soft-ink)', minWidth: 26 }}>
+            {value || '3'}/5
+          </span>
         </div>
       )}
-      <div style={{ marginTop: '10px', paddingTop: '10px', borderTop: '1px solid #eee' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-          <span style={{ fontSize: '12px', color: '#888' }}>Your confidence</span>
-          <span style={{ fontSize: '12px', fontWeight: 600, color: '#4a90d9' }}>{confidence}/5</span>
+      <div
+        style={{
+          marginTop: 12,
+          paddingTop: 12,
+          borderTop: '1px solid var(--faint)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+          <span style={monoLabel}>Your confidence</span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-soft-ink)' }}>{confidence}/5</span>
         </div>
         <input
           type="range"
@@ -147,9 +169,19 @@ function SubtaskInput({
           max="5"
           value={confidence}
           onChange={e => onConfidenceChange(parseInt(e.target.value))}
-          style={{ width: '100%', accentColor: '#4a90d9', margin: 0 }}
+          style={{ width: '100%', accentColor: 'var(--accent)', margin: 0 }}
         />
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#bbb', marginTop: '2px' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            letterSpacing: '0.04em',
+            color: 'var(--muted)',
+            marginTop: 4,
+          }}
+        >
           <span>Not confident</span>
           <span>Very confident</span>
         </div>
@@ -157,6 +189,63 @@ function SubtaskInput({
     </div>
   );
 }
+
+const panelStyle: React.CSSProperties = {
+  background: 'var(--surface)',
+  border: '1px solid var(--faint)',
+  borderRadius: 'var(--radius)',
+  boxShadow: 'var(--shadow)',
+  overflow: 'hidden',
+  height: '100%',
+  display: 'flex',
+  flexDirection: 'column',
+  position: 'sticky',
+  top: 24,
+};
+
+const panelHeaderStyle: React.CSSProperties = {
+  padding: '16px 22px',
+  borderBottom: '1px solid var(--line)',
+  background: 'var(--surface-2)',
+};
+
+const stepLabelStyle: React.CSSProperties = {
+  ...monoLabel,
+  marginBottom: 6,
+  display: 'block',
+};
+
+const panelTitleStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-head)',
+  fontSize: 17,
+  fontWeight: 600,
+  color: 'var(--ink)',
+  letterSpacing: '-0.005em',
+  margin: 0,
+};
+
+const panelBodyStyle: React.CSSProperties = {
+  padding: 22,
+  flex: 1,
+  overflowY: 'auto',
+};
+
+const subtaskCardStyle: React.CSSProperties = {
+  border: '1px solid var(--faint)',
+  borderRadius: 'var(--radius-sm)',
+  padding: 16,
+  marginBottom: 12,
+  background: 'var(--surface-2)',
+};
+
+const answeredRowStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'flex-start',
+  gap: 12,
+  padding: '8px 0',
+  borderBottom: '1px solid var(--line)',
+};
 
 function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }: AssistancePanelProps) {
   const [step, setStep] = useState<AssistanceStep | null>(null);
@@ -232,227 +321,29 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
       return val !== undefined && val.answer !== '';
     });
 
-  const styles = {
-    panel: {
-      background: '#fff',
-      border: '1px solid #e0e0e0',
-      borderRadius: '12px',
-      overflow: 'hidden',
-      height: '100%',
-      display: 'flex',
-      flexDirection: 'column' as const,
-    },
-    panelHeader: {
-      padding: '16px 20px',
-      borderBottom: '1px solid #e0e0e0',
-      background: '#fafafa',
-    },
-    stepLabel: {
-      fontSize: '11px',
-      fontWeight: 600,
-      color: '#888',
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      marginBottom: '2px',
-    },
-    panelTitle: {
-      fontSize: '15px',
-      fontWeight: 600,
-      color: '#333',
-      margin: 0,
-    },
-    panelBody: {
-      padding: '20px',
-      flex: 1,
-      overflowY: 'auto' as const,
-    },
-    subtaskCard: {
-      border: '1px solid #e8e8e8',
-      borderRadius: '8px',
-      padding: '16px',
-      marginBottom: '12px',
-      background: '#fafafa',
-    },
-    subtaskNumber: {
-      fontSize: '11px',
-      fontWeight: 600,
-      color: '#4a90d9',
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      marginBottom: '8px',
-    },
-    confidenceSection: {
-      border: '1px solid #e8e8e8',
-      borderRadius: '8px',
-      padding: '16px',
-      marginBottom: '12px',
-      background: '#fafafa',
-    },
-    confidenceHeader: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      marginBottom: '10px',
-    },
-    confidenceTitle: {
-      fontSize: '13px',
-      fontWeight: 500,
-      color: '#555',
-    },
-    confidenceValue: {
-      fontSize: '15px',
-      fontWeight: 600,
-      color: '#4a90d9',
-    },
-    confidenceLabels: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      marginTop: '6px',
-      fontSize: '11px',
-      color: '#999',
-    },
-    submitBtn: (enabled: boolean) => ({
-      marginTop: '4px',
-      width: '100%',
-      padding: '12px',
-      background: enabled ? '#4a90d9' : '#e0e0e0',
-      color: enabled ? '#fff' : '#999',
-      border: 'none',
-      borderRadius: '8px',
-      fontSize: '14px',
-      fontWeight: 600,
-      cursor: enabled ? 'pointer' : 'not-allowed',
-    }),
-    synthesisSection: {
-      marginBottom: '16px',
-    },
-    synthesisLabel: {
-      fontSize: '11px',
-      fontWeight: 600,
-      color: '#888',
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      marginBottom: '8px',
-    },
-    synthesisRecommendation: {
-      background: '#e3f2fd',
-      border: '1px solid #90caf9',
-      borderRadius: '8px',
-      padding: '12px 16px',
-      fontSize: '14px',
-      fontWeight: 600,
-      color: '#1565c0',
-      marginBottom: '12px',
-    },
-    synthesisReasoning: {
-      fontSize: '13px',
-      color: '#555',
-      lineHeight: 1.6,
-      background: '#f8f9fa',
-      borderRadius: '8px',
-      padding: '12px 16px',
-    },
-    answeredRow: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      gap: '12px',
-      padding: '8px 0',
-      borderBottom: '1px solid #f0f0f0',
-    },
-    answeredPrompt: {
-      fontSize: '13px',
-      color: '#666',
-      flex: 1,
-    },
-    answeredValue: {
-      fontSize: '13px',
-      fontWeight: 600,
-      color: '#333',
-      textAlign: 'right' as const,
-    },
-    continueHint: {
-      marginTop: '16px',
-      padding: '10px 14px',
-      background: '#e8f5e9',
-      border: '1px solid #a5d6a7',
-      borderRadius: '8px',
-      fontSize: '13px',
-      color: '#2e7d32',
-      fontWeight: 500,
-    },
-    loadingText: {
-      fontSize: '14px',
-      color: '#888',
-      padding: '20px',
-      textAlign: 'center' as const,
-    },
-    errorText: {
-      fontSize: '13px',
-      color: '#dc3545',
-    },
-    topNList: {
-      display: 'flex',
-      flexDirection: 'column' as const,
-      gap: '10px',
-    },
-    topNCard: {
-      border: '1px solid #d6e6f8',
-      borderRadius: '8px',
-      padding: '14px',
-      background: '#f7fbff',
-    },
-    topNHeader: {
-      display: 'flex',
-      justifyContent: 'space-between',
-      alignItems: 'flex-start',
-      gap: '12px',
-      marginBottom: '8px',
-    },
-    topNAnswer: {
-      fontSize: '14px',
-      fontWeight: 650,
-      color: '#1f3f5b',
-      lineHeight: 1.4,
-    },
-    topNBadge: {
-      flexShrink: 0,
-      fontSize: '12px',
-      fontWeight: 650,
-      color: '#2f6fae',
-      background: '#e3f2fd',
-      borderRadius: '999px',
-      padding: '3px 8px',
-    },
-    topNRationale: {
-      margin: 0,
-      fontSize: '13px',
-      lineHeight: 1.5,
-      color: '#52616f',
-    },
-  };
-
   if (loading) {
     return (
-      <div style={styles.panel}>
-        <div style={styles.panelHeader}>
-          <div style={styles.stepLabel}>AI Assistance</div>
-          <p style={styles.panelTitle}>Analyzing question…</p>
+      <div style={panelStyle}>
+        <div style={panelHeaderStyle}>
+          <span style={stepLabelStyle}>AI Assistance</span>
+          <p style={panelTitleStyle}>Analyzing question…</p>
         </div>
-        <div style={styles.loadingText}>Preparing guidance, please wait…</div>
+        <div style={{ ...panelBodyStyle, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
+          Preparing guidance, please wait…
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div style={styles.panel}>
-        <div style={styles.panelHeader}>
-          <div style={styles.stepLabel}>AI Assistance</div>
-          <p style={styles.panelTitle}>Could not load assistance</p>
+      <div style={panelStyle}>
+        <div style={panelHeaderStyle}>
+          <span style={stepLabelStyle}>AI Assistance</span>
+          <p style={panelTitleStyle}>Could not load assistance</p>
         </div>
-        <div style={styles.panelBody}>
-          <p style={styles.errorText}>{error}</p>
+        <div style={panelBodyStyle}>
+          <Banner tone="danger">{error}</Banner>
         </div>
       </div>
     );
@@ -463,25 +354,68 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
   if (step.type === 'display' && step.payload.kind === 'top_n') {
     const candidates = step.payload.candidates ?? [];
     return (
-      <div style={styles.panel}>
-        <div style={styles.panelHeader}>
-          <div style={styles.stepLabel}>AI Assistance</div>
-          <p style={styles.panelTitle}>Top {step.payload.top_n ?? candidates.length} Suggestions</p>
+      <div style={panelStyle}>
+        <div style={panelHeaderStyle}>
+          <span style={stepLabelStyle}>AI Assistance</span>
+          <p style={panelTitleStyle}>Top {step.payload.top_n ?? candidates.length} suggestions</p>
         </div>
-        <div style={styles.panelBody}>
-          <div style={styles.topNList}>
+        <div style={panelBodyStyle}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {candidates.map(candidate => (
-              <div key={`${candidate.rank}-${candidate.answer}`} style={styles.topNCard}>
-                <div style={styles.topNHeader}>
-                  <div style={styles.topNAnswer}>
-                    {candidate.rank}. {candidate.answer}
+              <div
+                key={`${candidate.rank}-${candidate.answer}`}
+                style={{
+                  border: '1px solid var(--faint)',
+                  borderRadius: 'var(--radius-sm)',
+                  padding: '14px 16px',
+                  background: 'var(--surface-2)',
+                }}
+              >
+                <div
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: 12,
+                    marginBottom: 6,
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                    <span
+                      style={{
+                        font: '700 12px/1 var(--font-mono)',
+                        color: 'var(--accent-soft-ink)',
+                        letterSpacing: '0.04em',
+                      }}
+                    >
+                      {candidate.rank}
+                    </span>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.4 }}>
+                      {candidate.answer}
+                    </span>
                   </div>
                   {candidate.confidence !== undefined && (
-                    <span style={styles.topNBadge}>{candidate.confidence}%</span>
+                    <span
+                      style={{
+                        flexShrink: 0,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: 'var(--accent-soft-ink)',
+                        background: 'var(--accent-soft)',
+                        borderRadius: 999,
+                        padding: '3px 9px',
+                        fontFamily: 'var(--font-mono)',
+                        letterSpacing: '0.04em',
+                      }}
+                    >
+                      {candidate.confidence}%
+                    </span>
                   )}
                 </div>
                 {candidate.rationale && (
-                  <p style={styles.topNRationale}>{candidate.rationale}</p>
+                  <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
+                    {candidate.rationale}
+                  </p>
                 )}
               </div>
             ))}
@@ -496,24 +430,37 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
     const completedHistory: Array<{ subtasks: Subtask[]; answers: Record<string, { answer: string; confidence?: number }> }> =
       step.payload.history ?? [];
     return (
-      <div style={styles.panel}>
-        <div style={styles.panelHeader}>
-          <div style={styles.stepLabel}>Analysis complete</div>
-          <p style={styles.panelTitle}>AI Analysis</p>
+      <div style={panelStyle}>
+        <div style={panelHeaderStyle}>
+          <span style={stepLabelStyle}>Analysis complete</span>
+          <p style={panelTitleStyle}>AI analysis</p>
         </div>
-        <div style={styles.panelBody}>
+        <div style={panelBodyStyle}>
           {synthesis && (
-            <div style={styles.synthesisSection}>
-              <div style={styles.synthesisLabel}>Suggested Answer</div>
-              <div style={styles.synthesisRecommendation}>{synthesis.answer}</div>
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ ...monoLabel, marginBottom: 8 }}>Suggested answer</div>
+              <Banner tone="ok" icon={false}>
+                <span style={{ fontWeight: 600, color: 'var(--ink)' }}>{synthesis.answer}</span>
+              </Banner>
             </div>
           )}
-          <div style={styles.synthesisLabel}>Your answers</div>
+          <div style={{ ...monoLabel, marginBottom: 8 }}>Your answers</div>
           {completedHistory.map((round, ri) =>
             round.subtasks.map(st => (
-              <div key={`${ri}-${st.index}`} style={styles.answeredRow}>
-                <span style={styles.answeredPrompt}>{st.question}</span>
-                <span style={styles.answeredValue}>{round.answers[String(st.index)]?.answer ?? '—'}</span>
+              <div key={`${ri}-${st.index}`} style={answeredRowStyle}>
+                <span style={{ fontSize: 13, color: 'var(--muted)', flex: 1, lineHeight: 1.45 }}>
+                  {st.question}
+                </span>
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: 'var(--ink)',
+                    textAlign: 'right',
+                  }}
+                >
+                  {round.answers[String(st.index)]?.answer ?? '—'}
+                </span>
               </div>
             ))
           )}
@@ -529,33 +476,37 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
     step?.payload?.history ?? [];
 
   return (
-    <div style={styles.panel}>
-      <div style={styles.panelHeader}>
-        <div style={styles.stepLabel}>
+    <div style={panelStyle}>
+      <div style={panelHeaderStyle}>
+        <span style={stepLabelStyle}>
           Round {iteration} of up to {maxRounds}
-        </div>
-        <p style={styles.panelTitle}>Answer before rating</p>
+        </span>
+        <p style={panelTitleStyle}>Answer before rating</p>
       </div>
-      <div style={styles.panelBody}>
-        {/* Previous rounds collapsed */}
+      <div style={panelBodyStyle}>
         {history.length > 0 && (
-          <div style={{ marginBottom: '16px' }}>
-            <div style={styles.synthesisLabel}>Previous answers</div>
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ ...monoLabel, marginBottom: 8 }}>Previous answers</div>
             {history.map((round, ri) =>
               round.subtasks.map(st => (
-                <div key={`${ri}-${st.index}`} style={{ ...styles.answeredRow, opacity: 0.7 }}>
-                  <span style={styles.answeredPrompt}>{st.question}</span>
-                  <span style={styles.answeredValue}>{round.answers[String(st.index)]?.answer ?? '—'}</span>
+                <div key={`${ri}-${st.index}`} style={{ ...answeredRowStyle, opacity: 0.7 }}>
+                  <span style={{ fontSize: 13, color: 'var(--muted)', flex: 1, lineHeight: 1.45 }}>
+                    {st.question}
+                  </span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', textAlign: 'right' }}>
+                    {round.answers[String(st.index)]?.answer ?? '—'}
+                  </span>
                 </div>
               ))
             )}
           </div>
         )}
 
-        {/* Current round */}
         {subtasks.map(st => (
-          <div key={st.index} style={styles.subtaskCard}>
-            <div style={styles.subtaskNumber}>{st.index + 1} of {subtasks.length}</div>
+          <div key={st.index} style={subtaskCardStyle}>
+            <div style={{ ...monoLabel, color: 'var(--accent-soft-ink)', marginBottom: 10 }}>
+              {st.index + 1} of {subtasks.length}
+            </div>
             <SubtaskInput
               subtask={st}
               value={answers[st.index]?.answer ?? ''}
@@ -566,11 +517,22 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
           </div>
         ))}
         <button
-          style={styles.submitBtn(allAnswered && !submitting)}
-          disabled={!allAnswered || submitting}
+          type="button"
           onClick={handleSubmit}
+          disabled={!allAnswered || submitting}
+          style={{
+            marginTop: 4,
+            width: '100%',
+            padding: '12px 16px',
+            background: allAnswered && !submitting ? 'var(--accent)' : 'var(--faint)',
+            color: allAnswered && !submitting ? 'var(--accent-ink)' : 'var(--muted)',
+            border: 'none',
+            borderRadius: 'var(--radius-sm)',
+            font: '600 14px var(--font-body)',
+            cursor: allAnswered && !submitting ? 'pointer' : 'not-allowed',
+          }}
         >
-          {submitting ? 'Submitting…' : 'Submit Answers'}
+          {submitting ? 'Submitting…' : 'Submit answers'}
         </button>
       </div>
     </div>

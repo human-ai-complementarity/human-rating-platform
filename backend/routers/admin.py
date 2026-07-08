@@ -168,6 +168,14 @@ async def delete_experiment(
     return await admin_service.delete_experiment(experiment_id=experiment_id, db=db)
 
 
+@secure_router.post("/experiments/{experiment_id}/finish", response_model=ExperimentResponse)
+async def finish_experiment(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.finish_experiment(experiment_id=experiment_id, db=db)
+
+
 @secure_router.get("/experiments/{experiment_id}/stats")
 async def get_experiment_stats(
     experiment_id: int,
@@ -280,6 +288,19 @@ async def close_experiment_round(
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.close_experiment_round(
+        experiment_id=experiment_id,
+        round_id=round_id,
+        db=db,
+    )
+
+
+@secure_router.delete("/experiments/{experiment_id}/prolific/rounds/{round_id}")
+async def discard_experiment_round(
+    experiment_id: int,
+    round_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.discard_experiment_round(
         experiment_id=experiment_id,
         round_id=round_id,
         db=db,

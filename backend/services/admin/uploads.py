@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import Experiment, Question, Upload
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
+from .status import assert_editable
 from .validators import validate_csv_required_fields, validate_upload_filename
 
 logger = logging.getLogger(__name__)
@@ -322,6 +323,7 @@ async def upload_questions(
     in the response but never overwrite saved fields.
     """
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    assert_editable(experiment, action="upload questions")
     extension = validate_upload_filename(file)
 
     if _get_upload_size(file) > MAX_FILE_SIZE:
