@@ -16,21 +16,21 @@ const STATUS_META: Record<
 > = {
   DRAFT: {
     label: 'Draft',
-    background: '#f1f5f9',
-    color: '#334155',
+    background: 'var(--surface-2)',
+    color: 'var(--muted)',
     description: 'Config editable. Pilot can run. First main round moves to Launch.',
   },
   LAUNCH: {
-    label: 'Launch',
-    background: '#dbeafe',
-    color: '#1d4ed8',
+    label: 'Launched',
+    background: 'var(--accent-soft)',
+    color: 'var(--accent-soft-ink)',
     description:
       'Experiment config is locked (name, description, prompts, assistance method, dataset). More rounds can be launched. Round-level fields stay editable while unpublished.',
   },
   FINISHED: {
     label: 'Finished',
-    background: '#dcfce7',
-    color: '#166534',
+    background: 'var(--accent)',
+    color: 'var(--accent-ink)',
     description:
       'Terminal. No more rounds. Selectable by other experiments as an exclusion source (its rater set is now fixed).',
   },
@@ -80,10 +80,10 @@ function StatusLabel({ status, size = 'md' }: StatusLabelProps) {
             zIndex: 20,
             width: '320px',
             padding: '12px 14px',
-            background: '#1e293b',
-            color: '#f1f5f9',
-            borderRadius: '6px',
-            boxShadow: '0 6px 16px rgba(15, 23, 42, 0.25)',
+            background: 'var(--ink)',
+            color: 'var(--bg)',
+            borderRadius: 'var(--radius-sm)',
+            boxShadow: 'var(--shadow)',
             fontSize: '12px',
             lineHeight: 1.5,
             fontWeight: 400,
@@ -91,7 +91,17 @@ function StatusLabel({ status, size = 'md' }: StatusLabelProps) {
             letterSpacing: 0,
           }}
         >
-          <div style={{ fontWeight: 600, marginBottom: '6px', color: '#fff' }}>
+          <div
+            style={{
+              fontWeight: 600,
+              marginBottom: '6px',
+              color: 'var(--bg)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: '10.5px',
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+            }}
+          >
             Experiment states
           </div>
           {(Object.entries(STATUS_META) as [ExperimentStatus, typeof meta][]).map(

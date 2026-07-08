@@ -292,3 +292,16 @@ async def close_experiment_round(
         round_id=round_id,
         db=db,
     )
+
+
+@secure_router.delete("/experiments/{experiment_id}/prolific/rounds/{round_id}")
+async def discard_experiment_round(
+    experiment_id: int,
+    round_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.discard_experiment_round(
+        experiment_id=experiment_id,
+        round_id=round_id,
+        db=db,
+    )

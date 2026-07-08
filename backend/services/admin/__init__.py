@@ -13,6 +13,7 @@ from .exports import build_export_filename, stream_export_csv_chunks
 from .rounds import (
     calculate_recommendation,
     close_experiment_round,
+    discard_experiment_round,
     list_experiment_rounds,
     publish_experiment_round,
     run_experiment_round,
@@ -34,6 +35,7 @@ __all__ = [
     "list_uploads",
     "publish_experiment_round",
     "close_experiment_round",
+    "discard_experiment_round",
     "run_experiment_round",
     "run_pilot_study",
     "stream_export_csv_chunks",

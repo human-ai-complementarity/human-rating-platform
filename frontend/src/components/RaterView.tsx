@@ -371,98 +371,130 @@ const handleSessionExpired = () => {
 
   const styles = {
     container: {
-      maxWidth: hasAssistance ? '1200px' : '700px',
+      maxWidth: hasAssistance ? '1200px' : '720px',
       margin: '0 auto',
-      padding: '24px',
+      padding: '32px 24px',
       minHeight: '100vh',
     },
     header: {
-      background: '#fff',
-      borderRadius: '12px',
-      border: '1px solid #e0e0e0',
-      padding: '20px 24px',
-      marginBottom: '20px',
+      background: 'var(--surface)',
+      borderRadius: 'var(--radius)',
+      border: '1px solid var(--faint)',
+      boxShadow: 'var(--shadow)',
+      padding: '18px 24px',
+      marginBottom: 20,
       display: 'flex',
       justifyContent: 'space-between',
       alignItems: 'center',
     },
     experimentName: {
-      fontSize: '18px',
+      fontFamily: 'var(--font-head)',
+      fontSize: 20,
       fontWeight: 600,
-      color: '#333',
+      color: 'var(--ink)',
+      letterSpacing: '-0.005em',
       margin: 0,
     },
     progress: {
-      fontSize: '14px',
-      color: '#666',
+      fontSize: 13,
+      color: 'var(--muted)',
       display: 'flex',
       alignItems: 'center',
-      gap: '8px',
+      gap: 10,
+      fontFamily: 'var(--font-mono)',
+      letterSpacing: '0.06em',
+      textTransform: 'uppercase' as const,
     },
     progressCount: {
-      background: '#e3f2fd',
-      color: '#4a90d9',
+      background: 'var(--accent-soft)',
+      color: 'var(--accent-soft-ink)',
       padding: '4px 12px',
-      borderRadius: '16px',
-      fontWeight: 600,
+      borderRadius: 999,
+      fontWeight: 700,
+      fontFamily: 'var(--font-mono)',
+      letterSpacing: '0.03em',
+      fontSize: 13,
     },
     completionCard: {
-      background: '#fff',
-      borderRadius: '12px',
-      border: '1px solid #e0e0e0',
-      padding: '60px 40px',
+      background: 'var(--surface)',
+      borderRadius: 'var(--radius)',
+      border: '1px solid var(--faint)',
+      boxShadow: 'var(--shadow)',
+      padding: '64px 40px',
       textAlign: 'center' as const,
     },
     completionTitle: {
-      fontSize: '32px',
+      fontFamily: 'var(--font-head)',
+      fontSize: 34,
       fontWeight: 600,
-      color: '#27ae60',
-      marginBottom: '16px',
+      color: 'var(--accent-soft-ink)',
+      letterSpacing: '-0.01em',
+      marginBottom: 14,
     },
     completionText: {
-      fontSize: '16px',
-      color: '#666',
-      marginBottom: '24px',
+      fontSize: 16,
+      color: 'var(--muted)',
+      marginBottom: 26,
+      lineHeight: 1.55,
     },
     completionStats: {
-      fontSize: '18px',
-      color: '#333',
-      marginBottom: '32px',
+      fontSize: 15,
+      color: 'var(--ink)',
+      marginBottom: 32,
     },
     completionCount: {
-      fontSize: '48px',
-      fontWeight: 700,
-      color: '#4a90d9',
+      fontFamily: 'var(--font-head)',
+      fontSize: 52,
+      fontWeight: 600,
+      color: 'var(--accent)',
       display: 'block',
-      marginBottom: '8px',
+      marginBottom: 6,
+      letterSpacing: '-0.02em',
     },
     redirectText: {
-      fontSize: '14px',
-      color: '#888',
+      fontSize: 13,
+      color: 'var(--muted)',
+      lineHeight: 1.6,
     },
     redirectLink: {
-      color: '#4a90d9',
-      textDecoration: 'none',
+      color: 'var(--accent-soft-ink)',
+      textDecoration: 'underline',
+      fontWeight: 600,
     },
     errorCard: {
-      background: '#fff',
-      borderRadius: '12px',
-      border: '1px solid #f5c6cb',
-      padding: '40px',
+      background: 'var(--surface)',
+      borderRadius: 'var(--radius)',
+      border: '1px solid var(--danger-soft)',
+      boxShadow: 'var(--shadow)',
+      padding: 40,
       textAlign: 'center' as const,
     },
     errorText: {
-      color: '#dc3545',
-      fontSize: '16px',
+      color: 'var(--danger)',
+      fontSize: 15,
+      lineHeight: 1.55,
     },
     loadingCard: {
-      background: '#fff',
-      borderRadius: '12px',
-      border: '1px solid #e0e0e0',
-      padding: '60px 40px',
+      background: 'var(--surface)',
+      borderRadius: 'var(--radius)',
+      border: '1px solid var(--faint)',
+      boxShadow: 'var(--shadow)',
+      padding: '64px 40px',
       textAlign: 'center' as const,
-      color: '#666',
+      color: 'var(--muted)',
+      fontSize: 15,
     },
+  };
+
+  const previewBannerStyle = {
+    background: 'var(--warn-soft)',
+    border: '1px solid var(--warn)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '11px 16px',
+    marginBottom: 16,
+    fontSize: 13,
+    color: 'var(--warn)',
+    lineHeight: 1.5,
   };
 
   if (error) {
@@ -523,17 +555,9 @@ const handleSessionExpired = () => {
 
   if (showIntro) {
     return (
-      <div style={{ ...styles.container, maxWidth: '700px' }}>
+      <div style={{ ...styles.container, maxWidth: '720px' }}>
         {isPreview && (
-          <div style={{
-            background: '#fff3cd',
-            border: '1px solid #ffc107',
-            borderRadius: '8px',
-            padding: '12px 16px',
-            marginBottom: '16px',
-            fontSize: '14px',
-            color: '#856404',
-          }}>
+          <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.
           </div>
         )}
@@ -550,15 +574,7 @@ const handleSessionExpired = () => {
   return (
     <div style={styles.container}>
       {isPreview && (
-        <div style={{
-          background: '#fff3cd',
-          border: '1px solid #ffc107',
-          borderRadius: '8px',
-          padding: '12px 16px',
-          marginBottom: '16px',
-          fontSize: '14px',
-          color: '#856404',
-        }}>
+        <div style={previewBannerStyle}>
           Preview mode — ratings submitted here are real and will appear in your data.
         </div>
       )}
@@ -567,7 +583,7 @@ const handleSessionExpired = () => {
       <div style={styles.header}>
         <h2 style={styles.experimentName}>{session.experiment_name}</h2>
         <div style={styles.progress}>
-          Completed:
+          Completed
           <span style={styles.progressCount}>{questionsCompleted}</span>
         </div>
       </div>

@@ -420,6 +420,12 @@ export const api = {
     });
   },
 
+  async discardExperimentRound(experimentId: number, roundId: number): Promise<MessageResponse> {
+    return requestJson<MessageResponse>(routes.admin.prolificRound(experimentId, roundId), {
+      method: 'DELETE',
+    });
+  },
+
   // Returns a URL string for direct browser download (not a fetch).
   getExportUrl(
     experimentId: number,
