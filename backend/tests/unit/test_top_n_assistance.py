@@ -11,12 +11,13 @@ import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
+import openai
 import pytest
 from models import Question, StepType
 from services.assistance.methods.top_n import (
     TopNAssistance,
     _clamp_top_n,
-    _match_option_answer,
     _normalize_candidates,
     _parse_options,
     _parse_top_n_response,
@@ -160,48 +161,6 @@ class TestParseTopNResponse:
 
 
 # ---------------------------------------------------------------------------
-# _match_option_answer
-# ---------------------------------------------------------------------------
-
-
-class TestMatchOptionAnswer:
-    OPTIONS = ["Paris", "London", "Berlin"]
-
-    def test_exact_match_case_insensitive(self):
-        assert _match_option_answer("paris", self.OPTIONS) == "Paris"
-        assert _match_option_answer("LONDON", self.OPTIONS) == "London"
-
-    def test_numeric_index_one_based(self):
-        assert _match_option_answer("1", self.OPTIONS) == "Paris"
-        assert _match_option_answer("3", self.OPTIONS) == "Berlin"
-
-    def test_letter_label(self):
-        assert _match_option_answer("a", self.OPTIONS) == "Paris"
-        assert _match_option_answer("b.", self.OPTIONS) == "London"
-        assert _match_option_answer("c)", self.OPTIONS) == "Berlin"
-
-    def test_no_match_returns_none(self):
-        assert _match_option_answer("Tokyo", self.OPTIONS) is None
-
-    def test_out_of_range_index_returns_none(self):
-        assert _match_option_answer("5", self.OPTIONS) is None
-
-    def test_option_with_label_prefix(self):
-        options = ["A. Paris", "B. London"]
-        assert _match_option_answer("A", options) == "A. Paris"
-        assert _match_option_answer("b", options) == "B. London"
-
-    @pytest.mark.xfail(
-        reason="_match_option_answer does not yet handle bare-number echo prefixes like '2.'; tracked as a follow-up.",
-    )
-    def test_option_with_numbered_echo_prefix(self):
-        options = ["1. Yes", "2. No", "3. Maybe"]
-        assert _match_option_answer("1", options) == "1. Yes"
-        assert _match_option_answer("2.", options) == "2. No"
-        assert _match_option_answer("3)", options) == "3. Maybe"
-
-
-# ---------------------------------------------------------------------------
 # _normalize_candidates
 # ---------------------------------------------------------------------------
 
@@ -210,7 +169,7 @@ class TestNormalizeCandidates:
     OPTIONS = ["Yes", "No", "Maybe"]
 
     def test_basic_normalization(self):
-        raw = [{"answer": "Yes", "confidence": 80, "rationale": "looks right"}]
+        raw = [{"option_index": 1, "confidence": 80, "rationale": "looks right"}]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert len(result) == 1
         assert result[0]["answer"] == "Yes"
@@ -219,25 +178,44 @@ class TestNormalizeCandidates:
 
     def test_respects_n_limit(self):
         raw = [
-            {"answer": "Yes", "confidence": 90, "rationale": ""},
-            {"answer": "No", "confidence": 70, "rationale": ""},
-            {"answer": "Maybe", "confidence": 50, "rationale": ""},
+            {"option_index": 1, "confidence": 90, "rationale": ""},
+            {"option_index": 2, "confidence": 70, "rationale": ""},
+            {"option_index": 3, "confidence": 50, "rationale": ""},
         ]
         result = _normalize_candidates(raw, self.OPTIONS, n=2)
         assert len(result) == 2
 
-    def test_deduplicates_case_insensitively(self):
+    def test_deduplicates_repeated_option_index(self):
         raw = [
-            {"answer": "Yes", "confidence": 80, "rationale": ""},
-            {"answer": "yes", "confidence": 75, "rationale": ""},
+            {"option_index": 1, "confidence": 80, "rationale": ""},
+            {"option_index": 1, "confidence": 75, "rationale": ""},
         ]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert len(result) == 1
 
-    def test_drops_answers_not_in_options(self):
-        raw = [{"answer": "Absolutely", "confidence": 90, "rationale": ""}]
+    def test_drops_out_of_range_option_index(self):
+        raw = [
+            {"option_index": 0, "confidence": 90, "rationale": ""},
+            {"option_index": 99, "confidence": 80, "rationale": ""},
+            {"option_index": -1, "confidence": 70, "rationale": ""},
+        ]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert result == []
+
+    def test_drops_missing_or_invalid_option_index(self):
+        raw = [
+            {"confidence": 90, "rationale": ""},  # missing
+            {"option_index": None, "confidence": 80, "rationale": ""},  # None
+            {"option_index": "abc", "confidence": 70, "rationale": ""},  # non-numeric
+        ]
+        result = _normalize_candidates(raw, self.OPTIONS, n=3)
+        assert result == []
+
+    def test_accepts_string_option_index(self):
+        raw = [{"option_index": "2", "confidence": 60, "rationale": ""}]
+        result = _normalize_candidates(raw, self.OPTIONS, n=3)
+        assert len(result) == 1
+        assert result[0]["answer"] == "No"
 
     def test_no_options_allows_any_answer(self):
         raw = [{"answer": "Some free-form text", "confidence": 60, "rationale": "custom"}]
@@ -245,41 +223,41 @@ class TestNormalizeCandidates:
         assert len(result) == 1
         assert result[0]["answer"] == "Some free-form text"
 
+    def test_no_options_skips_empty_answer(self):
+        raw = [{"answer": "", "confidence": 80, "rationale": ""}]
+        result = _normalize_candidates(raw, [], n=3)
+        assert result == []
+
     def test_confidence_clamped_to_0_100(self):
-        raw = [{"answer": "Yes", "confidence": 150, "rationale": ""}]
+        raw = [{"option_index": 1, "confidence": 150, "rationale": ""}]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert result[0]["confidence"] == 100
 
-        raw2 = [{"answer": "Yes", "confidence": -10, "rationale": ""}]
+        raw2 = [{"option_index": 1, "confidence": -10, "rationale": ""}]
         result2 = _normalize_candidates(raw2, self.OPTIONS, n=3)
         assert result2[0]["confidence"] == 0
 
     def test_invalid_confidence_defaults_to_50(self):
-        raw = [{"answer": "Yes", "confidence": "bad", "rationale": ""}]
+        raw = [{"option_index": 1, "confidence": "bad", "rationale": ""}]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert result[0]["confidence"] == 50
 
     def test_skips_non_dict_items(self):
-        raw = ["not a dict", {"answer": "No", "confidence": 60, "rationale": ""}]
+        raw = ["not a dict", {"option_index": 2, "confidence": 60, "rationale": ""}]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert len(result) == 1
         assert result[0]["answer"] == "No"
 
-    def test_skips_items_with_empty_answer(self):
-        raw = [{"answer": "", "confidence": 80, "rationale": ""}]
-        result = _normalize_candidates(raw, self.OPTIONS, n=3)
-        assert result == []
-
     def test_rank_is_sequential(self):
         raw = [
-            {"answer": "Yes", "confidence": 90, "rationale": ""},
-            {"answer": "No", "confidence": 70, "rationale": ""},
+            {"option_index": 1, "confidence": 90, "rationale": ""},
+            {"option_index": 2, "confidence": 70, "rationale": ""},
         ]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert [c["rank"] for c in result] == [1, 2]
 
     def test_non_list_raw_returns_empty(self):
-        result = _normalize_candidates({"answer": "Yes"}, self.OPTIONS, n=3)
+        result = _normalize_candidates({"option_index": 1}, self.OPTIONS, n=3)
         assert result == []
 
 
@@ -309,8 +287,8 @@ async def test_start_returns_display_step_with_candidates():
     question = _make_question()
     llm_payload = _llm_response(
         [
-            {"answer": "Yes", "confidence": 85, "rationale": "Strong match"},
-            {"answer": "No", "confidence": 40, "rationale": "Unlikely"},
+            {"option_index": 1, "confidence": 85, "rationale": "Strong match"},
+            {"option_index": 2, "confidence": 40, "rationale": "Unlikely"},
         ]
     )
 
@@ -334,9 +312,9 @@ async def test_start_respects_n_param():
     question = _make_question(options="A|B|C|D")
     llm_payload = _llm_response(
         [
-            {"answer": "A", "confidence": 90, "rationale": ""},
-            {"answer": "B", "confidence": 70, "rationale": ""},
-            {"answer": "C", "confidence": 50, "rationale": ""},
+            {"option_index": 1, "confidence": 90, "rationale": ""},
+            {"option_index": 2, "confidence": 70, "rationale": ""},
+            {"option_index": 3, "confidence": 50, "rationale": ""},
         ]
     )
 
@@ -355,8 +333,8 @@ async def test_start_clamps_n_to_number_of_options():
     question = _make_question(options="Yes|No")  # only 2 options
     llm_payload = _llm_response(
         [
-            {"answer": "Yes", "confidence": 90, "rationale": ""},
-            {"answer": "No", "confidence": 60, "rationale": ""},
+            {"option_index": 1, "confidence": 90, "rationale": ""},
+            {"option_index": 2, "confidence": 60, "rationale": ""},
         ]
     )
 
@@ -424,7 +402,7 @@ async def test_start_includes_parent_question_context():
     question = _make_question()
     llm_payload = _llm_response(
         [
-            {"answer": "Yes", "confidence": 80, "rationale": "given context"},
+            {"option_index": 1, "confidence": 80, "rationale": "given context"},
         ]
     )
 
@@ -437,10 +415,6 @@ async def test_start_includes_parent_question_context():
     assert "What is the capital of France?" in user_message["content"]
 
 
-@pytest.mark.xfail(
-    reason="TopNAssistance.start re-raises LLM RuntimeError instead of degrading to a NONE step; tracked as a follow-up.",
-    raises=RuntimeError,
-)
 @pytest.mark.asyncio
 async def test_start_returns_none_step_on_complete_runtime_error():
     method = TopNAssistance()
@@ -449,6 +423,37 @@ async def test_start_returns_none_step_on_complete_runtime_error():
     with patch(
         "services.assistance.methods.top_n.complete",
         new=AsyncMock(side_effect=RuntimeError("LLM service unavailable")),
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.is_terminal is True
+
+
+@pytest.mark.asyncio
+async def test_start_returns_none_step_on_openai_error():
+    method = TopNAssistance()
+    question = _make_question()
+
+    api_error = openai.APIConnectionError(request=httpx.Request("POST", "https://example"))
+    with patch(
+        "services.assistance.methods.top_n.complete",
+        new=AsyncMock(side_effect=api_error),
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.is_terminal is True
+
+
+@pytest.mark.asyncio
+async def test_start_returns_none_step_on_value_error():
+    method = TopNAssistance()
+    question = _make_question()
+
+    with patch(
+        "services.assistance.methods.top_n.complete",
+        new=AsyncMock(side_effect=ValueError("Invalid model string 'gpt-4'")),
     ):
         step = await method.start(question, {})
 

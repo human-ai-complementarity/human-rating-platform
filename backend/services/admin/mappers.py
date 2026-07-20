@@ -34,6 +34,7 @@ def build_experiment_response(
         human_prompt_prefix=experiment.human_prompt_prefix,
         human_prompt_suffix=experiment.human_prompt_suffix,
         prolific_pool=experiment.prolific_pool,
+        status=experiment.status,
         dataset_filenames=list(dataset_filenames or []),
     )
 

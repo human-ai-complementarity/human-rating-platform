@@ -13,7 +13,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
-from models import Experiment, ExperimentRound, ProlificStudyStatus, Question
+from models import (
+    ROUND_TERMINAL_STATUSES,
+    Experiment,
+    ExperimentRound,
+    ExperimentStatus,
+    ProlificStudyStatus,
+    Question,
+)
 from schemas import (
     ExperimentRoundCreate,
     ExperimentRoundResponse,
@@ -42,6 +49,7 @@ from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
+from .status import validate_new_exclusion_targets
 
 logger = logging.getLogger(__name__)
 
@@ -87,10 +95,6 @@ def _extract_prolific_message(body: str) -> str | None:
 
 SESSION_DURATION_SECONDS = 3600  # 1 hour per Prolific place
 ROUND_BUFFER_FACTOR = 0.8
-ROUND_TERMINAL_STATUSES = {
-    ProlificStudyStatus.AWAITING_REVIEW,
-    ProlificStudyStatus.COMPLETED,
-}
 ROUND_SYNC_STATUSES = {
     ProlificStudyStatus.UNPUBLISHED,
     ProlificStudyStatus.PUBLISHING,
@@ -477,6 +481,14 @@ async def run_pilot_study(
         )
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
+    # Pilot creation is the first write for this experiment's exclusion list —
+    # every listed target is "new", so all must be FINISHED. Grandfathering
+    # only kicks in on subsequent edits when IDs were already present.
+    await validate_new_exclusion_targets(
+        excluded_experiment_ids,
+        previously_allowed_ids=[],
+        db=db,
+    )
     blocklist_group_ids = await _build_round_blocklist_group_ids(
         experiment, excluded_experiment_ids, db, strict=True
     )
@@ -567,6 +579,11 @@ async def run_experiment_round(
         raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    if experiment.status == ExperimentStatus.FINISHED:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot launch new rounds: experiment is finished.",
+        )
     rounds = await _list_round_models(experiment_id, db)
     if not rounds:
         raise HTTPException(
@@ -682,7 +699,7 @@ async def publish_experiment_round(
     if not settings.prolific.enabled:
         raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
 
-    await fetch_experiment_or_404(experiment_id, db)
+    experiment = await fetch_experiment_or_404(experiment_id, db)
     round_ = await _fetch_round_or_404(experiment_id, round_id, db)
     if round_.prolific_study_status != ProlificStudyStatus.UNPUBLISHED:
         raise HTTPException(
@@ -732,6 +749,12 @@ async def publish_experiment_round(
     round_.prolific_study_status = ProlificStudyStatus(
         result.get("status", ProlificStudyStatus.ACTIVE.value)
     )
+    # First published round transitions the experiment out of DRAFT and freezes
+    # its config — participants may start rating any moment. Applies uniformly
+    # to pilot and main rounds; the pilot IS the first "we're live" study.
+    # Idempotent: LAUNCH stays LAUNCH on subsequent publishes.
+    if experiment.status == ExperimentStatus.DRAFT:
+        experiment.status = ExperimentStatus.LAUNCH
     await db.commit()
 
     logger.info(
@@ -745,6 +768,52 @@ async def publish_experiment_round(
         },
     )
     return {"message": "Study published on Prolific", "status": round_.prolific_study_status}
+
+
+async def discard_experiment_round(
+    experiment_id: int,
+    round_id: int,
+    db: AsyncSession,
+) -> dict[str, str]:
+    """Delete an UNPUBLISHED round + its Prolific draft study.
+
+    Guards to UNPUBLISHED only — published/active/closed rounds have
+    participant data or history and shouldn't be silently removed. If the
+    researcher wants those gone they can delete the whole experiment.
+    """
+    settings = get_settings()
+    if not settings.prolific.enabled:
+        raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
+
+    await fetch_experiment_or_404(experiment_id, db)
+    round_ = await _fetch_round_or_404(experiment_id, round_id, db)
+    if round_.prolific_study_status != ProlificStudyStatus.UNPUBLISHED:
+        raise HTTPException(
+            status_code=400,
+            detail="Only unpublished rounds can be discarded",
+        )
+
+    study_id = round_.prolific_study_id
+    await db.delete(round_)
+    await db.commit()
+
+    # Best-effort: remove the orphan draft study from Prolific too. Local
+    # delete already committed, so a Prolific failure is only a manual cleanup
+    # in the researcher's dashboard.
+    try:
+        await delete_study(settings=settings.prolific, study_id=study_id)
+        logger.info(
+            "Prolific draft study deleted",
+            extra={"attributes": {"study_id": study_id}},
+        )
+    except Exception:
+        logger.warning(
+            "Failed to delete Prolific draft study after discard",
+            exc_info=True,
+            extra={"attributes": {"study_id": study_id}},
+        )
+
+    return {"message": "Round discarded"}
 
 
 _PROLIFIC_FIELD_MAP = {
@@ -799,11 +868,22 @@ async def update_experiment_round(
             if payload.screeners is not None
             else _parse_screeners(round_.screeners)
         )
+        previously_allowed_ids = _parse_excluded_experiment_ids(round_.excluded_experiment_ids)
         excluded_ids = (
             list(payload.excluded_experiment_ids)
             if payload.excluded_experiment_ids is not None
-            else _parse_excluded_experiment_ids(round_.excluded_experiment_ids)
+            else previously_allowed_ids
         )
+        # New targets on this write must be FINISHED. IDs already present on
+        # this round are grandfathered: they were legal when set and the target
+        # experiment's later state change shouldn't retroactively invalidate
+        # them.
+        if payload.excluded_experiment_ids is not None:
+            await validate_new_exclusion_targets(
+                excluded_ids,
+                previously_allowed_ids=previously_allowed_ids,
+                db=db,
+            )
         # Strict only when the admin is explicitly setting the list — an
         # inherited-and-stale ID from an earlier round shouldn't block an
         # unrelated field edit (reward, screeners, etc.).

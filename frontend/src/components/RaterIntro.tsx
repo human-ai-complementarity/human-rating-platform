@@ -1,3 +1,5 @@
+import { Banner, primaryButton } from './experiment-detail/ui';
+
 interface RaterIntroProps {
   experimentName: string;
   // Pre-rendered HTML from the server (markdown converted via to_prolific_html).
@@ -8,70 +10,15 @@ interface RaterIntroProps {
   onContinue: () => void;
 }
 
-const styles = {
-  card: {
-    background: '#fff',
-    borderRadius: '12px',
-    border: '1px solid #e0e0e0',
-    padding: '40px',
-  },
-  title: {
-    fontSize: '24px',
-    fontWeight: 600,
-    color: '#333',
-    margin: '0 0 20px 0',
-  },
-  sectionLabel: {
-    fontSize: '13px',
-    fontWeight: 600,
-    color: '#4a90d9',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
-    marginBottom: '8px',
-  },
-  // Hosts converter-emitted HTML (<p>, <h1>, <ul>, etc.). Default whitespace
-  // handling — the converter wraps each line in its own block element so we
-  // don't need pre-wrap.
-  description: {
-    fontSize: '16px',
-    lineHeight: 1.6,
-    color: '#444',
-    marginBottom: '24px',
-  },
-  methodBox: {
-    background: '#f0f4f8',
-    border: '1px solid #d0dae3',
-    borderRadius: '8px',
-    padding: '16px 20px',
-    marginBottom: '28px',
-  },
-  methodLabel: {
-    fontSize: '13px',
-    fontWeight: 600,
-    color: '#4a90d9',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.5px',
-    marginBottom: '8px',
-  },
-  methodText: {
-    fontSize: '15px',
-    lineHeight: 1.6,
-    color: '#333',
-    whiteSpace: 'pre-wrap' as const,
-  },
-  continueButton: {
-    width: '100%',
-    padding: '14px',
-    background: '#4a90d9',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '8px',
-    fontSize: '16px',
-    fontWeight: 500,
-    cursor: 'pointer',
-  },
-};
-
+/**
+ * The rater's first screen after landing from Prolific — an editorial
+ * splash with the study name, description, and (when applicable) an
+ * "How this study works" callout for AI-assisted rating methods.
+ *
+ * Serif headline, generous whitespace, single primary CTA. Matches the
+ * Fieldbook aesthetic used across the researcher-facing surfaces so the
+ * study feels part of a coherent product rather than a bolt-on form.
+ */
 function RaterIntro({
   experimentName,
   descriptionHtml,
@@ -79,24 +26,79 @@ function RaterIntro({
   onContinue,
 }: RaterIntroProps) {
   return (
-    <div style={styles.card}>
-      <h1 style={styles.title}>{experimentName}</h1>
+    <div
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+        padding: '44px 48px 40px',
+      }}
+    >
+      <div
+        style={{
+          font: '600 11px/1 var(--font-mono)',
+          letterSpacing: '0.18em',
+          textTransform: 'uppercase',
+          color: 'var(--accent-soft-ink)',
+        }}
+      >
+        Rating study
+      </div>
+
+      <h1
+        style={{
+          fontFamily: 'var(--font-head)',
+          fontWeight: 600,
+          fontSize: 32,
+          lineHeight: 1.18,
+          letterSpacing: '-0.012em',
+          color: 'var(--ink)',
+          margin: '14px 0 24px',
+        }}
+      >
+        {experimentName}
+      </h1>
+
       {descriptionHtml && (
-        <>
-          <div style={styles.sectionLabel}>Description</div>
-          <div
-            style={styles.description}
-            dangerouslySetInnerHTML={{ __html: descriptionHtml }}
-          />
-        </>
+        <div
+          className="rater-intro-description"
+          dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+          style={{
+            fontSize: 16,
+            lineHeight: 1.65,
+            color: 'var(--ink)',
+            marginBottom: 28,
+          }}
+        />
       )}
+
       {assistanceInstructions && (
-        <div style={styles.methodBox}>
-          <div style={styles.methodLabel}>How this study works</div>
-          <div style={styles.methodText}>{assistanceInstructions}</div>
+        <div style={{ marginBottom: 28 }}>
+          <div
+            style={{
+              font: '600 10px/1 var(--font-mono)',
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+              marginBottom: 8,
+            }}
+          >
+            How this study works
+          </div>
+          <Banner tone="info" icon={false}>
+            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ink)' }}>
+              {assistanceInstructions}
+            </div>
+          </Banner>
         </div>
       )}
-      <button type="button" style={styles.continueButton} onClick={onContinue}>
+
+      <button
+        type="button"
+        onClick={onContinue}
+        style={{ ...primaryButton, width: '100%', padding: '13px 22px', fontSize: 15 }}
+      >
         Continue
       </button>
     </div>

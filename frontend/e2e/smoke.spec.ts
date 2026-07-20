@@ -9,6 +9,7 @@ type ExperimentRecord = {
   prolific_completion_url: string | null;
   question_count: number;
   rating_count: number;
+  status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
 };
 
 type UploadRecord = {
@@ -84,6 +85,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     prolific_completion_url: null,
     question_count: 0,
     rating_count: 0,
+    status: 'DRAFT',
     ...partial,
   };
 }
@@ -411,12 +413,6 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {
-  // ExperimentDetailPage.onRefresh triggers loadExperiment which sets loading=true,
-  // unmounting ExperimentDetail and wiping its local success toast state. The
-  // 'Uploaded 2 questions' toast flickers on every upload. Tracked as a follow-up;
-  // when the underlying bug is fixed this fixme should XPASS and be unmarked.
-  test.fixme();
-
   const state = createMockState();
   await installApiMocks(page, state);
 
@@ -427,11 +423,9 @@ test('create experiment and upload CSV shows the upload and success toast', asyn
   await page.getByRole('button', { name: 'Create Experiment' }).click();
 
   await expect(page.getByRole('heading', { name: 'Hour Breakdown Smoke Test' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Prolific Workflow' })).toBeVisible();
-  await expect(page.getByTestId('prolific-mode-badge')).toHaveText('Enabled');
-  await expect(page.getByTestId('prolific-mode-notice')).toContainText('Prolific is enabled');
-  await expect(page.getByTestId('run-pilot-button')).toBeVisible();
 
+  // Post-creation lands on Overview; upload lives on the Questions tab.
+  await page.getByTestId('tab-questions').click();
   const csvPath = fileURLToPath(new URL('./fixtures/sample_questions.csv', import.meta.url));
   await page.getByTestId('upload-csv-input').setInputFiles(csvPath);
   await page.getByTestId('upload-csv-button').click();
@@ -439,6 +433,12 @@ test('create experiment and upload CSV shows the upload and success toast', asyn
   await expect(page.getByText('sample_questions.csv')).toBeVisible();
   await expect(page.getByText('2 questions', { exact: true })).toBeVisible();
   await expect(page.getByText('Uploaded 2 questions')).toBeVisible();
+
+  // Pilot form lives on the Launch tab. When Prolific is enabled we
+  // deliberately don't show a Prolific-mode banner (would be noise in prod).
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByTestId('prolific-mode-notice')).toHaveCount(0);
+  await expect(page.getByTestId('run-pilot-button')).toBeVisible();
 });
 
 test('run pilot, close it, and launch a round from an experiment with uploaded questions', async ({ page }) => {
@@ -474,6 +474,8 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
   await installApiMocks(page, state);
   await page.goto('/admin/experiments/1');
 
+  // Pilot form and round controls all live on the Launch tab.
+  await page.getByTestId('tab-launch').click();
   await page.getByTestId('pilot-description-input').fill('Pilot description for smoke coverage');
   await page.getByTestId('pilot-estimated-completion-time-input').fill('60');
   await page.getByTestId('pilot-reward-input').fill('900');
@@ -483,10 +485,12 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
   await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();
   await expect(page.getByTestId('publish-round-0')).toBeVisible();
   await expect(page.getByTestId('recommendation-panel')).toContainText('Recommendation for next round');
-  await expect(page.getByTestId('completion-url-input')).toHaveValue(
+  await expect(page.getByTestId('completion-url-input')).toContainText(
     'https://app.prolific.com/submissions/complete?cc=TEST1234'
   );
-  await expect(page.getByTestId('launch-round-button')).toBeDisabled();
+  // Button is hidden (not just disabled) while the previous round is open,
+  // matching the pre-pilot state — we don't render mockable buttons.
+  await expect(page.getByTestId('launch-round-button')).toHaveCount(0);
 
   await page.getByTestId('publish-round-0').click();
   await expect(page.getByTestId('close-round-0')).toBeVisible();
@@ -494,7 +498,7 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
 
   await page.getByTestId('close-round-0').click();
   await expect(page.getByTestId('study-rounds-list').getByText('AWAITING_REVIEW')).toBeVisible();
-  await expect(page.getByTestId('launch-round-button')).toBeEnabled();
+  await expect(page.getByTestId('launch-round-button')).toBeVisible();
 
   await page.getByTestId('launch-round-button').click();
   await expect(page.getByTestId('study-rounds-list').getByText('Round 1')).toBeVisible();
@@ -503,6 +507,8 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
 
   const exportLink = page.getByTestId('export-link');
   await expect(exportLink).toHaveAttribute('href', /\/api\/admin\/experiments\/1\/export$/);
+  // include-preview toggle lives on the Overview panel.
+  await page.getByTestId('tab-overview').click();
   await page.getByTestId('include-preview-toggle').click();
   await expect(exportLink).toHaveAttribute('href', /include_preview=true/);
   await expect
@@ -545,6 +551,8 @@ test('preview participant link opens /rate with preview mode and starts one prev
   await installApiMocks(page, state);
   await page.goto('/admin/experiments/1');
 
+  // Preview button lives on the Launch tab.
+  await page.getByTestId('tab-launch').click();
   const popupPromise = context.waitForEvent('page');
   await page.getByTestId('preview-participant-button').click();
   const popup = await popupPromise;
@@ -727,6 +735,8 @@ test('disabled mode explains why pilot controls are unavailable', async ({ page 
   await installApiMocks(page, state, { prolificEnabled: false });
   await page.goto('/admin/experiments/1');
 
+  // Prolific-mode banner and preview button live on the Launch tab.
+  await page.getByTestId('tab-launch').click();
   await expect(page.getByTestId('prolific-mode-badge')).toHaveText('Disabled');
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Prolific is disabled for this environment');
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Configure a Prolific API token');
