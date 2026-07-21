@@ -88,8 +88,8 @@ The human has reviewed and corrected your previous sub-question answers. Incorpo
 1. If you now have enough information to answer the original question:
    {{"done": true, "synthesis": {{"reasoning": "<step-by-step explanation>", "answer": "<final answer>"}}}}
 
-2. If there is still remaining uncertainty that the human can help resolve — decompose it into new atomic sub-questions, exactly as you did in the first round. For each new sub-question, provide your best current answer regardless of confidence. Do not repeat sub-questions that have already been addressed.
-   {{"done": false, "subtasks": [/* new subtask objects only */]}}
+2. If there is still remaining uncertainty that the human can help resolve — decompose it into new atomic sub-questions, exactly as you did in the first round. For each new sub-question, provide your best current answer regardless of confidence, and fill in an "evidence" field: a short verbatim source quote, a "[knowledge]" marker for trivial world knowledge, or "" when it cannot be substantiated. Do not repeat sub-questions that have already been addressed.
+   {{"done": false, "subtasks": [/* new subtask objects, each including an "evidence" field */]}}
 
 {subtask_schema}
 
@@ -104,7 +104,7 @@ _FALLBACK_SYNTHESIS_SYSTEM = """\
 Based on the information gathered so far, provide your best answer to the question.
 
 Respond with JSON only — no explanation, no markdown fences:
-{{"answer": "<your best answer>", "reasoning": "<step-by-step explanation>"}}\
+{{"reasoning": "<step-by-step explanation>", "answer": "<your best answer>"}}\
 """
 
 
