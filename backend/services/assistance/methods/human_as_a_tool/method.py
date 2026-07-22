@@ -38,6 +38,7 @@ from .decomposer import SubtaskDecomposer
 logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD = 75
+_EVIDENCE_EMPTY_CONFIDENCE_PENALTY = 20
 
 
 class HumanAsAToolMethod(AssistanceMethod):
@@ -241,4 +242,16 @@ class HumanAsAToolMethod(AssistanceMethod):
     ) -> list[dict]:
         """Return all subtasks with confidence scores merged in."""
         scores = await self._get_estimator(params).estimate_batch(question_text, subtasks)
-        return [{**st, "confidence": score} for st, score in zip(subtasks, scores)]
+        return [
+            {**st, "confidence": _apply_evidence_penalty(st, int(score))}
+            for st, score in zip(subtasks, scores)
+        ]
+
+
+def _apply_evidence_penalty(subtask: dict, raw_score: int) -> int:
+    if "evidence" not in subtask:
+        return raw_score
+    ev = subtask.get("evidence")
+    if ev is None or (isinstance(ev, str) and not ev.strip()):
+        return max(0, raw_score - _EVIDENCE_EMPTY_CONFIDENCE_PENALTY)
+    return raw_score
