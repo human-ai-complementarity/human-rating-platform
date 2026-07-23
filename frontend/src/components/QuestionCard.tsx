@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import type { CSSProperties } from 'react';
 import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
-const openedLongContextDocumentKeys = new Set<string>();
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
 
@@ -33,6 +33,47 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Researcher-supplied framing is instructional, not decorative: raters are
+// expected to read it before answering, so it gets a labelled callout rather
+// than muted italics.
+function PromptFraming({ text, style }: { text: string; style?: CSSProperties }) {
+  return (
+    <div
+      style={{
+        background: 'var(--accent-soft)',
+        borderLeft: '3px solid var(--accent)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '14px 18px',
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          color: 'var(--accent-soft-ink)',
+          marginBottom: 7,
+        }}
+      >
+        Instructions
+      </div>
+      <p
+        style={{
+          fontSize: 16,
+          lineHeight: 1.6,
+          color: 'var(--ink)',
+          margin: 0,
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {text}
+      </p>
+    </div>
+  );
 }
 
 function parseQuestionDisplay(questionText: string): QuestionDisplay {
@@ -136,7 +177,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   const [freeTextAnswer, setFreeTextAnswer] = useState('');
   const [confidence, setConfidence] = useState(3);
   const [submitting, setSubmitting] = useState(false);
-  const [documentOpenBlocked, setDocumentOpenBlocked] = useState(false);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const timeStartedRef = useRef(new Date().toISOString());
   const display = useMemo(
@@ -149,7 +189,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     setFreeTextAnswer('');
     setConfidence(3);
     setSubmitting(false);
-    setDocumentOpenBlocked(false);
     timeStartedRef.current = new Date().toISOString();
   }, [question.id]);
 
@@ -168,24 +207,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       setDocumentUrl(null);
     };
   }, [display.documentText, question]);
-
-  useEffect(() => {
-    if (!documentUrl) {
-      return;
-    }
-
-    const documentKey = `${question.id}:${question.question_id}`;
-    if (openedLongContextDocumentKeys.has(documentKey)) {
-      return;
-    }
-    openedLongContextDocumentKeys.add(documentKey);
-
-    const openedWindow = window.open(documentUrl, '_blank');
-    if (openedWindow) {
-      openedWindow.opener = null;
-    }
-    setDocumentOpenBlocked(openedWindow === null);
-  }, [documentUrl, question.id, question.question_id]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -276,48 +297,30 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {display.documentText && documentUrl && (
-        <>
-          <a
-            href={documentUrl}
-            target="_blank"
-            rel="noreferrer"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              padding: '9px 14px',
-              background: 'var(--surface-2)',
-              border: '1px solid var(--faint)',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--accent-soft-ink)',
-              fontSize: 13,
-              fontWeight: 600,
-              textDecoration: 'none',
-              marginBottom: 18,
-            }}
-          >
-            Open document in new tab ↗
-          </a>
-          {documentOpenBlocked && (
-            <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: -6, marginBottom: 16 }}>
-              Your browser blocked the automatic document tab. Use the document link before answering.
-            </p>
-          )}
-        </>
+        <a
+          href={documentUrl}
+          target="_blank"
+          rel="noreferrer"
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '12px 18px',
+            background: 'var(--accent)',
+            border: '1px solid var(--accent)',
+            borderRadius: 'var(--radius-sm)',
+            color: 'var(--accent-ink)',
+            fontSize: 15,
+            fontWeight: 600,
+            textDecoration: 'none',
+            marginBottom: 20,
+          }}
+        >
+          Open document in new tab ↗
+        </a>
       )}
 
       {humanPromptPrefix && humanPromptPrefix.trim() && (
-        <p
-          style={{
-            fontSize: 14,
-            lineHeight: 1.55,
-            color: 'var(--muted)',
-            fontStyle: 'italic',
-            marginBottom: 12,
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {humanPromptPrefix}
-        </p>
+        <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
       <p
@@ -336,19 +339,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       </p>
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
-        <p
-          style={{
-            fontSize: 14,
-            lineHeight: 1.55,
-            color: 'var(--muted)',
-            fontStyle: 'italic',
-            marginTop: -12,
-            marginBottom: 24,
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {humanPromptSuffix}
-        </p>
+        <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />
       )}
 
       {assistanceActive && assistanceAnswer == null && (
