@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
+import type { CSSProperties } from 'react';
 import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
@@ -33,6 +34,47 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+// Researcher-supplied framing is instructional, not decorative: raters are
+// expected to read it before answering, so it gets a labelled callout rather
+// than muted italics.
+function PromptFraming({ text, style }: { text: string; style?: CSSProperties }) {
+  return (
+    <div
+      style={{
+        background: 'var(--accent-soft)',
+        borderLeft: '3px solid var(--accent)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '14px 18px',
+        ...style,
+      }}
+    >
+      <div
+        style={{
+          fontFamily: 'var(--font-mono)',
+          fontSize: 11,
+          letterSpacing: '0.1em',
+          textTransform: 'uppercase',
+          color: 'var(--accent-soft-ink)',
+          marginBottom: 7,
+        }}
+      >
+        Instructions
+      </div>
+      <p
+        style={{
+          fontSize: 16,
+          lineHeight: 1.6,
+          color: 'var(--ink)',
+          margin: 0,
+          whiteSpace: 'pre-wrap',
+        }}
+      >
+        {text}
+      </p>
+    </div>
+  );
 }
 
 function parseQuestionDisplay(questionText: string): QuestionDisplay {
@@ -306,18 +348,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {humanPromptPrefix && humanPromptPrefix.trim() && (
-        <p
-          style={{
-            fontSize: 14,
-            lineHeight: 1.55,
-            color: 'var(--muted)',
-            fontStyle: 'italic',
-            marginBottom: 12,
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {humanPromptPrefix}
-        </p>
+        <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
       <p
@@ -336,19 +367,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       </p>
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
-        <p
-          style={{
-            fontSize: 14,
-            lineHeight: 1.55,
-            color: 'var(--muted)',
-            fontStyle: 'italic',
-            marginTop: -12,
-            marginBottom: 24,
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {humanPromptSuffix}
-        </p>
+        <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />
       )}
 
       {assistanceActive && assistanceAnswer == null && (
