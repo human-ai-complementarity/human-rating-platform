@@ -158,6 +158,9 @@ class ExperimentResponse(BaseModel):
     human_prompt_suffix: Optional[str] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
+    # Non-null when the experiment has been archived (soft-hidden from the
+    # default admin list). NULL/absent means active.
+    archived_at: Optional[datetime] = None
     # Filenames of every Upload attached to this experiment. Used client-side
     # so admins can find an experiment by its dataset filename when picking
     # experiments to exclude from a new round.

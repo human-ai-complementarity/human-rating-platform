@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -65,6 +66,9 @@ async def list_experiments(
     skip: int,
     limit: int,
     db: AsyncSession,
+    archived: bool = False,
+    status: ExperimentStatus | None = None,
+    search: str | None = None,
 ) -> list[ExperimentResponse]:
     question_counts = (
         select(
@@ -86,16 +90,39 @@ async def list_experiments(
         .subquery()
     )
 
+    stmt = (
+        select(
+            Experiment,
+            func.coalesce(question_counts.c.question_count, 0).label("question_count"),
+            func.coalesce(rating_counts.c.rating_count, 0).label("rating_count"),
+        )
+        .outerjoin(question_counts, Experiment.id == question_counts.c.experiment_id)
+        .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
+        .where(
+            Experiment.archived_at.is_not(None)
+            if archived
+            else Experiment.archived_at.is_(None)
+        )
+    )
+
+    if status is not None:
+        stmt = stmt.where(Experiment.status == status)
+
+    # Case-insensitive substring match against either the public or internal
+    # name. `%`/`_` are escaped so a literal search term can't act as a wildcard.
+    if search and search.strip():
+        term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{term}%"
+        stmt = stmt.where(
+            or_(
+                Experiment.name.ilike(pattern, escape="\\"),
+                Experiment.internal_name.ilike(pattern, escape="\\"),
+            )
+        )
+
     rows = (
         await db.execute(
-            select(
-                Experiment,
-                func.coalesce(question_counts.c.question_count, 0).label("question_count"),
-                func.coalesce(rating_counts.c.rating_count, 0).label("rating_count"),
-            )
-            .outerjoin(question_counts, Experiment.id == question_counts.c.experiment_id)
-            .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
-            .order_by(Experiment.created_at.desc())
+            stmt.order_by(Experiment.created_at.desc())
             .offset(skip)
             .limit(limit)
         )
@@ -286,6 +313,45 @@ async def finish_experiment(
     return build_experiment_response(
         experiment, question_count=question_count, rating_count=rating_count
     )
+
+
+async def _set_archived(
+    experiment_id: int,
+    db: AsyncSession,
+    archived_at: datetime | None,
+) -> ExperimentResponse:
+    """Soft-archive transition. Non-destructive and reversible; unlike
+    delete it leaves all child rows and Prolific studies intact."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+
+    experiment.archived_at = archived_at
+    await db.commit()
+    await db.refresh(experiment)
+
+    logger.info(
+        "Experiment archived" if archived_at else "Experiment unarchived",
+        extra={"attributes": {"experiment_id": experiment_id}},
+    )
+
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
+    return build_experiment_response(
+        experiment, question_count=question_count, rating_count=rating_count
+    )
+
+
+async def archive_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    return await _set_archived(experiment_id, db, datetime.now(timezone.utc))
+
+
+async def unarchive_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    return await _set_archived(experiment_id, db, None)
 
 
 _PROLIFIC_CLEANUP_TIMEOUT_SECONDS = 3.0

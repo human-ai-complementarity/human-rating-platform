@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from .analytics import get_experiment_analytics
 from .experiments import (
+    archive_experiment,
     create_experiment,
     delete_experiment,
     finish_experiment,
     get_experiment_stats,
     list_experiments,
+    unarchive_experiment,
     update_experiment,
 )
 from .exports import build_export_filename, stream_export_csv_chunks
@@ -23,6 +25,7 @@ from .rounds import (
 from .uploads import list_uploads, upload_questions
 
 __all__ = [
+    "archive_experiment",
     "build_export_filename",
     "calculate_recommendation",
     "create_experiment",
@@ -39,6 +42,7 @@ __all__ = [
     "run_experiment_round",
     "run_pilot_study",
     "stream_export_csv_chunks",
+    "unarchive_experiment",
     "update_experiment",
     "update_experiment_round",
     "upload_questions",

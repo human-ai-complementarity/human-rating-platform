@@ -1,8 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { Experiment, ExperimentCreate } from '../types';
+import type { Experiment, ExperimentCreate, ExperimentStatus } from '../types';
 import StatusLabel from './StatusLabel';
+import RowActionMenu from './RowActionMenu';
+import ConfirmDialog from './ConfirmDialog';
+
+type ListTab = 'active' | 'archived';
+
+// A pending row action awaiting confirmation in the modal.
+type PendingAction = {
+  type: 'delete' | 'archive' | 'unarchive';
+  exp: Experiment;
+};
 
 /**
  * Admin dashboard: create-new panel on the left, existing experiments on the
@@ -15,6 +25,12 @@ function AdminView() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<ListTab>('active');
+  const [statusFilter, setStatusFilter] = useState<ExperimentStatus | 'ALL'>('ALL');
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pending, setPending] = useState<PendingAction | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const [newExperiment, setNewExperiment] = useState<ExperimentCreate>({
     name: '',
@@ -23,19 +39,59 @@ function AdminView() {
     prolific_completion_url: '',
   });
 
+  // Debounce the search box so we fire one request after typing settles,
+  // not one per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   useEffect(() => {
     loadExperiments();
-  }, []);
+    // loadExperiments reads tab/statusFilter/debouncedSearch off state; those
+    // are the only inputs that change what the server returns.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, statusFilter, debouncedSearch]);
+
+  const filtersActive = statusFilter !== 'ALL' || debouncedSearch.trim() !== '';
 
   const loadExperiments = async () => {
     try {
       setLoading(true);
-      const data = await api.listExperiments();
+      const data = await api.listExperiments({
+        archived: tab === 'archived',
+        status: statusFilter === 'ALL' ? undefined : statusFilter,
+        search: debouncedSearch.trim() || undefined,
+      });
       setExperiments(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Runs the confirmed row action (delete / archive / unarchive), then reloads
+  // the current tab so the row moves to (or disappears from) the right list.
+  const runPendingAction = async () => {
+    if (!pending) return;
+    setError(null);
+    setBusy(true);
+    try {
+      if (pending.type === 'delete') {
+        await api.deleteExperiment(pending.exp.id);
+      } else if (pending.type === 'archive') {
+        await api.archiveExperiment(pending.exp.id);
+      } else {
+        await api.unarchiveExperiment(pending.exp.id);
+      }
+      setPending(null);
+      await loadExperiments();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+      setPending(null);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -90,11 +146,75 @@ function AdminView() {
         <ListPanel
           experiments={experiments}
           loading={loading}
+          tab={tab}
+          onTabChange={setTab}
+          search={search}
+          onSearchChange={setSearch}
+          statusFilter={statusFilter}
+          onStatusFilterChange={setStatusFilter}
+          filtersActive={filtersActive}
           onSelect={(exp) => navigate(`/admin/experiments/${exp.id}`)}
+          onRequestAction={(type, exp) => setPending({ type, exp })}
         />
       </div>
+
+      {pending && (
+        <ConfirmDialog
+          {...confirmCopy(pending)}
+          tone={pending.type === 'delete' ? 'danger' : 'default'}
+          busy={busy}
+          onConfirm={runPendingAction}
+          onCancel={() => {
+            setBusy(false);
+            setPending(null);
+          }}
+        />
+      )}
     </div>
   );
+}
+
+// Modal wording per action. Delete is destructive (danger); archive/unarchive
+// are reversible state changes.
+function confirmCopy(pending: PendingAction): {
+  title: string;
+  message: React.ReactNode;
+  confirmLabel: string;
+} {
+  const label = pending.exp.internal_name || pending.exp.name;
+  if (pending.type === 'delete') {
+    return {
+      title: 'Delete experiment',
+      message: (
+        <>
+          Delete <strong>{label}</strong>? This permanently removes its questions, ratings, and
+          any linked Prolific studies. This cannot be undone.
+        </>
+      ),
+      confirmLabel: 'Delete',
+    };
+  }
+  if (pending.type === 'archive') {
+    return {
+      title: 'Archive experiment',
+      message: (
+        <>
+          Archive <strong>{label}</strong>? It will be hidden from the active list but kept
+          intact. You can restore it from the Archived tab.
+        </>
+      ),
+      confirmLabel: 'Archive',
+    };
+  }
+  return {
+    title: 'Restore experiment',
+    message: (
+      <>
+        Restore <strong>{label}</strong> to the active list?
+      </>
+    ),
+    confirmLabel: 'Restore',
+  };
 }
 
 function ErrorBanner({ text }: { text: string }) {
@@ -206,15 +326,44 @@ function CreatePanel({
   );
 }
 
+const STATUS_FILTERS: { value: ExperimentStatus | 'ALL'; label: string }[] = [
+  { value: 'ALL', label: 'All statuses' },
+  { value: 'DRAFT', label: 'Draft' },
+  { value: 'LAUNCH', label: 'Launched' },
+  { value: 'FINISHED', label: 'Finished' },
+];
+
 function ListPanel({
   experiments,
   loading,
+  tab,
+  onTabChange,
+  search,
+  onSearchChange,
+  statusFilter,
+  onStatusFilterChange,
+  filtersActive,
   onSelect,
+  onRequestAction,
 }: {
   experiments: Experiment[];
   loading: boolean;
+  tab: ListTab;
+  onTabChange: (tab: ListTab) => void;
+  search: string;
+  onSearchChange: (value: string) => void;
+  statusFilter: ExperimentStatus | 'ALL';
+  onStatusFilterChange: (value: ExperimentStatus | 'ALL') => void;
+  filtersActive: boolean;
   onSelect: (exp: Experiment) => void;
+  onRequestAction: (type: PendingAction['type'], exp: Experiment) => void;
 }) {
+  const emptyText = filtersActive
+    ? 'No experiments match your filters.'
+    : tab === 'archived'
+      ? 'No archived experiments.'
+      : 'No experiments yet. Create one to get started.';
+
   return (
     <section
       style={{
@@ -224,11 +373,71 @@ function ListPanel({
         boxShadow: 'var(--shadow)',
       }}
     >
-      <SectionHeader label="Your experiments" />
+      <div
+        style={{
+          display: 'flex',
+          gap: 4,
+          padding: '10px 16px 0',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
+        <ListTabButton label="Active" active={tab === 'active'} onClick={() => onTabChange('active')} />
+        <ListTabButton
+          label="Archived"
+          active={tab === 'archived'}
+          onClick={() => onTabChange('archived')}
+        />
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          gap: 10,
+          padding: '14px 16px',
+          borderBottom: '1px solid var(--line)',
+        }}
+      >
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Search by name…"
+          aria-label="Search experiments by name"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            padding: '8px 11px',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--surface)',
+            font: '400 13.5px var(--font-body)',
+            color: 'var(--ink)',
+          }}
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => onStatusFilterChange(e.target.value as ExperimentStatus | 'ALL')}
+          aria-label="Filter by status"
+          style={{
+            padding: '8px 11px',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--surface)',
+            font: '400 13.5px var(--font-body)',
+            color: 'var(--ink)',
+            cursor: 'pointer',
+          }}
+        >
+          {STATUS_FILTERS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+      </div>
       {loading ? (
         <EmptyState text="Loading…" />
       ) : experiments.length === 0 ? (
-        <EmptyState text="No experiments yet. Create one to get started." />
+        <EmptyState text={emptyText} />
       ) : (
         <div>
           {experiments.map((exp, idx) => (
@@ -236,6 +445,7 @@ function ListPanel({
               key={exp.id}
               exp={exp}
               onClick={() => onSelect(exp)}
+              onRequestAction={onRequestAction}
               isLast={idx === experiments.length - 1}
             />
           ))}
@@ -245,15 +455,48 @@ function ListPanel({
   );
 }
 
+/** Underlined tab button toggling the Active / Archived list. */
+function ListTabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: '12px 14px',
+        border: 'none',
+        borderBottom: `2px solid ${active ? 'var(--accent)' : 'transparent'}`,
+        background: 'transparent',
+        color: active ? 'var(--ink)' : 'var(--muted)',
+        font: '600 13px var(--font-body)',
+        cursor: 'pointer',
+        marginBottom: -1,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
 function ExperimentRow({
   exp,
   onClick,
+  onRequestAction,
   isLast,
 }: {
   exp: Experiment;
   onClick: () => void;
+  onRequestAction: (type: PendingAction['type'], exp: Experiment) => void;
   isLast: boolean;
 }) {
+  const isArchived = exp.archived_at !== null;
   return (
     <div
       onClick={onClick}
@@ -295,6 +538,29 @@ function ExperimentRow({
           {exp.question_count} questions · {exp.rating_count} ratings
         </div>
       </div>
+      <RowActionMenu
+        label={`Actions for ${exp.internal_name || exp.name}`}
+        actions={[
+          { label: 'View', testId: 'row-action-view', onSelect: onClick },
+          isArchived
+            ? {
+                label: 'Restore',
+                testId: 'row-action-unarchive',
+                onSelect: () => onRequestAction('unarchive', exp),
+              }
+            : {
+                label: 'Archive',
+                testId: 'row-action-archive',
+                onSelect: () => onRequestAction('archive', exp),
+              },
+          {
+            label: 'Delete',
+            tone: 'danger',
+            testId: 'row-action-delete',
+            onSelect: () => onRequestAction('delete', exp),
+          },
+        ]}
+      />
     </div>
   );
 }

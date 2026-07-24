@@ -36,6 +36,7 @@ def build_experiment_response(
         human_prompt_suffix=experiment.human_prompt_suffix,
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,
+        archived_at=experiment.archived_at,
         dataset_filenames=list(dataset_filenames or []),
         needs_attention=attention_reason is not None,
         attention_reason=attention_reason,

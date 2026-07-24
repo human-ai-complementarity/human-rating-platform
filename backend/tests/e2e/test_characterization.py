@@ -193,6 +193,88 @@ def test_create_experiment_then_list_contains_it(client: TestClient):
     assert items[0]["rating_count"] == 0
 
 
+def test_new_experiment_is_not_archived(client: TestClient):
+    created = _create_experiment(client)
+    assert created["archived_at"] is None
+
+
+def test_archive_hides_from_default_list_and_shows_under_archived(client: TestClient):
+    keep = _create_experiment(client)
+    target = _create_experiment(client)
+
+    archive = client.post(f"/api/admin/experiments/{target['id']}/archive")
+    assert archive.status_code == 200
+    assert archive.json()["archived_at"] is not None
+
+    active = client.get("/api/admin/experiments").json()
+    active_ids = {item["id"] for item in active}
+    assert target["id"] not in active_ids
+    assert keep["id"] in active_ids
+
+    archived = client.get("/api/admin/experiments", params={"archived": True}).json()
+    archived_ids = {item["id"] for item in archived}
+    assert archived_ids == {target["id"]}
+
+
+def test_unarchive_returns_experiment_to_active_list(client: TestClient):
+    target = _create_experiment(client)
+    client.post(f"/api/admin/experiments/{target['id']}/archive")
+
+    unarchive = client.post(f"/api/admin/experiments/{target['id']}/unarchive")
+    assert unarchive.status_code == 200
+    assert unarchive.json()["archived_at"] is None
+
+    active_ids = {item["id"] for item in client.get("/api/admin/experiments").json()}
+    assert target["id"] in active_ids
+    archived = client.get("/api/admin/experiments", params={"archived": True}).json()
+    assert archived == []
+
+
+def test_list_filters_by_status(client: TestClient, sync_engine):
+    draft = _create_experiment(client)
+    launched = _create_experiment(client)
+    _mark_experiment_status(sync_engine, launched["id"], "LAUNCH")
+
+    launch_only = client.get("/api/admin/experiments", params={"status": "LAUNCH"}).json()
+    assert {item["id"] for item in launch_only} == {launched["id"]}
+
+    draft_only = client.get("/api/admin/experiments", params={"status": "DRAFT"}).json()
+    assert {item["id"] for item in draft_only} == {draft["id"]}
+
+
+def test_list_filters_by_name_search(client: TestClient):
+    match = client.post(
+        "/api/admin/experiments",
+        json={"name": "Factuality study", "num_ratings_per_question": 2},
+    ).json()
+    client.post(
+        "/api/admin/experiments",
+        json={"name": "Sentiment study", "num_ratings_per_question": 2},
+    )
+
+    # Case-insensitive substring match on the public name.
+    hits = client.get("/api/admin/experiments", params={"search": "factual"}).json()
+    assert {item["id"] for item in hits} == {match["id"]}
+
+
+def test_list_search_matches_internal_name(client: TestClient):
+    match = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": "Public label",
+            "internal_name": "Q3 pilot — Sander",
+            "num_ratings_per_question": 2,
+        },
+    ).json()
+    client.post(
+        "/api/admin/experiments",
+        json={"name": "Another public label", "num_ratings_per_question": 2},
+    )
+
+    hits = client.get("/api/admin/experiments", params={"search": "q3 pilot"}).json()
+    assert {item["id"] for item in hits} == {match["id"]}
+
+
 def test_upload_questions_records_upload_and_stats(client: TestClient):
     experiment = _create_experiment(client)
     experiment_id = experiment["id"]

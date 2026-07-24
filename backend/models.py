@@ -141,6 +141,13 @@ class Experiment(SQLModel, table=True):
             server_default=text("'DRAFT'"),
         ),
     )
+    # Soft-archive flag, orthogonal to `status`. Non-null timestamp means the
+    # experiment is archived: hidden from the default admin list but not
+    # deleted. Reversible via unarchive (sets this back to NULL).
+    archived_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class Question(SQLModel, table=True):

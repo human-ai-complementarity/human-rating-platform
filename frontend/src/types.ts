@@ -17,6 +17,9 @@ export interface Experiment {
   human_prompt_suffix: string | null;
   prolific_pool: string | null;
   status: ExperimentStatus;
+  // Non-null ISO timestamp when the experiment has been archived (soft-hidden
+  // from the default admin list). null means active.
+  archived_at: string | null;
   dataset_filenames: string[];
   // Set by the list endpoint when the experiment has a pending admin action
   // (rounds closed but target unmet, an unpublished round draft, or target met

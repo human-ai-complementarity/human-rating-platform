@@ -12,6 +12,7 @@ import type {
   Experiment,
   ExperimentCreate,
   ExperimentStats,
+  ExperimentStatus,
   PilotStudyCreate,
   PlatformStatus,
   Question,
@@ -63,6 +64,8 @@ const routes = {
     experiments: '/admin/experiments',
     experiment: (id: number) => `/admin/experiments/${id}`,
     finishExperiment: (id: number) => `/admin/experiments/${id}/finish`,
+    archiveExperiment: (id: number) => `/admin/experiments/${id}/archive`,
+    unarchiveExperiment: (id: number) => `/admin/experiments/${id}/unarchive`,
     upload: (id: number) => `/admin/experiments/${id}/upload`,
     uploads: (id: number) => `/admin/experiments/${id}/uploads`,
     stats: (id: number) => `/admin/experiments/${id}/stats`,
@@ -298,8 +301,22 @@ export const api = {
     });
   },
 
-  async listExperiments(): Promise<Experiment[]> {
-    return requestJson<Experiment[]>(routes.admin.experiments);
+  async listExperiments({
+    archived = false,
+    status,
+    search,
+  }: {
+    archived?: boolean;
+    status?: ExperimentStatus;
+    search?: string;
+  } = {}): Promise<Experiment[]> {
+    return requestJson<Experiment[]>(routes.admin.experiments, {
+      query: {
+        ...(archived ? { archived: 'true' } : {}),
+        ...(status ? { status } : {}),
+        ...(search ? { search } : {}),
+      },
+    });
   },
 
   async uploadQuestions(experimentId: number, file: File): Promise<UploadResponse> {
@@ -362,6 +379,18 @@ export const api = {
 
   async finishExperiment(experimentId: number): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.finishExperiment(experimentId), {
+      method: 'POST',
+    });
+  },
+
+  async archiveExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.archiveExperiment(experimentId), {
+      method: 'POST',
+    });
+  },
+
+  async unarchiveExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.unarchiveExperiment(experimentId), {
       method: 'POST',
     });
   },
