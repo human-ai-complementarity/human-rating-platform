@@ -270,6 +270,13 @@ async def update_experiment(
 
     if payload.assistance_params is not None:
         experiment.assistance_params = json.dumps(payload.assistance_params)
+    if payload.name is not None:
+        stripped_name = payload.name.strip()
+        if not stripped_name:
+            raise HTTPException(
+                status_code=400, detail="Public name cannot be empty."
+            )
+        experiment.name = stripped_name
     if payload.internal_name is not None:
         experiment.internal_name = payload.internal_name.strip() or None
     # For each dataset-meta field, None means "leave unchanged"; an explicit

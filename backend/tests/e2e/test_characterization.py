@@ -515,6 +515,41 @@ def test_update_experiment_edits_dataset_metadata(client: TestClient):
     assert body["human_prompt_suffix"] is None
 
 
+def test_update_experiment_edits_public_name(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "name": "  Renamed task  "},
+    )
+    assert response.status_code == 200, response.text
+    # Whitespace is trimmed, mirroring the create path.
+    assert response.json()["name"] == "Renamed task"
+
+
+def test_update_experiment_rejects_empty_public_name(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "name": "   "},
+    )
+    assert response.status_code == 400
+    assert "Public name" in response.json()["detail"]
+
+
+def test_update_experiment_clears_internal_name_with_empty_string(client: TestClient):
+    experiment = _create_experiment(client)
+    client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "internal_name": "Working title"},
+    )
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "internal_name": ""},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["internal_name"] is None
+
+
 # ── Parquet upload ───────────────────────────────────────────────────────────
 # Parquet shares the upload endpoint, the meta-conflict logic and the Question
 # writer with CSV — the tests below check the format-specific bits: schema

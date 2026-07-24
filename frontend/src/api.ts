@@ -356,6 +356,12 @@ export const api = {
     data: {
       assistance_method: string;
       assistance_params?: Record<string, unknown> | null;
+      // Public rater-facing name. Undefined means "leave unchanged"; the backend
+      // rejects an empty value (the public name is required).
+      name?: string;
+      // Private researcher-facing label. Undefined means "leave unchanged"; ""
+      // clears it and the title falls back to the public name.
+      internal_name?: string;
       // Dataset metadata edits. Each field uses null/undefined to mean
       // "leave unchanged" and "" to clear. Mirrors ExperimentUpdate on the backend.
       description?: string;

@@ -178,6 +178,10 @@ class ExperimentResponse(BaseModel):
 class ExperimentUpdate(BaseModel):
     assistance_method: str
     assistance_params: Optional[dict] = None
+    # `name` is the public, rater-facing name. None means "leave unchanged"; an
+    # empty/whitespace value is rejected in update_experiment (the public name is
+    # required). Capped to the DB column width so an overlong value 422s cleanly.
+    name: Optional[str] = Field(default=None, max_length=255)
     internal_name: Optional[str] = Field(default=None, max_length=255)
     # Dataset metadata fields — each is sent only when the admin edits it.
     # An explicit "" clears the value; None means "leave unchanged".
