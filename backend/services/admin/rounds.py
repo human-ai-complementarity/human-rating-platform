@@ -176,9 +176,7 @@ async def _build_round_blocklist_group_ids(
     return list(dict.fromkeys(result))
 
 
-async def _filter_to_existing_experiment_ids(
-    ids: list[int], db: AsyncSession
-) -> list[int]:
+async def _filter_to_existing_experiment_ids(ids: list[int], db: AsyncSession) -> list[int]:
     """Drop IDs whose experiment no longer exists (was deleted), preserving
     order and duplicates of the survivors."""
     if not ids:
