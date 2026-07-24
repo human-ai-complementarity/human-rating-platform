@@ -36,6 +36,13 @@ export function ExperimentExclusionPicker({
   const visible = q
     ? selectable.filter((e) => experimentSearchHaystack(e).includes(q))
     : selectable;
+  // Selected IDs with no matching experiment reference a since-deleted target.
+  // The list above can't render a checkbox for them, so surface them as their
+  // own removable rows — otherwise they count toward the total but can't be
+  // unselected. Blank when searching so the filter stays clean.
+  const deletedSelectedIds = q
+    ? []
+    : selectedIds.filter((id) => !experiments.some((e) => e.id === id));
   const toggle = (id: number, checked: boolean) => {
     if (checked) {
       onChange(Array.from(new Set([...selectedIds, id])));
@@ -71,7 +78,7 @@ export function ExperimentExclusionPicker({
         }}
       />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 180, overflowY: 'auto' }}>
-        {visible.length === 0 && (
+        {visible.length === 0 && deletedSelectedIds.length === 0 && (
           <div
             style={{
               color: 'var(--muted)',
@@ -142,6 +149,53 @@ export function ExperimentExclusionPicker({
             </label>
           );
         })}
+        {deletedSelectedIds.map((id) => (
+          <label
+            key={`deleted-${id}`}
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              fontSize: 13,
+              cursor: 'pointer',
+              margin: 0,
+            }}
+          >
+            <input
+              type="checkbox"
+              data-testid={`${testIdPrefix}-option-${id}`}
+              checked
+              onChange={() => toggle(id, false)}
+              style={{
+                width: 16,
+                height: 16,
+                flex: '0 0 auto',
+                margin: '3px 0 0 0',
+                padding: 0,
+                cursor: 'pointer',
+              }}
+            />
+            <span style={{ lineHeight: 1.4, color: 'var(--muted)' }}>
+              <strong>Experiment #{id}</strong>
+              <span
+                style={{
+                  marginLeft: 6,
+                  padding: '1px 6px',
+                  borderRadius: 999,
+                  background: 'var(--warn-soft)',
+                  color: 'var(--warn)',
+                  fontSize: 10,
+                  fontWeight: 600,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.3px',
+                }}
+              >
+                Deleted
+              </span>
+              <span> — uncheck to remove</span>
+            </span>
+          </label>
+        ))}
       </div>
       {selectedIds.length > 0 && (
         <div style={{ color: 'var(--muted)', fontSize: 12 }}>

@@ -155,8 +155,6 @@ async def _build_round_blocklist_group_ids(
     experiment: Experiment,
     excluded_experiment_ids: list[int],
     db: AsyncSession,
-    *,
-    strict: bool,
 ) -> list[str]:
     """Full participant-group blocklist for a round of `experiment`.
 
@@ -167,7 +165,7 @@ async def _build_round_blocklist_group_ids(
     launch time (e.g. the pilot) starts filtering as soon as any rater joins.
     """
     own_group_id = await ensure_participant_group_and_commit(experiment, db)
-    others = await _resolve_exclusion_group_ids(excluded_experiment_ids, db, strict=strict)
+    others = await _resolve_exclusion_group_ids(excluded_experiment_ids, db)
     # Dedupe while preserving order: if the admin somehow ends up with the
     # current experiment in its own exclusion list, we still send Prolific a
     # single blocklist entry per group.
@@ -178,11 +176,20 @@ async def _build_round_blocklist_group_ids(
     return list(dict.fromkeys(result))
 
 
+async def _filter_to_existing_experiment_ids(ids: list[int], db: AsyncSession) -> list[int]:
+    """Drop IDs whose experiment no longer exists (was deleted), preserving
+    order and duplicates of the survivors."""
+    if not ids:
+        return []
+    existing = set(
+        (await db.execute(select(Experiment.id).where(Experiment.id.in_(ids)))).scalars()
+    )
+    return [exp_id for exp_id in ids if exp_id in existing]
+
+
 async def _resolve_exclusion_group_ids(
     excluded_experiment_ids: list[int],
     db: AsyncSession,
-    *,
-    strict: bool,
 ) -> list[str]:
     """For each experiment ID in the exclusion list, return its participant
     group ID, creating the group lazily if the experiment doesn't have one yet.
@@ -191,11 +198,13 @@ async def _resolve_exclusion_group_ids(
     still want to attach A's (empty) group to A*'s blocklist so future entrants
     to A are automatically excluded from A*.
 
-    `strict=True` means an ID with no matching experiment is a hard error —
-    used on paths where the admin just picked the IDs and a silent drop would
-    ship a broken blocklist. `strict=False` logs and skips — used when the IDs
-    are inherited from an earlier round and one may have been deleted since,
-    where blocking an unrelated edit would be more annoying than useful.
+    An ID with no matching experiment is dropped (and logged): the target was
+    deleted after it was picked, so there's no group left to block — and no way
+    for the admin to unselect a picker row that no longer renders. Raising here
+    would wedge the round in an unsaveable state. Genuinely-bogus *new* IDs are
+    still rejected upstream by `validate_new_exclusion_targets`; by the time we
+    reach this resolver every ID is either already-persisted or already-validated,
+    so skipping a missing one is the safe, non-blocking choice.
     """
     if not excluded_experiment_ids:
         return []
@@ -211,11 +220,6 @@ async def _resolve_exclusion_group_ids(
     for exp_id in excluded_experiment_ids:
         experiment = experiments_by_id.get(exp_id)
         if experiment is None:
-            if strict:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Excluded experiment {exp_id} does not exist.",
-                )
             logger.warning(
                 "Excluded experiment not found; skipping",
                 extra={"attributes": {"excluded_experiment_id": exp_id}},
@@ -490,7 +494,7 @@ async def run_pilot_study(
         db=db,
     )
     blocklist_group_ids = await _build_round_blocklist_group_ids(
-        experiment, excluded_experiment_ids, db, strict=True
+        experiment, excluded_experiment_ids, db
     )
 
     try:
@@ -604,7 +608,7 @@ async def run_experiment_round(
     screeners = _parse_screeners(pilot_round.screeners)
     excluded_experiment_ids = _parse_excluded_experiment_ids(pilot_round.excluded_experiment_ids)
     blocklist_group_ids = await _build_round_blocklist_group_ids(
-        experiment, excluded_experiment_ids, db, strict=False
+        experiment, excluded_experiment_ids, db
     )
 
     try:
@@ -884,14 +888,15 @@ async def update_experiment_round(
                 previously_allowed_ids=previously_allowed_ids,
                 db=db,
             )
-        # Strict only when the admin is explicitly setting the list — an
-        # inherited-and-stale ID from an earlier round shouldn't block an
-        # unrelated field edit (reward, screeners, etc.).
+        # Drop targets whose experiment has since been deleted. The picker can't
+        # render an unselectable ghost, so without this a stale ID would wedge
+        # the round in an unsaveable state. Filtering here also self-heals the
+        # persisted list below so the ghost is gone for good after one save.
+        excluded_ids = await _filter_to_existing_experiment_ids(excluded_ids, db)
         blocklist_group_ids = await _build_round_blocklist_group_ids(
             experiment,
             excluded_ids,
             db,
-            strict=payload.excluded_experiment_ids is not None,
         )
         prolific_fields["filters"] = build_screener_filters(screeners) + build_exclusion_filters(
             blocklist_group_ids
@@ -936,7 +941,9 @@ async def update_experiment_round(
     if payload.screeners is not None:
         round_.screeners = json.dumps(list(payload.screeners))
     if payload.excluded_experiment_ids is not None:
-        round_.excluded_experiment_ids = json.dumps(list(payload.excluded_experiment_ids))
+        # `excluded_ids` was filtered to existing experiments above, so any
+        # deleted target is stripped from what we store.
+        round_.excluded_experiment_ids = json.dumps(excluded_ids)
     await db.commit()
     await db.refresh(round_)
 
