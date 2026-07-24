@@ -2494,6 +2494,51 @@ def test_prolific_round_edit_adds_exclusion(
 
 
 @respx.mock
+def test_prolific_round_edit_drops_deleted_exclusion_target(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    """A round that excludes an experiment which is later deleted must stay
+    editable. The deleted target has no group to block and can't be unselected
+    in the picker, so the edit should drop it silently (not 400), send a
+    blocklist with only the survivors, and self-heal the stored list."""
+    excluded_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    excluded = excluded_resp.json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
+
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    # Attach the exclusion while the target still exists.
+    _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # The target experiment is hard-deleted; its ID lingers in the round's
+    # stored exclusion list.
+    delete_resp = client.delete(f"/api/admin/experiments/{excluded['id']}")
+    assert delete_resp.status_code == 200, delete_resp.text
+
+    # Re-submitting the form (still holding the ghost ID) must succeed. This is
+    # the path that previously raised "Excluded experiment N does not exist."
+    update_route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert resp.status_code == 200, resp.text
+    # Stored list self-heals: the deleted target is gone.
+    assert resp.json()["excluded_experiment_ids"] == []
+
+    # Blocklist sent to Prolific carries only the experiment's own group.
+    sent = json.loads(update_route.calls[-1].request.content.decode())
+    assert _blocklist_values(sent["filters"]) == [_expected_group_id(experiment)]
+
+
+@respx.mock
 def test_prolific_main_round_inherits_pilot_exclusions(
     client: TestClient,
     enable_prolific,
