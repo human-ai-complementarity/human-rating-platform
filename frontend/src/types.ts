@@ -18,6 +18,11 @@ export interface Experiment {
   prolific_pool: string | null;
   status: ExperimentStatus;
   dataset_filenames: string[];
+  // Set by the list endpoint when the experiment has a pending admin action
+  // (rounds closed but target unmet, an unpublished round draft, or target met
+  // and ready to finish). `attention_reason` is the tooltip shown on the dot.
+  needs_attention: boolean;
+  attention_reason: string | null;
 }
 
 // Keys an upload may declare as dataset-level metadata (CSV `#META:` line or

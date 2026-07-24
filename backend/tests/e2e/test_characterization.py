@@ -3064,3 +3064,72 @@ def test_finish_end_to_end_from_draft(
     finish_resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
     assert finish_resp.status_code == 200, finish_resp.text
     assert finish_resp.json()["status"] == "FINISHED"
+
+
+def _list_entry(client: TestClient, experiment_id: int) -> dict:
+    return next(
+        item
+        for item in client.get("/api/admin/experiments").json()
+        if item["id"] == experiment_id
+    )
+
+
+@respx.mock
+def test_list_experiments_surfaces_pending_action_flag(
+    client: TestClient,
+    enable_prolific,
+):
+    """The list endpoint flags experiments with a pending admin action so the
+    dashboard can show an attention dot: an unpublished draft round, then
+    (after all rounds close with the target unmet) a prompt to launch another
+    round. Terminal / actively-collecting states carry no flag."""
+    experiment, pilot = _create_prolific_experiment(client)
+    _upload_questions(client, experiment["id"])  # 2 questions × target 2 = 4 actions
+
+    # Pilot draft sits UNPUBLISHED → publish it.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is True
+    assert "publish" in entry["attention_reason"].lower()
+
+    _mock_publish_study()
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish"
+    )
+    _mock_close_study()
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/close"
+    )
+
+    _mock_create_study(study_id="MAIN")
+    main_round = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    ).json()
+
+    _mock_publish_study(study_id="MAIN")
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{main_round['id']}/publish"
+    )
+
+    # Main round is ACTIVE (still collecting) → nothing to do, no flag.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is False
+    assert entry["attention_reason"] is None
+
+    _mock_close_study(study_id="MAIN")
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{main_round['id']}/close"
+    )
+
+    # All rounds closed, no ratings collected → target unmet → launch another round.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is True
+    assert "launch another round" in entry["attention_reason"].lower()
+
+    finish_resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert finish_resp.status_code == 200, finish_resp.text
+
+    # Finished experiments are terminal → never flagged.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is False
+    assert entry["attention_reason"] is None

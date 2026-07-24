@@ -260,6 +260,7 @@ function ExperimentRow({
       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
       style={{
+        position: 'relative',
         display: 'flex',
         alignItems: 'center',
         gap: 18,
@@ -269,6 +270,7 @@ function ExperimentRow({
         transition: 'background 0.15s',
       }}
     >
+      {exp.needs_attention && <AttentionDot reason={exp.attention_reason} />}
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
           <span
@@ -293,17 +295,81 @@ function ExperimentRow({
           {exp.question_count} questions · {exp.rating_count} ratings
         </div>
       </div>
-      <span
-        style={{
-          fontSize: 13.5,
-          fontWeight: 600,
-          color: 'var(--accent)',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        View →
-      </span>
     </div>
+  );
+}
+
+/**
+ * Amber "action needed" dot floated in the top-left corner of an experiment
+ * row when the backend flags a pending admin action. Tucked into the left
+ * gutter so it clears the title text (which starts at the 24px content
+ * padding). Hovering reveals the reason, mirroring the StatusLabel tooltip.
+ * Only rendered when there's something to flag (the caller guards on
+ * `needs_attention`).
+ */
+function AttentionDot({ reason }: { reason: string | null }) {
+  const [hovered, setHovered] = useState(false);
+
+  if (!reason) return null;
+
+  return (
+    <span
+      style={{ position: 'absolute', top: 12, left: 9, display: 'inline-flex' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <span
+        role="img"
+        aria-label={`Action needed: ${reason}`}
+        tabIndex={0}
+        data-testid="experiment-attention-dot"
+        onFocus={() => setHovered(true)}
+        onBlur={() => setHovered(false)}
+        style={{
+          width: 11,
+          height: 11,
+          borderRadius: '50%',
+          background: 'var(--warn)',
+          boxShadow: '0 0 0 4px var(--warn-soft)',
+          cursor: 'help',
+        }}
+      />
+      {hovered && (
+        <div
+          role="tooltip"
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 8px)',
+            left: -4,
+            zIndex: 20,
+            width: 240,
+            padding: '10px 12px',
+            background: 'var(--ink)',
+            color: 'var(--bg)',
+            borderRadius: 'var(--radius-sm)',
+            boxShadow: 'var(--shadow)',
+            fontSize: 12,
+            lineHeight: 1.5,
+            fontWeight: 400,
+          }}
+        >
+          <div
+            style={{
+              fontFamily: 'var(--font-mono)',
+              fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.14em',
+              textTransform: 'uppercase',
+              marginBottom: 5,
+              color: 'var(--warn-soft)',
+            }}
+          >
+            Action needed
+          </div>
+          {reason}
+        </div>
+      )}
+    </span>
   );
 }
 

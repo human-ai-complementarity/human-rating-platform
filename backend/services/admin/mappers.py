@@ -15,6 +15,7 @@ def build_experiment_response(
     question_count: int,
     rating_count: int,
     dataset_filenames: list[str] | None = None,
+    attention_reason: str | None = None,
 ) -> ExperimentResponse:
     return ExperimentResponse(
         id=experiment.id,
@@ -36,6 +37,8 @@ def build_experiment_response(
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,
         dataset_filenames=list(dataset_filenames or []),
+        needs_attention=attention_reason is not None,
+        attention_reason=attention_reason,
     )
 
 

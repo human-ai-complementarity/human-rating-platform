@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -14,7 +14,7 @@ from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .prolific import delete_study
-from .status import assert_can_finish, is_locked
+from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.registry import get_method
 from services.queries import parent_question_ids_subquery
 from .queries import (
@@ -103,6 +103,12 @@ async def list_experiments(
 
     experiment_ids = [experiment.id for experiment, _, _ in rows]
     filenames_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
+    # Per-experiment shortfall against the rating target and the set of round
+    # statuses — both feed the "needs attention" flag below. Kept as separate
+    # keyed queries (not joined into the main select) so the row fan-out stays
+    # bounded to the page.
+    remaining_by_experiment: dict[int, int] = {}
+    round_statuses_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
     if experiment_ids:
         upload_rows = (
             await db.execute(
@@ -114,12 +120,55 @@ async def list_experiments(
         for exp_id, filename in upload_rows:
             filenames_by_experiment.setdefault(exp_id, []).append(filename)
 
+        # remaining = Σ max(0, target − ratings) over each non-parent question,
+        # matching calculate_recommendation's definition of "target not met".
+        per_question_counts = (
+            select(
+                Question.experiment_id.label("experiment_id"),
+                Question.id.label("question_id"),
+                func.count(Rating.id).label("cnt"),
+            )
+            .outerjoin(Rating, Rating.question_id == Question.id)
+            .where(Question.experiment_id.in_(experiment_ids))
+            .where(Question.id.notin_(parent_question_ids_subquery()))
+            .group_by(Question.experiment_id, Question.id)
+            .subquery()
+        )
+        deficit = Experiment.num_ratings_per_question - per_question_counts.c.cnt
+        clamped_deficit = case((deficit < 0, 0), else_=deficit)
+        remaining_rows = (
+            await db.execute(
+                select(
+                    per_question_counts.c.experiment_id,
+                    func.coalesce(func.sum(clamped_deficit), 0),
+                )
+                .join(Experiment, Experiment.id == per_question_counts.c.experiment_id)
+                .group_by(per_question_counts.c.experiment_id)
+            )
+        ).all()
+        remaining_by_experiment = {exp_id: int(rem or 0) for exp_id, rem in remaining_rows}
+
+        status_rows = (
+            await db.execute(
+                select(ExperimentRound.experiment_id, ExperimentRound.prolific_study_status).where(
+                    ExperimentRound.experiment_id.in_(experiment_ids)
+                )
+            )
+        ).all()
+        for exp_id, study_status in status_rows:
+            round_statuses_by_experiment.setdefault(exp_id, []).append(study_status)
+
     return [
         build_experiment_response(
             experiment,
             question_count=int(question_count or 0),
             rating_count=int(rating_count or 0),
             dataset_filenames=filenames_by_experiment.get(experiment.id, []),
+            attention_reason=compute_attention_reason(
+                status=experiment.status,
+                remaining_actions=remaining_by_experiment.get(experiment.id, 0),
+                round_statuses=round_statuses_by_experiment.get(experiment.id, []),
+            ),
         )
         for experiment, question_count, rating_count in rows
     ]

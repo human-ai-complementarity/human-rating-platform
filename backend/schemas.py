@@ -162,6 +162,12 @@ class ExperimentResponse(BaseModel):
     # so admins can find an experiment by its dataset filename when picking
     # experiments to exclude from a new round.
     dataset_filenames: list[str] = Field(default_factory=list)
+    # Set when the experiment has a pending admin action (e.g. rounds closed
+    # but target unmet, or an unpublished round draft). `attention_reason` is a
+    # short human sentence; the list view shows a dot with it as the tooltip.
+    # Only computed by the list endpoint — single-experiment reads leave it off.
+    needs_attention: bool = False
+    attention_reason: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
