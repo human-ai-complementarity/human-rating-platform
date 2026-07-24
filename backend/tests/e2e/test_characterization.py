@@ -1774,6 +1774,28 @@ def test_prolific_round_close_updates_status(client: TestClient, enable_prolific
 
 
 @respx.mock
+def test_prolific_round_close_handles_space_separated_status(client: TestClient, enable_prolific):
+    # Prolific's STOP transition returns the status space-separated
+    # ("AWAITING REVIEW"), which must not 500 the close endpoint.
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_publish_study()
+    publish_resp = client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/publish")
+    assert publish_resp.status_code == 200
+
+    route = _mock_close_study(closed_status="AWAITING REVIEW")
+    close_resp = client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/close")
+
+    assert close_resp.status_code == 200, close_resp.text
+    assert close_resp.json()["status"] == "AWAITING_REVIEW"
+    assert route.called
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+    assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+
+
+@respx.mock
 def test_prolific_delete_calls_prolific_api_for_all_rounds(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]

@@ -38,6 +38,20 @@ class ProlificStudyStatus(str, Enum):
     AWAITING_REVIEW = "AWAITING_REVIEW"
     COMPLETED = "COMPLETED"
 
+    @classmethod
+    def _missing_(cls, value: object) -> "ProlificStudyStatus | None":
+        # Prolific's API returns some statuses space-separated (e.g.
+        # "AWAITING REVIEW") while our members use underscores. Normalize
+        # before giving up so a STOP transition or status refresh doesn't
+        # raise ValueError on the space form. Unknown values still fall
+        # through to the standard ValueError.
+        if isinstance(value, str):
+            normalized = value.strip().upper().replace(" ", "_")
+            for member in cls:
+                if member.value == normalized:
+                    return member
+        return None
+
 
 ROUND_TERMINAL_STATUSES = frozenset(
     {ProlificStudyStatus.AWAITING_REVIEW, ProlificStudyStatus.COMPLETED}
