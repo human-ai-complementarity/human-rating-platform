@@ -44,8 +44,10 @@ function loadFilters(): Filters {
   }
 }
 
-const formatSpend = (minorUnits: number, symbol: string) =>
-  `${symbol}${(minorUnits / 100).toFixed(2)}`;
+// Guard against a missing spend field (e.g. a frontend/backend version skew):
+// treat it as 0 rather than rendering "NaN".
+const formatSpend = (minorUnits: number | undefined, symbol: string) =>
+  `${symbol}${((minorUnits ?? 0) / 100).toFixed(2)}`;
 
 /**
  * Admin dashboard: create-new panel on the left, existing experiments on the
@@ -117,7 +119,7 @@ function AdminView() {
   const label = (exp: Experiment) => exp.internal_name || exp.name;
 
   const handleArchiveToggle = async (exp: Experiment) => {
-    const toArchived = exp.archived_at === null;
+    const toArchived = !exp.archived_at;
     setError(null);
     try {
       if (toArchived) await api.archiveExperiment(exp.id);
@@ -167,7 +169,7 @@ function AdminView() {
   };
 
   const archivedCount = useMemo(
-    () => experiments.filter((e) => e.archived_at !== null).length,
+    () => experiments.filter((e) => Boolean(e.archived_at)).length,
     [experiments],
   );
 
@@ -177,8 +179,10 @@ function AdminView() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const showingArchived = statusFilter === 'ARCHIVED';
+    // Boolean() so a missing/undefined archived_at counts as active, not
+    // archived (which would otherwise hide every row under the Archived tab).
     const source = experiments.filter((e) =>
-      showingArchived ? e.archived_at !== null : e.archived_at === null,
+      showingArchived ? Boolean(e.archived_at) : !e.archived_at,
     );
     return source.filter((e) => {
       if (statusFilter !== 'ALL' && statusFilter !== 'ARCHIVED' && e.status !== statusFilter)
@@ -191,7 +195,7 @@ function AdminView() {
   }, [experiments, query, statusFilter, needsOnly]);
 
   const totalSpendMinor = useMemo(
-    () => filtered.reduce((sum, e) => sum + e.spend_minor_units, 0),
+    () => filtered.reduce((sum, e) => sum + (e.spend_minor_units ?? 0), 0),
     [filtered],
   );
 
@@ -490,7 +494,7 @@ function ExperimentRow({
   onArchiveToggle: () => void;
   onDelete: () => void;
 }) {
-  const isArchived = exp.archived_at !== null;
+  const isArchived = Boolean(exp.archived_at);
   return (
     <div
       onClick={onSelect}
