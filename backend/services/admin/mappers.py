@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from models import Experiment, Question, Rating, Rater, Upload
 from schemas import ExperimentResponse
 
 QUESTION_PREVIEW_LENGTH = 100
+
+
+def isoformat_utc(value: datetime | None) -> str | None:
+    """Serialize to RFC 3339 with a `Z` suffix instead of a `+00:00` offset.
+
+    Analytics builds its JSON by hand rather than through a response model, and
+    these columns are timezone-aware, so a bare `.isoformat()` emits `+00:00`.
+    Clients expect the `Z` form used elsewhere on the wire.
+    """
+    if value is None:
+        return None
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return aware.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def build_experiment_response(
@@ -94,8 +108,8 @@ def build_rater_stats_bucket(rater: Rater) -> dict[str, Any]:
     return {
         "prolific_id": rater.prolific_id,
         "study_id": rater.study_id,
-        "session_start": rater.session_start.isoformat() if rater.session_start else None,
-        "session_end": rater.session_end.isoformat() if rater.session_end else None,
+        "session_start": isoformat_utc(rater.session_start),
+        "session_end": isoformat_utc(rater.session_end),
         "is_active": rater.is_active,
         "num_ratings": 0,
         "response_times": [],

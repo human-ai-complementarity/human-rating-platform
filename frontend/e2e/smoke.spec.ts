@@ -51,6 +51,31 @@ type RaterSessionRecord = {
   rater_session_token: string;
 };
 
+type RaterAnalyticsRecord = {
+  prolific_id: string;
+  study_id: string | null;
+  session_start: string | null;
+  session_end: string | null;
+  is_active: boolean;
+  num_ratings: number;
+  total_response_time_seconds: number;
+  avg_response_time_seconds: number;
+  avg_confidence: number;
+};
+
+type AnalyticsRecord = {
+  experiment_name: string;
+  overview: {
+    total_ratings: number;
+    total_questions: number;
+    total_raters: number;
+    avg_response_time_seconds: number;
+    avg_confidence: number;
+  };
+  questions: unknown[];
+  raters: RaterAnalyticsRecord[];
+};
+
 type RaterQuestionRecord = {
   id: number;
   question_id: string;
@@ -70,6 +95,7 @@ type MockState = {
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
+  analyticsByExperimentId: Record<number, AnalyticsRecord>;
   questionsBySessionToken: Record<string, RaterQuestionRecord>;
   nextExperimentId: number;
   nextUploadId: number;
@@ -102,6 +128,7 @@ function createMockState(): MockState {
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
     sessionsByExperimentId: {},
+    analyticsByExperimentId: {},
     questionsBySessionToken: {},
     nextExperimentId: 1,
     nextUploadId: 1,
@@ -243,7 +270,8 @@ async function installApiMocks(
     }
 
     if (pathname.endsWith('/analytics') && method === 'GET') {
-      await fulfillJson(route, 200, {
+      const analytics = state.analyticsByExperimentId[extractExperimentId(url)];
+      await fulfillJson(route, 200, analytics ?? {
         experiment_name: 'Smoke Test Experiment',
         overview: {
           total_ratings: 0,
@@ -742,4 +770,66 @@ test('disabled mode explains why pilot controls are unavailable', async ({ page 
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Configure a Prolific API token');
   await expect(page.getByTestId('preview-participant-button')).toBeVisible();
   await expect(page.getByTestId('run-pilot-button')).toHaveCount(0);
+});
+
+// Locale and timezone are pinned so the rendered timestamp is comparable.
+test.describe('analytics raters tab', () => {
+  test.use({ timezoneId: 'UTC', locale: 'en-GB' });
+
+  test('renders session start times served in the backend timestamp format', async ({ page }) => {
+    const state = createMockState();
+    state.experiments = [
+      buildExperiment(state, {
+        id: 1,
+        name: 'Analytics Smoke Test',
+        question_count: 2,
+        rating_count: 3,
+      }),
+    ];
+    state.nextExperimentId = 2;
+    state.uploads[1] = [];
+    state.rounds[1] = [];
+    state.recommendations[1] = {
+      avg_time_per_question_seconds: 0,
+      remaining_rating_actions: 0,
+      total_hours_remaining: 0,
+      recommended_places: 0,
+      is_complete: false,
+    };
+    state.analyticsByExperimentId[1] = {
+      experiment_name: 'Analytics Smoke Test',
+      overview: {
+        total_ratings: 3,
+        total_questions: 2,
+        total_raters: 1,
+        avg_response_time_seconds: 69.94,
+        avg_confidence: 3.08,
+      },
+      questions: [],
+      raters: [
+        {
+          prolific_id: '660d6a1f4a7f1337de235daa',
+          study_id: '6a637562575f23b5aaf81ae4',
+          // Microsecond precision and a UTC designator, as the API sends it.
+          session_start: '2026-07-24T14:26:30.179021Z',
+          session_end: null,
+          is_active: true,
+          num_ratings: 3,
+          total_response_time_seconds: 209.82,
+          avg_response_time_seconds: 69.94,
+          avg_confidence: 3.08,
+        },
+      ],
+    };
+
+    await installApiMocks(page, state);
+    await page.goto('/admin/experiments/1');
+
+    await page.getByRole('button', { name: 'View analytics' }).click();
+    await page.getByRole('button', { name: 'Raters', exact: true }).click();
+
+    const raterRow = page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' });
+    await expect(raterRow).toContainText('24/07/2026, 14:26:30');
+    await expect(page.getByText('Invalid Date')).toHaveCount(0);
+  });
 });

@@ -393,7 +393,7 @@ function Analytics({ experimentId, experimentName, onBack }: AnalyticsProps) {
                       <td style={{ ...styles.td, ...styles.tdCenter }}>{formatTime(r.avg_response_time_seconds)}</td>
                       <td style={{ ...styles.td, ...styles.tdCenter }}>{r.avg_confidence.toFixed(1)}</td>
                       <td style={{ ...styles.td, fontSize: '12px', color: '#666' }}>
-                        {r.session_start ? new Date(r.session_start + 'Z').toLocaleString() : '-'}
+                        {r.session_start ? new Date(r.session_start).toLocaleString() : '-'}
                       </td>
                     </tr>
                   ))}
