@@ -270,12 +270,19 @@ async function installApiMocks(
     }
 
     if (pathname.endsWith('/analytics') && method === 'GET') {
-      const experimentId = extractExperimentId(url);
-      const analytics = state.analyticsByExperimentId[experimentId];
-      if (!analytics) {
-        throw new Error(`Missing analytics fixture for experiment ${experimentId}`);
-      }
-      await fulfillJson(route, 200, analytics);
+      const analytics = state.analyticsByExperimentId[extractExperimentId(url)];
+      await fulfillJson(route, 200, analytics ?? {
+        experiment_name: 'Smoke Test Experiment',
+        overview: {
+          total_ratings: 0,
+          total_questions: 2,
+          total_raters: 0,
+          avg_response_time_seconds: 0,
+          avg_confidence: 0,
+        },
+        questions: [],
+        raters: [],
+      });
       return;
     }
 
