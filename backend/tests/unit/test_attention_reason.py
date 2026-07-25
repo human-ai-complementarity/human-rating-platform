@@ -33,10 +33,7 @@ def test_finished_experiment_is_never_actionable():
 
 
 def test_draft_with_no_rounds_is_not_actionable():
-    assert (
-        compute_attention_reason(status=DRAFT, remaining_actions=0, round_statuses=[])
-        is None
-    )
+    assert compute_attention_reason(status=DRAFT, remaining_actions=0, round_statuses=[]) is None
 
 
 def test_unpublished_round_draft_flags_publish_in_draft():

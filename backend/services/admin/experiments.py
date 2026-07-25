@@ -105,9 +105,7 @@ async def list_experiments(
     # both active and archived rows; otherwise the `archived` flag selects one.
     if not include_archived:
         stmt = stmt.where(
-            Experiment.archived_at.is_not(None)
-            if archived
-            else Experiment.archived_at.is_(None)
+            Experiment.archived_at.is_not(None) if archived else Experiment.archived_at.is_(None)
         )
 
     if status is not None:
@@ -126,11 +124,7 @@ async def list_experiments(
         )
 
     rows = (
-        await db.execute(
-            stmt.order_by(Experiment.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-        )
+        await db.execute(stmt.order_by(Experiment.created_at.desc()).offset(skip).limit(limit))
     ).all()
 
     experiment_ids = [experiment.id for experiment, _, _ in rows]
@@ -286,9 +280,7 @@ async def update_experiment(
     if payload.name is not None:
         stripped_name = payload.name.strip()
         if not stripped_name:
-            raise HTTPException(
-                status_code=400, detail="Public name cannot be empty."
-            )
+            raise HTTPException(status_code=400, detail="Public name cannot be empty.")
         experiment.name = stripped_name
     if payload.internal_name is not None:
         experiment.internal_name = payload.internal_name.strip() or None

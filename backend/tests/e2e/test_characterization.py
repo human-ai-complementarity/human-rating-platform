@@ -1956,7 +1956,9 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
     assert (
-        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish").status_code
+        client.post(
+            f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish"
+        ).status_code
         == 200
     )
 
@@ -1965,9 +1967,7 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
     _mock_get_study(study_status="ACTIVE", total_cost=1860)
     client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
 
-    item = next(
-        i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id
-    )
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
     assert item["spend_minor_units"] == 1860
 
 
@@ -3286,9 +3286,7 @@ def test_finish_end_to_end_from_draft(
 
 def _list_entry(client: TestClient, experiment_id: int) -> dict:
     return next(
-        item
-        for item in client.get("/api/admin/experiments").json()
-        if item["id"] == experiment_id
+        item for item in client.get("/api/admin/experiments").json() if item["id"] == experiment_id
     )
 
 
@@ -3310,13 +3308,9 @@ def test_list_experiments_surfaces_pending_action_flag(
     assert "publish" in entry["attention_reason"].lower()
 
     _mock_publish_study()
-    client.post(
-        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish"
-    )
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish")
     _mock_close_study()
-    client.post(
-        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/close"
-    )
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/close")
 
     _mock_create_study(study_id="MAIN")
     main_round = client.post(

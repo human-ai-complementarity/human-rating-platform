@@ -199,7 +199,9 @@ def main() -> int:
                 session.execute(delete(Rating).where(Rating.question_id.in_(question_ids)))
             if rater_ids:
                 session.execute(delete(Rating).where(Rating.rater_id.in_(rater_ids)))
-            session.execute(delete(ExperimentRound).where(ExperimentRound.experiment_id.in_(demo_ids)))
+            session.execute(
+                delete(ExperimentRound).where(ExperimentRound.experiment_id.in_(demo_ids))
+            )
             session.execute(delete(Rater).where(Rater.experiment_id.in_(demo_ids)))
             session.execute(delete(Question).where(Question.experiment_id.in_(demo_ids)))
             session.execute(delete(Experiment).where(Experiment.id.in_(demo_ids)))
