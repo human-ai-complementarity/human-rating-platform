@@ -289,6 +289,14 @@ async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSessio
             round_.prolific_study_status = updated_status
             changed = True
 
+        # Capture Prolific's authoritative study cost while we have the study.
+        # Reaches its final value at the transition into a terminal status,
+        # which this same fetch observes (stored status is still transient).
+        total_cost = prolific_study.get("total_cost")
+        if isinstance(total_cost, int) and round_.total_cost != total_cost:
+            round_.total_cost = total_cost
+            changed = True
+
     if changed:
         await db.commit()
 

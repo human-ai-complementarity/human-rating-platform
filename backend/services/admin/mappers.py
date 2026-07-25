@@ -16,6 +16,7 @@ def build_experiment_response(
     rating_count: int,
     dataset_filenames: list[str] | None = None,
     attention_reason: str | None = None,
+    spend_minor_units: int = 0,
 ) -> ExperimentResponse:
     return ExperimentResponse(
         id=experiment.id,
@@ -40,6 +41,7 @@ def build_experiment_response(
         dataset_filenames=list(dataset_filenames or []),
         needs_attention=attention_reason is not None,
         attention_reason=attention_reason,
+        spend_minor_units=spend_minor_units,
     )
 
 

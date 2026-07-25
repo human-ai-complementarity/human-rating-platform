@@ -55,6 +55,46 @@ def _mark_experiment_status(sync_engine, experiment_id: int, status: str) -> Non
         )
 
 
+def _insert_round(
+    sync_engine,
+    *,
+    experiment_id: int,
+    round_number: int,
+    status: str = "COMPLETED",
+    total_cost: int | None = None,
+) -> None:
+    """Insert an experiment round directly, for tests that need controlled
+    round state (status / Prolific total_cost) without driving the Prolific
+    create/publish/close flow."""
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO experiment_rounds (
+                    experiment_id, round_number, prolific_study_id,
+                    prolific_study_status, description, estimated_completion_time,
+                    reward, device_compatibility, places_requested, total_cost
+                ) VALUES (
+                    :experiment_id, :round_number, :study_id, :status, :description,
+                    :ect, :reward, :device, :places, :total_cost
+                )
+                """
+            ),
+            {
+                "experiment_id": experiment_id,
+                "round_number": round_number,
+                "study_id": f"STUDY_{experiment_id}_{round_number}",
+                "status": status,
+                "description": "seeded round",
+                "ect": 10,
+                "reward": 100,
+                "device": '["desktop"]',
+                "places": 3,
+                "total_cost": total_cost,
+            },
+        )
+
+
 def _upload_questions(client: TestClient, experiment_id: int) -> None:
     csv_data = (
         "question_id,question_text,gt_answer,options,question_type\n"
@@ -273,6 +313,37 @@ def test_list_search_matches_internal_name(client: TestClient):
 
     hits = client.get("/api/admin/experiments", params={"search": "q3 pilot"}).json()
     assert {item["id"] for item in hits} == {match["id"]}
+
+
+def test_list_include_archived_returns_active_and_archived(client: TestClient):
+    active = _create_experiment(client)
+    archived = _create_experiment(client)
+    assert client.post(f"/api/admin/experiments/{archived['id']}/archive").status_code == 200
+
+    # include_archived returns both, unlike the default (active only) or the
+    # archived=true filter (archived only).
+    both = client.get("/api/admin/experiments", params={"include_archived": True}).json()
+    assert {item["id"] for item in both} == {active["id"], archived["id"]}
+
+    default = client.get("/api/admin/experiments").json()
+    assert {item["id"] for item in default} == {active["id"]}
+
+
+def test_list_spend_sums_round_total_cost(client: TestClient, sync_engine):
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0, total_cost=620)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=1, total_cost=240)
+    # A round Prolific has not costed yet (NULL total_cost) contributes nothing.
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=2, total_cost=None)
+
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == exp["id"])
+    assert item["spend_minor_units"] == 860
+
+
+def test_list_spend_zero_without_synced_rounds(client: TestClient):
+    exp = _create_experiment(client)
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == exp["id"])
+    assert item["spend_minor_units"] == 0
 
 
 def test_upload_questions_records_upload_and_stats(client: TestClient):
@@ -1108,9 +1179,12 @@ def _mock_get_study(
     *,
     study_id: str = PROLIFIC_STUDY_ID,
     study_status: str = "ACTIVE",
+    total_cost: int | None = None,
     status: int = 200,
 ) -> respx.Route:
     body = {"id": study_id, "status": study_status} if status == 200 else {"error": "fail"}
+    if status == 200 and total_cost is not None:
+        body["total_cost"] = total_cost
     return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/").mock(
         return_value=Response(status, json=body)
     )
@@ -1868,6 +1942,33 @@ def test_prolific_round_list_refreshes_transient_status_from_prolific(
 
     assert route.called
     assert rounds[0]["prolific_study_status"] == "ACTIVE"
+
+
+@respx.mock
+def test_prolific_round_sync_captures_total_cost_into_list_spend(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
+    )
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish").status_code
+        == 200
+    )
+
+    # Listing rounds triggers the Prolific status sync, which also stores the
+    # study's total_cost on the round; the experiment list then sums it as spend.
+    _mock_get_study(study_status="ACTIVE", total_cost=1860)
+    client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
+
+    item = next(
+        i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id
+    )
+    assert item["spend_minor_units"] == 1860
 
 
 @respx.mock

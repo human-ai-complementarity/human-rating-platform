@@ -303,16 +303,20 @@ export const api = {
 
   async listExperiments({
     archived = false,
+    includeArchived = false,
     status,
     search,
   }: {
     archived?: boolean;
+    // Return both active and archived rows in one call, for client-side
+    // filtering. Overrides `archived` when set.
+    includeArchived?: boolean;
     status?: ExperimentStatus;
     search?: string;
   } = {}): Promise<Experiment[]> {
     return requestJson<Experiment[]>(routes.admin.experiments, {
       query: {
-        ...(archived ? { archived: 'true' } : {}),
+        ...(includeArchived ? { include_archived: 'true' } : archived ? { archived: 'true' } : {}),
         ...(status ? { status } : {}),
         ...(search ? { search } : {}),
       },

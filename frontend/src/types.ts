@@ -26,6 +26,10 @@ export interface Experiment {
   // and ready to finish). `attention_reason` is the tooltip shown on the dot.
   needs_attention: boolean;
   attention_reason: string | null;
+  // Total Prolific spend across the experiment's rounds, in the workspace
+  // currency's minor units (sum of each round's Prolific `total_cost`).
+  // 0 until a round has been synced from Prolific.
+  spend_minor_units: number;
 }
 
 // Keys an upload may declare as dataset-level metadata (CSV `#META:` line or

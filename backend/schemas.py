@@ -171,6 +171,10 @@ class ExperimentResponse(BaseModel):
     # Only computed by the list endpoint — single-experiment reads leave it off.
     needs_attention: bool = False
     attention_reason: Optional[str] = None
+    # Total Prolific spend across this experiment's rounds, in the workspace
+    # currency's minor units (sum of each round's Prolific `total_cost`).
+    # 0 when no round has been synced yet. List endpoint only.
+    spend_minor_units: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -67,6 +67,7 @@ async def list_experiments(
     limit: int,
     db: AsyncSession,
     archived: bool = False,
+    include_archived: bool = False,
     status: ExperimentStatus | None = None,
     search: str | None = None,
 ) -> list[ExperimentResponse]:
@@ -98,12 +99,16 @@ async def list_experiments(
         )
         .outerjoin(question_counts, Experiment.id == question_counts.c.experiment_id)
         .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
-        .where(
+    )
+
+    # `include_archived` (used by the client-side-filtered dashboard) returns
+    # both active and archived rows; otherwise the `archived` flag selects one.
+    if not include_archived:
+        stmt = stmt.where(
             Experiment.archived_at.is_not(None)
             if archived
             else Experiment.archived_at.is_(None)
         )
-    )
 
     if status is not None:
         stmt = stmt.where(Experiment.status == status)
@@ -136,6 +141,9 @@ async def list_experiments(
     # bounded to the page.
     remaining_by_experiment: dict[int, int] = {}
     round_statuses_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
+    # Experiment spend = Σ over rounds of Prolific's own `total_cost` (minor
+    # units), captured on sync. Rounds never synced contribute nothing.
+    spend_by_experiment: dict[int, int] = {}
     if experiment_ids:
         upload_rows = (
             await db.execute(
@@ -177,13 +185,17 @@ async def list_experiments(
 
         status_rows = (
             await db.execute(
-                select(ExperimentRound.experiment_id, ExperimentRound.prolific_study_status).where(
-                    ExperimentRound.experiment_id.in_(experiment_ids)
-                )
+                select(
+                    ExperimentRound.experiment_id,
+                    ExperimentRound.prolific_study_status,
+                    ExperimentRound.total_cost,
+                ).where(ExperimentRound.experiment_id.in_(experiment_ids))
             )
         ).all()
-        for exp_id, study_status in status_rows:
+        for exp_id, study_status, total_cost in status_rows:
             round_statuses_by_experiment.setdefault(exp_id, []).append(study_status)
+            if total_cost:
+                spend_by_experiment[exp_id] = spend_by_experiment.get(exp_id, 0) + int(total_cost)
 
     return [
         build_experiment_response(
@@ -196,6 +208,7 @@ async def list_experiments(
                 remaining_actions=remaining_by_experiment.get(experiment.id, 0),
                 round_statuses=round_statuses_by_experiment.get(experiment.id, []),
             ),
+            spend_minor_units=spend_by_experiment.get(experiment.id, 0),
         )
         for experiment, question_count, rating_count in rows
     ]

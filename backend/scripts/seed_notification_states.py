@@ -39,9 +39,11 @@ TARGET = 3  # num_ratings_per_question for every demo experiment
 NUM_QUESTIONS = 4
 
 # Each entry: the row label, the experiment status, the rounds to attach
-# (round_number, prolific_study_status), how many raters have rated every
-# question so far, and the dot we expect the list endpoint to show. The
-# `expected` text is documentation only — it is not written to the DB.
+# (round_number, prolific_study_status, total_cost minor units), how many
+# raters have rated every question so far, and the dot we expect the list
+# endpoint to show. `total_cost` mimics Prolific's per-study cost so the demo
+# shows realistic per-experiment and total spend. `expected` is documentation
+# only — it is not written to the DB.
 DEMO_STATES = [
     {
         "label": "Draft — setup in progress",
@@ -53,7 +55,7 @@ DEMO_STATES = [
     {
         "label": "Draft — unpublished pilot draft",
         "status": ExperimentStatus.DRAFT,
-        "rounds": [(0, ProlificStudyStatus.UNPUBLISHED)],
+        "rounds": [(0, ProlificStudyStatus.UNPUBLISHED, 0)],
         "ratings_per_question": 0,
         "expected": "DOT — publish the round draft",
     },
@@ -61,8 +63,8 @@ DEMO_STATES = [
         "label": "Launched — unpublished round draft",
         "status": ExperimentStatus.LAUNCH,
         "rounds": [
-            (0, ProlificStudyStatus.COMPLETED),
-            (1, ProlificStudyStatus.UNPUBLISHED),
+            (0, ProlificStudyStatus.COMPLETED, 620),
+            (1, ProlificStudyStatus.UNPUBLISHED, 0),
         ],
         "ratings_per_question": 1,
         "expected": "DOT — publish the round draft",
@@ -70,7 +72,7 @@ DEMO_STATES = [
     {
         "label": "Launched — round actively collecting",
         "status": ExperimentStatus.LAUNCH,
-        "rounds": [(1, ProlificStudyStatus.ACTIVE)],
+        "rounds": [(1, ProlificStudyStatus.ACTIVE, 620)],
         "ratings_per_question": 1,
         "expected": "NO dot (a round is still collecting — just wait)",
     },
@@ -78,8 +80,8 @@ DEMO_STATES = [
         "label": "Launched — rounds closed, below target",
         "status": ExperimentStatus.LAUNCH,
         "rounds": [
-            (0, ProlificStudyStatus.COMPLETED),
-            (1, ProlificStudyStatus.AWAITING_REVIEW),
+            (0, ProlificStudyStatus.COMPLETED, 240),
+            (1, ProlificStudyStatus.AWAITING_REVIEW, 240),
         ],
         "ratings_per_question": 1,
         "expected": "DOT — launch another round",
@@ -87,14 +89,14 @@ DEMO_STATES = [
     {
         "label": "Launched — target met, ready to finish",
         "status": ExperimentStatus.LAUNCH,
-        "rounds": [(1, ProlificStudyStatus.COMPLETED)],
+        "rounds": [(1, ProlificStudyStatus.COMPLETED, 1860)],
         "ratings_per_question": TARGET,
         "expected": "DOT — mark the experiment finished",
     },
     {
         "label": "Finished",
         "status": ExperimentStatus.FINISHED,
-        "rounds": [(1, ProlificStudyStatus.COMPLETED)],
+        "rounds": [(1, ProlificStudyStatus.COMPLETED, 1860)],
         "ratings_per_question": TARGET,
         "expected": "NO dot (terminal)",
     },
@@ -131,7 +133,7 @@ def _seed_experiment(session: Session, spec: dict, *, order: int, now: datetime)
         questions.append(question)
     session.flush()  # assign question ids
 
-    for round_number, study_status in spec["rounds"]:
+    for round_number, study_status, total_cost in spec["rounds"]:
         session.add(
             ExperimentRound(
                 experiment_id=experiment.id,
@@ -143,6 +145,7 @@ def _seed_experiment(session: Session, spec: dict, *, order: int, now: datetime)
                 reward=100,
                 device_compatibility='["desktop"]',
                 places_requested=TARGET,
+                total_cost=total_cost,
                 created_at=created_at,
             )
         )

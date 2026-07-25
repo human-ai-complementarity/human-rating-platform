@@ -99,12 +99,19 @@ async def list_experiments(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
     archived: bool = Query(False),
+    include_archived: bool = Query(False),
     status: ExperimentStatus | None = Query(None),
     search: str | None = Query(None, max_length=255),
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.list_experiments(
-        skip=skip, limit=limit, archived=archived, status=status, search=search, db=db
+        skip=skip,
+        limit=limit,
+        archived=archived,
+        include_archived=include_archived,
+        status=status,
+        search=search,
+        db=db,
     )
 
 

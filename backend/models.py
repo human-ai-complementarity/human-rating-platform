@@ -319,6 +319,12 @@ class ExperimentRound(SQLModel, table=True):
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded list of experiment IDs whose participant groups block this round
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
+    # Prolific's own `total_cost` for this round's study, in the workspace
+    # currency's minor units. Captured on Prolific sync; NULL until first sync.
+    total_cost: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
