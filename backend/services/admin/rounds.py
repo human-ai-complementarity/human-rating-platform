@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -299,6 +300,60 @@ async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSessio
 
     if changed:
         await db.commit()
+
+
+async def refresh_experiment_spend(experiment_id: int, db: AsyncSession) -> int:
+    """Fetch every round's Prolific `total_cost` concurrently, store it, and
+    return the experiment's total spend in minor units.
+
+    Unlike the status sync, this refreshes terminal rounds too, so already-closed
+    rounds get their cost hydrated (the status sync skips them). A round whose
+    study can't be fetched keeps its last-known cost. `total_cost` is the study's
+    base cost (rewards + Prolific fee); it excludes bonuses paid separately.
+    """
+    await fetch_experiment_or_404(experiment_id, db)
+    settings = get_settings()
+    rounds = (
+        (
+            await db.execute(
+                select(ExperimentRound).where(ExperimentRound.experiment_id == experiment_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if settings.prolific.enabled and rounds:
+
+        async def _fetch_cost(round_: ExperimentRound) -> tuple[ExperimentRound, int | None]:
+            try:
+                study = await get_study(
+                    settings=settings.prolific, study_id=round_.prolific_study_id
+                )
+                total_cost = study.get("total_cost")
+                return round_, total_cost if isinstance(total_cost, int) else None
+            except Exception:
+                logger.warning(
+                    "Failed to fetch Prolific cost for round; keeping cached value",
+                    exc_info=True,
+                    extra={
+                        "attributes": {
+                            "round_id": round_.id,
+                            "study_id": round_.prolific_study_id,
+                        }
+                    },
+                )
+                return round_, None
+
+        changed = False
+        for round_, total_cost in await asyncio.gather(*(_fetch_cost(r) for r in rounds)):
+            if total_cost is not None and round_.total_cost != total_cost:
+                round_.total_cost = total_cost
+                changed = True
+        if changed:
+            await db.commit()
+
+    return sum(round_.total_cost or 0 for round_ in rounds)
 
 
 async def _cleanup_orphaned_study(study_id: str) -> None:

@@ -1972,6 +1972,53 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
 
 
 @respx.mock
+def test_sync_spend_hydrates_terminal_rounds_and_sums(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    """sync-spend refreshes every round's cost — including already-closed rounds
+    that the status sync skips — sums them, and persists so the list reflects it."""
+    experiment = _create_experiment(client)
+    experiment_id = experiment["id"]
+    # Two closed rounds with no cost captured yet.
+    _insert_round(sync_engine, experiment_id=experiment_id, round_number=0, status="COMPLETED")
+    _insert_round(sync_engine, experiment_id=experiment_id, round_number=1, status="COMPLETED")
+    _mock_get_study(study_id=f"STUDY_{experiment_id}_0", study_status="COMPLETED", total_cost=1500)
+    _mock_get_study(study_id=f"STUDY_{experiment_id}_1", study_status="COMPLETED", total_cost=900)
+
+    resp = client.post(f"/api/admin/experiments/{experiment_id}/prolific/sync-spend")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["spend_minor_units"] == 2400
+
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
+    assert item["spend_minor_units"] == 2400
+
+
+@respx.mock
+def test_sync_spend_keeps_cached_cost_when_study_fetch_fails(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    """A round whose Prolific study can't be fetched keeps its last-known cost."""
+    experiment = _create_experiment(client)
+    experiment_id = experiment["id"]
+    _insert_round(
+        sync_engine,
+        experiment_id=experiment_id,
+        round_number=0,
+        status="COMPLETED",
+        total_cost=777,
+    )
+    _mock_get_study(study_id=f"STUDY_{experiment_id}_0", status=404)
+
+    resp = client.post(f"/api/admin/experiments/{experiment_id}/prolific/sync-spend")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["spend_minor_units"] == 777
+
+
+@respx.mock
 def test_prolific_round_close_updates_status(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]

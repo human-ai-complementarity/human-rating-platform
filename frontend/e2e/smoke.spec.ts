@@ -299,6 +299,11 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname.endsWith('/prolific/sync-spend') && method === 'POST') {
+      await fulfillJson(route, 200, { spend_minor_units: 0 });
+      return;
+    }
+
     if (pathname.endsWith('/prolific/pilot') && method === 'POST') {
       const experimentId = extractExperimentId(url);
       const payload = request.postDataJSON() as {
