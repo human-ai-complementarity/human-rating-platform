@@ -12,6 +12,7 @@ import type {
   Experiment,
   ExperimentCreate,
   ExperimentStats,
+  ExperimentStatus,
   PilotStudyCreate,
   PlatformStatus,
   Question,
@@ -63,6 +64,8 @@ const routes = {
     experiments: '/admin/experiments',
     experiment: (id: number) => `/admin/experiments/${id}`,
     finishExperiment: (id: number) => `/admin/experiments/${id}/finish`,
+    archiveExperiment: (id: number) => `/admin/experiments/${id}/archive`,
+    unarchiveExperiment: (id: number) => `/admin/experiments/${id}/unarchive`,
     upload: (id: number) => `/admin/experiments/${id}/upload`,
     uploads: (id: number) => `/admin/experiments/${id}/uploads`,
     stats: (id: number) => `/admin/experiments/${id}/stats`,
@@ -298,8 +301,26 @@ export const api = {
     });
   },
 
-  async listExperiments(): Promise<Experiment[]> {
-    return requestJson<Experiment[]>(routes.admin.experiments);
+  async listExperiments({
+    archived = false,
+    includeArchived = false,
+    status,
+    search,
+  }: {
+    archived?: boolean;
+    // Return both active and archived rows in one call, for client-side
+    // filtering. Overrides `archived` when set.
+    includeArchived?: boolean;
+    status?: ExperimentStatus;
+    search?: string;
+  } = {}): Promise<Experiment[]> {
+    return requestJson<Experiment[]>(routes.admin.experiments, {
+      query: {
+        ...(includeArchived ? { include_archived: 'true' } : archived ? { archived: 'true' } : {}),
+        ...(status ? { status } : {}),
+        ...(search ? { search } : {}),
+      },
+    });
   },
 
   async uploadQuestions(experimentId: number, file: File): Promise<UploadResponse> {
@@ -339,6 +360,12 @@ export const api = {
     data: {
       assistance_method: string;
       assistance_params?: Record<string, unknown> | null;
+      // Public rater-facing name. Undefined means "leave unchanged"; the backend
+      // rejects an empty value (the public name is required).
+      name?: string;
+      // Private researcher-facing label. Undefined means "leave unchanged"; ""
+      // clears it and the title falls back to the public name.
+      internal_name?: string;
       // Dataset metadata edits. Each field uses null/undefined to mean
       // "leave unchanged" and "" to clear. Mirrors ExperimentUpdate on the backend.
       description?: string;
@@ -362,6 +389,18 @@ export const api = {
 
   async finishExperiment(experimentId: number): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.finishExperiment(experimentId), {
+      method: 'POST',
+    });
+  },
+
+  async archiveExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.archiveExperiment(experimentId), {
+      method: 'POST',
+    });
+  },
+
+  async unarchiveExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.unarchiveExperiment(experimentId), {
       method: 'POST',
     });
   },

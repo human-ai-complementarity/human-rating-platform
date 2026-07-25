@@ -141,6 +141,13 @@ class Experiment(SQLModel, table=True):
             server_default=text("'DRAFT'"),
         ),
     )
+    # Soft-archive flag, orthogonal to `status`. Non-null timestamp means the
+    # experiment is archived: hidden from the default admin list but not
+    # deleted. Reversible via unarchive (sets this back to NULL).
+    archived_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
 
 
 class Question(SQLModel, table=True):
@@ -312,6 +319,12 @@ class ExperimentRound(SQLModel, table=True):
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded list of experiment IDs whose participant groups block this round
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
+    # Prolific's own `total_cost` for this round's study, in the workspace
+    # currency's minor units. Captured on Prolific sync; NULL until first sync.
+    total_cost: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(

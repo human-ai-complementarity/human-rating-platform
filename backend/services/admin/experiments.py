@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -14,7 +15,7 @@ from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .prolific import delete_study
-from .status import assert_can_finish, is_locked
+from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.registry import get_method
 from services.queries import parent_question_ids_subquery
 from .queries import (
@@ -65,6 +66,10 @@ async def list_experiments(
     skip: int,
     limit: int,
     db: AsyncSession,
+    archived: bool = False,
+    include_archived: bool = False,
+    status: ExperimentStatus | None = None,
+    search: str | None = None,
 ) -> list[ExperimentResponse]:
     question_counts = (
         select(
@@ -86,23 +91,53 @@ async def list_experiments(
         .subquery()
     )
 
-    rows = (
-        await db.execute(
-            select(
-                Experiment,
-                func.coalesce(question_counts.c.question_count, 0).label("question_count"),
-                func.coalesce(rating_counts.c.rating_count, 0).label("rating_count"),
-            )
-            .outerjoin(question_counts, Experiment.id == question_counts.c.experiment_id)
-            .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
-            .order_by(Experiment.created_at.desc())
-            .offset(skip)
-            .limit(limit)
+    stmt = (
+        select(
+            Experiment,
+            func.coalesce(question_counts.c.question_count, 0).label("question_count"),
+            func.coalesce(rating_counts.c.rating_count, 0).label("rating_count"),
         )
+        .outerjoin(question_counts, Experiment.id == question_counts.c.experiment_id)
+        .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
+    )
+
+    # `include_archived` (used by the client-side-filtered dashboard) returns
+    # both active and archived rows; otherwise the `archived` flag selects one.
+    if not include_archived:
+        stmt = stmt.where(
+            Experiment.archived_at.is_not(None) if archived else Experiment.archived_at.is_(None)
+        )
+
+    if status is not None:
+        stmt = stmt.where(Experiment.status == status)
+
+    # Case-insensitive substring match against either the public or internal
+    # name. `%`/`_` are escaped so a literal search term can't act as a wildcard.
+    if search and search.strip():
+        term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{term}%"
+        stmt = stmt.where(
+            or_(
+                Experiment.name.ilike(pattern, escape="\\"),
+                Experiment.internal_name.ilike(pattern, escape="\\"),
+            )
+        )
+
+    rows = (
+        await db.execute(stmt.order_by(Experiment.created_at.desc()).offset(skip).limit(limit))
     ).all()
 
     experiment_ids = [experiment.id for experiment, _, _ in rows]
     filenames_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
+    # Per-experiment shortfall against the rating target and the set of round
+    # statuses — both feed the "needs attention" flag below. Kept as separate
+    # keyed queries (not joined into the main select) so the row fan-out stays
+    # bounded to the page.
+    remaining_by_experiment: dict[int, int] = {}
+    round_statuses_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
+    # Experiment spend = Σ over rounds of Prolific's own `total_cost` (minor
+    # units), captured on sync. Rounds never synced contribute nothing.
+    spend_by_experiment: dict[int, int] = {}
     if experiment_ids:
         upload_rows = (
             await db.execute(
@@ -114,12 +149,60 @@ async def list_experiments(
         for exp_id, filename in upload_rows:
             filenames_by_experiment.setdefault(exp_id, []).append(filename)
 
+        # remaining = Σ max(0, target − ratings) over each non-parent question,
+        # matching calculate_recommendation's definition of "target not met".
+        per_question_counts = (
+            select(
+                Question.experiment_id.label("experiment_id"),
+                Question.id.label("question_id"),
+                func.count(Rating.id).label("cnt"),
+            )
+            .outerjoin(Rating, Rating.question_id == Question.id)
+            .where(Question.experiment_id.in_(experiment_ids))
+            .where(Question.id.notin_(parent_question_ids_subquery()))
+            .group_by(Question.experiment_id, Question.id)
+            .subquery()
+        )
+        deficit = Experiment.num_ratings_per_question - per_question_counts.c.cnt
+        clamped_deficit = case((deficit < 0, 0), else_=deficit)
+        remaining_rows = (
+            await db.execute(
+                select(
+                    per_question_counts.c.experiment_id,
+                    func.coalesce(func.sum(clamped_deficit), 0),
+                )
+                .join(Experiment, Experiment.id == per_question_counts.c.experiment_id)
+                .group_by(per_question_counts.c.experiment_id)
+            )
+        ).all()
+        remaining_by_experiment = {exp_id: int(rem or 0) for exp_id, rem in remaining_rows}
+
+        status_rows = (
+            await db.execute(
+                select(
+                    ExperimentRound.experiment_id,
+                    ExperimentRound.prolific_study_status,
+                    ExperimentRound.total_cost,
+                ).where(ExperimentRound.experiment_id.in_(experiment_ids))
+            )
+        ).all()
+        for exp_id, study_status, total_cost in status_rows:
+            round_statuses_by_experiment.setdefault(exp_id, []).append(study_status)
+            if total_cost:
+                spend_by_experiment[exp_id] = spend_by_experiment.get(exp_id, 0) + int(total_cost)
+
     return [
         build_experiment_response(
             experiment,
             question_count=int(question_count or 0),
             rating_count=int(rating_count or 0),
             dataset_filenames=filenames_by_experiment.get(experiment.id, []),
+            attention_reason=compute_attention_reason(
+                status=experiment.status,
+                remaining_actions=remaining_by_experiment.get(experiment.id, 0),
+                round_statuses=round_statuses_by_experiment.get(experiment.id, []),
+            ),
+            spend_minor_units=spend_by_experiment.get(experiment.id, 0),
         )
         for experiment, question_count, rating_count in rows
     ]
@@ -194,6 +277,11 @@ async def update_experiment(
 
     if payload.assistance_params is not None:
         experiment.assistance_params = json.dumps(payload.assistance_params)
+    if payload.name is not None:
+        stripped_name = payload.name.strip()
+        if not stripped_name:
+            raise HTTPException(status_code=400, detail="Public name cannot be empty.")
+        experiment.name = stripped_name
     if payload.internal_name is not None:
         experiment.internal_name = payload.internal_name.strip() or None
     # For each dataset-meta field, None means "leave unchanged"; an explicit
@@ -237,6 +325,45 @@ async def finish_experiment(
     return build_experiment_response(
         experiment, question_count=question_count, rating_count=rating_count
     )
+
+
+async def _set_archived(
+    experiment_id: int,
+    db: AsyncSession,
+    archived_at: datetime | None,
+) -> ExperimentResponse:
+    """Soft-archive transition. Non-destructive and reversible; unlike
+    delete it leaves all child rows and Prolific studies intact."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+
+    experiment.archived_at = archived_at
+    await db.commit()
+    await db.refresh(experiment)
+
+    logger.info(
+        "Experiment archived" if archived_at else "Experiment unarchived",
+        extra={"attributes": {"experiment_id": experiment_id}},
+    )
+
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
+    return build_experiment_response(
+        experiment, question_count=question_count, rating_count=rating_count
+    )
+
+
+async def archive_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    return await _set_archived(experiment_id, db, datetime.now(timezone.utc))
+
+
+async def unarchive_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    return await _set_archived(experiment_id, db, None)
 
 
 _PROLIFIC_CLEANUP_TIMEOUT_SECONDS = 3.0

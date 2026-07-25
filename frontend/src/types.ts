@@ -17,7 +17,19 @@ export interface Experiment {
   human_prompt_suffix: string | null;
   prolific_pool: string | null;
   status: ExperimentStatus;
+  // Non-null ISO timestamp when the experiment has been archived (soft-hidden
+  // from the default admin list). null means active.
+  archived_at: string | null;
   dataset_filenames: string[];
+  // Set by the list endpoint when the experiment has a pending admin action
+  // (rounds closed but target unmet, an unpublished round draft, or target met
+  // and ready to finish). `attention_reason` is the tooltip shown on the dot.
+  needs_attention: boolean;
+  attention_reason: string | null;
+  // Total Prolific spend across the experiment's rounds, in the workspace
+  // currency's minor units (sum of each round's Prolific `total_cost`).
+  // 0 until a round has been synced from Prolific.
+  spend_minor_units: number;
 }
 
 // Keys an upload may declare as dataset-level metadata (CSV `#META:` line or

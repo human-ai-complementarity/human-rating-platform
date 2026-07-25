@@ -11,12 +11,49 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import ROUND_TERMINAL_STATUSES, Experiment, ExperimentRound, ExperimentStatus
+from models import (
+    ROUND_TERMINAL_STATUSES,
+    Experiment,
+    ExperimentRound,
+    ExperimentStatus,
+    ProlificStudyStatus,
+)
 
 
 def is_locked(experiment: Experiment) -> bool:
     """True once experiment-level config must be frozen (LAUNCH or FINISHED)."""
     return experiment.status != ExperimentStatus.DRAFT
+
+
+def compute_attention_reason(
+    *,
+    status: ExperimentStatus,
+    remaining_actions: int,
+    round_statuses: list[ProlificStudyStatus],
+) -> str | None:
+    """Short reason an experiment has a pending admin action, or None if not.
+
+    Mirrors the actionable states the detail view surfaces so the list can
+    flag a row without loading round data per experiment:
+
+      * An UNPUBLISHED round draft exists — publish it. (DRAFT or LAUNCH)
+      * LAUNCH, every round closed, target not met — launch another round.
+      * LAUNCH, every round closed, target met — mark the experiment finished.
+
+    A round still collecting (any non-terminal published status) means "just
+    wait", and a FINISHED experiment is terminal — neither is actionable.
+    """
+    if status == ExperimentStatus.FINISHED:
+        return None
+    if ProlificStudyStatus.UNPUBLISHED in round_statuses:
+        return "A round draft is waiting to be published on Prolific."
+    if status != ExperimentStatus.LAUNCH or not round_statuses:
+        return None
+    if any(s not in ROUND_TERMINAL_STATUSES for s in round_statuses):
+        return None  # a round is still collecting — nothing to do yet
+    if remaining_actions > 0:
+        return "All rounds have closed but the rating target isn't met — launch another round."
+    return "The rating target is met — mark the experiment finished."
 
 
 def assert_editable(experiment: Experiment, action: str) -> None:

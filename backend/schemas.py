@@ -158,10 +158,23 @@ class ExperimentResponse(BaseModel):
     human_prompt_suffix: Optional[str] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
+    # Non-null when the experiment has been archived (soft-hidden from the
+    # default admin list). NULL/absent means active.
+    archived_at: Optional[datetime] = None
     # Filenames of every Upload attached to this experiment. Used client-side
     # so admins can find an experiment by its dataset filename when picking
     # experiments to exclude from a new round.
     dataset_filenames: list[str] = Field(default_factory=list)
+    # Set when the experiment has a pending admin action (e.g. rounds closed
+    # but target unmet, or an unpublished round draft). `attention_reason` is a
+    # short human sentence; the list view shows a dot with it as the tooltip.
+    # Only computed by the list endpoint — single-experiment reads leave it off.
+    needs_attention: bool = False
+    attention_reason: Optional[str] = None
+    # Total Prolific spend across this experiment's rounds, in the workspace
+    # currency's minor units (sum of each round's Prolific `total_cost`).
+    # 0 when no round has been synced yet. List endpoint only.
+    spend_minor_units: int = 0
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -169,6 +182,10 @@ class ExperimentResponse(BaseModel):
 class ExperimentUpdate(BaseModel):
     assistance_method: str
     assistance_params: Optional[dict] = None
+    # `name` is the public, rater-facing name. None means "leave unchanged"; an
+    # empty/whitespace value is rejected in update_experiment (the public name is
+    # required). Capped to the DB column width so an overlong value 422s cleanly.
+    name: Optional[str] = Field(default=None, max_length=255)
     internal_name: Optional[str] = Field(default=None, max_length=255)
     # Dataset metadata fields — each is sent only when the admin edits it.
     # An explicit "" clears the value; None means "leave unchanged".

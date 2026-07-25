@@ -55,6 +55,46 @@ def _mark_experiment_status(sync_engine, experiment_id: int, status: str) -> Non
         )
 
 
+def _insert_round(
+    sync_engine,
+    *,
+    experiment_id: int,
+    round_number: int,
+    status: str = "COMPLETED",
+    total_cost: int | None = None,
+) -> None:
+    """Insert an experiment round directly, for tests that need controlled
+    round state (status / Prolific total_cost) without driving the Prolific
+    create/publish/close flow."""
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO experiment_rounds (
+                    experiment_id, round_number, prolific_study_id,
+                    prolific_study_status, description, estimated_completion_time,
+                    reward, device_compatibility, places_requested, total_cost
+                ) VALUES (
+                    :experiment_id, :round_number, :study_id, :status, :description,
+                    :ect, :reward, :device, :places, :total_cost
+                )
+                """
+            ),
+            {
+                "experiment_id": experiment_id,
+                "round_number": round_number,
+                "study_id": f"STUDY_{experiment_id}_{round_number}",
+                "status": status,
+                "description": "seeded round",
+                "ect": 10,
+                "reward": 100,
+                "device": '["desktop"]',
+                "places": 3,
+                "total_cost": total_cost,
+            },
+        )
+
+
 def _upload_questions(client: TestClient, experiment_id: int) -> None:
     csv_data = (
         "question_id,question_text,gt_answer,options,question_type\n"
@@ -191,6 +231,119 @@ def test_create_experiment_then_list_contains_it(client: TestClient):
     assert items[0]["id"] == created["id"]
     assert items[0]["question_count"] == 0
     assert items[0]["rating_count"] == 0
+
+
+def test_new_experiment_is_not_archived(client: TestClient):
+    created = _create_experiment(client)
+    assert created["archived_at"] is None
+
+
+def test_archive_hides_from_default_list_and_shows_under_archived(client: TestClient):
+    keep = _create_experiment(client)
+    target = _create_experiment(client)
+
+    archive = client.post(f"/api/admin/experiments/{target['id']}/archive")
+    assert archive.status_code == 200
+    assert archive.json()["archived_at"] is not None
+
+    active = client.get("/api/admin/experiments").json()
+    active_ids = {item["id"] for item in active}
+    assert target["id"] not in active_ids
+    assert keep["id"] in active_ids
+
+    archived = client.get("/api/admin/experiments", params={"archived": True}).json()
+    archived_ids = {item["id"] for item in archived}
+    assert archived_ids == {target["id"]}
+
+
+def test_unarchive_returns_experiment_to_active_list(client: TestClient):
+    target = _create_experiment(client)
+    client.post(f"/api/admin/experiments/{target['id']}/archive")
+
+    unarchive = client.post(f"/api/admin/experiments/{target['id']}/unarchive")
+    assert unarchive.status_code == 200
+    assert unarchive.json()["archived_at"] is None
+
+    active_ids = {item["id"] for item in client.get("/api/admin/experiments").json()}
+    assert target["id"] in active_ids
+    archived = client.get("/api/admin/experiments", params={"archived": True}).json()
+    assert archived == []
+
+
+def test_list_filters_by_status(client: TestClient, sync_engine):
+    draft = _create_experiment(client)
+    launched = _create_experiment(client)
+    _mark_experiment_status(sync_engine, launched["id"], "LAUNCH")
+
+    launch_only = client.get("/api/admin/experiments", params={"status": "LAUNCH"}).json()
+    assert {item["id"] for item in launch_only} == {launched["id"]}
+
+    draft_only = client.get("/api/admin/experiments", params={"status": "DRAFT"}).json()
+    assert {item["id"] for item in draft_only} == {draft["id"]}
+
+
+def test_list_filters_by_name_search(client: TestClient):
+    match = client.post(
+        "/api/admin/experiments",
+        json={"name": "Factuality study", "num_ratings_per_question": 2},
+    ).json()
+    client.post(
+        "/api/admin/experiments",
+        json={"name": "Sentiment study", "num_ratings_per_question": 2},
+    )
+
+    # Case-insensitive substring match on the public name.
+    hits = client.get("/api/admin/experiments", params={"search": "factual"}).json()
+    assert {item["id"] for item in hits} == {match["id"]}
+
+
+def test_list_search_matches_internal_name(client: TestClient):
+    match = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": "Public label",
+            "internal_name": "Q3 pilot — Sander",
+            "num_ratings_per_question": 2,
+        },
+    ).json()
+    client.post(
+        "/api/admin/experiments",
+        json={"name": "Another public label", "num_ratings_per_question": 2},
+    )
+
+    hits = client.get("/api/admin/experiments", params={"search": "q3 pilot"}).json()
+    assert {item["id"] for item in hits} == {match["id"]}
+
+
+def test_list_include_archived_returns_active_and_archived(client: TestClient):
+    active = _create_experiment(client)
+    archived = _create_experiment(client)
+    assert client.post(f"/api/admin/experiments/{archived['id']}/archive").status_code == 200
+
+    # include_archived returns both, unlike the default (active only) or the
+    # archived=true filter (archived only).
+    both = client.get("/api/admin/experiments", params={"include_archived": True}).json()
+    assert {item["id"] for item in both} == {active["id"], archived["id"]}
+
+    default = client.get("/api/admin/experiments").json()
+    assert {item["id"] for item in default} == {active["id"]}
+
+
+def test_list_spend_sums_round_total_cost(client: TestClient, sync_engine):
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0, total_cost=620)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=1, total_cost=240)
+    # A round Prolific has not costed yet (NULL total_cost) contributes nothing.
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=2, total_cost=None)
+
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == exp["id"])
+    assert item["spend_minor_units"] == 860
+
+
+def test_list_spend_zero_without_synced_rounds(client: TestClient):
+    exp = _create_experiment(client)
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == exp["id"])
+    assert item["spend_minor_units"] == 0
 
 
 def test_upload_questions_records_upload_and_stats(client: TestClient):
@@ -431,6 +584,41 @@ def test_update_experiment_edits_dataset_metadata(client: TestClient):
     assert body["prolific_pool"] == "us_balanced"
     assert body["human_prompt_prefix"] is None  # untouched fields stay null
     assert body["human_prompt_suffix"] is None
+
+
+def test_update_experiment_edits_public_name(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "name": "  Renamed task  "},
+    )
+    assert response.status_code == 200, response.text
+    # Whitespace is trimmed, mirroring the create path.
+    assert response.json()["name"] == "Renamed task"
+
+
+def test_update_experiment_rejects_empty_public_name(client: TestClient):
+    experiment = _create_experiment(client)
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "name": "   "},
+    )
+    assert response.status_code == 400
+    assert "Public name" in response.json()["detail"]
+
+
+def test_update_experiment_clears_internal_name_with_empty_string(client: TestClient):
+    experiment = _create_experiment(client)
+    client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "internal_name": "Working title"},
+    )
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "internal_name": ""},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["internal_name"] is None
 
 
 # ── Parquet upload ───────────────────────────────────────────────────────────
@@ -991,9 +1179,12 @@ def _mock_get_study(
     *,
     study_id: str = PROLIFIC_STUDY_ID,
     study_status: str = "ACTIVE",
+    total_cost: int | None = None,
     status: int = 200,
 ) -> respx.Route:
     body = {"id": study_id, "status": study_status} if status == 200 else {"error": "fail"}
+    if status == 200 and total_cost is not None:
+        body["total_cost"] = total_cost
     return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/").mock(
         return_value=Response(status, json=body)
     )
@@ -1751,6 +1942,33 @@ def test_prolific_round_list_refreshes_transient_status_from_prolific(
 
     assert route.called
     assert rounds[0]["prolific_study_status"] == "ACTIVE"
+
+
+@respx.mock
+def test_prolific_round_sync_captures_total_cost_into_list_spend(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
+    )
+    assert (
+        client.post(
+            f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish"
+        ).status_code
+        == 200
+    )
+
+    # Listing rounds triggers the Prolific status sync, which also stores the
+    # study's total_cost on the round; the experiment list then sums it as spend.
+    _mock_get_study(study_status="ACTIVE", total_cost=1860)
+    client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
+
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
+    assert item["spend_minor_units"] == 1860
 
 
 @respx.mock
@@ -3064,3 +3282,66 @@ def test_finish_end_to_end_from_draft(
     finish_resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
     assert finish_resp.status_code == 200, finish_resp.text
     assert finish_resp.json()["status"] == "FINISHED"
+
+
+def _list_entry(client: TestClient, experiment_id: int) -> dict:
+    return next(
+        item for item in client.get("/api/admin/experiments").json() if item["id"] == experiment_id
+    )
+
+
+@respx.mock
+def test_list_experiments_surfaces_pending_action_flag(
+    client: TestClient,
+    enable_prolific,
+):
+    """The list endpoint flags experiments with a pending admin action so the
+    dashboard can show an attention dot: an unpublished draft round, then
+    (after all rounds close with the target unmet) a prompt to launch another
+    round. Terminal / actively-collecting states carry no flag."""
+    experiment, pilot = _create_prolific_experiment(client)
+    _upload_questions(client, experiment["id"])  # 2 questions × target 2 = 4 actions
+
+    # Pilot draft sits UNPUBLISHED → publish it.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is True
+    assert "publish" in entry["attention_reason"].lower()
+
+    _mock_publish_study()
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish")
+    _mock_close_study()
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/close")
+
+    _mock_create_study(study_id="MAIN")
+    main_round = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds",
+        json={"places": 3},
+    ).json()
+
+    _mock_publish_study(study_id="MAIN")
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{main_round['id']}/publish"
+    )
+
+    # Main round is ACTIVE (still collecting) → nothing to do, no flag.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is False
+    assert entry["attention_reason"] is None
+
+    _mock_close_study(study_id="MAIN")
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{main_round['id']}/close"
+    )
+
+    # All rounds closed, no ratings collected → target unmet → launch another round.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is True
+    assert "launch another round" in entry["attention_reason"].lower()
+
+    finish_resp = client.post(f"/api/admin/experiments/{experiment['id']}/finish")
+    assert finish_resp.status_code == 200, finish_resp.text
+
+    # Finished experiments are terminal → never flagged.
+    entry = _list_entry(client, experiment["id"])
+    assert entry["needs_attention"] is False
+    assert entry["attention_reason"] is None

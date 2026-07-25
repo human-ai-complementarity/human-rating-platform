@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from database import get_session
+from models import ExperimentStatus
 from schemas import (
     ExperimentRoundCreate,
     ExperimentRoundResponse,
@@ -97,9 +98,21 @@ async def create_experiment(
 async def list_experiments(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=1000),
+    archived: bool = Query(False),
+    include_archived: bool = Query(False),
+    status: ExperimentStatus | None = Query(None),
+    search: str | None = Query(None, max_length=255),
     db: AsyncSession = Depends(get_session),
 ):
-    return await admin_service.list_experiments(skip=skip, limit=limit, db=db)
+    return await admin_service.list_experiments(
+        skip=skip,
+        limit=limit,
+        archived=archived,
+        include_archived=include_archived,
+        status=status,
+        search=search,
+        db=db,
+    )
 
 
 @secure_router.post("/experiments/{experiment_id}/upload")
@@ -174,6 +187,22 @@ async def finish_experiment(
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.finish_experiment(experiment_id=experiment_id, db=db)
+
+
+@secure_router.post("/experiments/{experiment_id}/archive", response_model=ExperimentResponse)
+async def archive_experiment(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.archive_experiment(experiment_id=experiment_id, db=db)
+
+
+@secure_router.post("/experiments/{experiment_id}/unarchive", response_model=ExperimentResponse)
+async def unarchive_experiment(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.unarchive_experiment(experiment_id=experiment_id, db=db)
 
 
 @secure_router.get("/experiments/{experiment_id}/stats")

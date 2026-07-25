@@ -98,6 +98,151 @@ interface ExperimentDetailProps {
   onRefresh: () => Promise<unknown>;
 }
 
+// Small square pencil button used to open an inline name editor in the header.
+function PencilButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 26,
+        height: 26,
+        padding: 0,
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--surface)',
+        color: 'var(--muted)',
+        cursor: 'pointer',
+        flex: '0 0 auto',
+      }}
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M12 20h9" />
+        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" />
+      </svg>
+    </button>
+  );
+}
+
+// Inline text editor for the header names. Enter saves, Escape cancels. `big`
+// styles the input to match the h1 title; otherwise it matches the muted
+// subtitle line.
+function NameEditor({
+  value,
+  onChange,
+  onSave,
+  onCancel,
+  saving,
+  placeholder,
+  ariaLabel,
+  big = false,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saving: boolean;
+  placeholder?: string;
+  ariaLabel: string;
+  big?: boolean;
+}) {
+  const iconButton: React.CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 30,
+    height: 30,
+    padding: 0,
+    borderRadius: 'var(--radius-sm)',
+    cursor: saving ? 'not-allowed' : 'pointer',
+    flex: '0 0 auto',
+    fontSize: 14,
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+      <input
+        autoFocus
+        type="text"
+        value={value}
+        placeholder={placeholder}
+        maxLength={255}
+        disabled={saving}
+        aria-label={ariaLabel}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            onSave();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        style={{
+          ...inputStyle,
+          flex: 1,
+          minWidth: 0,
+          ...(big
+            ? {
+                fontFamily: 'var(--font-head)',
+                fontWeight: 600,
+                fontSize: 24,
+                letterSpacing: '-0.01em',
+                padding: '6px 10px',
+              }
+            : { fontSize: 14, padding: '5px 9px' }),
+        }}
+      />
+      <button
+        type="button"
+        onClick={onSave}
+        disabled={saving}
+        title="Save"
+        aria-label="Save name"
+        style={{
+          ...iconButton,
+          border: '1px solid var(--accent)',
+          background: 'var(--accent)',
+          color: '#fff',
+          opacity: saving ? 0.6 : 1,
+        }}
+      >
+        ✓
+      </button>
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={saving}
+        title="Cancel"
+        aria-label="Cancel editing name"
+        style={{
+          ...iconButton,
+          border: '1px solid var(--faint)',
+          background: 'var(--surface)',
+          color: 'var(--muted)',
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
+
 // The four setup steps, in the order the user should complete them. Overview
 // and Danger sit outside this sequence.
 const SETUP_STEPS: { key: TabKey; label: string }[] = [
@@ -150,6 +295,47 @@ function ExperimentDetail({
   const [finishing, setFinishing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [tab, setTab] = useState<TabKey>('overview');
+
+  // Inline name editing in the header. `editingName` tracks which of the two
+  // names (public `name` vs private `internal_name`) is open for edit, if any;
+  // `nameDraft` holds the working value until Save.
+  const [editingName, setEditingName] = useState<null | 'name' | 'internal_name'>(null);
+  const [nameDraft, setNameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
+
+  const handleStartEditName = (field: 'name' | 'internal_name') => {
+    setError(null);
+    setEditingName(field);
+    setNameDraft(field === 'name' ? experiment.name : experiment.internal_name ?? '');
+  };
+
+  const handleSaveName = async () => {
+    if (editingName === null) return;
+    const trimmed = nameDraft.trim();
+    if (editingName === 'name' && !trimmed) {
+      setError('Public name cannot be empty.');
+      return;
+    }
+    setSavingName(true);
+    setError(null);
+    try {
+      await api.updateExperiment(experiment.id, {
+        assistance_method: experiment.assistance_method,
+        assistance_params: experiment.assistance_params ?? null,
+        ...(editingName === 'name' ? { name: trimmed } : { internal_name: trimmed }),
+      });
+      showSuccess(
+        editingName === 'name' ? 'Public name updated.' : 'Internal name updated.',
+        2000,
+      );
+      setEditingName(null);
+      await onRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update name');
+    } finally {
+      setSavingName(false);
+    }
+  };
 
   const [publishingRoundId, setPublishingRoundId] = useState<number | null>(null);
   const [closingRoundId, setClosingRoundId] = useState<number | null>(null);
@@ -738,24 +924,74 @@ function ExperimentDetail({
         </button>
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <h1
-              style={{
-                fontFamily: 'var(--font-head)',
-                fontWeight: 600,
-                fontSize: 28,
-                letterSpacing: '-0.01em',
-                margin: 0,
-              }}
-            >
-              {experiment.internal_name || experiment.name}
-            </h1>
-            <StatusLabel status={experiment.status} />
+            {editingName === 'internal_name' ? (
+              <NameEditor
+                value={nameDraft}
+                onChange={setNameDraft}
+                onSave={handleSaveName}
+                onCancel={() => setEditingName(null)}
+                saving={savingName}
+                big
+                placeholder="Internal name (optional)"
+                ariaLabel="Internal name"
+              />
+            ) : (
+              <>
+                <h1
+                  style={{
+                    fontFamily: 'var(--font-head)',
+                    fontWeight: 600,
+                    fontSize: 28,
+                    letterSpacing: '-0.01em',
+                    margin: 0,
+                  }}
+                >
+                  {experiment.internal_name || experiment.name}
+                </h1>
+                <PencilButton
+                  onClick={() => handleStartEditName('internal_name')}
+                  label="Edit internal name"
+                />
+                <StatusLabel status={experiment.status} />
+              </>
+            )}
           </div>
-          {experiment.internal_name && (
-            <p style={{ margin: '6px 0 0', fontSize: 14, color: 'var(--muted)' }}>
-              Public name (shown to raters): {experiment.name}
-            </p>
-          )}
+          {/* Public name always shown so it stays editable even before an
+              internal name is set (when the title above already is the public
+              name). */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              margin: '6px 0 0',
+              fontSize: 14,
+              color: 'var(--muted)',
+            }}
+          >
+            {editingName === 'name' ? (
+              <>
+                <span style={{ whiteSpace: 'nowrap' }}>Public name (shown to raters):</span>
+                <NameEditor
+                  value={nameDraft}
+                  onChange={setNameDraft}
+                  onSave={handleSaveName}
+                  onCancel={() => setEditingName(null)}
+                  saving={savingName}
+                  placeholder="Public name"
+                  ariaLabel="Public name"
+                />
+              </>
+            ) : (
+              <>
+                <span>Public name (shown to raters): {experiment.name}</span>
+                <PencilButton
+                  onClick={() => handleStartEditName('name')}
+                  label="Edit public name"
+                />
+              </>
+            )}
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 2 }}>
           <a
