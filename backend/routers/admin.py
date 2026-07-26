@@ -181,6 +181,14 @@ async def delete_experiment(
     return await admin_service.delete_experiment(experiment_id=experiment_id, db=db)
 
 
+@secure_router.post("/experiments/{experiment_id}/duplicate", response_model=ExperimentResponse)
+async def duplicate_experiment(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.duplicate_experiment(experiment_id=experiment_id, db=db)
+
+
 @secure_router.post("/experiments/{experiment_id}/finish", response_model=ExperimentResponse)
 async def finish_experiment(
     experiment_id: int,

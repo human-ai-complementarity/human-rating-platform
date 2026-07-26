@@ -116,6 +116,16 @@ function AdminView() {
 
   const label = (exp: Experiment) => exp.internal_name || exp.name;
 
+  const handleDuplicateExperiment = async (exp: Experiment) => {
+    setError(null);
+    try {
+      const copy = await api.duplicateExperiment(exp.id);
+      navigate(`/admin/experiments/${copy.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    }
+  };
+
   const handleArchiveToggle = async (exp: Experiment) => {
     const toArchived = exp.archived_at === null;
     setError(null);
@@ -241,6 +251,7 @@ function AdminView() {
           filtersActive={filtersActive}
           onClearFilters={clearFilters}
           onSelect={(exp) => navigate(`/admin/experiments/${exp.id}`)}
+          onDuplicate={handleDuplicateExperiment}
           onArchiveToggle={handleArchiveToggle}
           onDelete={(exp) => setPendingDelete(exp)}
         />
@@ -286,6 +297,7 @@ function ListPanel({
   filtersActive,
   onClearFilters,
   onSelect,
+  onDuplicate,
   onArchiveToggle,
   onDelete,
 }: {
@@ -303,6 +315,7 @@ function ListPanel({
   filtersActive: boolean;
   onClearFilters: () => void;
   onSelect: (exp: Experiment) => void;
+  onDuplicate: (exp: Experiment) => void;
   onArchiveToggle: (exp: Experiment) => void;
   onDelete: (exp: Experiment) => void;
 }) {
@@ -465,6 +478,7 @@ function ListPanel({
               currencySymbol={currencySymbol}
               isLast={idx === experiments.length - 1}
               onSelect={() => onSelect(exp)}
+              onDuplicate={() => onDuplicate(exp)}
               onArchiveToggle={() => onArchiveToggle(exp)}
               onDelete={() => onDelete(exp)}
             />
@@ -480,6 +494,7 @@ function ExperimentRow({
   currencySymbol,
   isLast,
   onSelect,
+  onDuplicate,
   onArchiveToggle,
   onDelete,
 }: {
@@ -487,6 +502,7 @@ function ExperimentRow({
   currencySymbol: string;
   isLast: boolean;
   onSelect: () => void;
+  onDuplicate: () => void;
   onArchiveToggle: () => void;
   onDelete: () => void;
 }) {
@@ -550,6 +566,7 @@ function ExperimentRow({
           label={`Actions for ${exp.internal_name || exp.name}`}
           actions={[
             { label: 'View', testId: 'row-action-view', onSelect },
+            { label: 'Duplicate', testId: 'row-action-duplicate', onSelect: onDuplicate },
             isArchived
               ? { label: 'Restore', testId: 'row-action-unarchive', onSelect: onArchiveToggle }
               : { label: 'Archive', testId: 'row-action-archive', onSelect: onArchiveToggle },

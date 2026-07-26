@@ -64,6 +64,7 @@ const routes = {
     experiments: '/admin/experiments',
     experiment: (id: number) => `/admin/experiments/${id}`,
     finishExperiment: (id: number) => `/admin/experiments/${id}/finish`,
+    duplicateExperiment: (id: number) => `/admin/experiments/${id}/duplicate`,
     archiveExperiment: (id: number) => `/admin/experiments/${id}/archive`,
     unarchiveExperiment: (id: number) => `/admin/experiments/${id}/unarchive`,
     upload: (id: number) => `/admin/experiments/${id}/upload`,
@@ -389,6 +390,12 @@ export const api = {
 
   async finishExperiment(experimentId: number): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.finishExperiment(experimentId), {
+      method: 'POST',
+    });
+  },
+
+  async duplicateExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.duplicateExperiment(experimentId), {
       method: 'POST',
     });
   },
