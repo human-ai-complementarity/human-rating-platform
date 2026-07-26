@@ -5,6 +5,7 @@ import type { Experiment, ExperimentCreate, ExperimentStatus } from '../types';
 import StatusLabel from './StatusLabel';
 import RowActionMenu from './RowActionMenu';
 import ConfirmDialog from './ConfirmDialog';
+import { rewardDecimals } from './experiment-detail/reward';
 
 // Notification amber (from the design mock). Used for the row "needs attention"
 // dot and the needs-attention filter toggle.
@@ -44,8 +45,12 @@ function loadFilters(): Filters {
   }
 }
 
-const formatSpend = (minorUnits: number, symbol: string) =>
-  `${symbol}${(minorUnits / 100).toFixed(2)}`;
+// Zero-decimal currencies (JPY, KRW, …) have no minor unit, so the divisor and
+// decimal places come from rewardDecimals rather than a hardcoded /100.
+const formatSpend = (minorUnits: number, symbol: string, currencyCode: string | null) => {
+  const decimals = rewardDecimals(currencyCode);
+  return `${symbol}${(minorUnits / 10 ** decimals).toFixed(decimals)}`;
+};
 
 /**
  * Admin dashboard: create-new panel on the left, existing experiments on the
@@ -61,6 +66,7 @@ function AdminView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currencySymbol, setCurrencySymbol] = useState('$');
+  const [currencyCode, setCurrencyCode] = useState<string | null>(null);
 
   const [query, setQuery] = useState(() => loadFilters().query);
   const [statusFilter, setStatusFilter] = useState<StatusTab>(() => loadFilters().statusFilter);
@@ -84,7 +90,10 @@ function AdminView() {
     loadExperiments();
     api
       .getPlatformStatus()
-      .then((s) => setCurrencySymbol(s.currency_symbol || '$'))
+      .then((s) => {
+        setCurrencySymbol(s.currency_symbol || '$');
+        setCurrencyCode(s.currency_code);
+      })
       .catch(() => {});
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -230,7 +239,8 @@ function AdminView() {
           experiments={filtered}
           loading={loading}
           currencySymbol={currencySymbol}
-          totalSpendLabel={formatSpend(totalSpendMinor, currencySymbol)}
+          currencyCode={currencyCode}
+          totalSpendLabel={formatSpend(totalSpendMinor, currencySymbol, currencyCode)}
           query={query}
           onQueryChange={setQuery}
           statusFilter={statusFilter}
@@ -275,6 +285,7 @@ function ListPanel({
   experiments,
   loading,
   currencySymbol,
+  currencyCode,
   totalSpendLabel,
   query,
   onQueryChange,
@@ -292,6 +303,7 @@ function ListPanel({
   experiments: Experiment[];
   loading: boolean;
   currencySymbol: string;
+  currencyCode: string | null;
   totalSpendLabel: string;
   query: string;
   onQueryChange: (value: string) => void;
@@ -463,6 +475,7 @@ function ListPanel({
               key={exp.id}
               exp={exp}
               currencySymbol={currencySymbol}
+              currencyCode={currencyCode}
               isLast={idx === experiments.length - 1}
               onSelect={() => onSelect(exp)}
               onArchiveToggle={() => onArchiveToggle(exp)}
@@ -478,6 +491,7 @@ function ListPanel({
 function ExperimentRow({
   exp,
   currencySymbol,
+  currencyCode,
   isLast,
   onSelect,
   onArchiveToggle,
@@ -485,6 +499,7 @@ function ExperimentRow({
 }: {
   exp: Experiment;
   currencySymbol: string;
+  currencyCode: string | null;
   isLast: boolean;
   onSelect: () => void;
   onArchiveToggle: () => void;
@@ -542,7 +557,7 @@ function ExperimentRow({
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
         <div style={{ width: 96, textAlign: 'right' }}>
           <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-            {formatSpend(exp.spend_minor_units, currencySymbol)}
+            {formatSpend(exp.spend_minor_units, currencySymbol, currencyCode)}
           </div>
           <div style={{ fontSize: 12, color: 'var(--muted)', letterSpacing: '0.02em' }}>spent</div>
         </div>
