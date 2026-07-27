@@ -421,6 +421,8 @@ Prerequisites beyond Quick Start: Docker running (backend tests) and Playwright'
 cd frontend && npx playwright install chromium
 ```
 
+On Linux, headless Chromium also needs OS libraries that CI installs via `--with-deps`; run `npx playwright install --with-deps chromium` instead (requires sudo). Not needed on macOS.
+
 ### Claude Code
 
 If you use Claude Code, this is automatic — the repo checks in its Claude config, so a fresh clone needs no setup:

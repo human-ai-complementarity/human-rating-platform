@@ -22,7 +22,7 @@ It mirrors `.github/workflows/main.yml`; if `make ci` passes locally, the PR che
 - Docker running (backend tests).
 - `uv` installed (linters run via pinned `uvx`).
 - Frontend dependencies installed: `npm ci --prefix frontend` if `frontend/node_modules` is missing.
-- Playwright chromium installed: `cd frontend && npx playwright install chromium` (one-time).
+- Playwright chromium installed: `cd frontend && npx playwright install chromium` (one-time). On Linux use `npx playwright install --with-deps chromium` (requires sudo) so the OS libraries headless Chromium needs are installed too — this matches what CI runs.
 
 ## Notes
 
