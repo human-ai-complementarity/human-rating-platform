@@ -216,6 +216,156 @@ _LOCKED_META_FIELDS = (
     "prolific_pool",
 )
 
+# Matches the String(255) columns on Experiment.name / internal_name.
+_NAME_MAX_LENGTH = 255
+
+
+def _with_copy_suffix(base: str, suffix: str) -> str:
+    """Append suffix, trimming the base so the result fits the name columns."""
+    return base[: _NAME_MAX_LENGTH - len(suffix)].rstrip() + suffix
+
+
+def _pick_copy_names(
+    name: str,
+    internal_name: str | None,
+    existing_names: set[str],
+    existing_internal_names: set[str],
+) -> tuple[str, str | None]:
+    """Choose "<base> COPY" names for a duplicate, bumping to "COPY (n)" on clashes.
+
+    One shared n is used for both names so the public and internal labels of a
+    duplicate never end up with mismatched suffixes.
+    """
+    n = 1
+    while True:
+        suffix = " COPY" if n == 1 else f" COPY ({n})"
+        candidate_name = _with_copy_suffix(name, suffix)
+        candidate_internal = _with_copy_suffix(internal_name, suffix) if internal_name else None
+        if candidate_name not in existing_names and (
+            candidate_internal is None or candidate_internal not in existing_internal_names
+        ):
+            return candidate_name, candidate_internal
+        n += 1
+
+
+async def duplicate_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    """Create a fresh DRAFT experiment from an existing one.
+
+    Copied: names (with a " COPY" suffix), ratings per question, the dataset
+    (questions + upload provenance), and the instructions-page fields
+    (description, system prompt, prefix/suffix, prolific pool). Everything
+    else — status, assistance config, rounds, raters, ratings, participant
+    group — starts from defaults.
+    """
+    source = await fetch_experiment_or_404(experiment_id, db)
+
+    existing_names = set((await db.execute(select(Experiment.name))).scalars().all())
+    existing_internal_names = {
+        value
+        for value in (await db.execute(select(Experiment.internal_name))).scalars().all()
+        if value
+    }
+    name, internal_name = _pick_copy_names(
+        source.name, source.internal_name, existing_names, existing_internal_names
+    )
+
+    duplicate = Experiment(
+        name=name,
+        internal_name=internal_name,
+        num_ratings_per_question=source.num_ratings_per_question,
+        description=source.description,
+        system_prompt=source.system_prompt,
+        human_prompt_prefix=source.human_prompt_prefix,
+        human_prompt_suffix=source.human_prompt_suffix,
+        prolific_pool=source.prolific_pool,
+    )
+    db.add(duplicate)
+    await db.flush()
+
+    source_questions = (
+        (
+            await db.execute(
+                select(Question)
+                .where(Question.experiment_id == experiment_id)
+                .order_by(Question.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cloned_questions = [
+        Question(
+            experiment_id=duplicate.id,
+            question_id=question.question_id,
+            question_text=question.question_text,
+            gt_answer=question.gt_answer,
+            options=question.options,
+            question_type=question.question_type,
+            extra_data=question.extra_data,
+        )
+        for question in source_questions
+    ]
+    for question in cloned_questions:
+        db.add(question)
+    # Flush so clones have DB ids, then remap parent references onto them.
+    await db.flush()
+    clone_id_by_source_id = {
+        source_question.id: clone.id
+        for source_question, clone in zip(source_questions, cloned_questions)
+    }
+    for source_question, clone in zip(source_questions, cloned_questions):
+        if source_question.parent_question_id is not None:
+            clone.parent_question_id = clone_id_by_source_id.get(source_question.parent_question_id)
+
+    # Carry over upload provenance so the Questions tab of the copy shows where
+    # its dataset came from (uploaded_at reflects duplication time).
+    source_uploads = (
+        (
+            await db.execute(
+                select(Upload)
+                .where(Upload.experiment_id == experiment_id)
+                .order_by(Upload.uploaded_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for upload in source_uploads:
+        db.add(
+            Upload(
+                experiment_id=duplicate.id,
+                filename=upload.filename,
+                question_count=upload.question_count,
+                dataset_meta=upload.dataset_meta,
+            )
+        )
+
+    await db.commit()
+    await db.refresh(duplicate)
+
+    logger.info(
+        "Experiment duplicated",
+        extra={
+            "attributes": {
+                "source_experiment_id": experiment_id,
+                "experiment_id": duplicate.id,
+                "experiment_name": duplicate.name,
+                "question_count": len(cloned_questions),
+            }
+        },
+    )
+
+    question_count = await fetch_total_questions_for_experiment(duplicate.id, db)
+    return build_experiment_response(
+        duplicate,
+        question_count=question_count,
+        rating_count=0,
+        dataset_filenames=[upload.filename for upload in source_uploads],
+    )
+
 
 def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpdate) -> list[str]:
     """Names of locked-experiment fields whose payload value would change the row.
