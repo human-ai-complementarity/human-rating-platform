@@ -178,6 +178,8 @@ make ps          # show service status
 make logs        # follow db/api logs
 make test        # backend test suite (unit + e2e) in an isolated compose stack
 make fmt         # format backend with ruff
+make lint        # every linter CI gates on (ruff, eslint, tsc, yamllint)
+make ci          # full CI gate set: lint + backend tests + Playwright e2e
 make down        # stop stack
 ```
 
@@ -404,15 +406,28 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 
 ## CI Checks (local)
 
-Run these locally to match what CI enforces:
+One command runs the full GitHub Actions gate set (`.github/workflows/main.yml`) locally:
 
 ```bash
-uvx ruff==0.15.2 check backend
-uvx ruff==0.15.2 format --check backend
-npm --prefix frontend run lint
-npm --prefix frontend run typecheck
-uvx yamllint==1.38.0 .
+make ci      # lint + backend tests + Playwright e2e
+make lint    # just the linters (fast, no Docker)
 ```
+
+`make lint` runs, in order: ruff check, ruff format check, eslint, tsc, yamllint. `make ci` adds `make test` (backend suite in an isolated Docker compose stack) and the Playwright e2e suite. If `make ci` passes locally, the PR checks should pass.
+
+Prerequisites beyond Quick Start: Docker running (backend tests) and Playwright's chromium, a one-time install:
+
+```bash
+cd frontend && npx playwright install chromium
+```
+
+### Claude Code
+
+If you use Claude Code, this is automatic — the repo checks in its Claude config, so a fresh clone needs no setup:
+
+- [CLAUDE.md](CLAUDE.md) tells Claude to run `make ci` before pushing or updating a PR, in every session.
+- The `/lint` and `/ci` skills ([.claude/skills/](.claude/skills/)) run the gates on demand and know how to fix each gate's failures.
+- [.claude/settings.json](.claude/settings.json) pre-approves the make targets so Claude runs them without permission prompts.
 
 ---
 

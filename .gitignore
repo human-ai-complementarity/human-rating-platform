@@ -27,5 +27,7 @@ frontend/test-results/
 data/
 artifacts/
 
-# Local assistant/worktree artifacts
-.claude/
+# Local assistant/worktree artifacts, except shared Claude Code config
+.claude/*
+!.claude/settings.json
+!.claude/skills/

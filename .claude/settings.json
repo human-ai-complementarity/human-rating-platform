@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make lint)",
+      "Bash(make ci)",
+      "Bash(make test)",
+      "Bash(make fmt)",
+      "Bash(make help)",
+      "Bash(npm ci --prefix frontend)"
+    ]
+  }
+}
