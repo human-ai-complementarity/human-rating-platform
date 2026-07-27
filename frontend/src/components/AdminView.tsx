@@ -70,6 +70,7 @@ function AdminView() {
   // archive/restore apply immediately with a toast (per the mock).
   const [pendingDelete, setPendingDelete] = useState<Experiment | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -116,13 +117,19 @@ function AdminView() {
 
   const label = (exp: Experiment) => exp.internal_name || exp.name;
 
+  // Unlike archive/restore, duplicate is not idempotent — every POST mints
+  // another COPY (n) — so ignore re-clicks while one is in flight.
   const handleDuplicateExperiment = async (exp: Experiment) => {
+    if (duplicating) return;
     setError(null);
+    setDuplicating(true);
     try {
       const copy = await api.duplicateExperiment(exp.id);
       navigate(`/admin/experiments/${copy.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setDuplicating(false);
     }
   };
 
