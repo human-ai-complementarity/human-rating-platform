@@ -76,6 +76,7 @@ function AdminView() {
   // archive/restore apply immediately with a toast (per the mock).
   const [pendingDelete, setPendingDelete] = useState<Experiment | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -124,6 +125,22 @@ function AdminView() {
   };
 
   const label = (exp: Experiment) => exp.internal_name || exp.name;
+
+  // Unlike archive/restore, duplicate is not idempotent — every POST mints
+  // another COPY (n) — so ignore re-clicks while one is in flight.
+  const handleDuplicateExperiment = async (exp: Experiment) => {
+    if (duplicating) return;
+    setError(null);
+    setDuplicating(true);
+    try {
+      const copy = await api.duplicateExperiment(exp.id);
+      navigate(`/admin/experiments/${copy.id}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setDuplicating(false);
+    }
+  };
 
   const handleArchiveToggle = async (exp: Experiment) => {
     const toArchived = exp.archived_at === null;
@@ -251,6 +268,7 @@ function AdminView() {
           filtersActive={filtersActive}
           onClearFilters={clearFilters}
           onSelect={(exp) => navigate(`/admin/experiments/${exp.id}`)}
+          onDuplicate={handleDuplicateExperiment}
           onArchiveToggle={handleArchiveToggle}
           onDelete={(exp) => setPendingDelete(exp)}
         />
@@ -297,6 +315,7 @@ function ListPanel({
   filtersActive,
   onClearFilters,
   onSelect,
+  onDuplicate,
   onArchiveToggle,
   onDelete,
 }: {
@@ -315,6 +334,7 @@ function ListPanel({
   filtersActive: boolean;
   onClearFilters: () => void;
   onSelect: (exp: Experiment) => void;
+  onDuplicate: (exp: Experiment) => void;
   onArchiveToggle: (exp: Experiment) => void;
   onDelete: (exp: Experiment) => void;
 }) {
@@ -478,6 +498,7 @@ function ListPanel({
               currencyCode={currencyCode}
               isLast={idx === experiments.length - 1}
               onSelect={() => onSelect(exp)}
+              onDuplicate={() => onDuplicate(exp)}
               onArchiveToggle={() => onArchiveToggle(exp)}
               onDelete={() => onDelete(exp)}
             />
@@ -494,6 +515,7 @@ function ExperimentRow({
   currencyCode,
   isLast,
   onSelect,
+  onDuplicate,
   onArchiveToggle,
   onDelete,
 }: {
@@ -502,6 +524,7 @@ function ExperimentRow({
   currencyCode: string | null;
   isLast: boolean;
   onSelect: () => void;
+  onDuplicate: () => void;
   onArchiveToggle: () => void;
   onDelete: () => void;
 }) {
@@ -565,6 +588,7 @@ function ExperimentRow({
           label={`Actions for ${exp.internal_name || exp.name}`}
           actions={[
             { label: 'View', testId: 'row-action-view', onSelect },
+            { label: 'Duplicate', testId: 'row-action-duplicate', onSelect: onDuplicate },
             isArchived
               ? { label: 'Restore', testId: 'row-action-unarchive', onSelect: onArchiveToggle }
               : { label: 'Archive', testId: 'row-action-archive', onSelect: onArchiveToggle },

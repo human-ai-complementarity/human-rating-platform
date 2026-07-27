@@ -3331,6 +3331,97 @@ def test_finish_end_to_end_from_draft(
     assert finish_resp.json()["status"] == "FINISHED"
 
 
+# ── Duplicate experiment ──────────────────────────────────────────────────────
+
+
+def test_duplicate_copies_dataset_instructions_and_ratings_target(client: TestClient):
+    base_name = _unique_name("dup-source")
+    created = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": base_name,
+            "internal_name": f"{base_name}-internal",
+            "num_ratings_per_question": 4,
+        },
+    ).json()
+    meta = {
+        "description": "Pilot dataset on x.",
+        "system_prompt": "You are an evaluator.",
+        "human_prompt_prefix": "Consider the text below.",
+        "human_prompt_suffix": "Pick the best option.",
+        "prolific_pool": "uk_representative_sample",
+    }
+    client.post(
+        f"/api/admin/experiments/{created['id']}/upload",
+        files={"file": ("with_meta.csv", _csv_with_meta(meta), "text/csv")},
+    )
+
+    response = client.post(f"/api/admin/experiments/{created['id']}/duplicate")
+    assert response.status_code == 200, response.text
+    copy = response.json()
+
+    assert copy["id"] != created["id"]
+    assert copy["name"] == f"{base_name} COPY"
+    assert copy["internal_name"] == f"{base_name}-internal COPY"
+    assert copy["num_ratings_per_question"] == 4
+    for key, value in meta.items():
+        assert copy[key] == value
+    assert copy["question_count"] == 2
+    assert copy["rating_count"] == 0
+
+    # Everything else resets to defaults.
+    assert copy["status"] == "DRAFT"
+    assert copy["assistance_method"] == "none"
+    assert copy["assistance_params"] is None
+    assert copy["prolific_completion_url"] is None
+
+    # Upload provenance travels with the dataset.
+    uploads = client.get(f"/api/admin/experiments/{copy['id']}/uploads").json()
+    assert [u["filename"] for u in uploads] == ["with_meta.csv"]
+    assert uploads[0]["dataset_meta"] == meta
+
+
+def test_duplicate_bumps_suffix_on_repeated_copies(client: TestClient):
+    created = _create_experiment(client)
+
+    first = client.post(f"/api/admin/experiments/{created['id']}/duplicate").json()
+    second = client.post(f"/api/admin/experiments/{created['id']}/duplicate").json()
+
+    assert first["name"] == f"{created['name']} COPY"
+    assert second["name"] == f"{created['name']} COPY (2)"
+
+
+def test_duplicate_preserves_parent_question_links(client: TestClient):
+    created = _create_experiment(client)
+    _upload_parent_and_children(client, created["id"])
+
+    copy = client.post(f"/api/admin/experiments/{created['id']}/duplicate").json()
+    # Parent rows don't count as ratable questions, so only the two children.
+    assert copy["question_count"] == 2
+
+    session_payload = _start_session(client, copy["id"], prolific_pid="PID_DUP_PARENT")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["question_id"] in {"sub_satisfied", "sub_problem"}
+    assert question["parent_question_text"] == PARENT_TEXT
+
+
+def test_duplicate_finished_experiment_yields_draft(client: TestClient, sync_engine):
+    created = _create_experiment(client)
+    _mark_experiment_status(sync_engine, created["id"], "FINISHED")
+
+    response = client.post(f"/api/admin/experiments/{created['id']}/duplicate")
+    assert response.status_code == 200
+    assert response.json()["status"] == "DRAFT"
+
+
+def test_duplicate_missing_experiment_returns_404(client: TestClient):
+    response = client.post("/api/admin/experiments/999999/duplicate")
+    assert response.status_code == 404
+
+
 def _list_entry(client: TestClient, experiment_id: int) -> dict:
     return next(
         item for item in client.get("/api/admin/experiments").json() if item["id"] == experiment_id

@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help env.sync up down ps logs db.clear db.reset db.new db.up db.down db.seed test config.check fmt tailscale.up tailscale.down tailscale.status
+.PHONY: help env.sync up down ps logs db.clear db.reset db.new db.up db.down db.seed test config.check fmt lint ci tailscale.up tailscale.down tailscale.status
 
 COMPOSE ?= docker compose
 TEST_COMPOSE_PROJECT ?= human-rating-platform-test
@@ -192,6 +192,28 @@ fmt: ## Format backend Python with ruff
 	$(call _title,==> Formatting backend Python)
 	@uvx ruff==0.15.2 format backend
 	$(call _ok,Formatting complete)
+
+lint: ## Run every linter CI gates on (ruff check + format, eslint, tsc, yamllint)
+	$(call _title,==> Linting)
+	$(call _info,Backend - ruff check)
+	@uvx ruff==0.15.2 check backend
+	$(call _info,Backend - ruff format check)
+	@uvx ruff==0.15.2 format --check backend
+	$(call _info,Frontend - eslint)
+	@npm --prefix frontend run lint
+	$(call _info,Frontend - typecheck)
+	@npm --prefix frontend run typecheck
+	$(call _info,YAML - yamllint)
+	@uvx yamllint==1.38.0 .
+	$(call _ok,Lint passed)
+
+ci: ## Run the full CI check set locally (lint + backend tests + frontend e2e)
+	$(call _title,==> Running full CI check set)
+	@$(MAKE) --no-print-directory lint
+	@$(MAKE) --no-print-directory test
+	$(call _info,Frontend - Playwright e2e)
+	@npm --prefix frontend run test:e2e
+	$(call _ok,All CI checks passed)
 
 ##@ Tailscale
 tailscale.up: ## Expose local stack via Tailscale (both frontend and backend)
