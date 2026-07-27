@@ -287,6 +287,17 @@ async def list_experiment_rounds(
     return await admin_service.list_experiment_rounds(experiment_id=experiment_id, db=db)
 
 
+@secure_router.post("/experiments/{experiment_id}/prolific/sync-spend")
+async def sync_experiment_spend(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """Refresh every round's Prolific cost and return the experiment's total
+    spend (minor units). Called from the detail view to hydrate the spend card."""
+    spend = await admin_service.refresh_experiment_spend(experiment_id=experiment_id, db=db)
+    return {"spend_minor_units": spend}
+
+
 @secure_router.patch(
     "/experiments/{experiment_id}/prolific/rounds/{round_id}",
     response_model=ExperimentRoundResponse,

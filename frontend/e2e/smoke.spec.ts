@@ -172,9 +172,17 @@ async function fulfillJson(route: Route, status: number, body: unknown) {
 async function installApiMocks(
   page: Page,
   state: MockState,
-  options: { prolificEnabled?: boolean } = {}
+  options: {
+    prolificEnabled?: boolean;
+    currencyCode?: string | null;
+    currencySymbol?: string | null;
+    spendMinorUnits?: number;
+  } = {}
 ) {
   const prolificEnabled = options.prolificEnabled ?? true;
+  const currencyCode = options.currencyCode ?? null;
+  const currencySymbol = options.currencySymbol ?? null;
+  const spendMinorUnits = options.spendMinorUnits ?? 0;
 
   await page.context().route('**/api/**', async (route) => {
     const request = route.request();
@@ -195,8 +203,8 @@ async function installApiMocks(
     if (pathname === '/api/admin/platform-status') {
       await fulfillJson(route, 200, {
         prolific_enabled: prolificEnabled,
-        currency_code: null,
-        currency_symbol: null,
+        currency_code: currencyCode,
+        currency_symbol: currencySymbol,
       });
       return;
     }
@@ -296,6 +304,11 @@ async function installApiMocks(
     if (pathname.endsWith('/prolific/rounds') && method === 'GET') {
       const experimentId = extractExperimentId(url);
       await fulfillJson(route, 200, state.rounds[experimentId] || []);
+      return;
+    }
+
+    if (pathname.endsWith('/prolific/sync-spend') && method === 'POST') {
+      await fulfillJson(route, 200, { spend_minor_units: spendMinorUnits });
       return;
     }
 
@@ -770,6 +783,36 @@ test('disabled mode explains why pilot controls are unavailable', async ({ page 
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Configure a Prolific API token');
   await expect(page.getByTestId('preview-participant-button')).toBeVisible();
   await expect(page.getByTestId('run-pilot-button')).toHaveCount(0);
+});
+
+test('spend card formats a zero-decimal currency (ISK) without decimals', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'ISK Experiment', question_count: 2 }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  // ISK has no minor unit, so 90000 must render as kr90000, not kr900.00. The
+  // background sync hydrates the Spend card on the (default) Overview tab.
+  await installApiMocks(page, state, {
+    prolificEnabled: true,
+    currencyCode: 'ISK',
+    currencySymbol: 'kr',
+    spendMinorUnits: 90000,
+  });
+  await page.goto('/admin/experiments/1');
+
+  await expect(page.getByText('kr90000')).toBeVisible();
+  await expect(page.getByText('kr900.00')).toHaveCount(0);
 });
 
 // Locale and timezone are pinned so the rendered timestamp is comparable.

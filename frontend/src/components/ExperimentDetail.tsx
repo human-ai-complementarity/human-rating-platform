@@ -30,7 +30,12 @@ import {
   secondaryButton,
   textareaStyle,
 } from './experiment-detail/ui';
-import { rewardHintText, rewardInputToMinor, rewardMinorToInput } from './experiment-detail/reward';
+import {
+  rewardDecimals,
+  rewardHintText,
+  rewardInputToMinor,
+  rewardMinorToInput,
+} from './experiment-detail/reward';
 
 // Labels shown to admins in the Instructions & prompts panel. Order matches
 // the CSV `#META:` JSON shape that researchers see in the colab guide.
@@ -261,6 +266,12 @@ function ExperimentDetail({
 }: ExperimentDetailProps) {
   // ── Data state ─────────────────────────────────────────────────────────
   const [stats, setStats] = useState<ExperimentStats | null>(null);
+  // Spend starts from the last-known list value and is refreshed in the
+  // background from Prolific when the experiment opens (covers closed rounds).
+  const [spendMinor, setSpendMinor] = useState<number | null>(
+    experiment.spend_minor_units ?? null,
+  );
+  const [spendSyncing, setSpendSyncing] = useState(false);
   const [uploads, setUploads] = useState<Upload[]>([]);
   const [rounds, setRounds] = useState<ExperimentRound[]>([]);
   const [recommendation, setRecommendation] = useState<RecommendationResponse | null>(null);
@@ -483,14 +494,33 @@ function ExperimentDetail({
     }
   }, [experiment.id]);
 
+  // Refresh spend from Prolific in the background and update the card. Gated on
+  // prolificEnabled (the product is Prolific-only); keeps the last-known value
+  // if the refresh fails.
+  const syncSpend = useCallback(async () => {
+    if (prolificEnabled !== true) return;
+    setSpendSyncing(true);
+    try {
+      const { spend_minor_units } = await api.syncExperimentSpend(experiment.id);
+      setSpendMinor(spend_minor_units);
+    } catch {
+      // keep the last-known spend
+    } finally {
+      setSpendSyncing(false);
+    }
+  }, [experiment.id, prolificEnabled]);
+
   const loadRounds = useCallback(async () => {
     try {
       const data = await api.listExperimentRounds(experiment.id);
       setRounds(data);
+      // Every round (re)load also refreshes spend, so the card stays current
+      // after publish/close/edit without a separate trigger per handler.
+      void syncSpend();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load round history');
     }
-  }, [experiment.id]);
+  }, [experiment.id, syncSpend]);
 
   const loadRecommendation = useCallback(async () => {
     try {
@@ -1081,6 +1111,10 @@ function ExperimentDetail({
           <OverviewPanel
             experiment={experiment}
             stats={stats}
+            spendMinor={spendMinor}
+            spendSyncing={spendSyncing}
+            currencySymbol={currencySymbol}
+            currencyCode={currencyCode}
             includePreview={includePreview}
             onTogglePreview={setIncludePreview}
             steps={stepDefs}
@@ -1189,6 +1223,10 @@ function ExperimentDetail({
 function OverviewPanel({
   experiment,
   stats,
+  spendMinor,
+  spendSyncing,
+  currencySymbol,
+  currencyCode,
   includePreview,
   onTogglePreview,
   steps,
@@ -1198,6 +1236,10 @@ function OverviewPanel({
 }: {
   experiment: Experiment;
   stats: ExperimentStats | null;
+  spendMinor: number | null;
+  spendSyncing: boolean;
+  currencySymbol: string | null;
+  currencyCode: string | null;
   includePreview: boolean;
   onTogglePreview: (v: boolean) => void;
   steps: StepDef[];
@@ -1289,11 +1331,17 @@ function OverviewPanel({
       )}
 
       {/* Stats grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
         <StatTile label="Questions" value={stats?.total_questions ?? 0} />
         <StatTile label="Complete" value={stats?.questions_complete ?? 0} />
         <StatTile label="Ratings" value={stats?.total_ratings ?? 0} />
         <StatTile label="Raters" value={stats?.total_raters ?? 0} />
+        <SpendTile
+          minorUnits={spendMinor}
+          symbol={currencySymbol}
+          currencyCode={currencyCode}
+          syncing={spendSyncing}
+        />
       </div>
 
       {/* Progress + preview toggle */}
@@ -1482,6 +1530,61 @@ function StatTile({ label, value }: { label: string; value: number }) {
     >
       <div style={{ font: '600 34px/1 var(--font-head)' }}>{value}</div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 5 }}>{label}</div>
+    </div>
+  );
+}
+
+/**
+ * Spend counterpart to StatTile: a currency figure that hydrates in the
+ * background from Prolific. Shows the last-known value with a subtle "syncing"
+ * hint until the live cost lands. The figure is each study's Prolific cost
+ * (rewards + fees) summed over rounds; it excludes bonuses paid separately.
+ */
+function SpendTile({
+  minorUnits,
+  symbol,
+  currencyCode,
+  syncing,
+}: {
+  minorUnits: number | null;
+  symbol: string | null;
+  currencyCode: string | null;
+  syncing: boolean;
+}) {
+  // Zero-decimal currencies (JPY, KRW, …) have no minor unit, so the divisor
+  // and decimal places come from rewardDecimals rather than a hardcoded /100.
+  const decimals = rewardDecimals(currencyCode);
+  const value =
+    minorUnits == null
+      ? '—'
+      : `${symbol || '$'}${(minorUnits / 10 ** decimals).toFixed(decimals)}`;
+  return (
+    <div
+      title="Prolific study cost (rewards + fees) across all rounds. Excludes bonuses paid separately."
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        padding: '22px 24px',
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <div style={{ font: '600 34px/1 var(--font-head)', fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          color: 'var(--muted)',
+          marginTop: 5,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+        }}
+      >
+        Spend
+        {syncing && <span style={{ fontSize: 11, color: 'var(--muted)' }}>· syncing…</span>}
+      </div>
     </div>
   );
 }

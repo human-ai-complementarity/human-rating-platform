@@ -78,6 +78,7 @@ const routes = {
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
     prolificRounds: (id: number) => `/admin/experiments/${id}/prolific/rounds`,
+    prolificSyncSpend: (id: number) => `/admin/experiments/${id}/prolific/sync-spend`,
     prolificRound: (experimentId: number, roundId: number) =>
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}`,
     prolificRoundPublish: (experimentId: number, roundId: number) =>
@@ -441,6 +442,15 @@ export const api = {
 
   async listExperimentRounds(experimentId: number): Promise<ExperimentRound[]> {
     return requestJson<ExperimentRound[]>(routes.admin.prolificRounds(experimentId));
+  },
+
+  // Refreshes each round's Prolific cost and returns the experiment's total
+  // spend (minor units). Fired from the detail view to hydrate the spend card.
+  async syncExperimentSpend(experimentId: number): Promise<{ spend_minor_units: number }> {
+    return requestJson<{ spend_minor_units: number }>(
+      routes.admin.prolificSyncSpend(experimentId),
+      { method: 'POST' },
+    );
   },
 
   async editExperimentRound(
