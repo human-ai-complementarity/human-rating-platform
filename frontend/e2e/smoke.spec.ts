@@ -234,6 +234,18 @@ async function installApiMocks(
       return;
     }
 
+    const experimentByIdMatch = pathname.match(/^\/api\/admin\/experiments\/(\d+)$/);
+    if (experimentByIdMatch && method === 'GET') {
+      const experimentId = Number(experimentByIdMatch[1]);
+      const experiment = state.experiments.find((item) => item.id === experimentId);
+      if (!experiment) {
+        await fulfillJson(route, 404, { detail: 'Experiment not found' });
+        return;
+      }
+      await fulfillJson(route, 200, experiment);
+      return;
+    }
+
     if (pathname.endsWith('/upload') && method === 'POST') {
       const experimentId = extractExperimentId(url);
       const upload = {
@@ -784,6 +796,17 @@ test('disabled mode explains why pilot controls are unavailable', async ({ page 
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Configure a Prolific API token');
   await expect(page.getByTestId('preview-participant-button')).toBeVisible();
   await expect(page.getByTestId('run-pilot-button')).toHaveCount(0);
+});
+
+test('a non-numeric experiment id shows a friendly not-found message', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  // A typo'd / stale URL segment isn't a valid id. The page should short-circuit
+  // to "Experiment not found" rather than leaking the backend's 422 JSON.
+  await page.goto('/admin/experiments/abc');
+
+  await expect(page.getByText('Experiment not found')).toBeVisible();
 });
 
 test('spend card formats a zero-decimal currency (ISK) without decimals', async ({ page }) => {

@@ -168,12 +168,14 @@ class ExperimentResponse(BaseModel):
     # Set when the experiment has a pending admin action (e.g. rounds closed
     # but target unmet, or an unpublished round draft). `attention_reason` is a
     # short human sentence; the list view shows a dot with it as the tooltip.
-    # Only computed by the list endpoint — single-experiment reads leave it off.
+    # Computed by both the list and single-experiment (get_experiment) reads
+    # via the shared _build_experiment_responses helper.
     needs_attention: bool = False
     attention_reason: Optional[str] = None
     # Total Prolific spend across this experiment's rounds, in the workspace
     # currency's minor units (sum of each round's Prolific `total_cost`).
-    # 0 when no round has been synced yet. List endpoint only.
+    # 0 when no round has been synced yet. Populated by both the list and
+    # single-experiment reads via the shared enrichment helper.
     spend_minor_units: int = 0
 
     model_config = ConfigDict(from_attributes=True)

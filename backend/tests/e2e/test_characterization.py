@@ -270,6 +270,34 @@ def test_unarchive_returns_experiment_to_active_list(client: TestClient):
     assert archived == []
 
 
+def test_get_experiment_returns_single_by_id(client: TestClient):
+    created = _create_experiment(client)
+
+    response = client.get(f"/api/admin/experiments/{created['id']}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == created["id"]
+    assert body["question_count"] == 0
+    assert body["rating_count"] == 0
+
+
+def test_get_experiment_resolves_archived_experiment(client: TestClient):
+    created = _create_experiment(client)
+    client.post(f"/api/admin/experiments/{created['id']}/archive")
+
+    # The list hides archived rows, but a direct fetch must still resolve one
+    # so the detail page can open it.
+    response = client.get(f"/api/admin/experiments/{created['id']}")
+    assert response.status_code == 200
+    assert response.json()["archived_at"] is not None
+
+
+def test_get_experiment_missing_returns_404(client: TestClient):
+    response = client.get("/api/admin/experiments/999999")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Experiment not found"
+
+
 def test_list_filters_by_status(client: TestClient, sync_engine):
     draft = _create_experiment(client)
     launched = _create_experiment(client)
