@@ -112,14 +112,15 @@ async def fetch_eligible_questions_with_counts(
     rater_id: int,
     now: datetime,
     db: AsyncSession,
-) -> list[tuple[Question, int | None]]:
-    """Questions this rater may still rate, each with its effective slot count.
+) -> list[tuple[Question, int | None, int | None]]:
+    """Questions this rater may still rate, as (question, committed, reserved).
 
-    The count is committed non-preview ratings plus live reservations
-    (incomplete, unexpired assignments) held by *other* raters, so a slot
-    being worked on right now blocks re-serving even though no rating has
-    been submitted yet. Preview ratings are excluded: they aren't real data
-    and must not make a question look satisfied to the selector.
+    `committed` is non-preview submitted ratings; `reserved` is live
+    reservations (incomplete, unexpired assignments) held by *other* raters.
+    The selector needs them separately: committed counts decide whether a
+    question still needs data at all, while reservations only influence
+    priority and the backfill cap. Preview ratings are excluded: they aren't
+    real data and must not make a question look satisfied to the selector.
     """
     rating_counts = (
         select(
@@ -143,11 +144,12 @@ async def fetch_eligible_questions_with_counts(
         .subquery()
     )
 
-    total_count = func.coalesce(rating_counts.c.count, 0) + func.coalesce(
-        assignment_counts.c.count, 0
-    )
     eligible_query = (
-        select(Question, total_count)
+        select(
+            Question,
+            func.coalesce(rating_counts.c.count, 0),
+            func.coalesce(assignment_counts.c.count, 0),
+        )
         .outerjoin(rating_counts, Question.id == rating_counts.c.question_id)
         .outerjoin(assignment_counts, Question.id == assignment_counts.c.question_id)
         .where(Question.experiment_id == experiment_id)

@@ -3528,7 +3528,9 @@ def _submit(client: TestClient, session_payload: dict, question: dict) -> None:
 def test_concurrent_raters_get_distinct_questions_via_reservations(client: TestClient):
     # Target 1 with 2 questions: serving a question reserves its only slot,
     # so a second rater must get the other question even though nothing has
-    # been submitted yet, and a third rater gets no work at all.
+    # been submitted yet. A third rater joins as backfill on the least-covered
+    # in-flight question rather than being sent home while ratings are still
+    # unsubmitted.
     experiment = _create_experiment_with_target(client, target=1)
     _upload_questions(client, experiment["id"])
 
@@ -3542,7 +3544,44 @@ def test_concurrent_raters_get_distinct_questions_via_reservations(client: TestC
     assert question_a["id"] != question_b["id"]
 
     session_c = _start_session(client, experiment["id"], prolific_pid="PID_RES_C")
-    assert _get_next_question(client, session_c) is None
+    question_c = _get_next_question(client, session_c)
+    assert question_c is not None
+    assert question_c["id"] in {question_a["id"], question_b["id"]}
+
+
+def _upload_single_question(client: TestClient, experiment_id: int) -> None:
+    csv_data = (
+        "question_id,question_text,gt_answer,options,question_type\n"
+        "only,The only question,Yes,Yes|No,MC"
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment_id}/upload",
+        files={"file": ("single.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200
+
+
+def test_backfill_capped_at_two_extra_raters(client: TestClient):
+    # One question, target 1. The first rater reserves the slot; two more may
+    # work it in parallel as abandonment insurance; a fourth is sent home.
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_single_question(client, experiment["id"])
+
+    sessions = [
+        _start_session(client, experiment["id"], prolific_pid=f"PID_CAP_{i}") for i in range(4)
+    ]
+    served = [_get_next_question(client, session) for session in sessions[:3]]
+    assert all(question is not None for question in served)
+    assert len({question["id"] for question in served}) == 1
+
+    assert _get_next_question(client, sessions[3]) is None
+
+    # One backfiller submits: the committed target is met, so nobody else is
+    # served, but the original holder's late rating is still accepted.
+    _submit(client, sessions[1], served[1])
+    session_late = _start_session(client, experiment["id"], prolific_pid="PID_CAP_LATE")
+    assert _get_next_question(client, session_late) is None
+    _submit(client, sessions[0], served[0])
 
 
 def test_next_question_reserves_and_is_stable_across_refreshes(client: TestClient):

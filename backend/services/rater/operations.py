@@ -325,22 +325,23 @@ async def get_next_question(
     )
     in_progress_parent_ids = await fetch_in_progress_parent_ids(rater_id, db)
 
-    under_quota, at_quota = build_question_selection_groups(
+    open_questions, backfill_questions, full_questions = build_question_selection_groups(
         eligible_questions=eligible_questions,
         target_ratings_per_question=experiment.num_ratings_per_question,
     )
     selected = build_selected_question(
-        under_quota=under_quota,
-        at_quota=at_quota,
+        open_questions=open_questions,
+        backfill_questions=backfill_questions,
+        full_questions=full_questions,
         in_progress_parent_ids=in_progress_parent_ids,
         # Preview sessions produce no real data; let them walk the flow even
         # when every question is at target. Real raters stop instead.
-        allow_at_quota=rater.is_preview,
+        allow_full=rater.is_preview,
     )
 
     if selected is None:
         logger.info(
-            "No under-quota questions left for rater; ending their work",
+            "No servable questions left for rater; ending their work",
             extra={
                 "attributes": {
                     "rater_id": rater_id,
