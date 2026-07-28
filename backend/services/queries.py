@@ -64,12 +64,16 @@ async def fetch_remaining_rating_actions(
     never offsets a shortfall on another (each question's surplus is
     clamped to zero).
     """
+    # Scoped to this experiment inside the subquery: the outer filter can't
+    # be pushed into a grouped subquery, and this runs on every submit.
     rating_counts = (
         select(
             Rating.question_id.label("question_id"),
             func.count(Rating.id).label("count"),
         )
+        .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
+        .where(Question.experiment_id == experiment_id)
         .where(Rater.is_preview == False)  # noqa: E712
         .group_by(Rating.question_id)
         .subquery()

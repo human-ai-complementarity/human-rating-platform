@@ -110,7 +110,12 @@ async def stream_export_csv_chunks(
             )
             .label("rank"),
         )
+        .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
+        # Scoped inside the subquery: the outer experiment filter can't be
+        # pushed into a window function, and ranks within a question are
+        # identical either way (a question belongs to one experiment).
+        .where(Question.experiment_id == experiment_id)
         .where(Rater.is_preview == False)  # noqa: E712
         .subquery()
     )

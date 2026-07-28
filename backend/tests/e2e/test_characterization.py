@@ -3645,6 +3645,11 @@ def test_end_session_releases_reserved_slot(client: TestClient):
     assert question_c is not None
     assert question_c["id"] == question_a["id"]
 
+    # The ended rater can't be served (and re-reserve) anything either —
+    # mirrors submit_rating's is_active check.
+    rejected = client.get("/api/raters/next-question", headers=_rater_headers(session_a))
+    assert rejected.status_code == 403
+
 
 def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid: str) -> dict:
     response = client.post(

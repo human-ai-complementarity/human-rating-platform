@@ -122,12 +122,18 @@ async def fetch_eligible_questions_with_counts(
     Preview ratings are excluded: they aren't real data and must not make a
     question look satisfied to the selector.
     """
+    # Both subqueries scope to this experiment's questions before grouping:
+    # the outer experiment filter can't be pushed into a grouped subquery, so
+    # without the inner filter every serve would aggregate platform-wide
+    # history while holding the per-experiment advisory lock.
     rating_counts = (
         select(
             Rating.question_id.label("question_id"),
             func.count(Rating.id).label("count"),
         )
+        .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
+        .where(Question.experiment_id == experiment_id)
         .where(Rater.is_preview == False)  # noqa: E712
         .group_by(Rating.question_id)
         .subquery()
@@ -137,6 +143,8 @@ async def fetch_eligible_questions_with_counts(
             QuestionAssignment.question_id.label("question_id"),
             func.count(QuestionAssignment.id).label("count"),
         )
+        .join(Question, QuestionAssignment.question_id == Question.id)
+        .where(Question.experiment_id == experiment_id)
         .where(QuestionAssignment.completed_at.is_(None))
         .where(QuestionAssignment.expires_at > now)
         .where(QuestionAssignment.rater_id != rater_id)

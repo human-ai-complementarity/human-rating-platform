@@ -296,6 +296,9 @@ async def get_next_question(
     rater = await fetch_rater_or_404(rater_id, db)
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
 
+    # Mirror submit_rating: an ended session must not be served (and thereby
+    # reserve) new questions — end_session just released its slot.
+    validate_rater_marked_active(rater)
     await validate_rater_session_is_active(rater, db)
 
     now = datetime.now(UTC)
