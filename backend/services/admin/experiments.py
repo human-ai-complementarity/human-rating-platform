@@ -633,11 +633,15 @@ async def get_experiment_stats(
     # Per-question counts capped at the target: overshoot on one question
     # must not offset a shortfall on another, so progress toward the target
     # sums min(count, target) rather than raw ratings.
+    # Parent questions are excluded to match the denominator this feeds:
+    # fetch_total_questions_for_experiment filters them out, so counting them
+    # here would let a rated parent inflate progress past what it should be.
     per_question_stmt = (
         select(func.count(Rating.id).label("count"))
         .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
         .where(Question.experiment_id == experiment_id)
+        .where(Question.id.notin_(parent_question_ids_subquery()))
         .group_by(Rating.question_id)
     )
 

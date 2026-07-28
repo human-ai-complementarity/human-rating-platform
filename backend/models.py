@@ -26,10 +26,14 @@ from sqlmodel import Field, SQLModel
 
 SESSION_DURATION_MINUTES = 60  # Hard-coded 1 hour per rater
 
-# How long a served-but-unanswered question reserves a rating slot. Generous
-# relative to typical per-question time so slow raters aren't double-booked,
-# but short enough that an abandoned session frees its slot within the hour.
-ASSIGNMENT_TTL_MINUTES = 10
+# How long a served-but-unanswered question reserves a rating slot. Sized to
+# comfortably exceed per-question time — including assisted conditions with
+# multi-turn LLM interaction — because a rater who refreshes after their
+# reservation lapses is handed a different question and loses their work.
+# Generous is cheap now that backfill covers abandonment: a question below
+# target is servable to other raters regardless of how long a reservation is
+# held, so a long TTL no longer risks a round closing short.
+ASSIGNMENT_TTL_MINUTES = 25
 
 
 class ProlificStudyStatus(str, Enum):

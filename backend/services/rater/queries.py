@@ -179,7 +179,14 @@ async def fetch_live_assignment_for_rater(
 
     Served-but-unanswered questions are re-served on the next request so a
     page refresh can't be used to re-roll, and the reserved slot isn't
-    forgotten.
+    forgotten. A refresh *after* the reservation expires does re-roll: the
+    rater is handed a fresh question and the lapsed slot returns to the pool
+    (a rating submitted late is still accepted, see `submit_rating`).
+
+    Selection and reservation run under the per-experiment advisory lock, so
+    a rater should never hold two live reservations at once. Ordered newest
+    first anyway, so that if the invariant is ever broken the rater keeps
+    seeing one stable question instead of flip-flopping between rows.
     """
     return (
         await db.execute(
@@ -187,6 +194,7 @@ async def fetch_live_assignment_for_rater(
             .where(QuestionAssignment.rater_id == rater_id)
             .where(QuestionAssignment.completed_at.is_(None))
             .where(QuestionAssignment.expires_at > now)
+            .order_by(QuestionAssignment.assigned_at.desc(), QuestionAssignment.id.desc())
             .limit(1)
         )
     ).scalar_one_or_none()

@@ -3823,3 +3823,43 @@ def test_submit_auto_stops_active_round_when_target_met(client: TestClient, enab
 
     rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
     assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+
+
+@respx.mock
+def test_submit_survives_failed_auto_stop_without_corrupting_round(
+    client: TestClient, enable_prolific
+):
+    """A Prolific stop failure must not fail the submit or half-apply a status.
+
+    The auto-stop is best-effort: the rating is already committed and the
+    rater is waiting, so a Prolific outage can only be logged. The round must
+    stay ACTIVE so a later submit or a manual close retries, rather than
+    being left reading AWAITING_REVIEW for a study that never stopped.
+    """
+    experiment, pilot = _create_prolific_experiment(client)
+    _upload_questions(client, experiment["id"])
+    _mock_publish_study()
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish"
+    )
+    assert publish_resp.status_code == 200
+
+    stop_route = respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(503, json={"error": "prolific unavailable"})
+    )
+
+    for prolific_pid in ("PID_FAILSTOP_A", "PID_FAILSTOP_B"):
+        session_payload = _start_session(client, experiment["id"], prolific_pid=prolific_pid)
+        for _ in range(2):
+            question = _get_next_question(client, session_payload)
+            assert question is not None
+            _submit(client, session_payload, question)
+
+    assert stop_route.called
+
+    # Every rating still landed — the failure is isolated to the stop attempt.
+    stats = client.get(f"/api/admin/experiments/{experiment['id']}/stats").json()
+    assert stats["total_ratings"] == 4
+
+    rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
+    assert rounds[0]["prolific_study_status"] == "ACTIVE"

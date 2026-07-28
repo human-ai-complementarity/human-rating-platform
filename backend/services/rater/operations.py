@@ -301,11 +301,15 @@ async def get_next_question(
     validate_rater_marked_active(rater)
     await validate_rater_session_is_active(rater, db)
 
-    now = datetime.now(UTC)
-
     if not rater.is_preview:
         await _acquire_assignment_lock(rater.experiment_id, db)
 
+    # Read the clock after the lock: waiting on a contended lock would
+    # otherwise eat into the reservation's TTL and stale-date every
+    # expires_at comparison below.
+    now = datetime.now(UTC)
+
+    if not rater.is_preview:
         # Re-serve an outstanding reservation rather than picking fresh, so a
         # refresh can't re-roll the question or leak an extra reserved slot.
         live_assignment = await fetch_live_assignment_for_rater(rater_id=rater_id, now=now, db=db)
@@ -489,32 +493,61 @@ async def _stop_rounds_if_target_met(*, experiment_id: int, db: AsyncSession) ->
             .scalars()
             .all()
         )
-        for round_ in running_rounds:
-            result = await stop_study(
-                settings=settings.prolific,
-                study_id=round_.prolific_study_id,
+        # Snapshot ids up front: a rollback below expires the ORM objects, and
+        # re-reading an expired attribute mid-loop would need a lazy refresh.
+        round_targets = [(round_.id, round_.prolific_study_id) for round_ in running_rounds]
+    except Exception:
+        logger.warning(
+            "Failed to check whether Prolific rounds should auto-stop",
+            exc_info=True,
+            extra={"attributes": {"experiment_id": experiment_id}},
+        )
+        return
+
+    # Each round is stopped and persisted on its own: a stop that already
+    # executed on Prolific must not be discarded because a later round
+    # failed, or our stored status diverges from Prolific's for a study that
+    # is really stopped.
+    for round_id, study_id in round_targets:
+        log_attributes = {
+            "experiment_id": experiment_id,
+            "round_id": round_id,
+            "study_id": study_id,
+        }
+        try:
+            result = await stop_study(settings=settings.prolific, study_id=study_id)
+        except Exception:
+            logger.warning(
+                "Failed to auto-stop Prolific round after target met",
+                exc_info=True,
+                extra={"attributes": log_attributes},
             )
+            continue
+
+        try:
+            round_ = await db.get(ExperimentRound, round_id)
+            if round_ is None:
+                continue
             status = result.get("status")
             round_.prolific_study_status = (
                 ProlificStudyStatus(status) if status else ProlificStudyStatus.AWAITING_REVIEW
             )
-            logger.info(
-                "Auto-stopped Prolific round: rating target met",
-                extra={
-                    "attributes": {
-                        "experiment_id": experiment_id,
-                        "round_id": round_.id,
-                        "study_id": round_.prolific_study_id,
-                    }
-                },
-            )
-        if running_rounds:
             await db.commit()
-    except Exception:
-        logger.warning(
-            "Failed to auto-stop Prolific rounds after target met",
-            exc_info=True,
-            extra={"attributes": {"experiment_id": experiment_id}},
+        except Exception:
+            await db.rollback()
+            # The study is stopped on Prolific but our status still reads
+            # running. Surfaced loudly because only a round sync or manual
+            # close will reconcile it.
+            logger.error(
+                "Auto-stopped Prolific round but failed to persist its status",
+                exc_info=True,
+                extra={"attributes": log_attributes},
+            )
+            continue
+
+        logger.info(
+            "Auto-stopped Prolific round: rating target met",
+            extra={"attributes": log_attributes},
         )
 
 
