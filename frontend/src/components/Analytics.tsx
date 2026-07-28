@@ -3,17 +3,21 @@ import { api } from '../api';
 import type { Analytics as AnalyticsType } from '../types';
 import { Banner } from './experiment-detail/ui';
 
+export const ANALYTICS_TABS = ['overview', 'questions', 'raters'] as const;
+export type AnalyticsTab = (typeof ANALYTICS_TABS)[number];
+
 interface AnalyticsProps {
   experimentId: number;
   experimentName: string;
+  activeTab: AnalyticsTab;
+  onTabChange: (tab: AnalyticsTab) => void;
   onBack: () => void;
 }
 
-function Analytics({ experimentId, experimentName, onBack }: AnalyticsProps) {
+function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBack }: AnalyticsProps) {
   const [analytics, setAnalytics] = useState<AnalyticsType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'questions' | 'raters'>('overview');
   const [includePreview, setIncludePreview] = useState(false);
 
   const loadAnalytics = useCallback(async () => {
@@ -226,10 +230,10 @@ function Analytics({ experimentId, experimentName, onBack }: AnalyticsProps) {
       {/* Tabs + Filters */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
         <div style={styles.tabs}>
-          {(['overview', 'questions', 'raters'] as const).map((tab) => (
+          {ANALYTICS_TABS.map((tab) => (
             <button
               key={tab}
-              onClick={() => setActiveTab(tab)}
+              onClick={() => onTabChange(tab)}
               style={{
                 ...styles.tab,
                 ...(activeTab === tab ? styles.tabActive : {}),

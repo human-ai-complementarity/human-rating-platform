@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 type ExperimentRecord = {
   id: number;
   name: string;
+  internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
   prolific_completion_url: string | null;
@@ -107,6 +108,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
   return {
     id: state.nextExperimentId++,
     name: 'Smoke Test Experiment',
+    internal_name: null,
     created_at: '2026-03-09T00:00:00Z',
     num_ratings_per_question: 3,
     prolific_completion_url: null,
@@ -893,6 +895,7 @@ test.describe('analytics raters tab', () => {
       buildExperiment(state, {
         id: 1,
         name: 'Analytics Smoke Test',
+        internal_name: 'Analytics Internal Name',
         question_count: 2,
         rating_count: 3,
       }),
@@ -937,10 +940,64 @@ test.describe('analytics raters tab', () => {
     await page.goto('/admin/experiments/1');
 
     await page.getByRole('button', { name: 'View analytics' }).click();
+    // Analytics is its own route now, titled with the internal name.
+    await expect(page).toHaveURL('/admin/experiments/1/analytics');
+    await expect(page.getByRole('heading', { name: 'Analytics: Analytics Internal Name' })).toBeVisible();
+
     await page.getByRole('button', { name: 'Raters', exact: true }).click();
+    await expect(page).toHaveURL('/admin/experiments/1/analytics/raters');
 
     const raterRow = page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' });
     await expect(raterRow).toContainText('24/07/2026, 14:26:30');
     await expect(page.getByText('Invalid Date')).toHaveCount(0);
+  });
+
+  test('deeplinks straight to a tab', async ({ page }) => {
+    const state = createMockState();
+    state.experiments = [
+      buildExperiment(state, {
+        id: 1,
+        name: 'Analytics Smoke Test',
+        internal_name: 'Analytics Internal Name',
+        question_count: 2,
+        rating_count: 3,
+      }),
+    ];
+    state.nextExperimentId = 2;
+    state.analyticsByExperimentId[1] = {
+      experiment_name: 'Analytics Smoke Test',
+      overview: {
+        total_ratings: 3,
+        total_questions: 2,
+        total_raters: 1,
+        avg_response_time_seconds: 69.94,
+        avg_confidence: 3.08,
+      },
+      questions: [],
+      raters: [
+        {
+          prolific_id: '660d6a1f4a7f1337de235daa',
+          study_id: '6a637562575f23b5aaf81ae4',
+          session_start: '2026-07-24T14:26:30.179021Z',
+          session_end: null,
+          is_active: true,
+          num_ratings: 3,
+          total_response_time_seconds: 209.82,
+          avg_response_time_seconds: 69.94,
+          avg_confidence: 3.08,
+        },
+      ],
+    };
+
+    await installApiMocks(page, state);
+    await page.goto('/admin/experiments/1/analytics/raters');
+
+    await expect(page.getByRole('heading', { name: 'Analytics: Analytics Internal Name' })).toBeVisible();
+    await expect(page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' })).toBeVisible();
+
+    // Unknown tab segments fall back to the overview URL.
+    await page.goto('/admin/experiments/1/analytics/bogus');
+    await expect(page).toHaveURL('/admin/experiments/1/analytics');
+    await expect(page.getByText('Total Ratings')).toBeVisible();
   });
 });

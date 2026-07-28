@@ -5,6 +5,7 @@ import RaterView from './components/RaterView';
 import AdminView from './components/AdminView';
 import AdminDocs from './components/AdminDocs';
 import ExperimentDetailPage from './components/ExperimentDetailPage';
+import AnalyticsPage from './components/AnalyticsPage';
 import LoginPage from './components/LoginPage';
 import LandingPage from './components/LandingPage';
 import { api } from './api';
@@ -70,6 +71,21 @@ function App() {
             <SignedIn>
               <AdminPage>
                 <ExperimentDetailPage />
+              </AdminPage>
+            </SignedIn>
+            <SignedOut>
+              <LoginPage />
+            </SignedOut>
+          </>
+        }
+      />
+      <Route
+        path="/admin/experiments/:experimentId/analytics/:tab?"
+        element={
+          <>
+            <SignedIn>
+              <AdminPage>
+                <AnalyticsPage />
               </AdminPage>
             </SignedIn>
             <SignedOut>

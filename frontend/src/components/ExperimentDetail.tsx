@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import Analytics from './Analytics';
 import StatusLabel from './StatusLabel';
 import type {
   DatasetMetaField,
@@ -264,6 +264,7 @@ function ExperimentDetail({
   onDeleted,
   onRefresh,
 }: ExperimentDetailProps) {
+  const navigate = useNavigate();
   // ── Data state ─────────────────────────────────────────────────────────
   const [stats, setStats] = useState<ExperimentStats | null>(null);
   // Spend starts from the last-known list value and is refreshed in the
@@ -301,7 +302,6 @@ function ExperimentDetail({
     }, durationMs);
   }, []);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [showAnalytics, setShowAnalytics] = useState(false);
   const [includePreview, setIncludePreview] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -915,17 +915,6 @@ function ExperimentDetail({
   });
   const stepsCompletedCount = stepDefs.filter((s) => s.status === 'done').length;
 
-  // Analytics is a separate full-screen surface; opening it swaps the whole page.
-  if (showAnalytics) {
-    return (
-      <Analytics
-        experimentId={experiment.id}
-        experimentName={experiment.name}
-        onBack={() => setShowAnalytics(false)}
-      />
-    );
-  }
-
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="admin-page">
@@ -1034,7 +1023,7 @@ function ExperimentDetail({
           </a>
           <button
             type="button"
-            onClick={() => setShowAnalytics(true)}
+            onClick={() => navigate(`/admin/experiments/${experiment.id}/analytics`)}
             style={primaryButton}
           >
             View analytics
