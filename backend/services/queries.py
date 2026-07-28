@@ -7,10 +7,10 @@ These are used across multiple service domains. Domain-specific queries
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Experiment, Question, Rater
+from models import Experiment, Question, Rater, Rating
 
 
 async def fetch_experiment_or_404(experiment_id: int, db: AsyncSession) -> Experiment:
@@ -50,6 +50,43 @@ def parent_question_ids_subquery():
         .where(Question.parent_question_id.is_not(None))
         .distinct()
     )
+
+
+async def fetch_remaining_rating_actions(
+    *,
+    experiment_id: int,
+    target_ratings_per_question: int,
+    db: AsyncSession,
+) -> int:
+    """Ratings still needed to bring every ratable question up to target.
+
+    Counts only committed non-preview ratings; overshoot on one question
+    never offsets a shortfall on another (each question's surplus is
+    clamped to zero).
+    """
+    rating_counts = (
+        select(
+            Rating.question_id.label("question_id"),
+            func.count(Rating.id).label("count"),
+        )
+        .join(Rater, Rating.rater_id == Rater.id)
+        .where(Rater.is_preview == False)  # noqa: E712
+        .group_by(Rating.question_id)
+        .subquery()
+    )
+    deficit = func.greatest(
+        target_ratings_per_question - func.coalesce(rating_counts.c.count, 0), 0
+    )
+    remaining = (
+        await db.execute(
+            select(func.coalesce(func.sum(deficit), 0))
+            .select_from(Question)
+            .outerjoin(rating_counts, Question.id == rating_counts.c.question_id)
+            .where(Question.experiment_id == experiment_id)
+            .where(Question.id.notin_(parent_question_ids_subquery()))
+        )
+    ).scalar_one()
+    return int(remaining or 0)
 
 
 async def fetch_parent_question_text(

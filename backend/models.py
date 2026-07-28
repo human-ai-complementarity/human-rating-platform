@@ -26,6 +26,11 @@ from sqlmodel import Field, SQLModel
 
 SESSION_DURATION_MINUTES = 60  # Hard-coded 1 hour per rater
 
+# How long a served-but-unanswered question reserves a rating slot. Generous
+# relative to typical per-question time so slow raters aren't double-booked,
+# but short enough that an abandoned session frees its slot within the hour.
+ASSIGNMENT_TTL_MINUTES = 10
+
 
 class ProlificStudyStatus(str, Enum):
     """Prolific study lifecycle states."""
@@ -272,6 +277,55 @@ class Rating(SQLModel, table=True):
             nullable=False,
             server_default=text("CURRENT_TIMESTAMP"),
         ),
+    )
+
+
+class QuestionAssignment(SQLModel, table=True):
+    """In-flight reservation of one rating slot on a question for a rater.
+
+    Created when a question is served, marked complete when the rating is
+    submitted. A live assignment (not completed, not expired) counts toward
+    the question's rating target during selection, so concurrent raters
+    can't all be handed the same remaining slot. Expiry frees slots held by
+    abandoned sessions; a rating submitted after expiry is still accepted.
+    """
+
+    __tablename__ = "question_assignments"
+    __table_args__ = (
+        UniqueConstraint(
+            "question_id",
+            "rater_id",
+            name="uq_assignment_question_rater",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    question_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("questions.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    rater_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("raters.id", ondelete="CASCADE"),
+            nullable=False,
+        )
+    )
+    assigned_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    expires_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    completed_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )
 
 

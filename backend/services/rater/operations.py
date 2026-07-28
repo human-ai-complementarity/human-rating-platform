@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AssistanceSession, Rating, Rater
-from config import Settings
+from models import (
+    ASSIGNMENT_TTL_MINUTES,
+    AssistanceSession,
+    ExperimentRound,
+    ProlificStudyStatus,
+    QuestionAssignment,
+    Rating,
+    Rater,
+)
+from config import Settings, get_settings
 from schemas import (
     QuestionResponse,
     RaterStartResponse,
@@ -17,9 +25,10 @@ from schemas import (
     RatingSubmit,
     SessionStatusResponse,
 )
-from services.admin.prolific import ProlificAPIError, add_participant_to_group
+from services.admin.prolific import ProlificAPIError, add_participant_to_group, stop_study
 from services.assistance import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
+from services.queries import fetch_remaining_rating_actions
 from .mappers import (
     build_question_response,
     build_rater_start_response,
@@ -27,11 +36,13 @@ from .mappers import (
 )
 from .session_token import issue_rater_session_token
 from .queries import (
+    fetch_assignment_for_question,
     fetch_eligible_questions_with_counts,
     fetch_existing_rater_for_experiment,
     fetch_existing_rating,
     fetch_experiment_or_404,
     fetch_in_progress_parent_ids,
+    fetch_live_assignment_for_rater,
     fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rated_question_ids,
@@ -224,6 +235,59 @@ async def start_session(
     )
 
 
+# Namespace for pg_advisory_xact_lock so this feature's locks can't collide
+# with any future advisory-lock use keyed on the same small integers.
+_ASSIGNMENT_LOCK_NAMESPACE = 4217
+
+
+async def _acquire_assignment_lock(experiment_id: int, db: AsyncSession) -> None:
+    """Serialize question selection per experiment.
+
+    Held until the surrounding transaction ends (the assignment commit, or
+    request teardown on the re-serve path). Selection is a sub-second
+    read-and-reserve, so contention is negligible next to minutes-long
+    rating work.
+    """
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:ns, :key)"),
+        {"ns": _ASSIGNMENT_LOCK_NAMESPACE, "key": experiment_id},
+    )
+
+
+async def _reserve_question(
+    *,
+    rater_id: int,
+    question_id: int,
+    now: datetime,
+    db: AsyncSession,
+) -> None:
+    """Create or revive this rater's reservation for a question.
+
+    A stale row can exist when a prior assignment for the same question
+    expired unanswered and the question is being served to the rater again;
+    the unique constraint on (question_id, rater_id) means we update it in
+    place. Caller holds the per-experiment advisory lock.
+    """
+    expires_at = now + timedelta(minutes=ASSIGNMENT_TTL_MINUTES)
+    existing = await fetch_assignment_for_question(
+        rater_id=rater_id, question_id=question_id, db=db
+    )
+    if existing:
+        existing.assigned_at = now
+        existing.expires_at = expires_at
+        existing.completed_at = None
+    else:
+        db.add(
+            QuestionAssignment(
+                question_id=question_id,
+                rater_id=rater_id,
+                assigned_at=now,
+                expires_at=expires_at,
+            )
+        )
+    await db.commit()
+
+
 async def get_next_question(
     *,
     rater_id: int,
@@ -234,10 +298,29 @@ async def get_next_question(
 
     await validate_rater_session_is_active(rater, db)
 
+    now = datetime.now(UTC)
+
+    if not rater.is_preview:
+        await _acquire_assignment_lock(rater.experiment_id, db)
+
+        # Re-serve an outstanding reservation rather than picking fresh, so a
+        # refresh can't re-roll the question or leak an extra reserved slot.
+        live_assignment = await fetch_live_assignment_for_rater(rater_id=rater_id, now=now, db=db)
+        if live_assignment is not None:
+            question = await fetch_question_or_404(live_assignment.question_id, db)
+            parent_text = (
+                await fetch_parent_question_text(question.parent_question_id, db)
+                if question.parent_question_id is not None
+                else None
+            )
+            return build_question_response(question, parent_question_text=parent_text)
+
     rated_question_ids = await fetch_rated_question_ids(rater_id, db)
     eligible_questions = await fetch_eligible_questions_with_counts(
         experiment_id=rater.experiment_id,
         rated_question_ids=rated_question_ids,
+        rater_id=rater_id,
+        now=now,
         db=db,
     )
     in_progress_parent_ids = await fetch_in_progress_parent_ids(rater_id, db)
@@ -250,11 +333,14 @@ async def get_next_question(
         under_quota=under_quota,
         at_quota=at_quota,
         in_progress_parent_ids=in_progress_parent_ids,
+        # Preview sessions produce no real data; let them walk the flow even
+        # when every question is at target. Real raters stop instead.
+        allow_at_quota=rater.is_preview,
     )
 
     if selected is None:
-        logger.warning(
-            "No eligible questions found for rater",
+        logger.info(
+            "No under-quota questions left for rater; ending their work",
             extra={
                 "attributes": {
                     "rater_id": rater_id,
@@ -264,6 +350,10 @@ async def get_next_question(
             },
         )
         return None
+
+    if not rater.is_preview:
+        await _reserve_question(rater_id=rater_id, question_id=selected.id, now=now, db=db)
+
     parent_text = (
         await fetch_parent_question_text(selected.parent_question_id, db)
         if selected.parent_question_id is not None
@@ -314,16 +404,29 @@ async def submit_rating(
                 status_code=400, detail="Invalid assistance_session_id for this rater and question"
             )
 
+    now = datetime.now(UTC)
     db_rating = Rating(
         question_id=payload.question_id,
         rater_id=rater_id,
         answer=payload.answer,
         confidence=payload.confidence,
         time_started=_normalize_to_utc_aware(payload.time_started),
-        time_submitted=datetime.now(UTC),
+        time_submitted=now,
         assistance_session_id=payload.assistance_session_id,
     )
     db.add(db_rating)
+
+    # Close out the reservation in the same commit as the rating, so the
+    # slot is never counted twice (once as a live assignment, once as a
+    # rating). A rating that arrives after its reservation expired is still
+    # accepted — the rater did the work — even if that overshoots the
+    # target; analysis truncates to the first N per question.
+    assignment = await fetch_assignment_for_question(
+        rater_id=rater_id, question_id=payload.question_id, db=db
+    )
+    if assignment is not None and assignment.completed_at is None:
+        assignment.completed_at = now
+
     await db.commit()
     await db.refresh(db_rating)
 
@@ -340,7 +443,78 @@ async def submit_rating(
         },
     )
 
+    if not rater.is_preview:
+        await _stop_rounds_if_target_met(experiment_id=rater.experiment_id, db=db)
+
     return RatingResponse(id=db_rating.id, success=True)
+
+
+async def _stop_rounds_if_target_met(*, experiment_id: int, db: AsyncSession) -> None:
+    """Stop this experiment's running Prolific studies once every question
+    has its target ratings.
+
+    Fires after a rating commit; best-effort — a Prolific failure never
+    fails the submit, and the next qualifying submit (or a manual close)
+    retries. Stopping promptly matters because each additional entrant costs
+    a full fixed reward while only producing overshoot that analysis
+    truncates away.
+    """
+    settings = get_settings()
+    if not settings.prolific.enabled:
+        return
+
+    try:
+        experiment = await fetch_experiment_or_404(experiment_id, db)
+        remaining = await fetch_remaining_rating_actions(
+            experiment_id=experiment_id,
+            target_ratings_per_question=experiment.num_ratings_per_question,
+            db=db,
+        )
+        if remaining > 0:
+            return
+
+        running_rounds = (
+            (
+                await db.execute(
+                    select(ExperimentRound)
+                    .where(ExperimentRound.experiment_id == experiment_id)
+                    .where(
+                        ExperimentRound.prolific_study_status.in_(
+                            [ProlificStudyStatus.ACTIVE, ProlificStudyStatus.PAUSED]
+                        )
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for round_ in running_rounds:
+            result = await stop_study(
+                settings=settings.prolific,
+                study_id=round_.prolific_study_id,
+            )
+            status = result.get("status")
+            round_.prolific_study_status = (
+                ProlificStudyStatus(status) if status else ProlificStudyStatus.AWAITING_REVIEW
+            )
+            logger.info(
+                "Auto-stopped Prolific round: rating target met",
+                extra={
+                    "attributes": {
+                        "experiment_id": experiment_id,
+                        "round_id": round_.id,
+                        "study_id": round_.prolific_study_id,
+                    }
+                },
+            )
+        if running_rounds:
+            await db.commit()
+    except Exception:
+        logger.warning(
+            "Failed to auto-stop Prolific rounds after target met",
+            exc_info=True,
+            extra={"attributes": {"experiment_id": experiment_id}},
+        )
 
 
 async def get_session_status(
@@ -375,8 +549,16 @@ async def end_session(
 ) -> dict[str, str]:
     rater = await fetch_rater_or_404(rater_id, db)
 
+    now = datetime.now(UTC)
     rater.is_active = False
-    rater.session_end = datetime.now(UTC)
+    rater.session_end = now
+
+    # Release any outstanding reservation right away rather than waiting for
+    # its TTL, so the slot is immediately servable to other raters.
+    live_assignment = await fetch_live_assignment_for_rater(rater_id=rater_id, now=now, db=db)
+    if live_assignment is not None:
+        live_assignment.expires_at = now
+
     await db.commit()
 
     return {"message": "Session ended successfully"}

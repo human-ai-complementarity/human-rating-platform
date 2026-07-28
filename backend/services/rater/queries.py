@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import ExperimentRound, Question, Rating, Rater
+from models import ExperimentRound, Question, QuestionAssignment, Rating, Rater
 from services.queries import (  # noqa: F401 — re-exported for backwards compat
     fetch_experiment_or_404,
     fetch_parent_question_text,
@@ -107,22 +109,47 @@ async def fetch_eligible_questions_with_counts(
     *,
     experiment_id: int,
     rated_question_ids: list[int],
+    rater_id: int,
+    now: datetime,
     db: AsyncSession,
 ) -> list[tuple[Question, int | None]]:
+    """Questions this rater may still rate, each with its effective slot count.
+
+    The count is committed non-preview ratings plus live reservations
+    (incomplete, unexpired assignments) held by *other* raters, so a slot
+    being worked on right now blocks re-serving even though no rating has
+    been submitted yet. Preview ratings are excluded: they aren't real data
+    and must not make a question look satisfied to the selector.
+    """
     rating_counts = (
         select(
-            Question.id.label("question_id"),
+            Rating.question_id.label("question_id"),
             func.count(Rating.id).label("count"),
         )
-        .outerjoin(Rating, Rating.question_id == Question.id)
-        .where(Question.experiment_id == experiment_id)
-        .group_by(Question.id)
+        .join(Rater, Rating.rater_id == Rater.id)
+        .where(Rater.is_preview == False)  # noqa: E712
+        .group_by(Rating.question_id)
+        .subquery()
+    )
+    assignment_counts = (
+        select(
+            QuestionAssignment.question_id.label("question_id"),
+            func.count(QuestionAssignment.id).label("count"),
+        )
+        .where(QuestionAssignment.completed_at.is_(None))
+        .where(QuestionAssignment.expires_at > now)
+        .where(QuestionAssignment.rater_id != rater_id)
+        .group_by(QuestionAssignment.question_id)
         .subquery()
     )
 
+    total_count = func.coalesce(rating_counts.c.count, 0) + func.coalesce(
+        assignment_counts.c.count, 0
+    )
     eligible_query = (
-        select(Question, rating_counts.c.count)
+        select(Question, total_count)
         .outerjoin(rating_counts, Question.id == rating_counts.c.question_id)
+        .outerjoin(assignment_counts, Question.id == assignment_counts.c.question_id)
         .where(Question.experiment_id == experiment_id)
         .where(Question.id.notin_(parent_question_ids_subquery()))
     )
@@ -130,6 +157,45 @@ async def fetch_eligible_questions_with_counts(
         eligible_query = eligible_query.where(Question.id.notin_(rated_question_ids))
 
     return (await db.execute(eligible_query)).all()
+
+
+async def fetch_live_assignment_for_rater(
+    *,
+    rater_id: int,
+    now: datetime,
+    db: AsyncSession,
+) -> QuestionAssignment | None:
+    """The rater's current unexpired, unanswered reservation, if any.
+
+    Served-but-unanswered questions are re-served on the next request so a
+    page refresh can't be used to re-roll, and the reserved slot isn't
+    forgotten.
+    """
+    return (
+        await db.execute(
+            select(QuestionAssignment)
+            .where(QuestionAssignment.rater_id == rater_id)
+            .where(QuestionAssignment.completed_at.is_(None))
+            .where(QuestionAssignment.expires_at > now)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def fetch_assignment_for_question(
+    *,
+    rater_id: int,
+    question_id: int,
+    db: AsyncSession,
+) -> QuestionAssignment | None:
+    return (
+        await db.execute(
+            select(QuestionAssignment).where(
+                QuestionAssignment.rater_id == rater_id,
+                QuestionAssignment.question_id == question_id,
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def fetch_rater_completed_count(rater_id: int, db: AsyncSession) -> int:

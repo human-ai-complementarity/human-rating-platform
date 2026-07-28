@@ -1250,10 +1250,11 @@ function OverviewPanel({
   const targetRatings = stats ? stats.total_questions * experiment.num_ratings_per_question : 0;
   // Ratings-based progress: a question with 2 of 3 ratings counts as 2/3 done
   // rather than 0, so the bar reflects work collected, not just questions
-  // that crossed the finish line. Clamped because over-collection can push
-  // total_ratings past the target.
+  // that crossed the finish line. effective_ratings caps each question at
+  // its target, so overshoot on one question can't mask a shortfall on
+  // another — 100% means every question is individually at target.
   const completePct = stats && targetRatings > 0
-    ? Math.min(100, Math.round((stats.total_ratings / targetRatings) * 100))
+    ? Math.min(100, Math.round((stats.effective_ratings / targetRatings) * 100))
     : 0;
   // Once a main round has launched the experiment leaves DRAFT and setup is
   // no longer the user's job — the Overview becomes a monitoring dashboard.
@@ -1376,8 +1377,8 @@ function OverviewPanel({
             }}
           >
             <span style={{ color: 'var(--muted)' }}>
-              {(stats?.total_ratings ?? 0).toLocaleString()} of {targetRatings.toLocaleString()} ratings
-              collected · {stats?.questions_complete ?? 0} of {stats?.total_questions ?? 0} questions
+              {(stats?.effective_ratings ?? 0).toLocaleString()} of {targetRatings.toLocaleString()} ratings
+              toward target · {stats?.questions_complete ?? 0} of {stats?.total_questions ?? 0} questions
               at target ({experiment.num_ratings_per_question} each)
             </span>
             <span style={{ font: '600 13px var(--font-mono)' }}>{completePct}%</span>
