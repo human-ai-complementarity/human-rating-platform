@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api';
 import Analytics, { ANALYTICS_TABS, type AnalyticsTab } from './Analytics';
@@ -11,30 +11,40 @@ function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const loadExperiment = useCallback(async () => {
-    try {
-      // Include archived experiments so analytics deeplinks keep resolving
-      // after an experiment is archived (mirrors ExperimentDetailPage).
-      const experiments = await api.listExperiments({ includeArchived: true });
-      const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
-      if (exp) {
-        setExperiment(exp);
-      } else {
-        setError('Experiment not found');
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  }, [experimentId]);
-
   useEffect(() => {
     setLoading(true);
     setExperiment(null);
     setError(null);
-    loadExperiment();
-  }, [loadExperiment]);
+
+    // Guard against out-of-order resolution when :experimentId changes while
+    // the page stays mounted (back/forward between two experiments' analytics):
+    // a stale response must not overwrite the fresh experiment.
+    let cancelled = false;
+
+    (async () => {
+      try {
+        // Include archived experiments so analytics deeplinks keep resolving
+        // after an experiment is archived.
+        const experiments = await api.listExperiments({ includeArchived: true });
+        if (cancelled) return;
+        const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
+        if (exp) {
+          setExperiment(exp);
+        } else {
+          setError('Experiment not found');
+        }
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [experimentId]);
 
   // No `:tab` segment means overview; an unknown segment redirects to the
   // canonical overview URL instead of rendering a broken page.
