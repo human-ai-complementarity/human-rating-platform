@@ -115,6 +115,14 @@ async def list_experiments(
     )
 
 
+@secure_router.get("/experiments/{experiment_id}", response_model=ExperimentResponse)
+async def get_experiment(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.get_experiment(experiment_id=experiment_id, db=db)
+
+
 @secure_router.post("/experiments/{experiment_id}/upload")
 async def upload_questions(
     experiment_id: int,

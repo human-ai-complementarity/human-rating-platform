@@ -325,6 +325,12 @@ export const api = {
     });
   },
 
+  // Single-experiment fetch. Resolves by id regardless of archived state, so
+  // the detail page can open an archived experiment (the list hides those).
+  async getExperiment(experimentId: number): Promise<Experiment> {
+    return requestJson<Experiment>(routes.admin.experiment(experimentId));
+  },
+
   async uploadQuestions(experimentId: number, file: File): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file);

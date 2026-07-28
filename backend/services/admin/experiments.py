@@ -127,12 +127,25 @@ async def list_experiments(
         await db.execute(stmt.order_by(Experiment.created_at.desc()).offset(skip).limit(limit))
     ).all()
 
+    return await _build_experiment_responses(list(rows), db)
+
+
+async def _build_experiment_responses(
+    rows: list[tuple[Experiment, int, int]],
+    db: AsyncSession,
+) -> list[ExperimentResponse]:
+    """Enrich (experiment, question_count, rating_count) rows with dataset
+    filenames, spend, and the attention flag.
+
+    The per-experiment queries are keyed on the batch of ids rather than
+    joined into the caller's select, so the fan-out stays bounded. Shared by
+    ``list_experiments`` and ``get_experiment`` so a single experiment and a
+    listed one return the same shape.
+    """
     experiment_ids = [experiment.id for experiment, _, _ in rows]
     filenames_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
     # Per-experiment shortfall against the rating target and the set of round
-    # statuses — both feed the "needs attention" flag below. Kept as separate
-    # keyed queries (not joined into the main select) so the row fan-out stays
-    # bounded to the page.
+    # statuses — both feed the "needs attention" flag below.
     remaining_by_experiment: dict[int, int] = {}
     round_statuses_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
     # Experiment spend = Σ over rounds of Prolific's own `total_cost` (minor
@@ -214,6 +227,22 @@ async def list_experiments(
         )
         for experiment, question_count, rating_count in rows
     ]
+
+
+async def get_experiment(
+    experiment_id: int,
+    db: AsyncSession,
+) -> ExperimentResponse:
+    """Fetch a single experiment by id, regardless of archived state.
+
+    The list endpoint hides archived rows, so the detail view needs a direct
+    lookup to open one. Returns the same enriched shape as a list row.
+    """
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
+    responses = await _build_experiment_responses([(experiment, question_count, rating_count)], db)
+    return responses[0]
 
 
 _LOCKED_META_FIELDS = (

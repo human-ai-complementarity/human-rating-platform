@@ -17,15 +17,26 @@ function ExperimentDetailPage() {
   // etc.) on every post-mutation refresh. The initial-mount effect below owns
   // the loading spinner. See 65d14ac.
   const loadExperiment = useCallback(async () => {
+    // A non-numeric route segment (typo, stale bookmark) can't be a valid id.
+    // Bail early so the backend's int-path validation (a 422 with array-shaped
+    // detail) never leaks raw JSON into the error box — a numeric-but-missing
+    // id still reaches the server and gets a clean "Experiment not found" 404.
+    const id = Number(experimentId);
+    if (!experimentId || !Number.isInteger(id)) {
+      setError('Experiment not found');
+      setLoading(false);
+      return;
+    }
     try {
-      const experiments = await api.listExperiments();
+      // Resolve the current experiment by id directly (works for archived ones,
+      // which the list hides). The list is still fetched — with archived
+      // included — to populate the exclusion-target picker in ExperimentDetail.
+      const [exp, experiments] = await Promise.all([
+        api.getExperiment(id),
+        api.listExperiments({ includeArchived: true }),
+      ]);
+      setExperiment(exp);
       setAllExperiments(experiments);
-      const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
-      if (exp) {
-        setExperiment(exp);
-      } else {
-        setError('Experiment not found');
-      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
