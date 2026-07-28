@@ -16,6 +16,16 @@ function AnalyticsPage() {
     setExperiment(null);
     setError(null);
 
+    // A non-numeric route segment (typo, stale bookmark) can't be a valid id.
+    // Bail early so the backend's int-path validation (a 422 with array-shaped
+    // detail) never leaks raw JSON into the error box.
+    const id = Number(experimentId);
+    if (!experimentId || !Number.isInteger(id)) {
+      setError('Experiment not found');
+      setLoading(false);
+      return;
+    }
+
     // Guard against out-of-order resolution when :experimentId changes while
     // the page stays mounted (back/forward between two experiments' analytics):
     // a stale response must not overwrite the fresh experiment.
@@ -23,16 +33,12 @@ function AnalyticsPage() {
 
     (async () => {
       try {
-        // Include archived experiments so analytics deeplinks keep resolving
-        // after an experiment is archived.
-        const experiments = await api.listExperiments({ includeArchived: true });
+        // Resolve the experiment by id directly. getExperiment works for
+        // archived ones (the list hides those), so analytics deeplinks keep
+        // resolving after archival without fetching the whole list to find one.
+        const exp = await api.getExperiment(id);
         if (cancelled) return;
-        const exp = experiments.find(e => e.id === parseInt(experimentId || '0'));
-        if (exp) {
-          setExperiment(exp);
-        } else {
-          setError('Experiment not found');
-        }
+        setExperiment(exp);
       } catch (err) {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Unknown error');
