@@ -258,7 +258,6 @@ async def _reserve_question(
     *,
     rater_id: int,
     question_id: int,
-    now: datetime,
     db: AsyncSession,
 ) -> None:
     """Create or revive this rater's reservation for a question.
@@ -268,6 +267,9 @@ async def _reserve_question(
     the unique constraint on (question_id, rater_id) means we update it in
     place. Caller holds the per-experiment advisory lock.
     """
+    # Stamped here, after the advisory lock was acquired: using the caller's
+    # pre-lock clock would silently shorten the TTL under lock contention.
+    now = datetime.now(UTC)
     expires_at = now + timedelta(minutes=ASSIGNMENT_TTL_MINUTES)
     existing = await fetch_assignment_for_question(
         rater_id=rater_id, question_id=question_id, db=db
@@ -353,7 +355,7 @@ async def get_next_question(
         return None
 
     if not rater.is_preview:
-        await _reserve_question(rater_id=rater_id, question_id=selected.id, now=now, db=db)
+        await _reserve_question(rater_id=rater_id, question_id=selected.id, db=db)
 
     parent_text = (
         await fetch_parent_question_text(selected.parent_question_id, db)

@@ -179,7 +179,14 @@ async def fetch_live_assignment_for_rater(
 
     Served-but-unanswered questions are re-served on the next request so a
     page refresh can't be used to re-roll, and the reserved slot isn't
-    forgotten.
+    forgotten. If the rater sits on one question past the reservation TTL,
+    a refresh falls through to fresh selection and may serve a different
+    question; their eventual answer to the original is still accepted.
+
+    A rater holds at most one live reservation by construction (a new one is
+    only created when none is live, and re-serving revives the same row);
+    the ordering makes the pick deterministic, freshest first, should that
+    invariant ever break.
     """
     return (
         await db.execute(
@@ -187,6 +194,7 @@ async def fetch_live_assignment_for_rater(
             .where(QuestionAssignment.rater_id == rater_id)
             .where(QuestionAssignment.completed_at.is_(None))
             .where(QuestionAssignment.expires_at > now)
+            .order_by(QuestionAssignment.expires_at.desc())
             .limit(1)
         )
     ).scalar_one_or_none()

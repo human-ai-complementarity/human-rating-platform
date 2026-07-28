@@ -632,12 +632,15 @@ async def get_experiment_stats(
 
     # Per-question counts capped at the target: overshoot on one question
     # must not offset a shortfall on another, so progress toward the target
-    # sums min(count, target) rather than raw ratings.
+    # sums min(count, target) rather than raw ratings. Parent rows are
+    # excluded to match the total_questions denominator; they are never
+    # served so this is defensive only.
     per_question_stmt = (
         select(func.count(Rating.id).label("count"))
         .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
         .where(Question.experiment_id == experiment_id)
+        .where(Question.id.notin_(parent_question_ids_subquery()))
         .group_by(Rating.question_id)
     )
 

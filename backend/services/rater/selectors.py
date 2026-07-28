@@ -18,10 +18,14 @@ def build_question_selection_groups(
                 reserved: served next as abandonment insurance, since a
                 reserving rater may never submit.
     done      — committed ratings at target: served last. An in-session
-                rater's reward is already committed, so extra ratings are
-                free; they're flagged in the export and truncated in
-                analysis, and can substitute when a rating is later
-                quality-filtered out.
+                rater's reward is already committed, so extra ratings cost
+                no additional rater spend; they're flagged in the export and
+                truncated in analysis, and can substitute when a rating is
+                later quality-filtered out. Not entirely free on assisted
+                experiments: each served question still pays the assistance
+                method's LLM inference (multi-turn methods especially). If
+                that spend becomes material, gate this tier on
+                assistance_method == "none".
 
     Tier entries carry coverage so selection can prefer the least-covered
     question; each serve adds a reservation, which spreads concurrent raters
@@ -55,7 +59,7 @@ def build_selected_question(
 
     Raters are kept busy for their whole session: open slots first, then
     in-flight questions that still lack committed ratings, then done
-    questions whose extras are free. Recruiting cost is controlled
+    questions whose extras cost no rater spend. Recruiting cost is controlled
     elsewhere (the study auto-stops at the committed target); serving is
     only about getting the most out of raters already paid for.
     """
