@@ -325,23 +325,20 @@ async def get_next_question(
     )
     in_progress_parent_ids = await fetch_in_progress_parent_ids(rater_id, db)
 
-    open_questions, backfill_questions, full_questions = build_question_selection_groups(
+    open_questions, backfill_questions, done_questions = build_question_selection_groups(
         eligible_questions=eligible_questions,
         target_ratings_per_question=experiment.num_ratings_per_question,
     )
     selected = build_selected_question(
         open_questions=open_questions,
         backfill_questions=backfill_questions,
-        full_questions=full_questions,
+        done_questions=done_questions,
         in_progress_parent_ids=in_progress_parent_ids,
-        # Preview sessions produce no real data; let them walk the flow even
-        # when every question is at target. Real raters stop instead.
-        allow_full=rater.is_preview,
     )
 
     if selected is None:
         logger.info(
-            "No servable questions left for rater; ending their work",
+            "Rater has rated every question; ending their session",
             extra={
                 "attributes": {
                     "rater_id": rater_id,

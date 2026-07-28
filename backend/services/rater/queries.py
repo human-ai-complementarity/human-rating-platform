@@ -117,10 +117,10 @@ async def fetch_eligible_questions_with_counts(
 
     `committed` is non-preview submitted ratings; `reserved` is live
     reservations (incomplete, unexpired assignments) held by *other* raters.
-    The selector needs them separately: committed counts decide whether a
-    question still needs data at all, while reservations only influence
-    priority and the backfill cap. Preview ratings are excluded: they aren't
-    real data and must not make a question look satisfied to the selector.
+    The selector needs them separately: committed counts decide which tier a
+    question falls in, while reservations only influence serving priority.
+    Preview ratings are excluded: they aren't real data and must not make a
+    question look satisfied to the selector.
     """
     rating_counts = (
         select(

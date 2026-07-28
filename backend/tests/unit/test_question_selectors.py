@@ -17,27 +17,27 @@ def _question(question_id: int, parent_question_id: int | None = None) -> Questi
     )
 
 
-def _select(open_questions=(), backfill_questions=(), full_questions=(), **kwargs):
+def _select(open_questions=(), backfill_questions=(), done_questions=(), **kwargs):
     return build_selected_question(
         open_questions=list(open_questions),
         backfill_questions=list(backfill_questions),
-        full_questions=list(full_questions),
+        done_questions=list(done_questions),
         **kwargs,
     )
 
 
-def test_groups_split_into_open_backfill_full():
+def test_groups_split_into_open_backfill_done():
     q_open = _question(1)  # 1 rating, 0 reserved: still an open slot
     q_backfill = _question(2)  # 1 rating + 1 reservation: covered but not committed
-    q_saturated = _question(3)  # 1 rating + 3 reservations: backfill cap reached
+    q_heavily_reserved = _question(3)  # many reservations, still no committed target
     q_done = _question(4)  # committed target met
     q_new = _question(5)  # None counts treated as zero
 
-    open_questions, backfill_questions, full_questions = build_question_selection_groups(
+    open_questions, backfill_questions, done_questions = build_question_selection_groups(
         eligible_questions=[
             (q_open, 1, 0),
             (q_backfill, 1, 1),
-            (q_saturated, 1, 3),
+            (q_heavily_reserved, 1, 3),
             (q_done, 2, 0),
             (q_new, None, None),
         ],
@@ -45,8 +45,8 @@ def test_groups_split_into_open_backfill_full():
     )
 
     assert [(q.id, c) for q, c in open_questions] == [(1, 1), (5, 0)]
-    assert [(q.id, c) for q, c in backfill_questions] == [(2, 2)]
-    assert [q.id for q in full_questions] == [3, 4]
+    assert [(q.id, c) for q, c in backfill_questions] == [(2, 2), (3, 4)]
+    assert [q.id for q in done_questions] == [4]
 
 
 def test_open_work_preferred_over_backfill():
@@ -59,19 +59,21 @@ def test_open_work_preferred_over_backfill():
     assert selected is q_open
 
 
-def test_backfill_served_when_no_open_work():
+def test_backfill_preferred_over_done():
     q_backfill = _question(1)
-    selected = _select(backfill_questions=[(q_backfill, 2)])
+    q_done = _question(2)
+    selected = _select(
+        backfill_questions=[(q_backfill, 2)],
+        done_questions=[q_done],
+    )
     assert selected is q_backfill
 
 
-def test_full_not_served_to_real_raters():
-    assert _select(full_questions=[_question(1)], allow_full=False) is None
-
-
-def test_full_served_in_preview():
-    question = _question(1)
-    assert _select(full_questions=[question], allow_full=True) is question
+def test_done_served_when_nothing_else_left():
+    # An in-session rater's extra rating is free, so done questions keep the
+    # rater busy rather than ending their session early.
+    q_done = _question(1)
+    assert _select(done_questions=[q_done]) is q_done
 
 
 def test_least_covered_question_preferred():
@@ -104,30 +106,18 @@ def test_in_progress_group_backfill_sibling_preferred_over_unrelated_open():
     assert selected is sibling_backfill
 
 
-def test_in_progress_group_full_sibling_skipped_for_real_raters():
-    # A sibling whose committed target is met is not served just to finish
-    # the group — the extra rating would be truncated in analysis.
-    sibling_full = _question(2, parent_question_id=10)
+def test_in_progress_group_done_sibling_preferred_over_unrelated_open():
+    # Group cohesion wins even when the sibling is already at target: the
+    # rater finishes the group (extra rating is free) instead of being
+    # bounced to unrelated questions mid-group.
+    sibling_done = _question(2, parent_question_id=10)
     unrelated = _question(3)
     selected = _select(
         open_questions=[(unrelated, 0)],
-        full_questions=[sibling_full],
+        done_questions=[sibling_done],
         in_progress_parent_ids={10},
-        allow_full=False,
     )
-    assert selected is unrelated
-
-
-def test_in_progress_group_full_sibling_served_in_preview():
-    sibling_full = _question(2, parent_question_id=10)
-    unrelated = _question(3)
-    selected = _select(
-        open_questions=[(unrelated, 0)],
-        full_questions=[sibling_full],
-        in_progress_parent_ids={10},
-        allow_full=True,
-    )
-    assert selected is sibling_full
+    assert selected is sibling_done
 
 
 def test_nothing_left_returns_none():

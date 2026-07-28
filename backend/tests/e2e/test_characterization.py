@@ -3561,27 +3561,33 @@ def _upload_single_question(client: TestClient, experiment_id: int) -> None:
     assert response.status_code == 200
 
 
-def test_backfill_capped_at_two_extra_raters(client: TestClient):
-    # One question, target 1. The first rater reserves the slot; two more may
-    # work it in parallel as abandonment insurance; a fourth is sent home.
+def test_extra_raters_backfill_inflight_question_and_overshoot_is_accepted(client: TestClient):
+    # One question, target 1. The first rater reserves the slot; later raters
+    # join the same question as backfill (a reserving rater may never submit,
+    # and their sessions are already paid for either way).
     experiment = _create_experiment_with_target(client, target=1)
     _upload_single_question(client, experiment["id"])
 
     sessions = [
-        _start_session(client, experiment["id"], prolific_pid=f"PID_CAP_{i}") for i in range(4)
+        _start_session(client, experiment["id"], prolific_pid=f"PID_BF_{i}") for i in range(3)
     ]
-    served = [_get_next_question(client, session) for session in sessions[:3]]
+    served = [_get_next_question(client, session) for session in sessions]
     assert all(question is not None for question in served)
     assert len({question["id"] for question in served}) == 1
 
-    assert _get_next_question(client, sessions[3]) is None
-
-    # One backfiller submits: the committed target is met, so nobody else is
-    # served, but the original holder's late rating is still accepted.
+    # A backfiller submits first: the committed target is met, yet both the
+    # original holder's late rating and a fresh in-session rater's extra are
+    # still accepted (flagged for truncation in the export).
     _submit(client, sessions[1], served[1])
-    session_late = _start_session(client, experiment["id"], prolific_pid="PID_CAP_LATE")
-    assert _get_next_question(client, session_late) is None
     _submit(client, sessions[0], served[0])
+
+    session_late = _start_session(client, experiment["id"], prolific_pid="PID_BF_LATE")
+    late_question = _get_next_question(client, session_late)
+    assert late_question is not None
+    _submit(client, session_late, late_question)
+    # Only exhaustion ends the session: the late rater has now rated
+    # everything, so nothing further is served.
+    assert _get_next_question(client, session_late) is None
 
 
 def test_next_question_reserves_and_is_stable_across_refreshes(client: TestClient):
@@ -3596,7 +3602,7 @@ def test_next_question_reserves_and_is_stable_across_refreshes(client: TestClien
     assert first["id"] == second["id"]
 
 
-def test_no_questions_served_once_target_met(client: TestClient):
+def test_rater_keeps_rating_after_target_until_exhausted(client: TestClient):
     experiment = _create_experiment_with_target(client, target=1)
     _upload_questions(client, experiment["id"])
 
@@ -3605,12 +3611,17 @@ def test_no_questions_served_once_target_met(client: TestClient):
         question = _get_next_question(client, session_a)
         assert question is not None
         _submit(client, session_a, question)
-    # Rater A has rated everything; nothing left for them either.
+    # Rater A has personally rated everything; only then are they done.
     assert _get_next_question(client, session_a) is None
 
-    # Every question is at target: a fresh rater gets no work instead of
-    # producing overshoot ratings that analysis would truncate away.
+    # Every question is at target, but a rater already in session is paid
+    # either way — keep serving them; their extras are flagged in the export
+    # and can substitute for quality-filtered ratings.
     session_b = _start_session(client, experiment["id"], prolific_pid="PID_TGT_B")
+    for _ in range(2):
+        question = _get_next_question(client, session_b)
+        assert question is not None
+        _submit(client, session_b, question)
     assert _get_next_question(client, session_b) is None
 
 
