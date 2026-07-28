@@ -10,6 +10,7 @@ type ExperimentRecord = {
   question_count: number;
   rating_count: number;
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
+  archived_at: string | null;
 };
 
 type UploadRecord = {
@@ -112,6 +113,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     question_count: 0,
     rating_count: 0,
     status: 'DRAFT',
+    archived_at: null,
     ...partial,
   };
 }
@@ -210,7 +212,18 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/experiments' && method === 'GET') {
-      await fulfillJson(route, 200, state.experiments);
+      // Mirror the backend's archived filtering so the detail page's per-id
+      // fetch (not the list) is what resolves an archived experiment:
+      // `include_archived=true` returns both, `archived=true` returns only
+      // archived, and the default hides archived rows.
+      const includeArchived = url.searchParams.get('include_archived') === 'true';
+      const archivedOnly = url.searchParams.get('archived') === 'true';
+      const rows = includeArchived
+        ? state.experiments
+        : archivedOnly
+          ? state.experiments.filter((item) => item.archived_at !== null)
+          : state.experiments.filter((item) => item.archived_at === null);
+      await fulfillJson(route, 200, rows);
       return;
     }
 
@@ -807,6 +820,37 @@ test('a non-numeric experiment id shows a friendly not-found message', async ({ 
   await page.goto('/admin/experiments/abc');
 
   await expect(page.getByText('Experiment not found')).toBeVisible();
+});
+
+test('opening an archived experiment resolves via the per-id fetch', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Archived Experiment',
+      question_count: 2,
+      archived_at: '2026-03-10T00:00:00Z',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // The list endpoint hides archived rows, so the old list-then-.find() lookup
+  // would 404 here. Resolving the page proves the detail view now fetches the
+  // experiment by id directly.
+  await expect(page.getByRole('heading', { name: 'Archived Experiment' })).toBeVisible();
+  await expect(page.getByText('Experiment not found')).toHaveCount(0);
 });
 
 test('spend card formats a zero-decimal currency (ISK) without decimals', async ({ page }) => {
