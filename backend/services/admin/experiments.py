@@ -151,13 +151,21 @@ async def list_experiments(
 
         # remaining = Σ max(0, target − ratings) over each non-parent question,
         # matching calculate_recommendation's definition of "target not met".
+        # Preview ratings are excluded — they aren't real data and must not
+        # make the target look met.
+        real_ratings = (
+            select(Rating.id, Rating.question_id)
+            .join(Rater, Rating.rater_id == Rater.id)
+            .where(Rater.is_preview == False)  # noqa: E712
+            .subquery()
+        )
         per_question_counts = (
             select(
                 Question.experiment_id.label("experiment_id"),
                 Question.id.label("question_id"),
-                func.count(Rating.id).label("cnt"),
+                func.count(real_ratings.c.id).label("cnt"),
             )
-            .outerjoin(Rating, Rating.question_id == Question.id)
+            .outerjoin(real_ratings, real_ratings.c.question_id == Question.id)
             .where(Question.experiment_id.in_(experiment_ids))
             .where(Question.id.notin_(parent_question_ids_subquery()))
             .group_by(Question.experiment_id, Question.id)
@@ -622,21 +630,46 @@ async def get_experiment_stats(
         .having(func.count(Rating.id) >= experiment.num_ratings_per_question)
     )
 
+    # Per-question counts capped at the target: overshoot on one question
+    # must not offset a shortfall on another, so progress toward the target
+    # sums min(count, target) rather than raw ratings. Parent rows are
+    # excluded to match the total_questions denominator; they are never
+    # served so this is defensive only.
+    per_question_stmt = (
+        select(func.count(Rating.id).label("count"))
+        .join(Question, Rating.question_id == Question.id)
+        .join(Rater, Rating.rater_id == Rater.id)
+        .where(Question.experiment_id == experiment_id)
+        .where(Question.id.notin_(parent_question_ids_subquery()))
+        .group_by(Rating.question_id)
+    )
+
     if not include_preview:
         preview_filter = Rater.is_preview == False  # noqa: E712
         ratings_stmt = ratings_stmt.where(preview_filter)
         raters_stmt = raters_stmt.where(preview_filter)
         complete_stmt = complete_stmt.where(preview_filter)
+        per_question_stmt = per_question_stmt.where(preview_filter)
+
+    per_question_counts = per_question_stmt.subquery()
+    effective_stmt = select(
+        func.coalesce(
+            func.sum(func.least(per_question_counts.c.count, experiment.num_ratings_per_question)),
+            0,
+        )
+    ).select_from(per_question_counts)
 
     total_ratings = (await db.execute(ratings_stmt)).scalar_one()
     total_raters = (await db.execute(raters_stmt)).scalar_one()
     questions_complete = len((await db.execute(complete_stmt)).all())
+    effective_ratings = (await db.execute(effective_stmt)).scalar_one()
 
     return {
         "experiment_name": experiment.name,
         "total_questions": total_questions,
         "questions_complete": int(questions_complete),
         "total_ratings": int(total_ratings or 0),
+        "effective_ratings": int(effective_ratings or 0),
         "total_raters": int(total_raters or 0),
         "target_ratings_per_question": experiment.num_ratings_per_question,
     }

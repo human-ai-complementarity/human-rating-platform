@@ -5,7 +5,7 @@ import io
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -27,6 +27,7 @@ EXPORT_COLUMNS = [
     "time_started",
     "time_submitted",
     "response_time_seconds",
+    "counts_toward_target",
 ]
 
 
@@ -53,6 +54,7 @@ def _build_export_row(
     rating: Rating,
     question: Question,
     rater: Rater,
+    counts_toward_target: bool,
 ) -> list[object]:
     response_time = (rating.time_submitted - rating.time_started).total_seconds()
     return [
@@ -68,6 +70,7 @@ def _build_export_row(
         rating.time_started.isoformat(),
         rating.time_submitted.isoformat(),
         round(response_time, 2),
+        counts_toward_target,
     ]
 
 
@@ -79,7 +82,7 @@ async def stream_export_csv_chunks(
     include_preview: bool = False,
 ) -> AsyncIterator[str]:
     resolved_batch_size = _resolve_batch_size(batch_size)
-    await fetch_experiment_or_404(experiment_id, db)
+    experiment = await fetch_experiment_or_404(experiment_id, db)
 
     logger.info(
         "CSV export started",
@@ -92,10 +95,36 @@ async def stream_export_csv_chunks(
     )
     yield _build_export_header_chunk()
 
-    statement = (
-        select(Rating, Question, Rater)
+    # Rank each real rating within its question by submission order. Only
+    # the first `num_ratings_per_question` count toward the target; later
+    # ones are overshoot (e.g. a rating submitted after its reservation
+    # expired) and are exported flagged False so analysis can truncate.
+    # Preview ratings are never ranked and never count.
+    rating_rank = (
+        select(
+            Rating.id.label("rating_id"),
+            func.row_number()
+            .over(
+                partition_by=Rating.question_id,
+                order_by=(Rating.time_submitted, Rating.id),
+            )
+            .label("rank"),
+        )
         .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
+        # Scoped inside the subquery: the outer experiment filter can't be
+        # pushed into a window function, and ranks within a question are
+        # identical either way (a question belongs to one experiment).
+        .where(Question.experiment_id == experiment_id)
+        .where(Rater.is_preview == False)  # noqa: E712
+        .subquery()
+    )
+
+    statement = (
+        select(Rating, Question, Rater, rating_rank.c.rank)
+        .join(Question, Rating.question_id == Question.id)
+        .join(Rater, Rating.rater_id == Rater.id)
+        .outerjoin(rating_rank, Rating.id == rating_rank.c.rating_id)
         .where(Question.experiment_id == experiment_id)
         .order_by(Rating.id)
         .execution_options(stream_results=True, yield_per=resolved_batch_size)
@@ -110,8 +139,9 @@ async def stream_export_csv_chunks(
         rows_in_chunk = 0
         total_rows = 0
 
-        async for rating, question, rater in result:
-            writer.writerow(_build_export_row(rating, question, rater))
+        async for rating, question, rater, rank in result:
+            counts_toward_target = rank is not None and rank <= experiment.num_ratings_per_question
+            writer.writerow(_build_export_row(rating, question, rater, counts_toward_target))
             rows_in_chunk += 1
             total_rows += 1
 

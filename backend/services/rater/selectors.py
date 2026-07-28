@@ -7,56 +7,94 @@ from models import Question
 
 def build_question_selection_groups(
     *,
-    eligible_questions: list[tuple[Question, int | None]],
+    eligible_questions: list[tuple[Question, int | None, int | None]],
     target_ratings_per_question: int,
-) -> tuple[list[tuple[Question, int]], list[Question]]:
-    under_quota: list[tuple[Question, int]] = []
-    at_quota: list[Question] = []
+) -> tuple[list[tuple[Question, int]], list[tuple[Question, int]], list[Question]]:
+    """Split eligible questions into (open, backfill, done) tiers.
 
-    for question, count in eligible_questions:
-        rating_count = int(count or 0)
-        if rating_count < target_ratings_per_question:
-            under_quota.append((question, rating_count))
+    open      — coverage (committed ratings + live reservations) below target:
+                real work, served first.
+    backfill  — committed ratings below target but every remaining slot is
+                reserved: served next as abandonment insurance, since a
+                reserving rater may never submit.
+    done      — committed ratings at target: served last. An in-session
+                rater's reward is already committed, so extra ratings cost
+                no additional rater spend; they're flagged in the export and
+                truncated in analysis, and can substitute when a rating is
+                later quality-filtered out. Not entirely free on assisted
+                experiments: each served question still pays the assistance
+                method's LLM inference (multi-turn methods especially). If
+                that spend becomes material, gate this tier on
+                assistance_method == "none".
+
+    Tier entries carry coverage so selection can prefer the least-covered
+    question; each serve adds a reservation, which spreads concurrent raters
+    across the tier instead of piling them onto one question.
+    """
+    open_questions: list[tuple[Question, int]] = []
+    backfill_questions: list[tuple[Question, int]] = []
+    done_questions: list[Question] = []
+
+    for question, committed, reserved in eligible_questions:
+        committed_count = int(committed or 0)
+        coverage = committed_count + int(reserved or 0)
+        if committed_count >= target_ratings_per_question:
+            done_questions.append(question)
+        elif coverage < target_ratings_per_question:
+            open_questions.append((question, coverage))
         else:
-            at_quota.append(question)
+            backfill_questions.append((question, coverage))
 
-    return under_quota, at_quota
+    return open_questions, backfill_questions, done_questions
 
 
 def build_selected_question(
     *,
-    under_quota: list[tuple[Question, int]],
-    at_quota: list[Question],
+    open_questions: list[tuple[Question, int]],
+    backfill_questions: list[tuple[Question, int]],
+    done_questions: list[Question],
     in_progress_parent_ids: set[int] | None = None,
 ) -> Question | None:
+    """Pick the next question, or None once the rater has rated everything.
+
+    Raters are kept busy for their whole session: open slots first, then
+    in-flight questions that still lack committed ratings, then done
+    questions whose extras cost no rater spend. Recruiting cost is controlled
+    elsewhere (the study auto-stops at the committed target); serving is
+    only about getting the most out of raters already paid for.
+    """
     in_progress_parent_ids = in_progress_parent_ids or set()
 
     # If the rater has started a parent group, keep them in it until all its
     # remaining children are rated — sibling sub-questions should be served
     # consecutively rather than randomly interleaved with unrelated questions.
     if in_progress_parent_ids:
-        in_group_under = [
-            (q, c) for q, c in under_quota if q.parent_question_id in in_progress_parent_ids
+        for tier in (open_questions, backfill_questions):
+            in_group = [(q, c) for q, c in tier if q.parent_question_id in in_progress_parent_ids]
+            if in_group:
+                return _pick_least_covered(in_group)
+
+        in_group_done = [
+            q for q in done_questions if q.parent_question_id in in_progress_parent_ids
         ]
-        if in_group_under:
-            return _pick_least_rated(in_group_under)
+        if in_group_done:
+            return random.choice(in_group_done)
 
-        in_group_at = [q for q in at_quota if q.parent_question_id in in_progress_parent_ids]
-        if in_group_at:
-            return random.choice(in_group_at)
+    # Otherwise prioritize the least-covered questions first to keep
+    # experiment coverage balanced.
+    if open_questions:
+        return _pick_least_covered(open_questions)
 
-    # Otherwise prioritize the least-rated questions first to keep experiment
-    # coverage balanced.
-    if under_quota:
-        return _pick_least_rated(under_quota)
+    if backfill_questions:
+        return _pick_least_covered(backfill_questions)
 
-    if at_quota:
-        return random.choice(at_quota)
+    if done_questions:
+        return random.choice(done_questions)
 
     return None
 
 
-def _pick_least_rated(candidates: list[tuple[Question, int]]) -> Question:
+def _pick_least_covered(candidates: list[tuple[Question, int]]) -> Question:
     candidates.sort(key=lambda item: item[1])
     min_count = candidates[0][1]
     return random.choice([q for q, count in candidates if count == min_count])

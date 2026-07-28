@@ -1524,7 +1524,10 @@ def test_prolific_recommendation_updates_after_pilot_rating(client: TestClient, 
     assert payload["avg_time_per_question_seconds"] > 0
     assert payload["remaining_rating_actions"] == 3
     assert payload["total_hours_remaining"] > 0
-    assert payload["recommended_places"] == 1
+    # 2 questions at target 2 with 1 rating collected: the unrated question
+    # still needs 2 ratings from distinct raters, so 2 places is the floor
+    # regardless of how fast raters are.
+    assert payload["recommended_places"] == 2
     assert payload["is_complete"] is False
 
 
@@ -3483,3 +3486,340 @@ def test_list_experiments_surfaces_pending_action_flag(
     entry = _list_entry(client, experiment["id"])
     assert entry["needs_attention"] is False
     assert entry["attention_reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# Question assignment (reservation) behavior
+# ---------------------------------------------------------------------------
+
+
+def _create_experiment_with_target(client: TestClient, target: int) -> dict:
+    response = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("experiment"),
+            "num_ratings_per_question": target,
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def _get_next_question(client: TestClient, session_payload: dict) -> dict | None:
+    response = client.get("/api/raters/next-question", headers=_rater_headers(session_payload))
+    assert response.status_code == 200
+    return response.json()
+
+
+def _submit(client: TestClient, session_payload: dict, question: dict) -> None:
+    response = client.post(
+        "/api/raters/submit",
+        headers=_rater_headers(session_payload),
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_concurrent_raters_get_distinct_questions_via_reservations(client: TestClient):
+    # Target 1 with 2 questions: serving a question reserves its only slot,
+    # so a second rater must get the other question even though nothing has
+    # been submitted yet. A third rater joins as backfill on the least-covered
+    # in-flight question rather than being sent home while ratings are still
+    # unsubmitted.
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_questions(client, experiment["id"])
+
+    session_a = _start_session(client, experiment["id"], prolific_pid="PID_RES_A")
+    question_a = _get_next_question(client, session_a)
+
+    session_b = _start_session(client, experiment["id"], prolific_pid="PID_RES_B")
+    question_b = _get_next_question(client, session_b)
+
+    assert question_a is not None and question_b is not None
+    assert question_a["id"] != question_b["id"]
+
+    session_c = _start_session(client, experiment["id"], prolific_pid="PID_RES_C")
+    question_c = _get_next_question(client, session_c)
+    assert question_c is not None
+    assert question_c["id"] in {question_a["id"], question_b["id"]}
+
+
+def _upload_single_question(client: TestClient, experiment_id: int) -> None:
+    csv_data = (
+        "question_id,question_text,gt_answer,options,question_type\n"
+        "only,The only question,Yes,Yes|No,MC"
+    )
+    response = client.post(
+        f"/api/admin/experiments/{experiment_id}/upload",
+        files={"file": ("single.csv", csv_data, "text/csv")},
+    )
+    assert response.status_code == 200
+
+
+def test_extra_raters_backfill_inflight_question_and_overshoot_is_accepted(client: TestClient):
+    # One question, target 1. The first rater reserves the slot; later raters
+    # join the same question as backfill (a reserving rater may never submit,
+    # and their sessions are already paid for either way).
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_single_question(client, experiment["id"])
+
+    sessions = [
+        _start_session(client, experiment["id"], prolific_pid=f"PID_BF_{i}") for i in range(3)
+    ]
+    served = [_get_next_question(client, session) for session in sessions]
+    assert all(question is not None for question in served)
+    assert len({question["id"] for question in served}) == 1
+
+    # A backfiller submits first: the committed target is met, yet both the
+    # original holder's late rating and a fresh in-session rater's extra are
+    # still accepted (flagged for truncation in the export).
+    _submit(client, sessions[1], served[1])
+    _submit(client, sessions[0], served[0])
+
+    session_late = _start_session(client, experiment["id"], prolific_pid="PID_BF_LATE")
+    late_question = _get_next_question(client, session_late)
+    assert late_question is not None
+    _submit(client, session_late, late_question)
+    # Only exhaustion ends the session: the late rater has now rated
+    # everything, so nothing further is served.
+    assert _get_next_question(client, session_late) is None
+
+
+def test_next_question_reserves_and_is_stable_across_refreshes(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_REFRESH")
+
+    first = _get_next_question(client, session_payload)
+    second = _get_next_question(client, session_payload)
+
+    assert first is not None and second is not None
+    assert first["id"] == second["id"]
+
+
+def test_rater_keeps_rating_after_target_until_exhausted(client: TestClient):
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_questions(client, experiment["id"])
+
+    session_a = _start_session(client, experiment["id"], prolific_pid="PID_TGT_A")
+    for _ in range(2):
+        question = _get_next_question(client, session_a)
+        assert question is not None
+        _submit(client, session_a, question)
+    # Rater A has personally rated everything; only then are they done.
+    assert _get_next_question(client, session_a) is None
+
+    # Every question is at target, but a rater already in session is paid
+    # either way — keep serving them; their extras are flagged in the export
+    # and can substitute for quality-filtered ratings.
+    session_b = _start_session(client, experiment["id"], prolific_pid="PID_TGT_B")
+    for _ in range(2):
+        question = _get_next_question(client, session_b)
+        assert question is not None
+        _submit(client, session_b, question)
+    assert _get_next_question(client, session_b) is None
+
+
+def test_end_session_releases_reserved_slot(client: TestClient):
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_questions(client, experiment["id"])
+
+    session_a = _start_session(client, experiment["id"], prolific_pid="PID_REL_A")
+    question_a = _get_next_question(client, session_a)
+    session_b = _start_session(client, experiment["id"], prolific_pid="PID_REL_B")
+    question_b = _get_next_question(client, session_b)
+    assert question_a is not None and question_b is not None
+
+    # A walks away without answering; their reserved slot must become
+    # servable again immediately.
+    end_response = client.post("/api/raters/end-session", headers=_rater_headers(session_a))
+    assert end_response.status_code == 200
+
+    session_c = _start_session(client, experiment["id"], prolific_pid="PID_REL_C")
+    question_c = _get_next_question(client, session_c)
+    assert question_c is not None
+    assert question_c["id"] == question_a["id"]
+
+    # The ended rater can't be served (and re-reserve) anything either —
+    # mirrors submit_rating's is_active check.
+    rejected = client.get("/api/raters/next-question", headers=_rater_headers(session_a))
+    assert rejected.status_code == 403
+
+
+def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid: str) -> dict:
+    response = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment_id,
+            "PROLIFIC_PID": prolific_pid,
+            "STUDY_ID": "preview",
+            "SESSION_ID": f"SESSION_{prolific_pid}",
+            "preview": "true",
+        },
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
+def test_preview_ratings_do_not_count_toward_target(client: TestClient):
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_questions(client, experiment["id"])
+
+    preview_session = _start_preview_session(client, experiment["id"], "PID_PREV_BLOCK")
+    for _ in range(2):
+        question = _get_next_question(client, preview_session)
+        assert question is not None
+        _submit(client, preview_session, question)
+
+    # Both questions carry a preview rating, but real work must still be served.
+    real_session = _start_session(client, experiment["id"], prolific_pid="PID_PREV_REAL")
+    assert _get_next_question(client, real_session) is not None
+
+
+def test_preview_rater_can_walk_flow_when_target_met(client: TestClient):
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_questions(client, experiment["id"])
+
+    real_session = _start_session(client, experiment["id"], prolific_pid="PID_WALK_REAL")
+    for _ in range(2):
+        question = _get_next_question(client, real_session)
+        assert question is not None
+        _submit(client, real_session, question)
+
+    # Real raters are done, but a preview session still gets served so the
+    # admin can always demo the flow.
+    preview_session = _start_preview_session(client, experiment["id"], "PID_WALK_PREV")
+    assert _get_next_question(client, preview_session) is not None
+
+
+def _fetch_question_db_ids(sync_engine, experiment_id: int) -> list[int]:
+    with sync_engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id FROM questions WHERE experiment_id = :experiment_id ORDER BY id"),
+            {"experiment_id": experiment_id},
+        ).all()
+    return [row[0] for row in rows]
+
+
+def _seed_rating_from_new_rater(
+    sync_engine,
+    *,
+    experiment_id: int,
+    question_db_id: int,
+    prolific_id: str,
+) -> None:
+    with sync_engine.begin() as conn:
+        rater_id = conn.execute(
+            text(
+                """
+                INSERT INTO raters (
+                    prolific_id, study_id, session_id, experiment_id,
+                    session_start, is_active
+                ) VALUES (
+                    :prolific_id, 'STUDY_SEED', :session_id, :experiment_id,
+                    NOW(), true
+                ) RETURNING id
+                """
+            ),
+            {
+                "prolific_id": prolific_id,
+                "session_id": f"SESSION_{prolific_id}",
+                "experiment_id": experiment_id,
+            },
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                INSERT INTO ratings (
+                    question_id, rater_id, answer, confidence,
+                    time_started, time_submitted
+                ) VALUES (:question_id, :rater_id, 'Yes', 3, NOW(), NOW())
+                """
+            ),
+            {"question_id": question_db_id, "rater_id": rater_id},
+        )
+
+
+def test_stats_effective_ratings_cap_overshoot_per_question(client: TestClient, sync_engine):
+    # Target 2. q1 overshoots to 3 ratings, q2 has only 1: raw total (4)
+    # reads as target met, effective total (min-capped per question) must not.
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    q1_id, q2_id = _fetch_question_db_ids(sync_engine, experiment["id"])
+
+    for index in range(3):
+        _seed_rating_from_new_rater(
+            sync_engine,
+            experiment_id=experiment["id"],
+            question_db_id=q1_id,
+            prolific_id=f"PID_CAP_Q1_{index}",
+        )
+    _seed_rating_from_new_rater(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_db_id=q2_id,
+        prolific_id="PID_CAP_Q2_0",
+    )
+
+    stats = client.get(f"/api/admin/experiments/{experiment['id']}/stats").json()
+    assert stats["total_ratings"] == 4
+    assert stats["effective_ratings"] == 3  # min(3, 2) + min(1, 2)
+    assert stats["questions_complete"] == 1
+
+
+def test_export_flags_ratings_beyond_target(client: TestClient, sync_engine):
+    # Target 2 with 3 ratings on one question: the first two by submission
+    # order count toward the target, the third is flagged for truncation.
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    q1_id, _q2_id = _fetch_question_db_ids(sync_engine, experiment["id"])
+
+    for index in range(3):
+        _seed_rating_from_new_rater(
+            sync_engine,
+            experiment_id=experiment["id"],
+            question_db_id=q1_id,
+            prolific_id=f"PID_TRUNC_{index}",
+        )
+
+    with client.stream("GET", f"/api/admin/experiments/{experiment['id']}/export") as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    rows = list(csv.DictReader(io.StringIO(body)))
+    assert len(rows) == 3
+    rows.sort(key=lambda row: int(row["rating_id"]))
+    assert [row["counts_toward_target"] for row in rows] == ["True", "True", "False"]
+
+
+@respx.mock
+def test_submit_auto_stops_active_round_when_target_met(client: TestClient, enable_prolific):
+    experiment, pilot = _create_prolific_experiment(client)
+    # Upload before publishing: the first publish locks experiment config.
+    _upload_questions(client, experiment["id"])
+    _mock_publish_study()
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish"
+    )
+    assert publish_resp.status_code == 200
+
+    stop_route = _mock_close_study()
+
+    # Target 2 × 2 questions: two raters each rating both questions meet the
+    # target on the final submit, which must stop the still-ACTIVE study.
+    for prolific_pid in ("PID_STOP_A", "PID_STOP_B"):
+        session_payload = _start_session(client, experiment["id"], prolific_pid=prolific_pid)
+        for _ in range(2):
+            question = _get_next_question(client, session_payload)
+            assert question is not None
+            _submit(client, session_payload, question)
+
+    assert stop_route.called
+
+    rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
+    assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"

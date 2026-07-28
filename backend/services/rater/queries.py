@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import ExperimentRound, Question, Rating, Rater
+from models import ExperimentRound, Question, QuestionAssignment, Rating, Rater
 from services.queries import (  # noqa: F401 — re-exported for backwards compat
     fetch_experiment_or_404,
     fetch_parent_question_text,
@@ -107,22 +109,57 @@ async def fetch_eligible_questions_with_counts(
     *,
     experiment_id: int,
     rated_question_ids: list[int],
+    rater_id: int,
+    now: datetime,
     db: AsyncSession,
-) -> list[tuple[Question, int | None]]:
+) -> list[tuple[Question, int | None, int | None]]:
+    """Questions this rater may still rate, as (question, committed, reserved).
+
+    `committed` is non-preview submitted ratings; `reserved` is live
+    reservations (incomplete, unexpired assignments) held by *other* raters.
+    The selector needs them separately: committed counts decide which tier a
+    question falls in, while reservations only influence serving priority.
+    Preview ratings are excluded: they aren't real data and must not make a
+    question look satisfied to the selector.
+    """
+    # Both subqueries scope to this experiment's questions before grouping:
+    # the outer experiment filter can't be pushed into a grouped subquery, so
+    # without the inner filter every serve would aggregate platform-wide
+    # history while holding the per-experiment advisory lock.
     rating_counts = (
         select(
-            Question.id.label("question_id"),
+            Rating.question_id.label("question_id"),
             func.count(Rating.id).label("count"),
         )
-        .outerjoin(Rating, Rating.question_id == Question.id)
+        .join(Question, Rating.question_id == Question.id)
+        .join(Rater, Rating.rater_id == Rater.id)
         .where(Question.experiment_id == experiment_id)
-        .group_by(Question.id)
+        .where(Rater.is_preview == False)  # noqa: E712
+        .group_by(Rating.question_id)
+        .subquery()
+    )
+    assignment_counts = (
+        select(
+            QuestionAssignment.question_id.label("question_id"),
+            func.count(QuestionAssignment.id).label("count"),
+        )
+        .join(Question, QuestionAssignment.question_id == Question.id)
+        .where(Question.experiment_id == experiment_id)
+        .where(QuestionAssignment.completed_at.is_(None))
+        .where(QuestionAssignment.expires_at > now)
+        .where(QuestionAssignment.rater_id != rater_id)
+        .group_by(QuestionAssignment.question_id)
         .subquery()
     )
 
     eligible_query = (
-        select(Question, rating_counts.c.count)
+        select(
+            Question,
+            func.coalesce(rating_counts.c.count, 0),
+            func.coalesce(assignment_counts.c.count, 0),
+        )
         .outerjoin(rating_counts, Question.id == rating_counts.c.question_id)
+        .outerjoin(assignment_counts, Question.id == assignment_counts.c.question_id)
         .where(Question.experiment_id == experiment_id)
         .where(Question.id.notin_(parent_question_ids_subquery()))
     )
@@ -130,6 +167,53 @@ async def fetch_eligible_questions_with_counts(
         eligible_query = eligible_query.where(Question.id.notin_(rated_question_ids))
 
     return (await db.execute(eligible_query)).all()
+
+
+async def fetch_live_assignment_for_rater(
+    *,
+    rater_id: int,
+    now: datetime,
+    db: AsyncSession,
+) -> QuestionAssignment | None:
+    """The rater's current unexpired, unanswered reservation, if any.
+
+    Served-but-unanswered questions are re-served on the next request so a
+    page refresh can't be used to re-roll, and the reserved slot isn't
+    forgotten. If the rater sits on one question past the reservation TTL,
+    a refresh falls through to fresh selection and may serve a different
+    question; their eventual answer to the original is still accepted.
+
+    A rater holds at most one live reservation by construction (a new one is
+    only created when none is live, and re-serving revives the same row);
+    the ordering makes the pick deterministic, freshest first, should that
+    invariant ever break.
+    """
+    return (
+        await db.execute(
+            select(QuestionAssignment)
+            .where(QuestionAssignment.rater_id == rater_id)
+            .where(QuestionAssignment.completed_at.is_(None))
+            .where(QuestionAssignment.expires_at > now)
+            .order_by(QuestionAssignment.expires_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def fetch_assignment_for_question(
+    *,
+    rater_id: int,
+    question_id: int,
+    db: AsyncSession,
+) -> QuestionAssignment | None:
+    return (
+        await db.execute(
+            select(QuestionAssignment).where(
+                QuestionAssignment.rater_id == rater_id,
+                QuestionAssignment.question_id == question_id,
+            )
+        )
+    ).scalar_one_or_none()
 
 
 async def fetch_rater_completed_count(rater_id: int, db: AsyncSession) -> int:

@@ -69,6 +69,11 @@ export interface ExperimentStats {
   total_questions: number;
   questions_complete: number;
   total_ratings: number;
+  // Per-question counts capped at the target, then summed. Unlike
+  // total_ratings, overshoot on one question can't mask a shortfall on
+  // another, so effective_ratings === total_questions × target means
+  // every question is individually complete.
+  effective_ratings: number;
   total_raters: number;
   target_ratings_per_question: number;
 }

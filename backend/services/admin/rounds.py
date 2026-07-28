@@ -95,7 +95,6 @@ def _extract_prolific_message(body: str) -> str | None:
 
 
 SESSION_DURATION_SECONDS = 3600  # 1 hour per Prolific place
-ROUND_BUFFER_FACTOR = 0.8
 ROUND_SYNC_STATUSES = {
     ProlificStudyStatus.UNPUBLISHED,
     ProlificStudyStatus.PUBLISHING,
@@ -515,11 +514,29 @@ async def calculate_recommendation(
     )
 
     target = experiment.num_ratings_per_question
-    remaining_actions = sum(max(0, target - rating_counts.get(qid, 0)) for qid in all_question_ids)
+    deficits = [max(0, target - rating_counts.get(qid, 0)) for qid in all_question_ids]
+    remaining_actions = sum(deficits)
 
     is_complete = remaining_actions == 0
     total_hours = (remaining_actions * avg_time) / SESSION_DURATION_SECONDS
-    recommended_places = math.ceil(total_hours * ROUND_BUFFER_FACTOR) if not is_complete else 0
+
+    if is_complete:
+        recommended_places = 0
+    else:
+        # A place's useful output is capped twice: by session time, and by
+        # the number of distinct questions still needing ratings (a rater
+        # can rate each question at most once). And however fast raters
+        # are, a question needing K more ratings needs K distinct raters,
+        # so the max per-question deficit is a hard floor on places.
+        questions_needing_ratings = sum(1 for d in deficits if d > 0)
+        max_deficit = max(deficits)
+        per_place_capacity = float(questions_needing_ratings)
+        if avg_time > 0:
+            per_place_capacity = min(per_place_capacity, SESSION_DURATION_SECONDS / avg_time)
+        recommended_places = max(
+            math.ceil(remaining_actions / per_place_capacity),
+            max_deficit,
+        )
 
     return RecommendationResponse(
         avg_time_per_question_seconds=round(avg_time, 2),

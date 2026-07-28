@@ -271,6 +271,7 @@ async function installApiMocks(
         total_questions: experiment?.question_count ?? 0,
         questions_complete: 0,
         total_ratings: 0,
+        effective_ratings: 0,
         total_raters: 0,
         target_ratings_per_question: experiment?.num_ratings_per_question ?? 3,
       });
