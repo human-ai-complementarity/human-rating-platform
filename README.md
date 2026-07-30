@@ -102,12 +102,12 @@ DATABASE__URL=postgresql://postgres:postgres@localhost:5432/human_rating_platfor
 Frontend (Render Static Site):
 
 - `VITE_CLERK_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY`
-- `VITE_API_HOST=https://<your-api-service>.onrender.com`  (origin only; no path)
+- `VITE_API_HOST=https://api.platform.complementarities.org`  (origin only; no path)
 
 Backend (Render Web Service):
 
 - `DATABASE__URL=postgresql://<user>:<pass>@<host>:5432/<db>` (Render Postgres internal URL)
-- `APP__CORS_ORIGINS=["https://<your-web-service>.onrender.com"]`
+- `APP__CORS_ORIGINS=["https://platform.complementarities.org"]`
 - `ADMIN_ALLOWLIST=alice@example.com,bob@example.com`
 - `APP_SECRET_KEY=<long-random-string>`
 - `COOKIE_SECURE=true`
@@ -289,7 +289,7 @@ Frontend env (`frontend/.env`):
 
 - `VITE_API_HOST` — optional API origin for cross-origin deployments
   - **Local dev (default):** empty → frontend uses same-origin `/api` via Vite proxy
-  - **Render example:** `https://human-rating-platform-api-uxnt.onrender.com`
+  - **Prod:** `https://api.platform.complementarities.org`
 
 ## End-To-End Testing
 
@@ -387,14 +387,14 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 
 **API service** (set in Render Dashboard → API service → Environment):
 - `DATABASE__URL` — Render Postgres internal connection string
-- `APP__CORS_ORIGINS` — JSON array including web origin, e.g. `["https://human-rating-platform-web.onrender.com"]`
-- `APP__SITE_URL` — public frontend URL, e.g. `https://human-rating-platform-web.onrender.com`
+- `APP__CORS_ORIGINS` — JSON array including web origin, e.g. `["https://platform.complementarities.org"]`
+- `APP__SITE_URL` — public frontend URL, e.g. `https://platform.complementarities.org`
 - `PROLIFIC__API_TOKEN` — Prolific API token (set to enable automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under (recommended on multi-workspace accounts to avoid wrong-currency studies; workspace and currency are auto-derived)
 - `PROLIFIC__ENV_LABEL` — leave unset in prod (dev sets it to `dev` to distinguish participant groups created locally from prod ones)
 
 **Web service** (set in Render Dashboard → Web service → Environment):
-- `VITE_API_HOST` — public API origin, e.g. `https://human-rating-platform-api-uxnt.onrender.com`
+- `VITE_API_HOST` — public API origin, e.g. `https://api.platform.complementarities.org`
 
 ### Deploy flow
 
