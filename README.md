@@ -16,18 +16,19 @@ PostgreSQL stores everything. Alembic manages schema migrations.
 
 ```text
 backend/              FastAPI app, models, services, migrations, tests
-  routers/            API route handlers (admin, raters)
-  services/           Business logic (admin/, rater/, assistance/)
+  routers/            API route handlers (admin, raters, v1)
+  services/           Business logic (admin/, rater/, assistance/, v1/, api_keys.py)
     assistance/       Assistance method plugin system (base, registry, operations, methods/)
+    v1/               Read models for the programmatic /api/v1 API
   alembic/            Migration config + versions
   scripts/            migrate.sh, predeploy.sh, seed_dev.py, config_check.py
   config.toml         Default local settings
 frontend/             React + TypeScript + Vite SPA
   src/api.ts          API client (route map, request pipeline, error handling)
-  src/components/     UI components (AdminView, RaterView, ExperimentDetail, etc.)
+  src/components/     UI components (AdminView, RaterView, ExperimentDetail, ApiKeysPage, etc.)
 scripts/              CI/deploy scripts (deploy.sh, resolve_deploy_target.sh)
 .github/workflows/    CI (main.yml) + deploy (deploy.yml)
-docker-compose.yml    Local dev stack (db + api + test runner)
+docker-compose.yml    Local dev stack (db + migrate + api; frontend runs separately via `make web`)
 sample_questions.csv  Example CSV for testing uploads
 ```
 
@@ -145,22 +146,22 @@ Creates `backend/.env`, `frontend/.env`, and `frontend/.env.local` from template
   # DATABASE__URL=postgresql://postgres:postgres@localhost:5432/human_rating_platform
   ```
 
-### 2) Start backend + DB (Terminal A)
+### 2) Start everything
 
 ```bash
-make up
+make dev.up      # backend + DB (Docker) + frontend (background) in one command
 ```
 
-This starts Postgres, runs migrations, and launches the API with hot reload.
+Open http://localhost:5173. Stop with `make dev.down`, restart with
+`make dev.restart`, check with `make dev.status`. The frontend runs detached,
+logging to `frontend/vite.log`.
 
-### 3) Start frontend (Terminal B)
+> Prefer separate terminals (e.g. to watch frontend logs live)? Run `make up`
+> (backend + DB) in one and `make web` (frontend, foreground) in another.
+> `make up` alone starts **only** the backend — the frontend is a separate
+> process, so nothing shows at `localhost:5173` until you also start it.
 
-```bash
-cd frontend
-make up
-```
-
-### 4) Open the app
+### 3) Open the app
 
 - **App:** http://localhost:5173
 - **API docs (Swagger):** http://localhost:8000/docs
@@ -173,15 +174,22 @@ Sign in with a Clerk account whose email appears in `ADMIN_ALLOWLIST`. The admin
 ## Daily Commands
 
 ```bash
-make up          # start db + migrations + api (hot reload)
+make dev.up      # start EVERYTHING: backend + DB + frontend (background)
+make dev.down    # stop EVERYTHING
+make dev.restart # restart EVERYTHING
+make dev.status  # show backend + frontend status
+make up          # start db + migrations + api (hot reload) — backend only
+make web         # start the frontend Vite dev server (:5173, foreground)
 make ps          # show service status
 make logs        # follow db/api logs
 make test        # backend test suite (unit + e2e) in an isolated compose stack
 make fmt         # format backend with ruff
 make lint        # every linter CI gates on (ruff, eslint, tsc, yamllint)
 make ci          # full CI gate set: lint + backend tests + Playwright e2e
-make down        # stop stack
 ```
+
+`make dev.up` is the one-command full stack. If you prefer separate terminals,
+`make up` (backend + DB) plus `make web` (frontend) does the same.
 
 DB lifecycle:
 
@@ -271,6 +279,7 @@ Top‑level convenience envs (not nested):
 
 - `ADMIN_ALLOWLIST` — comma‑separated or JSON array of admin emails
 - `APP_SECRET_KEY` — HMAC signer for the HTTP‑only admin session cookie
+- `API_KEYS` — static bearer keys for the programmatic `/api/v1` read API (comma‑separated or JSON array). Optional: primary keys are minted from the dashboard **API Keys** tab and stored hashed; this env list is accepted in addition, as a fallback for local dev or a pre‑DB deployment. See [Programmatic API](#programmatic-api-apiv1) below.
 - `RATER_SESSION_SECRET_KEY` — dedicated HMAC signer for rater session tokens (falls back to `APP_SECRET_KEY` if unset)
 - `RATER_SESSION_TTL_SECONDS` — TTL in seconds for rater session tokens (defaults to 3600 = 60 minutes; same as session duration)
 - `HRP_SESSION_COOKIE`, `HRP_SESSION_MAX_AGE`, `COOKIE_SECURE` — cookie name/ttl/secure flag
@@ -429,6 +438,7 @@ If you use Claude Code, this is automatic — the repo checks in its Claude conf
 
 - [CLAUDE.md](CLAUDE.md) tells Claude to run `make ci` before pushing or updating a PR, in every session.
 - The `/lint` and `/ci` skills ([.claude/skills/](.claude/skills/)) run the gates on demand and know how to fix each gate's failures.
+- The `/dev` skill starts, stops, restarts, or checks all local servers (backend + frontend) — ask it to "bring up the app" or "restart the servers".
 - [.claude/settings.json](.claude/settings.json) pre-approves the make targets so Claude runs them without permission prompts.
 
 ---
@@ -549,6 +559,50 @@ https://your-app.com/rate?experiment_id=1&PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_
 
 ---
 
+## Programmatic API (`/api/v1`)
+
+A versioned, read-only API for programmatic clients (CLIs, inference pipelines
+that fetch experiment data directly). It's separate from the cookie-authed
+dashboard routes so a script can use it without a browser.
+
+### Auth
+
+Send a bearer key: `Authorization: Bearer <key>`. Keys are matched against
+DB-backed keys (managed in the dashboard) and, as a fallback, the static
+`API_KEYS` env list. Auth **fails closed** — a request with no matching key is
+always rejected. Only over HTTPS in any deployed environment; the key is
+plaintext on the wire.
+
+### Managing keys (dashboard)
+
+The admin dashboard has an **API Keys** tab (`/admin/api-keys`, alongside
+Experiments and Documentation):
+
+- **Create** mints a key and shows the full secret **once** — copy it then; only
+  a masked prefix is shown afterward. Only the SHA-256 hash is stored.
+- **Regenerate** rotates the secret in place (same name/id); the old secret
+  stops working immediately.
+- **Revoke** disables a key (kept for audit). Regenerating a revoked key
+  reactivates it under a fresh secret.
+
+For local dev or automation you can instead set `API_KEYS=local-dev-key` in
+`backend/.env` (recreate the api container to pick up `.env` changes).
+
+### Example
+
+```bash
+BASE=http://localhost:8000/api/v1
+KEY=local-dev-key
+
+# list experiments (batch by id with ?ids=1&ids=2)
+curl -s -H "Authorization: Bearer $KEY" "$BASE/experiments" | jq .
+
+# page through one experiment's raw ratings (stop at offset >= total)
+curl -s -H "Authorization: Bearer $KEY" "$BASE/experiments/1/ratings?limit=500&offset=0" | jq .
+```
+
+The full endpoint list is in **API Endpoints** below.
+
 ## API Endpoints
 
 Interactive Swagger docs are available at `/docs` when the backend is running.
@@ -572,6 +626,21 @@ Interactive Swagger docs are available at `/docs` when the backend is running.
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/publish` — publish an unpublished round
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/close` — close an active round
 - `DELETE /api/admin/experiments/{id}` — delete experiment (+ Prolific study if linked)
+- `GET /api/admin/api-keys` — list programmatic API keys (masked)
+- `POST /api/admin/api-keys` — mint a key; returns the full secret once
+- `POST /api/admin/api-keys/{id}/regenerate` — rotate a key's secret in place
+- `POST /api/admin/api-keys/{id}/revoke` — revoke a key (soft; kept for audit)
+
+### Programmatic API (`/api/v1`)
+
+Read-only, versioned API for CLIs and inference pipelines. Authenticated with a
+static bearer key (`Authorization: Bearer <key>`) instead of the browser cookie
+the dashboard uses. See [Programmatic API](#programmatic-api-apiv1) for the auth
+model and key management.
+
+- `GET /api/v1/experiments` — list experiments for discovery; `ids` (repeatable) fetches a specific batch
+- `GET /api/v1/experiments/{id}` — single experiment detail
+- `GET /api/v1/experiments/{id}/ratings` — raw human ratings, paginated (`limit`/`offset`/`include_preview`, plus `total`)
 
 ### Rater
 
