@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import Timer from './Timer';
-import QuestionCard from './QuestionCard';
+import QuestionCard, { parseOptions } from './QuestionCard';
+import type { AnswerRequest } from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
 import type { Session, Question, AssistanceStep } from '../types';
@@ -129,6 +130,10 @@ function RaterView() {
   const [assistanceSessionId, setAssistanceSessionId] = useState<number | null>(null);
   const [assistanceStep, setAssistanceStep] = useState<AssistanceStep | null>(null);
   const [showIntro, setShowIntro] = useState(false);
+  // Mirror of the rater's current answer plus a channel for pushing an answer
+  // into the question card (used when a Top-N suggestion is clicked).
+  const [raterAnswer, setRaterAnswer] = useState('');
+  const [answerRequest, setAnswerRequest] = useState<AnswerRequest | null>(null);
 
   const experimentId = searchParams.get('experiment_id');
   const prolificId = searchParams.get('PROLIFIC_PID');
@@ -177,6 +182,8 @@ function RaterView() {
     try {
       setAssistanceSessionId(null);
       setAssistanceStep(null);
+      setAnswerRequest(null);
+      setRaterAnswer('');
       const q = await api.getNextQuestion(token);
       if (q === null || (typeof q === 'object' && Object.keys(q).length === 0)) {
         setAllDone(true);
@@ -360,6 +367,15 @@ const handleSessionExpired = () => {
       void loadNextQuestion(sessionToken);
     }
   }, [assistanceStep?.type, sessionToken, loadNextQuestion]);
+
+  const questionOptions = useMemo(
+    () => (question ? parseOptions(question.options) : []),
+    [question]
+  );
+
+  const handleSelectSuggestion = useCallback((answer: string) => {
+    setAnswerRequest(prev => ({ answer, seq: (prev?.seq ?? 0) + 1 }));
+  }, []);
 
   const hasAssistance = session?.assistance_method && session.assistance_method !== 'none';
   const assistanceBlocksRating = Boolean(
@@ -596,6 +612,8 @@ const handleSessionExpired = () => {
               onSubmit={handleSubmit}
               assistanceActive={assistanceBlocksRating}
               assistanceAnswer={assistanceStep?.payload.synthesis?.answer ?? null}
+              answerRequest={answerRequest}
+              onAnswerChange={setRaterAnswer}
               humanPromptPrefix={session?.human_prompt_prefix ?? null}
               humanPromptSuffix={session?.human_prompt_suffix ?? null}
             />
@@ -605,6 +623,9 @@ const handleSessionExpired = () => {
             questionId={question.id}
             onSessionId={setAssistanceSessionId}
             onStepChange={setAssistanceStep}
+            questionOptions={questionOptions}
+            selectedAnswer={raterAnswer}
+            onSelectAnswer={handleSelectSuggestion}
           />
         </div>
       ) : (

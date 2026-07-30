@@ -106,3 +106,5 @@ When you enable it, you pick a **confidence method**:
 ## Top-N suggestions
 
 The AI ranks the most likely answers and shows the rater a short ordered list before they submit. One-shot, lightweight. Set the number of suggestions to show (capped by the number of MC options when applicable).
+
+Suggestions are ordered highest AI confidence first, each labelled with that confidence score. Clicking a suggestion selects the matching answer in the question card; the rater can still change it before submitting.

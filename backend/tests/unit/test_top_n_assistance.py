@@ -175,6 +175,12 @@ class TestNormalizeCandidates:
         assert result[0]["answer"] == "Yes"
         assert result[0]["rank"] == 1
         assert result[0]["confidence"] == 80
+        assert result[0]["option_index"] == 1
+
+    def test_option_index_is_none_without_options(self):
+        raw = [{"answer": "free text", "confidence": 80, "rationale": ""}]
+        result = _normalize_candidates(raw, [], n=3)
+        assert result[0]["option_index"] is None
 
     def test_respects_n_limit(self):
         raw = [
@@ -184,6 +190,36 @@ class TestNormalizeCandidates:
         ]
         result = _normalize_candidates(raw, self.OPTIONS, n=2)
         assert len(result) == 2
+
+    def test_sorts_by_descending_confidence(self):
+        raw = [
+            {"option_index": 1, "confidence": 40, "rationale": ""},
+            {"option_index": 2, "confidence": 90, "rationale": ""},
+            {"option_index": 3, "confidence": 65, "rationale": ""},
+        ]
+        result = _normalize_candidates(raw, self.OPTIONS, n=3)
+        assert [c["answer"] for c in result] == ["No", "Maybe", "Yes"]
+        assert [c["confidence"] for c in result] == [90, 65, 40]
+        assert [c["rank"] for c in result] == [1, 2, 3]
+
+    def test_keeps_highest_confidence_when_truncating(self):
+        # The LLM returned its best candidate last; slicing before sorting would
+        # have dropped it.
+        raw = [
+            {"option_index": 1, "confidence": 20, "rationale": ""},
+            {"option_index": 2, "confidence": 30, "rationale": ""},
+            {"option_index": 3, "confidence": 95, "rationale": ""},
+        ]
+        result = _normalize_candidates(raw, self.OPTIONS, n=1)
+        assert [c["answer"] for c in result] == ["Maybe"]
+
+    def test_equal_confidence_keeps_llm_order(self):
+        raw = [
+            {"option_index": 3, "confidence": 50, "rationale": ""},
+            {"option_index": 1, "confidence": 50, "rationale": ""},
+        ]
+        result = _normalize_candidates(raw, self.OPTIONS, n=3)
+        assert [c["answer"] for c in result] == ["Maybe", "Yes"]
 
     def test_deduplicates_repeated_option_index(self):
         raw = [
@@ -304,6 +340,29 @@ async def test_start_returns_display_step_with_candidates():
     assert step.payload["candidates"][0]["answer"] == "Yes"
     assert step.payload["candidates"][0]["rank"] == 1
     assert step.payload["has_options"] is True
+
+
+@pytest.mark.asyncio
+async def test_start_orders_candidates_by_confidence():
+    method = TopNAssistance()
+    question = _make_question(options="Yes|No|Maybe")
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 30, "rationale": "weak"},
+            {"option_index": 3, "confidence": 88, "rationale": "strong"},
+            {"option_index": 2, "confidence": 55, "rationale": "middling"},
+        ]
+    )
+
+    with patch(
+        "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
+    ):
+        step = await method.start(question, {"n": 3})
+
+    candidates = step.payload["candidates"]
+    assert [c["answer"] for c in candidates] == ["Maybe", "No", "Yes"]
+    assert [c["rank"] for c in candidates] == [1, 2, 3]
+    assert [c["option_index"] for c in candidates] == [3, 2, 1]
 
 
 @pytest.mark.asyncio

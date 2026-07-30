@@ -51,6 +51,7 @@ type RaterSessionRecord = {
   experiment_name: string;
   completion_url: string | null;
   rater_session_token: string;
+  assistance_method?: string;
 };
 
 type RaterAnalyticsRecord = {
@@ -99,6 +100,8 @@ type MockState = {
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
   questionsBySessionToken: Record<string, RaterQuestionRecord>;
+  assistanceStepBySessionToken: Record<string, unknown>;
+  submittedRatings: Array<{ answer: string; confidence: number }>;
   nextExperimentId: number;
   nextUploadId: number;
   nextRoundId: number;
@@ -134,6 +137,8 @@ function createMockState(): MockState {
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
     questionsBySessionToken: {},
+    assistanceStepBySessionToken: {},
+    submittedRatings: [],
     nextExperimentId: 1,
     nextUploadId: 1,
     nextRoundId: 1,
@@ -454,7 +459,24 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname === '/api/raters/assistance/start' && method === 'POST') {
+      const sessionToken = request.headers()['x-rater-session'] || '';
+      await fulfillJson(
+        route,
+        200,
+        state.assistanceStepBySessionToken[sessionToken] || {
+          session_id: 1,
+          type: 'none',
+          is_terminal: true,
+          payload: {},
+        }
+      );
+      return;
+    }
+
     if (pathname === '/api/raters/submit' && method === 'POST') {
+      const payload = request.postDataJSON() as { answer: string; confidence: number };
+      state.submittedRatings.push({ answer: payload.answer, confidence: payload.confidence });
       await fulfillJson(route, 200, { id: 1, success: true });
       return;
     }
@@ -686,6 +708,91 @@ test('long-context question links document separately and shows only question in
 
   await expect(documentPopup.getByRole('heading', { name: 'Document for Question long-q' })).toBeVisible();
   await expect(documentPopup.getByText('Document line one')).toBeVisible();
+});
+
+test('top-N suggestions are ordered by AI confidence and clicking one selects that option', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Top-N Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 401,
+    session_start: '2026-03-09T00:05:00Z',
+    session_end_time: '2099-03-09T01:05:00Z',
+    experiment_name: 'Top-N Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-top-n',
+    assistance_method: 'top_n',
+  };
+  state.questionsBySessionToken['token-top-n'] = {
+    id: 504,
+    question_id: 'top-n-q',
+    question_text: 'Which answer is correct?',
+    options: 'Yes|No|Maybe',
+    question_type: 'MC',
+  };
+  // The backend hands back candidates already sorted by descending confidence.
+  state.assistanceStepBySessionToken['token-top-n'] = {
+    session_id: 77,
+    type: 'display',
+    is_terminal: true,
+    payload: {
+      kind: 'top_n',
+      top_n: 3,
+      has_options: true,
+      candidates: [
+        { rank: 1, answer: 'Maybe', option_index: 3, confidence: 91, rationale: 'best fit' },
+        { rank: 2, answer: 'Yes', option_index: 1, confidence: 60, rationale: 'plausible' },
+        { rank: 3, answer: 'No', option_index: 2, confidence: 12, rationale: 'unlikely' },
+      ],
+    },
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/rate?experiment_id=1&PROLIFIC_PID=pid-1&STUDY_ID=study-1&SESSION_ID=session-1');
+
+  await expect(page.getByText('Top 3 answers by AI confidence')).toBeVisible();
+
+  const candidates = page.getByTestId(/^top-n-candidate-/);
+  await expect(candidates).toHaveCount(3);
+  await expect(candidates.nth(0)).toContainText('Maybe');
+  await expect(candidates.nth(0)).toContainText('AI confidence 91%');
+  await expect(candidates.nth(1)).toContainText('Yes');
+  await expect(candidates.nth(2)).toContainText('No');
+  await expect(candidates.nth(2)).toContainText('AI confidence 12%');
+
+  // Clicking the top suggestion selects the matching option in the question card.
+  await candidates.nth(0).click();
+  await expect(page.getByTestId('question-option-2')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('question-option-0')).toHaveAttribute('aria-pressed', 'false');
+  await expect(candidates.nth(0)).toHaveAttribute('aria-pressed', 'true');
+
+  // The rater can still override, and the panel highlight follows the answer.
+  await page.getByTestId('question-option-0').click();
+  await expect(candidates.nth(0)).toHaveAttribute('aria-pressed', 'false');
+  await expect(candidates.nth(1)).toHaveAttribute('aria-pressed', 'true');
+
+  // Re-picking the same suggestion after the override still applies.
+  await candidates.nth(0).click();
+  await expect(page.getByTestId('question-option-2')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings[0]?.answer).toBe('Maybe');
 });
 
 test('rater ignores a stored session from another experiment and starts a fresh one', async ({ page }) => {

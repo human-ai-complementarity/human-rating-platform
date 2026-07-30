@@ -8,6 +8,27 @@ interface AssistancePanelProps {
   questionId: number;
   onSessionId: (sessionId: number) => void;
   onStepChange: (step: AssistanceStep | null) => void;
+  // The options the rater sees, used to map a Top-N suggestion onto a real
+  // option. Empty for free-response questions.
+  questionOptions?: string[];
+  // The rater's current answer, so the picked suggestion stays highlighted.
+  selectedAnswer?: string;
+  onSelectAnswer?: (answer: string) => void;
+}
+
+type TopNCandidate = NonNullable<AssistanceStep['payload']['candidates']>[number];
+
+// The backend and the rater UI parse `question.options` independently, so match
+// on the answer text first and fall back to the 1-based index the LLM returned.
+// Returns null when the suggestion maps onto no option the rater can pick.
+function resolveCandidateAnswer(candidate: TopNCandidate, options: string[]): string | null {
+  if (options.length === 0) return candidate.answer;
+  if (options.includes(candidate.answer)) return candidate.answer;
+  const index = candidate.option_index;
+  if (typeof index === 'number' && index >= 1 && index <= options.length) {
+    return options[index - 1];
+  }
+  return null;
 }
 
 const monoLabel = {
@@ -73,6 +94,116 @@ function OptionTile({
         )}
       </span>
       <span style={{ flex: 1 }}>{children}</span>
+    </button>
+  );
+}
+
+function CandidateCard({
+  candidate,
+  selected,
+  onSelect,
+}: {
+  candidate: TopNCandidate;
+  selected: boolean;
+  onSelect?: () => void;
+}) {
+  const interactive = onSelect !== undefined;
+  const cardStyle: React.CSSProperties = {
+    display: 'block',
+    width: '100%',
+    border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+    borderRadius: 'var(--radius-sm)',
+    padding: '14px 16px',
+    background: selected ? 'var(--accent-soft)' : 'var(--surface-2)',
+    textAlign: 'left',
+    cursor: interactive ? 'pointer' : 'default',
+  };
+
+  const content = (
+    <>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+        {interactive && (
+          <span
+            aria-hidden
+            style={{
+              width: 15,
+              height: 15,
+              borderRadius: '50%',
+              border: `2px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+              background: 'var(--surface)',
+              flex: '0 0 auto',
+              marginTop: 2,
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            {selected && (
+              <span
+                style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--accent)' }}
+              />
+            )}
+          </span>
+        )}
+        <span
+          style={{
+            font: '700 12px/1.5 var(--font-mono)',
+            color: 'var(--accent-soft-ink)',
+            letterSpacing: '0.04em',
+            flex: '0 0 auto',
+          }}
+        >
+          {candidate.rank}
+        </span>
+        <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.4 }}>
+          {candidate.answer}
+        </span>
+      </div>
+      {candidate.confidence !== undefined && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+          <div
+            style={{
+              flex: 1,
+              height: 5,
+              borderRadius: 999,
+              background: 'var(--faint)',
+              overflow: 'hidden',
+            }}
+          >
+            <div
+              style={{
+                width: `${candidate.confidence}%`,
+                height: '100%',
+                background: 'var(--accent)',
+              }}
+            />
+          </div>
+          <span style={{ ...monoLabel, color: 'var(--accent-soft-ink)', flex: '0 0 auto' }}>
+            AI confidence {candidate.confidence}%
+          </span>
+        </div>
+      )}
+      {candidate.rationale && (
+        <p style={{ margin: '8px 0 0', fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
+          {candidate.rationale}
+        </p>
+      )}
+    </>
+  );
+
+  if (!interactive) {
+    return <div style={cardStyle}>{content}</div>;
+  }
+
+  return (
+    <button
+      type="button"
+      data-testid={`top-n-candidate-${candidate.rank}`}
+      aria-pressed={selected}
+      onClick={onSelect}
+      style={{ ...cardStyle, font: 'inherit' }}
+    >
+      {content}
     </button>
   );
 }
@@ -247,7 +378,15 @@ const answeredRowStyle: React.CSSProperties = {
   borderBottom: '1px solid var(--line)',
 };
 
-function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }: AssistancePanelProps) {
+function AssistancePanel({
+  sessionToken,
+  questionId,
+  onSessionId,
+  onStepChange,
+  questionOptions = [],
+  selectedAnswer = '',
+  onSelectAnswer,
+}: AssistancePanelProps) {
   const [step, setStep] = useState<AssistanceStep | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -357,68 +496,30 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
       <div style={panelStyle}>
         <div style={panelHeaderStyle}>
           <span style={stepLabelStyle}>AI Assistance</span>
-          <p style={panelTitleStyle}>Top {step.payload.top_n ?? candidates.length} suggestions</p>
+          <p style={panelTitleStyle}>
+            Top {step.payload.top_n ?? candidates.length} answers by AI confidence
+          </p>
         </div>
         <div style={panelBodyStyle}>
+          <p style={{ margin: '0 0 14px', fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
+            Ranked highest-confidence first. The percentages are the AI's own confidence
+            scores, not ground truth.
+            {onSelectAnswer && ' Click a suggestion to select it as your answer; you can still change it before submitting.'}
+          </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {candidates.map(candidate => (
-              <div
-                key={`${candidate.rank}-${candidate.answer}`}
-                style={{
-                  border: '1px solid var(--faint)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '14px 16px',
-                  background: 'var(--surface-2)',
-                }}
-              >
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    gap: 12,
-                    marginBottom: 6,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                    <span
-                      style={{
-                        font: '700 12px/1 var(--font-mono)',
-                        color: 'var(--accent-soft-ink)',
-                        letterSpacing: '0.04em',
-                      }}
-                    >
-                      {candidate.rank}
-                    </span>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.4 }}>
-                      {candidate.answer}
-                    </span>
-                  </div>
-                  {candidate.confidence !== undefined && (
-                    <span
-                      style={{
-                        flexShrink: 0,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: 'var(--accent-soft-ink)',
-                        background: 'var(--accent-soft)',
-                        borderRadius: 999,
-                        padding: '3px 9px',
-                        fontFamily: 'var(--font-mono)',
-                        letterSpacing: '0.04em',
-                      }}
-                    >
-                      {candidate.confidence}%
-                    </span>
-                  )}
-                </div>
-                {candidate.rationale && (
-                  <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
-                    {candidate.rationale}
-                  </p>
-                )}
-              </div>
-            ))}
+            {candidates.map(candidate => {
+              const resolved = resolveCandidateAnswer(candidate, questionOptions);
+              const selectable = Boolean(onSelectAnswer && resolved !== null);
+              const selected = resolved !== null && resolved === selectedAnswer;
+              return (
+                <CandidateCard
+                  key={`${candidate.rank}-${candidate.answer}`}
+                  candidate={candidate}
+                  selected={selected}
+                  onSelect={selectable ? () => onSelectAnswer!(resolved!) : undefined}
+                />
+              );
+            })}
           </div>
         </div>
       </div>

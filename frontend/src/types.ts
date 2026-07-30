@@ -147,6 +147,8 @@ export interface AssistanceStep {
     candidates?: Array<{
       rank: number;
       answer: string;
+      // 1-based index into the question's option list; null for free-response.
+      option_index?: number | null;
       confidence?: number;
       rationale?: string;
     }>;

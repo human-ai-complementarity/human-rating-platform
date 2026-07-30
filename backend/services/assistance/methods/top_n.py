@@ -43,6 +43,9 @@ option_index is 1-based and must match the numbering shown in the user prompt.
 
 Free-response (no options):
 {"candidates":[{"answer":"...","confidence":0-100,"rationale":"short reason"}]}
+
+confidence is your own calibrated probability (0-100) that the candidate is the
+correct answer. List candidates from highest to lowest confidence.
 """
 
 
@@ -100,6 +103,14 @@ def _parse_top_n_response(raw: str) -> dict:
 
 
 def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> list[dict[str, Any]]:
+    """Validate LLM candidates, order them by descending confidence, keep top n.
+
+    Ranks are assigned after sorting so `rank` always agrees with the displayed
+    order. The sort is stable, so equal-confidence candidates keep the LLM's own
+    ordering. Candidates are collected before truncating: the LLM sometimes
+    returns its list out of confidence order, and slicing first would drop a
+    higher-confidence candidate that appeared late.
+    """
     if not isinstance(raw_candidates, list):
         return []
 
@@ -110,6 +121,7 @@ def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> li
         if not isinstance(item, dict):
             continue
 
+        option_index: int | None = None
         if options:
             try:
                 option_index = int(item["option_index"])
@@ -139,16 +151,19 @@ def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> li
 
         candidates.append(
             {
-                "rank": len(candidates) + 1,
                 "answer": answer,
+                "option_index": option_index,
                 "confidence": max(0, min(100, confidence)),
                 "rationale": str(item.get("rationale", "")).strip(),
             }
         )
-        if len(candidates) >= n:
-            break
 
-    return candidates
+    candidates.sort(key=lambda candidate: candidate["confidence"], reverse=True)
+    top_candidates = candidates[:n]
+    for rank, candidate in enumerate(top_candidates, start=1):
+        candidate["rank"] = rank
+
+    return top_candidates
 
 
 def _compose_system_prompt(extra: str | None) -> str:
@@ -187,9 +202,11 @@ class TopNAssistance(AssistanceMethod):
         )
         return_instruction = (
             f"Return exactly the top {n} candidate(s) as option_index values "
-            f"(1-based, matching the numbering above), ordered best first."
+            f"(1-based, matching the numbering above), ordered from highest to "
+            f"lowest confidence."
             if options
-            else f"Return exactly the top {n} candidate answer(s) as free text, ordered best first."
+            else f"Return exactly the top {n} candidate answer(s) as free text, "
+            f"ordered from highest to lowest confidence."
         )
         user_prompt = (
             f"{context_block}"

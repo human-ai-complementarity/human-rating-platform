@@ -8,12 +8,19 @@ const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
 
+// An externally requested answer (e.g. the rater clicked a Top-N suggestion).
+// `seq` increments per request so re-selecting the same answer after the rater
+// changed their mind still applies.
+export type AnswerRequest = { answer: string; seq: number };
+
 interface QuestionCardProps {
   question: Question;
   onSubmit: (answer: string, confidence: number, timeStarted: string) => Promise<void>;
   disabled?: boolean;
   assistanceAnswer?: string | null;
   assistanceActive?: boolean;
+  answerRequest?: AnswerRequest | null;
+  onAnswerChange?: (answer: string) => void;
   // Researcher-supplied framing from the dataset metadata. `humanPromptPrefix`
   // is rendered above the question text, `humanPromptSuffix` below it. Both are
   // constant for the session and either may be null.
@@ -95,7 +102,9 @@ function parseQuestionDisplay(questionText: string): QuestionDisplay {
   return { documentText, questionText: displayQuestion };
 }
 
-function parseOptions(rawOptions: string | null): string[] {
+// Exported so callers that need to map an assistance suggestion onto the
+// options the rater actually sees use the same parse.
+export function parseOptions(rawOptions: string | null): string[] {
   if (!rawOptions) {
     return [];
   }
@@ -172,7 +181,7 @@ function buildLongContextDocumentHtml(question: Question, documentText: string):
 </html>`;
 }
 
-function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false, humanPromptPrefix = null, humanPromptSuffix = null }: QuestionCardProps) {
+function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false, answerRequest = null, onAnswerChange, humanPromptPrefix = null, humanPromptSuffix = null }: QuestionCardProps) {
   const [selectedAnswer, setSelectedAnswer] = useState('');
   const [freeTextAnswer, setFreeTextAnswer] = useState('');
   const [confidence, setConfidence] = useState(3);
@@ -183,6 +192,10 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     () => parseQuestionDisplay(question.question_text),
     [question.question_text]
   );
+
+  const options = useMemo(() => parseOptions(question.options), [question.options]);
+  const isMC = question.question_type === 'MC' && options.length > 0;
+  const answer = isMC ? selectedAnswer : freeTextAnswer;
 
   useEffect(() => {
     setSelectedAnswer('');
@@ -211,16 +224,30 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
     if (!assistanceAnswer) return;
-    if (question.question_type === 'FT') {
-      setFreeTextAnswer(assistanceAnswer);
-    } else {
+    if (isMC) {
       setSelectedAnswer(assistanceAnswer);
+    } else {
+      setFreeTextAnswer(assistanceAnswer);
     }
   }, [assistanceAnswer]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSubmit = async () => {
-    const answer = question.question_type === 'FT' ? freeTextAnswer : selectedAnswer;
+  // Apply an answer the rater picked outside this card (a Top-N suggestion).
+  useEffect(() => {
+    if (!answerRequest) return;
+    if (isMC) {
+      setSelectedAnswer(answerRequest.answer);
+    } else {
+      setFreeTextAnswer(answerRequest.answer);
+    }
+  }, [answerRequest?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Mirror the current answer upward so the assistance panel can show which
+  // suggestion is selected.
+  useEffect(() => {
+    onAnswerChange?.(answer);
+  }, [answer]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSubmit = async () => {
     if (!answer.trim()) {
       alert('Please provide an answer');
       return;
@@ -234,9 +261,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
   };
 
-  const options = parseOptions(question.options);
-
-  const isMC = question.question_type === 'MC' && options.length > 0;
   const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
 
   return (
@@ -363,6 +387,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
               <button
                 key={index}
                 type="button"
+                data-testid={`question-option-${index}`}
                 aria-pressed={selected}
                 onClick={() => setSelectedAnswer(option)}
                 onMouseEnter={(e) => {
