@@ -220,6 +220,15 @@ def test_lists_and_batches_experiments(v1_client: TestClient, sync_engine) -> No
     assert {e["id"] for e in batch.json()} == {a, archived}
 
 
+def test_batch_ids_ignore_pagination_limit(v1_client: TestClient, sync_engine) -> None:
+    # An id batch must return every requested experiment even when the batch is
+    # larger than `limit` — it's bounded by the id list, not paginated.
+    ids = [_insert_experiment(sync_engine, name=f"batch-{i}") for i in range(3)]
+    resp = v1_client.get("/api/v1/experiments", headers=_auth(), params={"ids": ids, "limit": 1})
+    assert resp.status_code == 200
+    assert {e["id"] for e in resp.json()} == set(ids)
+
+
 def test_get_single_experiment(v1_client: TestClient, sync_engine) -> None:
     eid = _insert_experiment(sync_engine, name="exp-detail")
     resp = v1_client.get(f"/api/v1/experiments/{eid}", headers=_auth())

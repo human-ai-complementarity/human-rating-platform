@@ -103,17 +103,17 @@ up: ## Start db + alembic migrations + api (hot reload)
 web: ## Start the frontend Vite dev server (:5173, foreground)
 	$(call _title,==> Starting frontend dev server)
 	$(call _info,Serving the UI on http://localhost:$(FRONTEND_PORT) — press Ctrl+C to stop)
-	@$(MAKE) -C frontend up
+	@$(MAKE) -C frontend up PORT=$(FRONTEND_PORT)
 
 dev.up: ## Start EVERYTHING: backend + DB (Docker) + frontend (background)
 	$(call _title,==> Starting full dev stack)
 	@$(MAKE) --no-print-directory up
-	@$(MAKE) --no-print-directory -C frontend up.bg
+	@$(MAKE) --no-print-directory -C frontend up.bg PORT=$(FRONTEND_PORT)
 	@$(MAKE) --no-print-directory dev.status
 
 dev.down: ## Stop EVERYTHING: frontend + backend + DB
 	$(call _title,==> Stopping full dev stack)
-	@$(MAKE) --no-print-directory -C frontend stop
+	@$(MAKE) --no-print-directory -C frontend stop PORT=$(FRONTEND_PORT)
 	@$(MAKE) --no-print-directory down
 
 dev.restart: ## Restart EVERYTHING (down then up)

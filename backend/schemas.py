@@ -311,6 +311,9 @@ class V1RatingsPage(BaseModel):
 
 # --- API key management (dashboard, cookie-authed) -------------------------
 class ApiKeyCreate(BaseModel):
+    # Strip before length validation so a whitespace-only name (" ") is rejected
+    # as empty rather than stored as a blank, unlabeled key.
+    model_config = ConfigDict(str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=255)
 
 

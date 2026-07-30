@@ -88,3 +88,10 @@ def test_regenerate_reactivates_revoked_key(client: TestClient) -> None:
 def test_regenerate_missing_key_404(client: TestClient) -> None:
     assert client.post("/api/admin/api-keys/9999/regenerate").status_code == 404
     assert client.post("/api/admin/api-keys/9999/revoke").status_code == 404
+
+
+def test_blank_name_is_rejected(client: TestClient) -> None:
+    # A whitespace-only name strips to empty and must not create an unlabeled key.
+    resp = client.post("/api/admin/api-keys", json={"name": "   "})
+    assert resp.status_code == 422
+    assert client.get("/api/admin/api-keys").json() == []

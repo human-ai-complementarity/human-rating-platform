@@ -130,9 +130,13 @@ async def list_experiments(
             )
         )
 
-    rows = (
-        await db.execute(stmt.order_by(Experiment.created_at.desc()).offset(skip).limit(limit))
-    ).all()
+    stmt = stmt.order_by(Experiment.created_at.desc())
+    # An explicit id batch is already bounded by the caller's id list, so return
+    # exactly those rows (per the endpoint contract) instead of paginating and
+    # silently truncating a batch larger than `limit`.
+    if ids is None:
+        stmt = stmt.offset(skip).limit(limit)
+    rows = (await db.execute(stmt)).all()
 
     return await _build_experiment_responses(list(rows), db)
 
