@@ -146,6 +146,14 @@ class Settings(BaseSettings):
         default_factory=list,
         description="Comma-separated list of allowlisted admin emails.",
     )
+    # Bearer keys for the programmatic /api/v1 read API (CLI / inference
+    # pipelines). Comma-separated or JSON array so keys can be rotated by
+    # adding a new one before retiring the old. Empty => the v1 API is
+    # disabled (every request 401s).
+    api_keys: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Comma-separated list of bearer keys for the /api/v1 programmatic API.",
+    )
     app_secret_key: str = Field(
         description="Secret for signing the HTTP-only admin session cookie.",
     )
@@ -194,6 +202,27 @@ class Settings(BaseSettings):
             return []
         if isinstance(value, str):
             # Allow JSON array or comma-separated string
+            value = value.strip()
+            if value.startswith("["):
+                try:
+                    arr = json.loads(value)
+                    if isinstance(arr, list):
+                        return [str(x).strip() for x in arr if str(x).strip()]
+                except json.JSONDecodeError:
+                    pass
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, list):
+            return [str(x).strip() for x in value if str(x).strip()]
+        return []
+
+    @field_validator("api_keys", mode="before")
+    @classmethod
+    def parse_api_keys(cls, value: object) -> list[str]:
+        # Same shape as admin_allowlist (JSON array or comma-separated), but
+        # values are opaque secrets so case is preserved.
+        if value is None:
+            return []
+        if isinstance(value, str):
             value = value.strip()
             if value.startswith("["):
                 try:

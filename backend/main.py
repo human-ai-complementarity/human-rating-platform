@@ -14,7 +14,7 @@ from starlette.responses import Response
 from config import get_settings
 from database import build_database
 from logging_config import configure_logging
-from routers import admin, raters
+from routers import admin, raters, v1
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ def create_app() -> FastAPI:
     api_router.include_router(admin.router)
     api_router.include_router(admin.secure_router)
     api_router.include_router(raters.router)
+    api_router.include_router(v1.router)
     api_router.add_api_route("/health", health, methods=["GET"])
     app.include_router(api_router)
 

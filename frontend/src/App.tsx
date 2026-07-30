@@ -4,6 +4,7 @@ import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-
 import RaterView from './components/RaterView';
 import AdminView from './components/AdminView';
 import AdminDocs from './components/AdminDocs';
+import ApiKeysPage from './components/ApiKeysPage';
 import ExperimentDetailPage from './components/ExperimentDetailPage';
 import AnalyticsPage from './components/AnalyticsPage';
 import LoginPage from './components/LoginPage';
@@ -56,6 +57,21 @@ function App() {
             <SignedIn>
               <AdminPage>
                 <AdminDocs />
+              </AdminPage>
+            </SignedIn>
+            <SignedOut>
+              <LoginPage />
+            </SignedOut>
+          </>
+        }
+      />
+      <Route
+        path="/admin/api-keys"
+        element={
+          <>
+            <SignedIn>
+              <AdminPage>
+                <ApiKeysPage />
               </AdminPage>
             </SignedIn>
             <SignedOut>
@@ -189,11 +205,12 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
 function AdminShell({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
-  // Highlight the top-nav item that owns this route. `/admin/docs` is its own
-  // section; everything else under `/admin` (list + experiment detail) belongs
-  // to the "Experiments" tab.
+  // Highlight the top-nav item that owns this route. `/admin/docs` and
+  // `/admin/api-keys` are their own sections; everything else under `/admin`
+  // (list + experiment detail) belongs to the "Experiments" tab.
   const isDocs = pathname.startsWith('/admin/docs');
-  const isExperiments = pathname.startsWith('/admin') && !isDocs;
+  const isApiKeys = pathname.startsWith('/admin/api-keys');
+  const isExperiments = pathname.startsWith('/admin') && !isDocs && !isApiKeys;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--page-bg)' }}>
@@ -234,6 +251,7 @@ function AdminShell({ children }: { children: React.ReactNode }) {
           <span style={{ font: '600 16px/1 var(--font-head)' }}>Complementarities Platform</span>
         </button>
         <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
+        <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
         <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
           <UserButton afterSignOutUrl="/" />

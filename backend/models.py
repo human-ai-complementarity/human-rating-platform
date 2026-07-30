@@ -486,3 +486,46 @@ class AssistanceSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+
+
+class ApiKey(SQLModel, table=True):
+    """A bearer credential for the programmatic /api/v1 read API.
+
+    The raw key is shown to the admin exactly once at creation/regeneration;
+    only its SHA-256 hash is persisted. `prefix` is the leading, non-secret
+    slice of the key (``hrp_`` + 8 chars) — indexed so a presented key is
+    looked up by prefix, then confirmed by constant-time hash compare, and
+    shown in the dashboard so a key is identifiable without revealing it.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # Human label so a key is recognizable (e.g. "inference-pipeline").
+    name: str = Field(sa_column=Column(String(255), nullable=False))
+    prefix: str = Field(sa_column=Column(String(16), nullable=False, index=True))
+    key_hash: str = Field(sa_column=Column(String(64), nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    # Best-effort, throttled: stamped on use so admins can spot stale keys.
+    last_used_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    # Soft-revoke: a non-null timestamp means the key no longer authenticates.
+    # The row is kept for audit rather than deleted.
+    revoked_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    # Allowlisted admin email that minted the key, for the audit trail.
+    created_by: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )

@@ -265,3 +265,68 @@ class AssistanceStepResponse(BaseModel):
     type: StepType
     payload: dict
     is_terminal: bool
+
+
+# ---------------------------------------------------------------------------
+# /api/v1 programmatic read API
+# ---------------------------------------------------------------------------
+class V1RatingRow(BaseModel):
+    """One human rating with its full question context.
+
+    JSON equivalent of a CSV export row: full (untruncated) question text and
+    ground truth, plus the rater and their answer/timing.
+    """
+
+    rating_id: int
+    # The dataset-provided question identifier (string) plus our internal PK,
+    # so a client can join back to whichever it holds.
+    question_id: str
+    question_db_id: int
+    question_text: str
+    gt_answer: Optional[str] = None
+    options: Optional[str] = None
+    question_type: str
+    rater_prolific_id: str
+    rater_study_id: Optional[str] = None
+    rater_session_id: Optional[str] = None
+    is_preview: bool
+    answer: str
+    confidence: int
+    time_started: datetime
+    time_submitted: datetime
+    response_time_seconds: float
+    # False for overshoot ratings beyond num_ratings_per_question (matches the
+    # export's ranking) so analysis can truncate to the intended target.
+    counts_toward_target: bool
+
+
+class V1RatingsPage(BaseModel):
+    experiment_id: int
+    # Total matching ratings, not just this page: page to `offset >= total`.
+    total: int
+    limit: int
+    offset: int
+    ratings: list[V1RatingRow]
+
+
+# --- API key management (dashboard, cookie-authed) -------------------------
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class ApiKeyResponse(BaseModel):
+    id: int
+    name: str
+    # Non-secret display form: prefix + a masked tail. The full key is never
+    # returned after creation.
+    masked_key: str
+    created_at: datetime
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_by: Optional[str] = None
+    is_active: bool
+
+
+class ApiKeyCreated(ApiKeyResponse):
+    # The full secret, returned exactly once (create or regenerate).
+    plaintext_key: str
