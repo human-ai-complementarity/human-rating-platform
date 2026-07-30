@@ -573,35 +573,39 @@ DB-backed keys (managed in the dashboard) and, as a fallback, the static
 always rejected. Only over HTTPS in any deployed environment; the key is
 plaintext on the wire.
 
-### Managing keys (dashboard)
+### Getting a key (dashboard)
 
-The admin dashboard has an **API Keys** tab (`/admin/api-keys`, alongside
-Experiments and Documentation):
+1. Open the app (local: `http://localhost:5173`; prod: your frontend URL) and sign in.
+2. Go to the **API Keys** tab in the top nav (next to Experiments and Documentation). It also links to the interactive API docs.
+3. Click **Create key**, give it a name, and **copy the full `hrp_…` secret from the reveal card**. It is shown only once; afterwards only a masked prefix remains.
 
-- **Create** mints a key and shows the full secret **once** — copy it then; only
-  a masked prefix is shown afterward. Only the SHA-256 hash is stored.
-- **Regenerate** rotates the secret in place (same name/id); the old secret
-  stops working immediately.
-- **Revoke** disables a key (kept for audit). Regenerating a revoked key
-  reactivates it under a fresh secret.
+Manage existing keys from the same tab:
 
-For local dev or automation you can instead set `API_KEYS=local-dev-key` in
-`backend/.env` (recreate the api container to pick up `.env` changes).
+- **Regenerate** rotates the secret in place (same name), and the old one stops working immediately.
+- **Revoke** disables a key (kept for audit). Regenerating a revoked key reactivates it under a fresh secret.
 
-### Example
+Only the SHA-256 hash is stored server-side, so keep the raw key somewhere safe and out of committed code (pass it via an env var). If it leaks, hit Regenerate.
+
+For local dev or automation you can skip the dashboard and set a static fallback key: `API_KEYS=local-dev-key` in `backend/.env` (recreate the api container to pick up `.env` changes).
+
+### Using the key
+
+Pass it in the `Authorization` header on every request. The base URL is
+`http://localhost:8000/api/v1` locally, or `https://<your-api-host>/api/v1` in prod.
 
 ```bash
 BASE=http://localhost:8000/api/v1
-KEY=local-dev-key
+KEY=hrp_paste_your_copied_key      # or the API_KEYS value for local dev
 
-# list experiments (batch by id with ?ids=1&ids=2)
+# list experiments (batch specific ones with ?ids=1&ids=2)
 curl -s -H "Authorization: Bearer $KEY" "$BASE/experiments" | jq .
 
-# page through one experiment's raw ratings (stop at offset >= total)
+# one experiment's raw ratings, paginated (stop when offset >= total)
 curl -s -H "Authorization: Bearer $KEY" "$BASE/experiments/1/ratings?limit=500&offset=0" | jq .
 ```
 
-The full endpoint list is in **API Endpoints** below.
+The full endpoint list is in **API Endpoints** below; the interactive reference
+is at `/docs` (also linked from the API Keys tab).
 
 ## API Endpoints
 
