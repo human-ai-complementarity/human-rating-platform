@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from auth import require_api_key
 from database import get_session
 from models import ExperimentStatus
-from schemas import ExperimentResponse, V1RatingsPage
+from schemas import ExperimentResponse, V1ExperimentResponse, V1RatingsPage
 from services import admin as admin_service
 from services import v1 as v1_service
 
@@ -25,7 +25,24 @@ router = APIRouter(
 )
 
 
-@router.get("/experiments", response_model=list[ExperimentResponse])
+def _to_public_experiment(experiment: ExperimentResponse) -> V1ExperimentResponse:
+    """Project the enriched admin experiment onto the public v1 shape, dropping
+    internal-only fields (internal_name, spend, attention flags, etc.)."""
+    return V1ExperimentResponse(
+        id=experiment.id,
+        name=experiment.name,
+        created_at=experiment.created_at,
+        status=experiment.status,
+        num_ratings_per_question=experiment.num_ratings_per_question,
+        question_count=experiment.question_count,
+        rating_count=experiment.rating_count,
+        archived_at=experiment.archived_at,
+        assistance_method=experiment.assistance_method,
+        description=experiment.description,
+    )
+
+
+@router.get("/experiments", response_model=list[V1ExperimentResponse])
 async def list_experiments(
     ids: list[int] | None = Query(None, description="Fetch exactly these experiment ids (batch)."),
     status: ExperimentStatus | None = Query(None),
@@ -41,7 +58,7 @@ async def list_experiments(
     state; without it, results follow the same active/archived + status/search
     filtering as the dashboard list.
     """
-    return await admin_service.list_experiments(
+    experiments = await admin_service.list_experiments(
         skip=skip,
         limit=limit,
         include_archived=include_archived,
@@ -50,14 +67,16 @@ async def list_experiments(
         ids=ids,
         db=db,
     )
+    return [_to_public_experiment(experiment) for experiment in experiments]
 
 
-@router.get("/experiments/{experiment_id}", response_model=ExperimentResponse)
+@router.get("/experiments/{experiment_id}", response_model=V1ExperimentResponse)
 async def get_experiment(
     experiment_id: int,
     db: AsyncSession = Depends(get_session),
 ):
-    return await admin_service.get_experiment(experiment_id=experiment_id, db=db)
+    experiment = await admin_service.get_experiment(experiment_id=experiment_id, db=db)
+    return _to_public_experiment(experiment)
 
 
 @router.get("/experiments/{experiment_id}/ratings", response_model=V1RatingsPage)

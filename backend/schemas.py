@@ -309,6 +309,27 @@ class V1RatingsPage(BaseModel):
     ratings: list[V1RatingRow]
 
 
+class V1ExperimentResponse(BaseModel):
+    """Public projection of an experiment for the /api/v1 API.
+
+    Deliberately narrower than ExperimentResponse: internal-only fields
+    (internal_name, spend, attention flags, dataset filenames, Prolific/prompt
+    config) are omitted so a bearer-key holder — and the public OpenAPI doc —
+    never sees them.
+    """
+
+    id: int
+    name: str
+    created_at: datetime
+    status: ExperimentStatus
+    num_ratings_per_question: int
+    question_count: int
+    rating_count: int
+    archived_at: Optional[datetime] = None
+    assistance_method: str = "none"
+    description: Optional[str] = None
+
+
 # --- API key management (dashboard, cookie-authed) -------------------------
 class ApiKeyCreate(BaseModel):
     # Strip before length validation so a whitespace-only name (" ") is rejected

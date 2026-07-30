@@ -183,6 +183,10 @@ def test_openapi_exposes_only_public_v1_by_default(v1_client: TestClient) -> Non
     # Internal request/response models must not leak into components either.
     component_schemas = schema.get("components", {}).get("schemas", {})
     assert "PilotStudyCreate" not in component_schemas
+    # The public experiments endpoints use the slim projection, not the admin
+    # schema, so internal field names stay out of the shared doc.
+    assert "ExperimentResponse" not in component_schemas
+    assert "V1ExperimentResponse" in component_schemas
 
 
 def test_openapi_can_include_internal_docs_via_flag(sync_engine) -> None:
@@ -235,6 +239,39 @@ def test_get_single_experiment(v1_client: TestClient, sync_engine) -> None:
     assert resp.status_code == 200
     assert resp.json()["id"] == eid
     assert resp.json()["name"] == "exp-detail"
+
+
+# Internal-only fields the admin schema carries that must never reach a v1 client.
+_INTERNAL_FIELDS = {
+    "internal_name",
+    "spend_minor_units",
+    "needs_attention",
+    "attention_reason",
+    "dataset_filenames",
+    "prolific_pool",
+    "prolific_completion_url",
+    "system_prompt",
+    "human_prompt_prefix",
+    "human_prompt_suffix",
+}
+
+
+def test_experiments_expose_only_public_fields(v1_client: TestClient, sync_engine) -> None:
+    with sync_engine.begin() as conn:
+        eid = conn.execute(
+            text(
+                "INSERT INTO experiments (name, internal_name, num_ratings_per_question) "
+                "VALUES ('public-name', 'SECRET-internal', 3) RETURNING id"
+            )
+        ).scalar_one()
+
+    detail = v1_client.get(f"/api/v1/experiments/{eid}", headers=_auth()).json()
+    assert detail["name"] == "public-name"
+    assert _INTERNAL_FIELDS.isdisjoint(detail), detail.keys()
+
+    listed = v1_client.get("/api/v1/experiments", headers=_auth()).json()
+    row = next(e for e in listed if e["id"] == eid)
+    assert _INTERNAL_FIELDS.isdisjoint(row), row.keys()
 
 
 # --- ratings --------------------------------------------------------------
