@@ -4,7 +4,6 @@ import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
-const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
 
@@ -102,33 +101,6 @@ function parseQuestionDisplay(questionText: string): QuestionDisplay {
   return { documentText, questionText: displayQuestion };
 }
 
-// Exported so callers that need to map an assistance suggestion onto the
-// options the rater actually sees use the same parse.
-export function parseOptions(rawOptions: string | null): string[] {
-  if (!rawOptions) {
-    return [];
-  }
-
-  if (rawOptions.includes('|')) {
-    return rawOptions.split('|').map(option => option.trim()).filter(Boolean);
-  }
-
-  const labeledOptionStarts = Array.from(rawOptions.matchAll(OPTION_LABEL_PATTERN))
-    .map(match => match.index ?? 0);
-  if (labeledOptionStarts.length > 1) {
-    return labeledOptionStarts
-      .map((start, index) => rawOptions.slice(start, labeledOptionStarts[index + 1]).trim())
-      .filter(Boolean);
-  }
-
-  const lineOptions = rawOptions.split(/\r?\n+/).map(option => option.trim()).filter(Boolean);
-  if (lineOptions.length > 1) {
-    return lineOptions;
-  }
-
-  return rawOptions.split(',').map(option => option.trim()).filter(Boolean);
-}
-
 function buildLongContextDocumentHtml(question: Question, documentText: string): string {
   const title = `Document for Question ${question.question_id}`;
 
@@ -193,7 +165,9 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question.question_text]
   );
 
-  const options = useMemo(() => parseOptions(question.options), [question.options]);
+  // Split by the backend, so these are exactly the options assistance methods
+  // rank against.
+  const options = question.options_list;
   const isMC = question.question_type === 'MC' && options.length > 0;
   const answer = isMC ? selectedAnswer : freeTextAnswer;
 

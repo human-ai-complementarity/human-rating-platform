@@ -84,6 +84,9 @@ type RaterQuestionRecord = {
   question_id: string;
   question_text: string;
   options: string | null;
+  // The backend serves the parsed list alongside the raw string; the rater UI
+  // renders this one, so mocks have to supply it.
+  options_list: string[];
   question_type: string;
 };
 
@@ -453,6 +456,7 @@ async function installApiMocks(
           question_id: 'q-1',
           question_text: 'Is this workflow ready for release?',
           options: 'Yes|No',
+          options_list: ['Yes', 'No'],
           question_type: 'MC',
         }
       );
@@ -690,6 +694,7 @@ test('long-context question links document separately and shows only question in
     question_id: 'long-q',
     question_text: 'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
     options: 'A|B',
+    options_list: ['A', 'B'],
     question_type: 'MC',
   };
 
@@ -744,6 +749,7 @@ test('top-N suggestions are ordered by AI confidence and clicking one selects th
     question_id: 'top-n-q',
     question_text: 'Which answer is correct?',
     options: 'Yes|No|Maybe',
+    options_list: ['Yes', 'No', 'Maybe'],
     question_type: 'MC',
   };
   // The backend hands back candidates already sorted by descending confidence.
@@ -843,6 +849,7 @@ test('rater ignores a stored session from another experiment and starts a fresh 
     question_id: 'old-q',
     question_text: 'Old experiment question',
     options: 'Yes,No',
+    options_list: ['Yes', 'No'],
     question_type: 'MC',
   };
   state.questionsBySessionToken['token-exp-2'] = {
@@ -850,6 +857,7 @@ test('rater ignores a stored session from another experiment and starts a fresh 
     question_id: 'fresh-q',
     question_text: 'Fresh experiment question',
     options: 'Yes,No',
+    options_list: ['Yes', 'No'],
     question_type: 'MC',
   };
 

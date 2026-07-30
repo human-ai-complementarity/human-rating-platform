@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import Timer from './Timer';
-import QuestionCard, { parseOptions } from './QuestionCard';
+import QuestionCard from './QuestionCard';
 import type { AnswerRequest } from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
@@ -368,11 +368,6 @@ const handleSessionExpired = () => {
     }
   }, [assistanceStep?.type, sessionToken, loadNextQuestion]);
 
-  const questionOptions = useMemo(
-    () => (question ? parseOptions(question.options) : []),
-    [question]
-  );
-
   const handleSelectSuggestion = useCallback((answer: string) => {
     setAnswerRequest(prev => ({ answer, seq: (prev?.seq ?? 0) + 1 }));
   }, []);
@@ -623,7 +618,7 @@ const handleSessionExpired = () => {
             questionId={question.id}
             onSessionId={setAssistanceSessionId}
             onStepChange={setAssistanceStep}
-            questionOptions={questionOptions}
+            questionOptions={question.options_list}
             selectedAnswer={raterAnswer}
             onSelectAnswer={handleSelectSuggestion}
           />

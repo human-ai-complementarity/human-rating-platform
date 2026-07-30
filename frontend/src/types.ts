@@ -60,6 +60,9 @@ export interface Question {
   question_id: string;
   question_text: string;
   options: string | null;
+  // `options` split by the backend. The only list clients should render or
+  // index: assistance methods rank against exactly these entries.
+  options_list: string[];
   question_type: string;
   parent_question_text?: string | null;
 }
@@ -147,8 +150,6 @@ export interface AssistanceStep {
     candidates?: Array<{
       rank: number;
       answer: string;
-      // 1-based index into the question's option list; null for free-response.
-      option_index?: number | null;
       confidence?: number;
       rationale?: string;
     }>;

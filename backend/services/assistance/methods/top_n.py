@@ -20,6 +20,7 @@ import openai
 
 from config import get_settings
 from models import Question
+from question_options import parse_options
 
 from ..base import AssistanceMethod, InteractionStep, StepType
 from ..llm import complete
@@ -28,7 +29,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TOP_N = 3
 _MAX_TOP_N = 10
-_OPTION_LABEL_PATTERN = re.compile(r"(?:^|[,\r\n])\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+")
 
 _SYSTEM_PROMPT = """\
 You help human raters answer evaluation questions. Rank the most likely answers
@@ -47,32 +47,6 @@ Free-response (no options):
 confidence is your own calibrated probability (0-100) that the candidate is the
 correct answer. List candidates from highest to lowest confidence.
 """
-
-
-def _parse_options(raw_options: str | None) -> list[str]:
-    if not raw_options:
-        return []
-
-    if "|" in raw_options:
-        return [option.strip() for option in raw_options.split("|") if option.strip()]
-
-    labeled_option_starts = [match.start() for match in _OPTION_LABEL_PATTERN.finditer(raw_options)]
-    if len(labeled_option_starts) > 1:
-        options = []
-        for index, start in enumerate(labeled_option_starts):
-            end = (
-                labeled_option_starts[index + 1] if index + 1 < len(labeled_option_starts) else None
-            )
-            option = raw_options[start:end].strip(" ,\r\n")
-            if option:
-                options.append(option)
-        return options
-
-    line_options = [option.strip() for option in re.split(r"\r?\n+", raw_options) if option.strip()]
-    if len(line_options) > 1:
-        return line_options
-
-    return [option.strip() for option in raw_options.split(",") if option.strip()]
 
 
 def _clamp_top_n(value: Any) -> int:
@@ -105,23 +79,21 @@ def _parse_top_n_response(raw: str) -> dict:
 def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> list[dict[str, Any]]:
     """Validate LLM candidates, order them by descending confidence, keep top n.
 
-    Ranks are assigned after sorting so `rank` always agrees with the displayed
-    order. The sort is stable, so equal-confidence candidates keep the LLM's own
-    ordering. Candidates are collected before truncating: the LLM sometimes
-    returns its list out of confidence order, and slicing first would drop a
-    higher-confidence candidate that appeared late.
+    Confidence decides everything: the list is sorted before it is deduplicated
+    and truncated, so a repeated answer keeps its highest-confidence entry and a
+    strong candidate the LLM listed late is not dropped. The sort is stable, so
+    equal-confidence candidates keep the LLM's own ordering. Ranks are assigned
+    last, so `rank` always agrees with the displayed order.
     """
     if not isinstance(raw_candidates, list):
         return []
 
-    candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    parsed: list[dict[str, Any]] = []
 
     for item in raw_candidates:
         if not isinstance(item, dict):
             continue
 
-        option_index: int | None = None
         if options:
             try:
                 option_index = int(item["option_index"])
@@ -139,31 +111,34 @@ def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> li
             if not answer:
                 continue
 
-        dedupe_key = answer.casefold()
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-
         try:
             confidence = int(item.get("confidence", 50))
         except (TypeError, ValueError):
             confidence = 50
 
-        candidates.append(
+        parsed.append(
             {
                 "answer": answer,
-                "option_index": option_index,
                 "confidence": max(0, min(100, confidence)),
                 "rationale": str(item.get("rationale", "")).strip(),
             }
         )
 
-    candidates.sort(key=lambda candidate: candidate["confidence"], reverse=True)
-    top_candidates = candidates[:n]
-    for rank, candidate in enumerate(top_candidates, start=1):
-        candidate["rank"] = rank
+    parsed.sort(key=lambda candidate: candidate["confidence"], reverse=True)
 
-    return top_candidates
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in parsed:
+        dedupe_key = candidate["answer"].casefold()
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        candidate["rank"] = len(candidates) + 1
+        candidates.append(candidate)
+        if len(candidates) >= n:
+            break
+
+    return candidates
 
 
 def _compose_system_prompt(extra: str | None) -> str:
@@ -189,7 +164,7 @@ class TopNAssistance(AssistanceMethod):
         settings = get_settings()
         model = params.get("model") or settings.llm.default_model
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
-        options = _parse_options(question.options)
+        options = parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n
 
         option_block = (

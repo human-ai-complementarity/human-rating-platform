@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 from models import ExperimentStatus, ProlificStudyStatus, StepType
+from question_options import parse_options
 
 
 # Allowed values for Prolific's `study_labels` field. The Prolific API also
@@ -208,6 +209,17 @@ class QuestionResponse(BaseModel):
     parent_question_text: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @computed_field
+    @property
+    def options_list(self) -> list[str]:
+        """The raw options split into the choices a rater picks from.
+
+        Served alongside the raw string so the client renders exactly the list
+        assistance methods rank against, instead of re-splitting it itself.
+        Empty for free-response questions.
+        """
+        return parse_options(self.options)
 
 
 # Rater schemas

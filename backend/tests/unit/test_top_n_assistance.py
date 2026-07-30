@@ -19,7 +19,6 @@ from services.assistance.methods.top_n import (
     TopNAssistance,
     _clamp_top_n,
     _normalize_candidates,
-    _parse_options,
     _parse_top_n_response,
     _strip_markdown_json,
 )
@@ -28,53 +27,6 @@ from services.assistance.methods.top_n import (
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
-
-
-# ---------------------------------------------------------------------------
-# _parse_options
-# ---------------------------------------------------------------------------
-
-
-class TestParseOptions:
-    def test_none_returns_empty(self):
-        assert _parse_options(None) == []
-
-    def test_empty_string_returns_empty(self):
-        assert _parse_options("") == []
-
-    def test_pipe_delimited(self):
-        assert _parse_options("Yes|No|Maybe") == ["Yes", "No", "Maybe"]
-
-    def test_pipe_delimited_strips_whitespace(self):
-        assert _parse_options(" Yes | No ") == ["Yes", "No"]
-
-    def test_pipe_delimited_ignores_empty_segments(self):
-        assert _parse_options("Yes||No") == ["Yes", "No"]
-
-    def test_labeled_options_uppercase_letter_period(self):
-        raw = "A. Option one\nB. Option two\nC. Option three"
-        result = _parse_options(raw)
-        assert len(result) == 3
-        assert "A. Option one" in result[0]
-        assert "B. Option two" in result[1]
-        assert "C. Option three" in result[2]
-
-    def test_labeled_options_parens(self):
-        raw = "(A) Option one\n(B) Option two"
-        result = _parse_options(raw)
-        assert len(result) == 2
-
-    def test_newline_delimited(self):
-        result = _parse_options("option one\noption two\noption three")
-        assert result == ["option one", "option two", "option three"]
-
-    def test_comma_delimited_fallback(self):
-        result = _parse_options("alpha,beta,gamma")
-        assert result == ["alpha", "beta", "gamma"]
-
-    def test_single_value_returned_as_list(self):
-        result = _parse_options("only one option")
-        assert result == ["only one option"]
 
 
 # ---------------------------------------------------------------------------
@@ -175,12 +127,6 @@ class TestNormalizeCandidates:
         assert result[0]["answer"] == "Yes"
         assert result[0]["rank"] == 1
         assert result[0]["confidence"] == 80
-        assert result[0]["option_index"] == 1
-
-    def test_option_index_is_none_without_options(self):
-        raw = [{"answer": "free text", "confidence": 80, "rationale": ""}]
-        result = _normalize_candidates(raw, [], n=3)
-        assert result[0]["option_index"] is None
 
     def test_respects_n_limit(self):
         raw = [
@@ -228,6 +174,27 @@ class TestNormalizeCandidates:
         ]
         result = _normalize_candidates(raw, self.OPTIONS, n=3)
         assert len(result) == 1
+
+    def test_dedup_keeps_the_highest_confidence_duplicate(self):
+        # Dedup runs after the sort, so the weaker duplicate listed first does
+        # not shadow the stronger one and cost "Yes" its place.
+        raw = [
+            {"option_index": 1, "confidence": 40, "rationale": "weak"},
+            {"option_index": 1, "confidence": 95, "rationale": "strong"},
+            {"option_index": 2, "confidence": 50, "rationale": ""},
+        ]
+        result = _normalize_candidates(raw, self.OPTIONS, n=1)
+        assert [(c["answer"], c["confidence"], c["rationale"]) for c in result] == [
+            ("Yes", 95, "strong")
+        ]
+
+    def test_dedup_keeps_the_highest_confidence_duplicate_free_response(self):
+        raw = [
+            {"answer": "Paris", "confidence": 30, "rationale": ""},
+            {"answer": "paris", "confidence": 90, "rationale": ""},
+        ]
+        result = _normalize_candidates(raw, [], n=3)
+        assert [(c["answer"], c["confidence"]) for c in result] == [("paris", 90)]
 
     def test_drops_out_of_range_option_index(self):
         raw = [
@@ -362,7 +329,6 @@ async def test_start_orders_candidates_by_confidence():
     candidates = step.payload["candidates"]
     assert [c["answer"] for c in candidates] == ["Maybe", "No", "Yes"]
     assert [c["rank"] for c in candidates] == [1, 2, 3]
-    assert [c["option_index"] for c in candidates] == [3, 2, 1]
 
 
 @pytest.mark.asyncio

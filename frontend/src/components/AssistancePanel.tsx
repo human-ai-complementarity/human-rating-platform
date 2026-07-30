@@ -8,8 +8,8 @@ interface AssistancePanelProps {
   questionId: number;
   onSessionId: (sessionId: number) => void;
   onStepChange: (step: AssistanceStep | null) => void;
-  // The options the rater sees, used to map a Top-N suggestion onto a real
-  // option. Empty for free-response questions.
+  // `question.options_list` as served by the backend, i.e. the same list the
+  // method ranked. Empty for free-response questions.
   questionOptions?: string[];
   // The rater's current answer, so the picked suggestion stays highlighted.
   selectedAnswer?: string;
@@ -18,17 +18,12 @@ interface AssistancePanelProps {
 
 type TopNCandidate = NonNullable<AssistanceStep['payload']['candidates']>[number];
 
-// The backend and the rater UI parse `question.options` independently, so match
-// on the answer text first and fall back to the 1-based index the LLM returned.
-// Returns null when the suggestion maps onto no option the rater can pick.
+// A multiple-choice candidate's answer is an entry of the same server-parsed
+// option list the card renders, so the text is the whole mapping. Anything that
+// somehow isn't in the list is not selectable rather than an off-list answer.
 function resolveCandidateAnswer(candidate: TopNCandidate, options: string[]): string | null {
   if (options.length === 0) return candidate.answer;
-  if (options.includes(candidate.answer)) return candidate.answer;
-  const index = candidate.option_index;
-  if (typeof index === 'number' && index >= 1 && index <= options.length) {
-    return options[index - 1];
-  }
-  return null;
+  return options.includes(candidate.answer) ? candidate.answer : null;
 }
 
 const monoLabel = {

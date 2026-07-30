@@ -751,8 +751,10 @@ def test_upload_parquet_serialises_list_options_and_dict_metadata(client: TestCl
         "/api/raters/next-question",
         headers=_rater_headers(session),
     ).json()
-    # Confirms the canonical pipe-separated form reached the rater payload.
+    # Confirms the canonical pipe-separated form reached the rater payload,
+    # along with the server-side split the rater UI renders.
     assert question["options"] == "Yes|No"
+    assert question["options_list"] == ["Yes", "No"]
 
 
 def test_upload_parquet_rejects_unknown_meta_keys(client: TestClient):
