@@ -18,6 +18,11 @@ import {
  * (rotate the secret under the same name) or revoked. Mirrors the Experiments
  * tab: a create panel on the left, the existing keys on the right.
  */
+// Interactive API reference. In prod the docs are served from the API host
+// (VITE_API_HOST); in local dev VITE_API_HOST is empty and the relative /docs
+// path is proxied to the backend by Vite.
+const DOCS_URL = `${import.meta.env.VITE_API_HOST || ''}/docs`;
+
 function ApiKeysPage() {
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -116,7 +121,16 @@ function ApiKeysPage() {
         </h1>
         <p style={{ margin: '6px 0 0', fontSize: 15, color: 'var(--muted)' }}>
           Bearer keys for the programmatic <code>/api/v1</code> read API — used by CLIs and
-          inference pipelines to fetch experiment data.
+          inference pipelines to fetch experiment data. See the{' '}
+          <a
+            href={DOCS_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: 'var(--accent)', fontWeight: 600 }}
+          >
+            API docs
+          </a>{' '}
+          for the endpoints and how to authenticate.
         </p>
       </div>
 
