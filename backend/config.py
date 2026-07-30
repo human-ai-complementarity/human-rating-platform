@@ -38,6 +38,11 @@ class AppSettings(_StrictModel):
     )
     site_url: str = "http://localhost:5173"
     log_level: str = "INFO"
+    # Scope of the interactive API docs (/docs, /redoc, /openapi.json). Default
+    # False exposes only the public /api/v1 endpoints, so the docs can be shared
+    # without leaking the admin/rater surface or their model shapes. Set True in
+    # local dev (never in prod) to document the full internal API too.
+    expose_internal_docs: bool = False
 
     @field_validator("cors_origins", mode="before")
     @classmethod

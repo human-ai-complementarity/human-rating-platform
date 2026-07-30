@@ -171,6 +171,34 @@ def test_v1_rejects_unknown_key_when_none_configured(sync_engine) -> None:
         settings.admin_auth_enabled = original_admin_auth
 
 
+# --- openapi scope --------------------------------------------------------
+
+
+def test_openapi_exposes_only_public_v1_by_default(v1_client: TestClient) -> None:
+    schema = v1_client.get("/openapi.json").json()
+    paths = schema.get("paths", {})
+    assert paths, "expected some documented paths"
+    assert all(path.startswith("/api/v1") for path in paths), sorted(paths)
+    assert "/api/admin/experiments" not in paths
+    # Internal request/response models must not leak into components either.
+    component_schemas = schema.get("components", {}).get("schemas", {})
+    assert "PilotStudyCreate" not in component_schemas
+
+
+def test_openapi_can_include_internal_docs_via_flag(sync_engine) -> None:
+    settings = get_settings()
+    original = settings.app.expose_internal_docs
+    settings.app.expose_internal_docs = True
+    try:
+        app = create_app()
+        with TestClient(app) as client:
+            paths = client.get("/openapi.json").json()["paths"]
+            assert any(path.startswith("/api/admin") for path in paths)
+            assert any(path.startswith("/api/v1") for path in paths)
+    finally:
+        settings.app.expose_internal_docs = original
+
+
 # --- experiments discovery + batch ---------------------------------------
 
 

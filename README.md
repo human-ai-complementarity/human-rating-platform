@@ -605,7 +605,12 @@ The full endpoint list is in **API Endpoints** below.
 
 ## API Endpoints
 
-Interactive Swagger docs are available at `/docs` when the backend is running.
+Interactive Swagger docs are at `/docs` (ReDoc at `/redoc`, spec at
+`/openapi.json`) when the backend is running. By default they document **only
+the public `/api/v1` endpoints**, so the docs can be shared without exposing the
+admin/rater surface. To include the internal endpoints while developing, set
+`APP__EXPOSE_INTERNAL_DOCS=true` in `backend/.env`. The full list below is for
+contributors.
 
 ### Admin
 
