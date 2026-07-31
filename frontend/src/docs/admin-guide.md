@@ -120,4 +120,6 @@ When you enable it, you pick a **confidence method**:
 
 ## Top-N suggestions
 
-The AI ranks the most likely answers and shows the rater a short ordered list before they submit. One-shot, lightweight. Set the number of suggestions to show (capped by the number of MC options when applicable).
+The AI ranks the most likely answers and shows the rater that shortlist before they submit. One-shot, lightweight. Set the number of suggestions to show (capped by the number of MC options when applicable).
+
+The rater sees the suggestions in random order, with neither the rank nor the AI's confidence, so the model's ordering doesn't anchor their choice. The ranking is still recorded against each suggestion for analysis.

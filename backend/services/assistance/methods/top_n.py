@@ -4,6 +4,11 @@ The method asks an LLM to rank likely answers for the current question and
 returns the top N candidates as static guidance. It is intentionally one-shot:
 raters can review the suggestions, then make their own final rating.
 
+Candidates are returned in a random order rather than best-first, and the UI
+shows neither the rank nor the model's confidence, so the rater sees the
+shortlist without the model's ordering anchoring their choice. Each candidate
+still carries its `rank`, persisted with the session payload for analysis.
+
 assistance_params:
     model: LLM to use for ranking (default: settings.llm.default_model)
     n:     Number of candidates to show (default: 3, range 1-10)
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 from typing import Any
 
@@ -224,12 +230,17 @@ class TopNAssistance(AssistanceMethod):
         if not candidates:
             return InteractionStep(type=StepType.NONE, is_terminal=True)
 
+        # Payload order is display order, so shuffle here rather than in the UI:
+        # the shuffled list is what gets persisted with the session, which keeps
+        # the record of what the rater actually saw.
+        shuffled = random.sample(candidates, len(candidates))
+
         return InteractionStep(
             type=StepType.DISPLAY,
             payload={
                 "kind": "top_n",
                 "top_n": n,
-                "candidates": candidates,
+                "candidates": shuffled,
                 "has_options": bool(options),
             },
             is_terminal=True,

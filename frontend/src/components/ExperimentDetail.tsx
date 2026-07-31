@@ -1980,7 +1980,7 @@ function AssistanceModePanel({
           selected={method === 'top_n'}
           disabled={isLocked}
           title="Top-N suggestions"
-          body="AI ranks the most likely answers and shows a short ordered list before the rater submits."
+          body="AI ranks the most likely answers and shows the shortlist, in random order, before the rater submits."
           onClick={() => {
             if (isLocked) return;
             if (method !== 'top_n') onToggleTopN();

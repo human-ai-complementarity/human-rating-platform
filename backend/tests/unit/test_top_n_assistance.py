@@ -300,10 +300,41 @@ async def test_start_returns_display_step_with_candidates():
     assert step.type == StepType.DISPLAY
     assert step.is_terminal is True
     assert step.payload["kind"] == "top_n"
-    assert len(step.payload["candidates"]) == 2
-    assert step.payload["candidates"][0]["answer"] == "Yes"
-    assert step.payload["candidates"][0]["rank"] == 1
+    # Display order is shuffled, so assert on the set rather than the sequence.
+    candidates = step.payload["candidates"]
+    assert len(candidates) == 2
+    assert {c["answer"] for c in candidates} == {"Yes", "No"}
+    assert next(c for c in candidates if c["answer"] == "Yes")["rank"] == 1
     assert step.payload["has_options"] is True
+
+
+@pytest.mark.asyncio
+async def test_start_shuffles_candidate_display_order():
+    method = TopNAssistance()
+    question = _make_question(options="A|B|C")
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 90, "rationale": ""},
+            {"option_index": 2, "confidence": 70, "rationale": ""},
+            {"option_index": 3, "confidence": 50, "rationale": ""},
+        ]
+    )
+
+    with (
+        patch(
+            "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
+        ),
+        patch(
+            "services.assistance.methods.top_n.random.sample",
+            side_effect=lambda population, k: list(reversed(population)),
+        ),
+    ):
+        step = await method.start(question, {})
+
+    candidates = step.payload["candidates"]
+    assert [c["answer"] for c in candidates] == ["C", "B", "A"]
+    # Rank survives the shuffle so analysis can recover the model's ordering.
+    assert [c["rank"] for c in candidates] == [3, 2, 1]
 
 
 @pytest.mark.asyncio
