@@ -7,6 +7,7 @@ import time
 
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
@@ -14,7 +15,7 @@ from starlette.responses import Response
 from config import get_settings
 from database import build_database
 from logging_config import configure_logging
-from routers import admin, raters
+from routers import admin, raters, v1
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,45 @@ async def health():
     return {"status": "healthy", "version": _COMMIT[:8], "commit": _COMMIT}
 
 
+# Only the versioned programmatic API is meant for outside consumers; the admin
+# and rater routes are internal.
+_PUBLIC_PATH_PREFIX = "/api/v1"
+
+
+def _configure_openapi(app: FastAPI, expose_internal_docs: bool) -> None:
+    """Scope the generated OpenAPI schema to the public API.
+
+    By default the schema (and therefore /docs, /redoc, /openapi.json) contains
+    only the `/api/v1` routes. Filtering the *routes* passed to ``get_openapi``
+    rather than the finished ``paths`` dict means the admin/rater request and
+    response models are never emitted into ``components`` either, so the docs
+    can be shared without leaking the internal surface.
+    """
+
+    def custom_openapi() -> dict:
+        if app.openapi_schema:
+            return app.openapi_schema
+        routes = app.routes
+        if not expose_internal_docs:
+            routes = [
+                route
+                for route in app.routes
+                if getattr(route, "path", "").startswith(_PUBLIC_PATH_PREFIX)
+            ]
+        app.openapi_schema = get_openapi(
+            title="Human Rating Platform API",
+            version=app.version,
+            description=(
+                "Programmatic read API for experiment data. Authenticate with a "
+                "bearer key: `Authorization: Bearer <key>`."
+            ),
+            routes=routes,
+        )
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.app.log_level)
@@ -112,8 +152,11 @@ def create_app() -> FastAPI:
     api_router.include_router(admin.router)
     api_router.include_router(admin.secure_router)
     api_router.include_router(raters.router)
+    api_router.include_router(v1.router)
     api_router.add_api_route("/health", health, methods=["GET"])
     app.include_router(api_router)
+
+    _configure_openapi(app, settings.app.expose_internal_docs)
 
     return app
 

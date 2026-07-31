@@ -70,6 +70,7 @@ async def list_experiments(
     include_archived: bool = False,
     status: ExperimentStatus | None = None,
     search: str | None = None,
+    ids: list[int] | None = None,
 ) -> list[ExperimentResponse]:
     question_counts = (
         select(
@@ -101,9 +102,15 @@ async def list_experiments(
         .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
     )
 
+    # An explicit id set is a targeted batch fetch: return exactly those rows
+    # regardless of archived state (the caller already knows what it wants).
+    if ids is not None:
+        stmt = stmt.where(Experiment.id.in_(ids))
+
     # `include_archived` (used by the client-side-filtered dashboard) returns
     # both active and archived rows; otherwise the `archived` flag selects one.
-    if not include_archived:
+    # Skipped for id-batch fetches so an archived id in the set still resolves.
+    if ids is None and not include_archived:
         stmt = stmt.where(
             Experiment.archived_at.is_not(None) if archived else Experiment.archived_at.is_(None)
         )
@@ -123,9 +130,13 @@ async def list_experiments(
             )
         )
 
-    rows = (
-        await db.execute(stmt.order_by(Experiment.created_at.desc()).offset(skip).limit(limit))
-    ).all()
+    stmt = stmt.order_by(Experiment.created_at.desc())
+    # An explicit id batch is already bounded by the caller's id list, so return
+    # exactly those rows (per the endpoint contract) instead of paginating and
+    # silently truncating a batch larger than `limit`.
+    if ids is None:
+        stmt = stmt.offset(skip).limit(limit)
+    rows = (await db.execute(stmt)).all()
 
     return await _build_experiment_responses(list(rows), db)
 

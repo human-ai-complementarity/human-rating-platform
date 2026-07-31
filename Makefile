@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help env.sync up down ps logs db.clear db.reset db.new db.up db.down db.seed test config.check fmt lint ci tailscale.up tailscale.down tailscale.status
+.PHONY: help env.sync up web dev.up dev.down dev.restart dev.status down ps logs db.clear db.reset db.new db.up db.down db.seed test config.check fmt lint ci tailscale.up tailscale.down tailscale.status
 
 COMPOSE ?= docker compose
 TEST_COMPOSE_PROJECT ?= human-rating-platform-test
@@ -11,7 +11,8 @@ KEEP_TEST_STACK ?= 0
 MIGRATION_NAME ?= schema_update
 MIGRATION_REVISION ?= -1
 CONFIG_TARGET ?= local
-ENV_SYNC_TARGETS := up down ps logs db.clear db.reset db.new db.up db.down db.seed test config.check
+FRONTEND_PORT ?= 5173
+ENV_SYNC_TARGETS := up web dev.up dev.restart down ps logs db.clear db.reset db.new db.up db.down db.seed test config.check
 
 $(ENV_SYNC_TARGETS): env.sync
 
@@ -97,6 +98,36 @@ up: ## Start db + alembic migrations + api (hot reload)
 	@$(COMPOSE) up -d api > /dev/null
 	$(call _ok,Services are up)
 	@$(MAKE) --no-print-directory ps
+	$(call _info,Backend + DB are up. Run `make web` in another terminal for the frontend UI.)
+
+web: ## Start the frontend Vite dev server (:5173, foreground)
+	$(call _title,==> Starting frontend dev server)
+	$(call _info,Serving the UI on http://localhost:$(FRONTEND_PORT) — press Ctrl+C to stop)
+	@$(MAKE) -C frontend up PORT=$(FRONTEND_PORT)
+
+dev.up: ## Start EVERYTHING: backend + DB (Docker) + frontend (background)
+	$(call _title,==> Starting full dev stack)
+	@$(MAKE) --no-print-directory up
+	@$(MAKE) --no-print-directory -C frontend up.bg PORT=$(FRONTEND_PORT)
+	@$(MAKE) --no-print-directory dev.status
+
+dev.down: ## Stop EVERYTHING: frontend + backend + DB
+	$(call _title,==> Stopping full dev stack)
+	@$(MAKE) --no-print-directory -C frontend stop PORT=$(FRONTEND_PORT)
+	@$(MAKE) --no-print-directory down
+
+dev.restart: ## Restart EVERYTHING (down then up)
+	@$(MAKE) --no-print-directory dev.down
+	@$(MAKE) --no-print-directory dev.up
+
+dev.status: ## Show backend + frontend server status
+	$(call _title,==> Dev stack status)
+	@$(COMPOSE) ps
+	@if lsof -ti:$(FRONTEND_PORT) >/dev/null 2>&1; then \
+		printf "$(C_OK)++$(C_RESET) frontend  up    http://localhost:$(FRONTEND_PORT)\n"; \
+	else \
+		printf "$(C_WARN)!!$(C_RESET) frontend  down  (run 'make web' or 'make dev.up')\n"; \
+	fi
 
 down: ## Stop services (keep database volume)
 	$(call _title,==> Stopping local services)

@@ -6,6 +6,8 @@
 
 import type {
   Analytics,
+  ApiKey,
+  ApiKeyCreated,
   AssistanceStep,
   ExperimentRound,
   ExperimentRoundUpdate,
@@ -75,6 +77,9 @@ const routes = {
     authLogin: '/admin/auth/login',
     authLogout: '/admin/auth/logout',
     platformStatus: '/admin/platform-status',
+    apiKeys: '/admin/api-keys',
+    apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
+    apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
     prolificRounds: (id: number) => `/admin/experiments/${id}/prolific/rounds`,
@@ -421,6 +426,33 @@ export const api = {
 
   async getPlatformStatus(): Promise<PlatformStatus> {
     return requestJson<PlatformStatus>(routes.admin.platformStatus);
+  },
+
+  // ── API keys (bearer credentials for the /api/v1 programmatic API) ─────────
+
+  async listApiKeys(): Promise<ApiKey[]> {
+    return requestJson<ApiKey[]>(routes.admin.apiKeys);
+  },
+
+  // Returns the full plaintext key — surface it to the user once, then discard.
+  async createApiKey(name: string): Promise<ApiKeyCreated> {
+    return requestJson<ApiKeyCreated>(routes.admin.apiKeys, {
+      method: 'POST',
+      json: { name },
+    });
+  },
+
+  // Rotates the secret under the same key id/name; returns the new plaintext.
+  async regenerateApiKey(id: number): Promise<ApiKeyCreated> {
+    return requestJson<ApiKeyCreated>(routes.admin.apiKeyRegenerate(id), {
+      method: 'POST',
+    });
+  },
+
+  async revokeApiKey(id: number): Promise<ApiKey> {
+    return requestJson<ApiKey>(routes.admin.apiKeyRevoke(id), {
+      method: 'POST',
+    });
   },
 
   async runPilotStudy(experimentId: number, data: PilotStudyCreate): Promise<ExperimentRound> {

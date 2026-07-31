@@ -5,11 +5,12 @@ import io
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from models import Question, Rating, Rater
+from services.queries import canonical_rating_rank_subquery, counts_toward_target
 from .queries import fetch_experiment_or_404
 
 logger = logging.getLogger(__name__)
@@ -95,30 +96,10 @@ async def stream_export_csv_chunks(
     )
     yield _build_export_header_chunk()
 
-    # Rank each real rating within its question by submission order. Only
-    # the first `num_ratings_per_question` count toward the target; later
-    # ones are overshoot (e.g. a rating submitted after its reservation
-    # expired) and are exported flagged False so analysis can truncate.
-    # Preview ratings are never ranked and never count.
-    rating_rank = (
-        select(
-            Rating.id.label("rating_id"),
-            func.row_number()
-            .over(
-                partition_by=Rating.question_id,
-                order_by=(Rating.time_submitted, Rating.id),
-            )
-            .label("rank"),
-        )
-        .join(Question, Rating.question_id == Question.id)
-        .join(Rater, Rating.rater_id == Rater.id)
-        # Scoped inside the subquery: the outer experiment filter can't be
-        # pushed into a window function, and ranks within a question are
-        # identical either way (a question belongs to one experiment).
-        .where(Question.experiment_id == experiment_id)
-        .where(Rater.is_preview == False)  # noqa: E712
-        .subquery()
-    )
+    # Canonical ranking: first `num_ratings_per_question` per question count
+    # toward the target, later ones are overshoot (flagged False so analysis can
+    # truncate). Shared with the /api/v1 ratings endpoint via services.queries.
+    rating_rank = canonical_rating_rank_subquery(experiment_id)
 
     statement = (
         select(Rating, Question, Rater, rating_rank.c.rank)
@@ -140,8 +121,8 @@ async def stream_export_csv_chunks(
         total_rows = 0
 
         async for rating, question, rater, rank in result:
-            counts_toward_target = rank is not None and rank <= experiment.num_ratings_per_question
-            writer.writerow(_build_export_row(rating, question, rater, counts_toward_target))
+            counts = counts_toward_target(rank, experiment.num_ratings_per_question)
+            writer.writerow(_build_export_row(rating, question, rater, counts))
             rows_in_chunk += 1
             total_rows += 1
 

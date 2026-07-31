@@ -8,6 +8,9 @@ from config import get_settings
 from database import get_session
 from models import ExperimentStatus
 from schemas import (
+    ApiKeyCreate,
+    ApiKeyCreated,
+    ApiKeyResponse,
     ExperimentRoundCreate,
     ExperimentRoundResponse,
     ExperimentRoundUpdate,
@@ -18,9 +21,11 @@ from schemas import (
     PlatformStatus,
     RecommendationResponse,
 )
+from models import ApiKey
 from services import admin as admin_service
+from services import api_keys as api_key_service
 from services.admin.prolific import get_cached_workspace_currency
-from auth import require_admin, get_admin_manager
+from auth import AdminSession, require_admin, get_admin_manager
 from services.authn import verify_clerk_token_and_get_email
 
 # Public admin router (for auth endpoints)
@@ -361,3 +366,67 @@ async def discard_experiment_round(
         round_id=round_id,
         db=db,
     )
+
+
+# ── API keys (bearer credentials for the /api/v1 programmatic API) ──────────
+
+
+def _api_key_response(record: ApiKey) -> ApiKeyResponse:
+    return ApiKeyResponse(
+        id=record.id,
+        name=record.name,
+        masked_key=api_key_service.mask(record),
+        created_at=record.created_at,
+        last_used_at=record.last_used_at,
+        revoked_at=record.revoked_at,
+        created_by=record.created_by,
+        is_active=record.revoked_at is None,
+    )
+
+
+def _api_key_created(issued: api_key_service.IssuedApiKey) -> ApiKeyCreated:
+    base = _api_key_response(issued.record)
+    return ApiKeyCreated(**base.model_dump(), plaintext_key=issued.plaintext)
+
+
+async def _get_api_key_or_404(key_id: int, db: AsyncSession) -> ApiKey:
+    record = await api_key_service.get_api_key_or_none(key_id, db)
+    if record is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return record
+
+
+@secure_router.get("/api-keys", response_model=list[ApiKeyResponse])
+async def list_api_keys(db: AsyncSession = Depends(get_session)):
+    records = await api_key_service.list_api_keys(db)
+    return [_api_key_response(record) for record in records]
+
+
+@secure_router.post("/api-keys", response_model=ApiKeyCreated)
+async def create_api_key(
+    payload: ApiKeyCreate,
+    admin: AdminSession = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    issued = await api_key_service.create_api_key(payload.name, db, created_by=admin.email)
+    return _api_key_created(issued)
+
+
+@secure_router.post("/api-keys/{key_id}/regenerate", response_model=ApiKeyCreated)
+async def regenerate_api_key(
+    key_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    record = await _get_api_key_or_404(key_id, db)
+    issued = await api_key_service.regenerate_api_key(record, db)
+    return _api_key_created(issued)
+
+
+@secure_router.post("/api-keys/{key_id}/revoke", response_model=ApiKeyResponse)
+async def revoke_api_key(
+    key_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    record = await _get_api_key_or_404(key_id, db)
+    record = await api_key_service.revoke_api_key(record, db)
+    return _api_key_response(record)

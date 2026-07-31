@@ -16,18 +16,19 @@ PostgreSQL stores everything. Alembic manages schema migrations.
 
 ```text
 backend/              FastAPI app, models, services, migrations, tests
-  routers/            API route handlers (admin, raters)
-  services/           Business logic (admin/, rater/, assistance/)
+  routers/            API route handlers (admin, raters, v1)
+  services/           Business logic (admin/, rater/, assistance/, v1/, api_keys.py)
     assistance/       Assistance method plugin system (base, registry, operations, methods/)
+    v1/               Read models for the programmatic /api/v1 API
   alembic/            Migration config + versions
   scripts/            migrate.sh, predeploy.sh, seed_dev.py, config_check.py
   config.toml         Default local settings
 frontend/             React + TypeScript + Vite SPA
   src/api.ts          API client (route map, request pipeline, error handling)
-  src/components/     UI components (AdminView, RaterView, ExperimentDetail, etc.)
+  src/components/     UI components (AdminView, RaterView, ExperimentDetail, ApiKeysPage, etc.)
 scripts/              CI/deploy scripts (deploy.sh, resolve_deploy_target.sh)
 .github/workflows/    CI (main.yml) + deploy (deploy.yml)
-docker-compose.yml    Local dev stack (db + api + test runner)
+docker-compose.yml    Local dev stack (db + migrate + api; frontend runs separately via `make web`)
 sample_questions.csv  Example CSV for testing uploads
 ```
 
@@ -101,12 +102,12 @@ DATABASE__URL=postgresql://postgres:postgres@localhost:5432/human_rating_platfor
 Frontend (Render Static Site):
 
 - `VITE_CLERK_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY`
-- `VITE_API_HOST=https://<your-api-service>.onrender.com`  (origin only; no path)
+- `VITE_API_HOST=https://api.platform.complementarities.org`  (origin only; no path)
 
 Backend (Render Web Service):
 
 - `DATABASE__URL=postgresql://<user>:<pass>@<host>:5432/<db>` (Render Postgres internal URL)
-- `APP__CORS_ORIGINS=["https://<your-web-service>.onrender.com"]`
+- `APP__CORS_ORIGINS=["https://platform.complementarities.org"]`
 - `ADMIN_ALLOWLIST=alice@example.com,bob@example.com`
 - `APP_SECRET_KEY=<long-random-string>`
 - `COOKIE_SECURE=true`
@@ -145,22 +146,22 @@ Creates `backend/.env`, `frontend/.env`, and `frontend/.env.local` from template
   # DATABASE__URL=postgresql://postgres:postgres@localhost:5432/human_rating_platform
   ```
 
-### 2) Start backend + DB (Terminal A)
+### 2) Start everything
 
 ```bash
-make up
+make dev.up      # backend + DB (Docker) + frontend (background) in one command
 ```
 
-This starts Postgres, runs migrations, and launches the API with hot reload.
+Open http://localhost:5173. Stop with `make dev.down`, restart with
+`make dev.restart`, check with `make dev.status`. The frontend runs detached,
+logging to `frontend/vite.log`.
 
-### 3) Start frontend (Terminal B)
+> Prefer separate terminals (e.g. to watch frontend logs live)? Run `make up`
+> (backend + DB) in one and `make web` (frontend, foreground) in another.
+> `make up` alone starts **only** the backend — the frontend is a separate
+> process, so nothing shows at `localhost:5173` until you also start it.
 
-```bash
-cd frontend
-make up
-```
-
-### 4) Open the app
+### 3) Open the app
 
 - **App:** http://localhost:5173
 - **API docs (Swagger):** http://localhost:8000/docs
@@ -173,15 +174,22 @@ Sign in with a Clerk account whose email appears in `ADMIN_ALLOWLIST`. The admin
 ## Daily Commands
 
 ```bash
-make up          # start db + migrations + api (hot reload)
+make dev.up      # start EVERYTHING: backend + DB + frontend (background)
+make dev.down    # stop EVERYTHING
+make dev.restart # restart EVERYTHING
+make dev.status  # show backend + frontend status
+make up          # start db + migrations + api (hot reload) — backend only
+make web         # start the frontend Vite dev server (:5173, foreground)
 make ps          # show service status
 make logs        # follow db/api logs
 make test        # backend test suite (unit + e2e) in an isolated compose stack
 make fmt         # format backend with ruff
 make lint        # every linter CI gates on (ruff, eslint, tsc, yamllint)
 make ci          # full CI gate set: lint + backend tests + Playwright e2e
-make down        # stop stack
 ```
+
+`make dev.up` is the one-command full stack. If you prefer separate terminals,
+`make up` (backend + DB) plus `make web` (frontend) does the same.
 
 DB lifecycle:
 
@@ -271,6 +279,7 @@ Top‑level convenience envs (not nested):
 
 - `ADMIN_ALLOWLIST` — comma‑separated or JSON array of admin emails
 - `APP_SECRET_KEY` — HMAC signer for the HTTP‑only admin session cookie
+- `API_KEYS` — static bearer keys for the programmatic `/api/v1` read API (comma‑separated or JSON array). Optional: primary keys are minted from the dashboard **API Keys** tab and stored hashed; this env list is accepted in addition, as a fallback for local dev or a pre‑DB deployment. See [Programmatic API](#programmatic-api-apiv1) below.
 - `RATER_SESSION_SECRET_KEY` — dedicated HMAC signer for rater session tokens (falls back to `APP_SECRET_KEY` if unset)
 - `RATER_SESSION_TTL_SECONDS` — TTL in seconds for rater session tokens (defaults to 3600 = 60 minutes; same as session duration)
 - `HRP_SESSION_COOKIE`, `HRP_SESSION_MAX_AGE`, `COOKIE_SECURE` — cookie name/ttl/secure flag
@@ -280,7 +289,7 @@ Frontend env (`frontend/.env`):
 
 - `VITE_API_HOST` — optional API origin for cross-origin deployments
   - **Local dev (default):** empty → frontend uses same-origin `/api` via Vite proxy
-  - **Render example:** `https://human-rating-platform-api-uxnt.onrender.com`
+  - **Prod:** `https://api.platform.complementarities.org`
 
 ## End-To-End Testing
 
@@ -378,14 +387,14 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 
 **API service** (set in Render Dashboard → API service → Environment):
 - `DATABASE__URL` — Render Postgres internal connection string
-- `APP__CORS_ORIGINS` — JSON array including web origin, e.g. `["https://human-rating-platform-web.onrender.com"]`
-- `APP__SITE_URL` — public frontend URL, e.g. `https://human-rating-platform-web.onrender.com`
+- `APP__CORS_ORIGINS` — JSON array including web origin, e.g. `["https://platform.complementarities.org"]`
+- `APP__SITE_URL` — public frontend URL, e.g. `https://platform.complementarities.org`
 - `PROLIFIC__API_TOKEN` — Prolific API token (set to enable automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under (recommended on multi-workspace accounts to avoid wrong-currency studies; workspace and currency are auto-derived)
 - `PROLIFIC__ENV_LABEL` — leave unset in prod (dev sets it to `dev` to distinguish participant groups created locally from prod ones)
 
 **Web service** (set in Render Dashboard → Web service → Environment):
-- `VITE_API_HOST` — public API origin, e.g. `https://human-rating-platform-api-uxnt.onrender.com`
+- `VITE_API_HOST` — public API origin, e.g. `https://api.platform.complementarities.org`
 
 ### Deploy flow
 
@@ -429,6 +438,7 @@ If you use Claude Code, this is automatic — the repo checks in its Claude conf
 
 - [CLAUDE.md](CLAUDE.md) tells Claude to run `make ci` before pushing or updating a PR, in every session.
 - The `/lint` and `/ci` skills ([.claude/skills/](.claude/skills/)) run the gates on demand and know how to fix each gate's failures.
+- The `/dev` skill starts, stops, restarts, or checks all local servers (backend + frontend) — ask it to "bring up the app" or "restart the servers".
 - [.claude/settings.json](.claude/settings.json) pre-approves the make targets so Claude runs them without permission prompts.
 
 ---
@@ -549,9 +559,62 @@ https://your-app.com/rate?experiment_id=1&PROLIFIC_PID={{%PROLIFIC_PID%}}&STUDY_
 
 ---
 
+## Programmatic API (`/api/v1`)
+
+A versioned, read-only API for programmatic clients (CLIs, inference pipelines
+that fetch experiment data directly). It's separate from the cookie-authed
+dashboard routes so a script can use it without a browser.
+
+### Auth
+
+Send a bearer key: `Authorization: Bearer <key>`. Keys are matched against
+DB-backed keys (managed in the dashboard) and, as a fallback, the static
+`API_KEYS` env list. Auth **fails closed** — a request with no matching key is
+always rejected. Only over HTTPS in any deployed environment; the key is
+plaintext on the wire.
+
+### Getting a key (dashboard)
+
+1. Open the app (local: `http://localhost:5173`; prod: your frontend URL) and sign in.
+2. Go to the **API Keys** tab in the top nav (next to Experiments and Documentation). It also links to the interactive API docs.
+3. Click **Create key**, give it a name, and **copy the full `hrp_…` secret from the reveal card**. It is shown only once; afterwards only a masked prefix remains.
+
+Manage existing keys from the same tab:
+
+- **Regenerate** rotates the secret in place (same name), and the old one stops working immediately.
+- **Revoke** disables a key (kept for audit). Regenerating a revoked key reactivates it under a fresh secret.
+
+Only the SHA-256 hash is stored server-side, so keep the raw key somewhere safe and out of committed code (pass it via an env var). If it leaks, hit Regenerate.
+
+For local dev or automation you can skip the dashboard and set a static fallback key: `API_KEYS=local-dev-key` in `backend/.env` (recreate the api container to pick up `.env` changes).
+
+### Using the key
+
+Pass it in the `Authorization` header on every request. The base URL is
+`http://localhost:8000/api/v1` locally, or `https://<your-api-host>/api/v1` in prod.
+
+```bash
+BASE=http://localhost:8000/api/v1
+KEY=hrp_paste_your_copied_key      # or the API_KEYS value for local dev
+
+# list experiments (batch specific ones with ?ids=1&ids=2)
+curl -s -H "Authorization: Bearer $KEY" "$BASE/experiments" | jq .
+
+# one experiment's raw ratings, paginated (stop when offset >= total)
+curl -s -H "Authorization: Bearer $KEY" "$BASE/experiments/1/ratings?limit=500&offset=0" | jq .
+```
+
+The full endpoint list is in **API Endpoints** below; the interactive reference
+is at `/docs` (also linked from the API Keys tab).
+
 ## API Endpoints
 
-Interactive Swagger docs are available at `/docs` when the backend is running.
+Interactive Swagger docs are at `/docs` (ReDoc at `/redoc`, spec at
+`/openapi.json`) when the backend is running. By default they document **only
+the public `/api/v1` endpoints**, so the docs can be shared without exposing the
+admin/rater surface. To include the internal endpoints while developing, set
+`APP__EXPOSE_INTERNAL_DOCS=true` in `backend/.env`. The full list below is for
+contributors.
 
 ### Admin
 
@@ -572,6 +635,21 @@ Interactive Swagger docs are available at `/docs` when the backend is running.
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/publish` — publish an unpublished round
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/close` — close an active round
 - `DELETE /api/admin/experiments/{id}` — delete experiment (+ Prolific study if linked)
+- `GET /api/admin/api-keys` — list programmatic API keys (masked)
+- `POST /api/admin/api-keys` — mint a key; returns the full secret once
+- `POST /api/admin/api-keys/{id}/regenerate` — rotate a key's secret in place
+- `POST /api/admin/api-keys/{id}/revoke` — revoke a key (soft; kept for audit)
+
+### Programmatic API (`/api/v1`)
+
+Read-only, versioned API for CLIs and inference pipelines. Authenticated with a
+static bearer key (`Authorization: Bearer <key>`) instead of the browser cookie
+the dashboard uses. See [Programmatic API](#programmatic-api-apiv1) for the auth
+model and key management.
+
+- `GET /api/v1/experiments` — list experiments for discovery; `ids` (repeatable) fetches a specific batch
+- `GET /api/v1/experiments/{id}` — single experiment detail
+- `GET /api/v1/experiments/{id}/ratings` — raw human ratings, paginated (`limit`/`offset`/`include_preview`, plus `total`)
 
 ### Rater
 

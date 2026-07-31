@@ -19,6 +19,7 @@ venv/
 node_modules/
 frontend/dist/
 frontend/test-results/
+frontend/vite.log
 
 # OS
 .DS_Store

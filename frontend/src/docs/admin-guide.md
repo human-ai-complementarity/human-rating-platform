@@ -89,6 +89,21 @@ Once the pilot closes, a **Recommendation for next round** panel appears with a 
 
 The **Overview** section shows live progress. From there you can open analytics or export the raw ratings as CSV. The *include preview data* toggle controls whether your own test ratings count.
 
+## 7. Fetch data programmatically (optional)
+
+Besides the CSV export, there's a read-only **`/api/v1`** API for scripts and inference pipelines that need to pull experiment data directly (e.g. running a model over your questions and comparing against human ratings).
+
+Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time.
+
+Use it as a bearer token:
+
+```bash
+curl -H "Authorization: Bearer <your-key>" \
+  https://<api-host>/api/v1/experiments/<id>/ratings
+```
+
+Available endpoints: list/batch experiments, single experiment detail, and paginated raw ratings (with full question text and ground truth). Treat keys like passwords — anyone with a key can read all experiment data.
+
 ---
 
 # Assistance methods

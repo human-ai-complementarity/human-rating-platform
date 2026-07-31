@@ -264,3 +264,21 @@ export interface RecommendationResponse {
   recommended_places: number;
   is_complete: boolean;
 }
+
+export interface ApiKey {
+  id: number;
+  name: string;
+  // Non-secret display form: prefix + a masked tail. The raw key is only
+  // returned once, on creation/regeneration.
+  masked_key: string;
+  created_at: string;
+  last_used_at: string | null;
+  revoked_at: string | null;
+  created_by: string | null;
+  is_active: boolean;
+}
+
+// Returned only by create/regenerate: the full secret, shown to the user once.
+export interface ApiKeyCreated extends ApiKey {
+  plaintext_key: string;
+}

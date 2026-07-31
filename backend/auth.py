@@ -9,8 +9,10 @@ from typing import Optional
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import Response
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
+from database import get_session
 
 
 def _b64url(data: bytes) -> str:
@@ -120,6 +122,52 @@ class AdminSessionManager:
 
 def get_admin_manager(settings: Settings = Depends(get_settings)) -> AdminSessionManager:
     return AdminSessionManager(settings)
+
+
+def _extract_bearer_token(request: Request) -> str:
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    if not auth or not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid Bearer token")
+    return token
+
+
+async def require_api_key(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    db: AsyncSession = Depends(get_session),
+) -> str:
+    """Authenticate a programmatic client for the /api/v1 read API.
+
+    Accepts ``Authorization: Bearer <key>`` and matches it against, in order:
+      1. the DB-backed keys managed from the dashboard (looked up by prefix,
+         constant-time hash compared), and
+      2. the static ``api_keys`` env list — a fallback that keeps local dev and
+         any pre-DB deployments working.
+
+    Fails closed: a request with no matching key is always rejected. Returns a
+    short principal label (the key's name/prefix, or ``env``) so callers can
+    attribute usage without holding the secret.
+    """
+    # Deferred import: services.api_keys pulls in models, and auth.py is imported
+    # early by main; importing at module load would risk a cycle.
+    from services import api_keys as api_key_service
+
+    token = _extract_bearer_token(request)
+
+    # Static env keys first — a cheap, allocation-free check that also covers
+    # the case where the DB has no keys yet.
+    for key in settings.api_keys:
+        if hmac.compare_digest(token, key):
+            return "env"
+
+    record = await api_key_service.verify_api_key(token, db)
+    if record is not None:
+        return record.name or record.prefix
+
+    raise HTTPException(status_code=401, detail="Invalid API key")
 
 
 async def require_admin(
