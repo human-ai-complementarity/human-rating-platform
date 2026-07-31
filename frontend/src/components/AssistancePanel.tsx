@@ -357,7 +357,7 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
       <div style={panelStyle}>
         <div style={panelHeaderStyle}>
           <span style={stepLabelStyle}>AI Assistance</span>
-          <p style={panelTitleStyle}>Top {step.payload.top_n ?? candidates.length} suggestions</p>
+          <p style={panelTitleStyle}>AI Suggestions &amp; Reasoning</p>
         </div>
         <div style={panelBodyStyle}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -371,46 +371,18 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
                   background: 'var(--surface-2)',
                 }}
               >
+                {/* Rank and confidence are deliberately not shown: candidates
+                    arrive shuffled so the model's ordering can't anchor the rater. */}
                 <div
                   style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'flex-start',
-                    gap: 12,
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: 'var(--ink)',
+                    lineHeight: 1.4,
                     marginBottom: 6,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                    <span
-                      style={{
-                        font: '700 12px/1 var(--font-mono)',
-                        color: 'var(--accent-soft-ink)',
-                        letterSpacing: '0.04em',
-                      }}
-                    >
-                      {candidate.rank}
-                    </span>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink)', lineHeight: 1.4 }}>
-                      {candidate.answer}
-                    </span>
-                  </div>
-                  {candidate.confidence !== undefined && (
-                    <span
-                      style={{
-                        flexShrink: 0,
-                        fontSize: 11,
-                        fontWeight: 700,
-                        color: 'var(--accent-soft-ink)',
-                        background: 'var(--accent-soft)',
-                        borderRadius: 999,
-                        padding: '3px 9px',
-                        fontFamily: 'var(--font-mono)',
-                        letterSpacing: '0.04em',
-                      }}
-                    >
-                      {candidate.confidence}%
-                    </span>
-                  )}
+                  {candidate.answer}
                 </div>
                 {candidate.rationale && (
                   <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
