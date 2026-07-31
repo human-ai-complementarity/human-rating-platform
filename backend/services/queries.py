@@ -38,6 +38,49 @@ async def fetch_question_or_404(question_id: int, db: AsyncSession) -> Question:
     return question
 
 
+def canonical_rating_rank_subquery(experiment_id: int):
+    """Rank each real rating within its question by submission order.
+
+    Single source of truth for the canonical dataset rule: within a question,
+    ratings are ordered by ``(time_submitted, id)`` and the first
+    ``num_ratings_per_question`` count toward the target (see
+    ``counts_toward_target``); later ones are overshoot. Preview ratings are
+    never ranked and never count. Used by both the CSV export and the
+    ``/api/v1`` ratings endpoint so they can never disagree. If the "which
+    ratings count" definition changes (e.g. issue #65), change it here.
+
+    Scoped to the experiment inside the subquery: the outer experiment filter
+    can't be pushed into a window function, and ranks within a question are
+    identical either way (a question belongs to one experiment).
+    """
+    return (
+        select(
+            Rating.id.label("rating_id"),
+            func.row_number()
+            .over(
+                partition_by=Rating.question_id,
+                order_by=(Rating.time_submitted, Rating.id),
+            )
+            .label("rank"),
+        )
+        .join(Question, Rating.question_id == Question.id)
+        .join(Rater, Rating.rater_id == Rater.id)
+        .where(Question.experiment_id == experiment_id)
+        .where(Rater.is_preview == False)  # noqa: E712
+        .subquery()
+    )
+
+
+def counts_toward_target(rank: int | None, num_ratings_per_question: int) -> bool:
+    """Whether a rating counts toward its question's target.
+
+    Pairs with ``canonical_rating_rank_subquery``: a rating counts when it ranks
+    within the first ``num_ratings_per_question`` by submission order. A NULL
+    rank (a preview rating, unranked by the subquery) never counts.
+    """
+    return rank is not None and rank <= num_ratings_per_question
+
+
 def parent_question_ids_subquery():
     """Subquery yielding ids of questions referenced as a parent.
 

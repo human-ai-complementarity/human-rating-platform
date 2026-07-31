@@ -6,33 +6,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Question, Rater, Rating
-from services.queries import fetch_experiment_or_404
-
-
-def _rating_rank_subquery(experiment_id: int):
-    """Rank each real rating within its question by submission order.
-
-    Mirrors the CSV export: only the first ``num_ratings_per_question`` ratings
-    on a question count toward the target; later ones are overshoot. Preview
-    ratings are never ranked (and never count). The rank is computed over the
-    whole question, so it is stable regardless of how the outer query paginates.
-    """
-    return (
-        select(
-            Rating.id.label("rating_id"),
-            func.row_number()
-            .over(
-                partition_by=Rating.question_id,
-                order_by=(Rating.time_submitted, Rating.id),
-            )
-            .label("rank"),
-        )
-        .join(Question, Rating.question_id == Question.id)
-        .join(Rater, Rating.rater_id == Rater.id)
-        .where(Question.experiment_id == experiment_id)
-        .where(Rater.is_preview == False)  # noqa: E712
-        .subquery()
-    )
+from services.queries import (
+    canonical_rating_rank_subquery,
+    counts_toward_target,
+    fetch_experiment_or_404,
+)
 
 
 def _serialize_rating(
@@ -89,7 +67,7 @@ async def list_experiment_ratings(
         count_stmt = count_stmt.where(Rater.is_preview == False)  # noqa: E712
     total = int((await db.execute(count_stmt)).scalar_one() or 0)
 
-    rating_rank = _rating_rank_subquery(experiment_id)
+    rating_rank = canonical_rating_rank_subquery(experiment_id)
     stmt = (
         select(Rating, Question, Rater, rating_rank.c.rank)
         .join(Question, Rating.question_id == Question.id)
@@ -109,7 +87,7 @@ async def list_experiment_ratings(
             rating,
             question,
             rater,
-            counts_toward_target=rank is not None and rank <= experiment.num_ratings_per_question,
+            counts_toward_target(rank, experiment.num_ratings_per_question),
         )
         for rating, question, rater, rank in rows
     ]
