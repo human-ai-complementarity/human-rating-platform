@@ -95,12 +95,20 @@ def _extract_prolific_message(body: str) -> str | None:
 
 
 SESSION_DURATION_SECONDS = 3600  # 1 hour per Prolific place
+# Statuses still worth re-fetching from Prolific. Deliberately wider than
+# ROUND_TERMINAL_STATUSES: a round in AWAITING_REVIEW has finished collecting
+# (so it counts as terminal for round creation and experiment status) but has
+# not reached its final Prolific status yet. Dropping it from this set left the
+# stored status pinned at AWAITING_REVIEW forever once a refresh happened to
+# observe the review window, since nothing polls it again after the researcher
+# approves the submissions. COMPLETED is the genuine end state and stays out.
 ROUND_SYNC_STATUSES = {
     ProlificStudyStatus.UNPUBLISHED,
     ProlificStudyStatus.PUBLISHING,
     ProlificStudyStatus.ACTIVE,
     ProlificStudyStatus.SCHEDULED,
     ProlificStudyStatus.PAUSED,
+    ProlificStudyStatus.AWAITING_REVIEW,
 }
 
 
@@ -290,8 +298,9 @@ async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSessio
             changed = True
 
         # Capture Prolific's authoritative study cost while we have the study.
-        # Reaches its final value at the transition into a terminal status,
-        # which this same fetch observes (stored status is still transient).
+        # Refreshes through AWAITING_REVIEW as well, so approving, rejecting or
+        # returning submissions during review is reflected; the value settles
+        # once the study reaches COMPLETED and polling stops.
         total_cost = prolific_study.get("total_cost")
         if isinstance(total_cost, int) and round_.total_cost != total_cost:
             round_.total_cost = total_cost
