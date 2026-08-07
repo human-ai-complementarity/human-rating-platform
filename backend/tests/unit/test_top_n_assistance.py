@@ -161,6 +161,86 @@ class TestParseTopNResponse:
 
 
 # ---------------------------------------------------------------------------
+# Salvaging candidates from a malformed wrapper
+# ---------------------------------------------------------------------------
+
+
+# Verbatim from production (claude-sonnet-4-6, CulturalBench Hard). The middle
+# candidate carries `"confidence">80` — a comparison instead of a value — which
+# makes the enclosing object undecodable even though candidates 1 and 3 are
+# intact.
+MALFORMED_PRODUCTION_RESPONSE = (
+    '```json\n{"candidates":['
+    '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE","confidence":85,'
+    '"rationale":"Sandwiches and empanadas are both popular hand-held foods."},'
+    '{"answer":"1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE","confidence">80,'
+    '"rationale":"Empanadas are the most iconic Argentine hand-held food."},'
+    '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE","confidence":75,'
+    '"rationale":"Both sandwiches and empanadas are popular Argentine foods."}'
+    "]}\n```"
+)
+
+
+class TestSalvageMalformedWrapper:
+    def test_recovers_intact_candidates_around_the_malformed_one(self):
+        result = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
+        answers = [c["answer"] for c in result["candidates"]]
+        # The corrupt middle candidate is unrecoverable; the other two are not.
+        assert answers == [
+            "1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE",
+            "1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE",
+        ]
+
+    def test_salvaged_candidates_survive_normalization(self):
+        parsed = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
+        normalized = _normalize_candidates(parsed["candidates"], [], n=3)
+        assert [c["rank"] for c in normalized] == [1, 2]
+        assert normalized[0]["confidence"] == 85
+
+    def test_salvages_multiple_choice_candidates(self):
+        raw = (
+            '{"candidates":[{"option_index":1,"confidence":90,"rationale":"a"},'
+            '{"option_index":2,"confidence">50,"rationale":"b"},'
+            '{"option_index":3,"confidence":20,"rationale":"c"}]}'
+        )
+        result = _parse_top_n_response(raw)
+        assert [c["option_index"] for c in result["candidates"]] == [1, 3]
+
+    def test_well_formed_response_is_untouched(self):
+        # The salvage path must never engage for a response that parses today,
+        # so an experiment that is working keeps identical behaviour.
+        payload = {
+            "candidates": [
+                {"answer": "A", "confidence": 90, "rationale": "r"},
+                {"answer": "B", "confidence": 10, "rationale": "s"},
+            ]
+        }
+        assert _parse_top_n_response(json.dumps(payload)) == payload
+
+    def test_still_raises_when_nothing_is_candidate_shaped(self):
+        raw = '{"candidates":[{"foo":1,"bar">2}]}'
+        with pytest.raises(json.JSONDecodeError):
+            _parse_top_n_response(raw)
+
+
+@pytest.mark.asyncio
+async def test_start_displays_salvaged_candidates_instead_of_no_assistance():
+    # Before salvaging, this response produced StepType.NONE and the rater saw
+    # an empty assistance panel while still being able to submit a rating.
+    method = TopNAssistance()
+    question = _make_question(options=None, question_type="FT")
+
+    with patch(
+        "services.assistance.methods.top_n.complete",
+        new=AsyncMock(return_value=MALFORMED_PRODUCTION_RESPONSE),
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.DISPLAY
+    assert len(step.payload["candidates"]) == 2
+
+
+# ---------------------------------------------------------------------------
 # _normalize_candidates
 # ---------------------------------------------------------------------------
 

@@ -90,6 +90,45 @@ def _strip_markdown_json(raw: str) -> str:
     return re.sub(r"```json?\n?|```\n?", "", raw).strip()
 
 
+def _salvage_candidates(content: str) -> list[dict]:
+    """Collect standalone candidate objects when the wrapper object won't decode.
+
+    A single malformed token anywhere in the response makes the enclosing
+    ``{"candidates": [...]}`` undecodable, even though the individual candidate
+    objects on either side of it are intact. Observed in production against
+    claude-sonnet-4-6, which emits ``"confidence">80`` (a comparison rather than
+    a value) on the middle, hedged candidate; the first and last candidates
+    parse cleanly but were being discarded with it.
+
+    Only ever called once the wrapper scan has come up empty, so a response that
+    parses today never reaches this and its result is unchanged.
+
+    Note the recovered set is biased: the dropped candidate is the one the model
+    hedged on, which is disproportionately the one proposing a *different*
+    answer. Callers get fewer, less diverse suggestions rather than none.
+    """
+    decoder = json.JSONDecoder()
+    salvaged: list[dict] = []
+    index = 0
+    while index < len(content):
+        if content[index] != "{":
+            index += 1
+            continue
+        try:
+            parsed, end = decoder.raw_decode(content[index:])
+        except json.JSONDecodeError:
+            index += 1
+            continue
+        # Candidate shape per the method's own contract: free-response entries
+        # carry "answer", multiple-choice entries carry "option_index".
+        if isinstance(parsed, dict) and ("answer" in parsed or "option_index" in parsed):
+            salvaged.append(parsed)
+            index += end
+            continue
+        index += 1
+    return salvaged
+
+
 def _parse_top_n_response(raw: str) -> dict:
     content = _strip_markdown_json(raw)
     decoder = json.JSONDecoder()
@@ -102,6 +141,15 @@ def _parse_top_n_response(raw: str) -> dict:
             continue
         if isinstance(parsed, dict) and isinstance(parsed.get("candidates"), list):
             return parsed
+
+    salvaged = _salvage_candidates(content)
+    if salvaged:
+        logger.warning(
+            "Top-N wrapper JSON was malformed; salvaged %d candidate(s) from %r",
+            len(salvaged),
+            content,
+        )
+        return {"candidates": salvaged}
     raise json.JSONDecodeError("No top-N candidates JSON object found", content, 0)
 
 
