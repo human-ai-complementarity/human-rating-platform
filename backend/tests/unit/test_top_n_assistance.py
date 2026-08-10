@@ -181,30 +181,45 @@ MALFORMED_PRODUCTION_RESPONSE = (
 )
 
 
-class TestSalvageMalformedWrapper:
-    def test_recovers_intact_candidates_around_the_malformed_one(self):
+class TestRepairMalformedWrapper:
+    def test_repairs_the_comparison_and_keeps_every_candidate(self):
+        # Repair is preferred over salvage precisely because it keeps the
+        # hedged candidate, which is the one proposing a different answer.
         result = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
         answers = [c["answer"] for c in result["candidates"]]
-        # The corrupt middle candidate is unrecoverable; the other two are not.
         assert answers == [
             "1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE",
+            "1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE",
             "1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE",
         ]
+        assert result["candidates"][1]["confidence"] == 80
 
-    def test_salvaged_candidates_survive_normalization(self):
+    def test_repaired_candidates_survive_normalization(self):
         parsed = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
         normalized = _normalize_candidates(parsed["candidates"], [], n=3)
-        assert [c["rank"] for c in normalized] == [1, 2]
+        assert [c["rank"] for c in normalized] == [1, 2, 3]
         assert normalized[0]["confidence"] == 85
 
-    def test_salvages_multiple_choice_candidates(self):
+    def test_repairs_multiple_choice_candidates(self):
         raw = (
             '{"candidates":[{"option_index":1,"confidence":90,"rationale":"a"},'
             '{"option_index":2,"confidence">50,"rationale":"b"},'
             '{"option_index":3,"confidence":20,"rationale":"c"}]}'
         )
         result = _parse_top_n_response(raw)
-        assert [c["option_index"] for c in result["candidates"]] == [1, 3]
+        assert [c["option_index"] for c in result["candidates"]] == [1, 2, 3]
+
+
+class TestSalvageMalformedWrapper:
+    def test_salvages_when_repair_cannot_fix_the_response(self):
+        # Truncated mid-candidate: no comparison token to repair, but the first
+        # candidate is complete and usable.
+        raw = (
+            '{"candidates":[{"answer":"A","confidence":90,"rationale":"a"},'
+            '{"answer":"B","confidence":'
+        )
+        result = _parse_top_n_response(raw)
+        assert [c["answer"] for c in result["candidates"]] == ["A"]
 
     def test_well_formed_response_is_untouched(self):
         # The salvage path must never engage for a response that parses today,
@@ -217,10 +232,18 @@ class TestSalvageMalformedWrapper:
         }
         assert _parse_top_n_response(json.dumps(payload)) == payload
 
-    def test_still_raises_when_nothing_is_candidate_shaped(self):
-        raw = '{"candidates":[{"foo":1,"bar">2}]}'
+    def test_raises_on_a_degenerate_response(self):
+        # Seen once in production: the model returned essentially nothing.
+        # Neither repair nor salvage can invent candidates from this.
         with pytest.raises(json.JSONDecodeError):
-            _parse_top_n_response(raw)
+            _parse_top_n_response('{"')
+
+    def test_objects_that_are_not_candidates_normalize_away(self):
+        # Repair can make this decodable, but the entries carry neither
+        # "answer" nor "option_index", so normalization still yields nothing
+        # and the caller falls through to StepType.NONE.
+        parsed = _parse_top_n_response('{"candidates":[{"foo":1,"bar">2}]}')
+        assert _normalize_candidates(parsed["candidates"], [], n=3) == []
 
 
 @pytest.mark.asyncio
@@ -237,7 +260,7 @@ async def test_start_displays_salvaged_candidates_instead_of_no_assistance():
         step = await method.start(question, {})
 
     assert step.type == StepType.DISPLAY
-    assert len(step.payload["candidates"]) == 2
+    assert len(step.payload["candidates"]) == 3
 
 
 # ---------------------------------------------------------------------------
