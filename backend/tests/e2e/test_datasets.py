@@ -1,4 +1,4 @@
-"""End-to-end CRUD for datasets (design: docs/datasets-groups-design.md).
+"""End-to-end CRUD for datasets.
 
 Uses the shared `client` fixture. Covers case-insensitive name uniqueness
 (create and rename), wave-token normalization, partial PATCH semantics, and

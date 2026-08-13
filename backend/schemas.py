@@ -330,7 +330,7 @@ class V1ExperimentResponse(BaseModel):
     description: Optional[str] = None
 
 
-# --- Datasets (identity anchor; design: docs/datasets-groups-design.md) ----
+# --- Datasets (identity anchor for experiment grouping) --------------------
 # Wave tokens are short enum-like identifiers ("fall25", "sp26"). They are
 # normalized to lowercase in the service layer so a group's attribution wave
 # (validated against this set in a follow-up) can never miss on casing.

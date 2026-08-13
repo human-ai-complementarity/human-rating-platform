@@ -16,6 +16,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -489,13 +490,13 @@ class AssistanceSession(SQLModel, table=True):
 
 
 class Dataset(SQLModel, table=True):
-    """Identity anchor for a rating dataset (design: docs/datasets-groups-design.md).
+    """Identity anchor for a rating dataset.
 
-    `name` is unique case-insensitively (functional index on lower(name) in the
-    migration, plus a service-layer check for a clean 409). Where the dataset
-    comes from the inference pipeline, `name` matches the pipeline's card name —
-    that is the cross-repo join key, so it is stored verbatim (trimmed only,
-    internal punctuation/casing preserved).
+    `name` is unique case-insensitively (functional index on lower(name), plus
+    a service-layer check for a clean 409). Where the dataset comes from the
+    inference pipeline, `name` matches the pipeline's card name — that is the
+    cross-repo join key, so it is stored verbatim (trimmed only, internal
+    punctuation/casing preserved).
 
     `waves` mirrors the card's wave-inclusion *set* (which waves the dataset is
     part of), not attribution — which wave a given run was for lives on the
@@ -504,6 +505,9 @@ class Dataset(SQLModel, table=True):
     """
 
     __tablename__ = "datasets"
+    # Declared here as well as in the migration so autogenerate sees the
+    # functional index in model metadata and never proposes dropping it.
+    __table_args__ = (Index("uq_datasets_name_lower", text("lower(name)"), unique=True),)
 
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(sa_column=Column(String(255), nullable=False))

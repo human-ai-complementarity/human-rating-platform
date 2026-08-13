@@ -1,4 +1,4 @@
-"""Dataset CRUD (design: docs/datasets-groups-design.md).
+"""Dataset CRUD.
 
 Datasets are the identity anchor for grouping experiments: a canonical row per
 dataset, named after the inference-pipeline card where one exists, so identity
@@ -46,6 +46,13 @@ def _to_response(dataset: Dataset) -> DatasetResponse:
     )
 
 
+def _conflict(name: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=f'Dataset "{name}" already exists (names are case-insensitive).',
+    )
+
+
 async def _fetch_dataset_or_404(dataset_id: int, db: AsyncSession) -> Dataset:
     dataset = await db.get(Dataset, dataset_id)
     if dataset is None:
@@ -53,31 +60,34 @@ async def _fetch_dataset_or_404(dataset_id: int, db: AsyncSession) -> Dataset:
     return dataset
 
 
-async def _find_by_name_ci(name: str, db: AsyncSession) -> Dataset | None:
+async def _check_name_available(name: str, db: AsyncSession, exclude_id: int | None = None) -> None:
+    """409 if another dataset already holds `name` case-insensitively.
+
+    `exclude_id` exempts the dataset being renamed, so recasing your own name
+    is not a conflict.
+    """
     result = await db.execute(select(Dataset).where(func.lower(Dataset.name) == name.lower()))
-    return result.scalar_one_or_none()
+    existing = result.scalar_one_or_none()
+    if existing is not None and existing.id != exclude_id:
+        raise _conflict(existing.name)
 
 
-async def create_dataset(payload: DatasetCreate, db: AsyncSession) -> DatasetResponse:
-    existing = await _find_by_name_ci(payload.name, db)
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail=f'Dataset "{existing.name}" already exists (names are case-insensitive).',
-        )
-
-    dataset = Dataset(name=payload.name, waves=json.dumps(normalize_waves(payload.waves)))
+async def _commit_name_change(dataset: Dataset, db: AsyncSession) -> None:
+    """Commit, converting a unique-index race on the name into the same 409
+    the pre-check gives (the lower(name) index is the backstop)."""
     db.add(dataset)
     try:
         await db.commit()
     except IntegrityError as e:
-        # Race with a concurrent create; the lower(name) unique index caught it.
         await db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=f'Dataset "{payload.name}" already exists (names are case-insensitive).',
-        ) from e
+        raise _conflict(dataset.name) from e
     await db.refresh(dataset)
+
+
+async def create_dataset(payload: DatasetCreate, db: AsyncSession) -> DatasetResponse:
+    await _check_name_available(payload.name, db)
+    dataset = Dataset(name=payload.name, waves=json.dumps(normalize_waves(payload.waves)))
+    await _commit_name_change(dataset, db)
     return _to_response(dataset)
 
 
@@ -95,21 +105,13 @@ async def update_dataset(
 ) -> DatasetResponse:
     dataset = await _fetch_dataset_or_404(dataset_id, db)
 
-    if payload.name is not None and payload.name.lower() != dataset.name.lower():
-        existing = await _find_by_name_ci(payload.name, db)
-        if existing is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=f'Dataset "{existing.name}" already exists (names are case-insensitive).',
-            )
     if payload.name is not None:
+        await _check_name_available(payload.name, db, exclude_id=dataset_id)
         dataset.name = payload.name
     if payload.waves is not None:
         dataset.waves = json.dumps(normalize_waves(payload.waves))
 
-    db.add(dataset)
-    await db.commit()
-    await db.refresh(dataset)
+    await _commit_name_change(dataset, db)
     return _to_response(dataset)
 
 
