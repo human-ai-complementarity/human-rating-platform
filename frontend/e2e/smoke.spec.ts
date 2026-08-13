@@ -98,6 +98,7 @@ type MockState = {
   nextQuestionSessionTokens: string[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
+  statsByExperimentId: Record<number, Record<string, unknown>>;
   questionsBySessionToken: Record<string, RaterQuestionRecord>;
   nextExperimentId: number;
   nextUploadId: number;
@@ -133,6 +134,7 @@ function createMockState(): MockState {
     nextQuestionSessionTokens: [],
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
+    statsByExperimentId: {},
     questionsBySessionToken: {},
     nextExperimentId: 1,
     nextUploadId: 1,
@@ -293,7 +295,8 @@ async function installApiMocks(
       const experimentId = extractExperimentId(url);
       state.statsRequests.push(search);
       const experiment = state.experiments.find((item) => item.id === experimentId);
-      await fulfillJson(route, 200, {
+      const override = state.statsByExperimentId[experimentId];
+      await fulfillJson(route, 200, override ?? {
         experiment_name: experiment?.name ?? 'Unknown',
         total_questions: experiment?.question_count ?? 0,
         questions_complete: 0,
@@ -811,6 +814,82 @@ test('disabled mode explains why pilot controls are unavailable', async ({ page 
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Configure a Prolific API token');
   await expect(page.getByTestId('preview-participant-button')).toBeVisible();
   await expect(page.getByTestId('run-pilot-button')).toHaveCount(0);
+});
+
+test('completion progress stays under 100% while any question is short', async ({ page }) => {
+  // Real CulturalBench numbers: 3671 of 3681 effective ratings is 99.7%, which
+  // Math.round reported as a full 100% while 10 questions were still short.
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Nearly Complete Experiment',
+      question_count: 1227,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 10,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.statsByExperimentId[1] = {
+    experiment_name: 'Nearly Complete Experiment',
+    total_questions: 1227,
+    questions_complete: 1217,
+    total_ratings: 3865,
+    effective_ratings: 3671,
+    total_raters: 92,
+    target_ratings_per_question: 3,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  await expect(page.getByText('1217 of 1227 questions')).toBeVisible();
+  await expect(page.getByText('99%', { exact: true })).toBeVisible();
+  await expect(page.getByText('100%', { exact: true })).toHaveCount(0);
+});
+
+test('completion progress reaches 100% only when every question is at target', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Complete Experiment',
+      question_count: 1227,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: true,
+  };
+  state.statsByExperimentId[1] = {
+    experiment_name: 'Complete Experiment',
+    total_questions: 1227,
+    questions_complete: 1227,
+    total_ratings: 3865,
+    effective_ratings: 3681,
+    total_raters: 92,
+    target_ratings_per_question: 3,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  await expect(page.getByText('100%', { exact: true })).toBeVisible();
 });
 
 test('a non-numeric experiment id shows a friendly not-found message', async ({ page }) => {
