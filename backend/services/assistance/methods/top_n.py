@@ -8,6 +8,8 @@ Candidates are returned in a random order rather than best-first, and the UI
 shows neither the rank nor the model's confidence, so the rater sees the
 shortlist without the model's ordering anchoring their choice. Each candidate
 still carries its `rank`, persisted with the session payload for analysis.
+The payload also records `parse_status` (clean/repaired/salvaged): a salvaged
+list is a degraded treatment, so analysis must be able to tell them apart.
 
 assistance_params:
     model: LLM to use for ranking (default: settings.llm.default_model)
@@ -162,7 +164,15 @@ def _salvage_candidates(content: str) -> list[dict]:
     return salvaged
 
 
-def _parse_top_n_response(raw: str) -> dict:
+def _parse_top_n_response(raw: str) -> tuple[dict, str]:
+    """Parse the LLM response, reporting how much coercion that took.
+
+    Returns ``(parsed, parse_status)`` where parse_status is ``"clean"``,
+    ``"repaired"`` or ``"salvaged"``. The status is persisted with the session
+    payload: a salvaged list is a materially different treatment (fewer,
+    less diverse suggestions), and without the marker those sessions are
+    indistinguishable from clean ones in the recorded data.
+    """
     content = _strip_markdown_json(raw)
     decoder = json.JSONDecoder()
     for start_index, char in enumerate(content):
@@ -173,7 +183,7 @@ def _parse_top_n_response(raw: str) -> dict:
         except json.JSONDecodeError:
             continue
         if isinstance(parsed, dict) and isinstance(parsed.get("candidates"), list):
-            return parsed
+            return parsed, "clean"
 
     repaired = _repair_comparison_tokens(content)
     if repaired is not None:
@@ -181,7 +191,7 @@ def _parse_top_n_response(raw: str) -> dict:
             "Top-N JSON had a comparison where a colon belongs; repaired %r",
             content,
         )
-        return repaired
+        return repaired, "repaired"
 
     salvaged = _salvage_candidates(content)
     if salvaged:
@@ -190,7 +200,7 @@ def _parse_top_n_response(raw: str) -> dict:
             len(salvaged),
             content,
         )
-        return {"candidates": salvaged}
+        return {"candidates": salvaged}, "salvaged"
     raise json.JSONDecodeError("No top-N candidates JSON object found", content, 0)
 
 
@@ -310,10 +320,10 @@ class TopNAssistance(AssistanceMethod):
             return InteractionStep(type=StepType.NONE, is_terminal=True)
 
         try:
-            parsed = _parse_top_n_response(raw)
+            parsed, parse_status = _parse_top_n_response(raw)
         except json.JSONDecodeError:
             logger.warning("Failed to parse top-N assistance response: %r", raw)
-            parsed = {}
+            parsed, parse_status = {}, "unparseable"
 
         candidates = _normalize_candidates(parsed.get("candidates"), options, n)
         if not candidates:
@@ -331,6 +341,7 @@ class TopNAssistance(AssistanceMethod):
                 "top_n": n,
                 "candidates": shuffled,
                 "has_options": bool(options),
+                "parse_status": parse_status,
             },
             is_terminal=True,
         )
