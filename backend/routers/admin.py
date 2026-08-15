@@ -11,6 +11,8 @@ from schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyResponse,
+    CatalogEntry,
+    CatalogSyncResponse,
     DatasetCreate,
     DatasetResponse,
     DatasetUpdate,
@@ -402,6 +404,38 @@ async def discard_experiment_round(
         round_id=round_id,
         db=db,
     )
+
+
+# ── Pipeline catalog (seed datasets + backfill groups) ──────────────────────
+
+
+@secure_router.get("/catalog", response_model=list[CatalogEntry])
+async def get_catalog():
+    """Scheduled inference-pipeline cards this platform will seed.
+
+    `name` matches the pipeline card name (cross-repo join key). `waves` is
+    the card's inclusion set. Automated card sync is a follow-up; this list
+    is a snapshot.
+    """
+    return admin_service.catalog_entries()
+
+
+@secure_router.post("/catalog/sync", response_model=CatalogSyncResponse)
+async def sync_catalog(db: AsyncSession = Depends(get_session)):
+    """Idempotent catalog seed + experiment-group backfill.
+
+    Creates missing dataset rows (named after the cards; unions catalog
+    waves onto an existing same-name row). Then assigns ungrouped
+    experiments whose upload filenames match a card (`{card}_n300.parquet`
+    style). Wave is auto-filled when the dataset has one token, otherwise
+    taken from a wave token in the experiment name / internal name /
+    filenames. Dual-wave cards with no signal stay ungrouped.
+
+    Already-grouped experiments are left alone. Assignment writes
+    `group_id` directly so launched / finished collections can be attached
+    (the usual PATCH lock does not apply).
+    """
+    return await admin_service.sync_catalog(db)
 
 
 # ── Datasets (identity anchor for experiment grouping) ──────────────────────
