@@ -157,6 +157,29 @@ button:disabled {
   }
 }
 
+/* Indeterminate progress: work is in flight but its duration is unknown
+   (e.g. the server-side half of a dataset upload). */
+.indeterminate-bar {
+  width: 40%;
+  animation: indeterminate-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes indeterminate-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indeterminate-bar {
+    width: 100%;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+}
+
 /* Full-viewport centered pages (unauthenticated landing, callbacks). */
 .login-page {
   display: flex;
