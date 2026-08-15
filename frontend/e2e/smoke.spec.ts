@@ -12,6 +12,32 @@ type ExperimentRecord = {
   rating_count: number;
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
+  assistance_method: string;
+  needs_attention: boolean;
+  attention_reason: string | null;
+  spend_minor_units: number;
+  group_id: number | null;
+  group_name: string | null;
+  dataset_id: number | null;
+  dataset_name: string | null;
+  wave: string | null;
+};
+
+type DatasetRecord = {
+  id: number;
+  name: string;
+  waves: string[];
+  created_at: string;
+};
+
+type GroupRecord = {
+  id: number;
+  name: string;
+  dataset_id: number;
+  dataset_name: string;
+  wave: string;
+  experiment_count: number;
+  created_at: string;
 };
 
 type UploadRecord = {
@@ -92,6 +118,8 @@ type RaterQuestionRecord = {
 
 type MockState = {
   experiments: ExperimentRecord[];
+  datasets: DatasetRecord[];
+  groups: GroupRecord[];
   uploads: Record<number, UploadRecord[]>;
   rounds: Record<number, ExperimentRoundRecord[]>;
   recommendations: Record<number, RecommendationRecord>;
@@ -106,6 +134,8 @@ type MockState = {
   statsByExperimentId: Record<number, Record<string, unknown>>;
   questionsBySessionToken: Record<string, RaterQuestionRecord>;
   nextExperimentId: number;
+  nextDatasetId: number;
+  nextGroupId: number;
   nextUploadId: number;
   nextRoundId: number;
 };
@@ -122,6 +152,15 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     rating_count: 0,
     status: 'DRAFT',
     archived_at: null,
+    assistance_method: 'none',
+    needs_attention: false,
+    attention_reason: null,
+    spend_minor_units: 0,
+    group_id: null,
+    group_name: null,
+    dataset_id: null,
+    dataset_name: null,
+    wave: null,
     ...partial,
   };
 }
@@ -129,6 +168,8 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
 function createMockState(): MockState {
   return {
     experiments: [],
+    datasets: [],
+    groups: [],
     uploads: {},
     rounds: {},
     recommendations: {},
@@ -143,6 +184,8 @@ function createMockState(): MockState {
     statsByExperimentId: {},
     questionsBySessionToken: {},
     nextExperimentId: 1,
+    nextDatasetId: 1,
+    nextGroupId: 1,
     nextUploadId: 1,
     nextRoundId: 1,
   };
@@ -227,6 +270,59 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname === '/api/admin/datasets' && method === 'GET') {
+      await fulfillJson(route, 200, state.datasets);
+      return;
+    }
+
+    if (pathname === '/api/admin/datasets' && method === 'POST') {
+      const payload = request.postDataJSON() as { name: string; waves?: string[] };
+      const dataset: DatasetRecord = {
+        id: state.nextDatasetId++,
+        name: payload.name,
+        waves: (payload.waves ?? []).map((wave) => wave.trim().toLowerCase()).filter(Boolean),
+        created_at: '2026-03-09T00:00:00Z',
+      };
+      state.datasets = [...state.datasets, dataset];
+      await fulfillJson(route, 200, dataset);
+      return;
+    }
+
+    if (pathname === '/api/admin/experiment-groups' && method === 'GET') {
+      await fulfillJson(route, 200, state.groups);
+      return;
+    }
+
+    if (pathname === '/api/admin/experiment-groups' && method === 'POST') {
+      const payload = request.postDataJSON() as {
+        name: string;
+        dataset_id: number;
+        wave?: string;
+      };
+      const dataset = state.datasets.find((item) => item.id === payload.dataset_id);
+      if (!dataset) {
+        await fulfillJson(route, 404, { detail: 'Dataset not found' });
+        return;
+      }
+      const wave = payload.wave?.trim().toLowerCase() || (dataset.waves.length === 1 ? dataset.waves[0] : '');
+      if (!wave || (dataset.waves.length > 0 && !dataset.waves.includes(wave))) {
+        await fulfillJson(route, 400, { detail: 'Wave is not in the dataset set' });
+        return;
+      }
+      const group: GroupRecord = {
+        id: state.nextGroupId++,
+        name: payload.name,
+        dataset_id: dataset.id,
+        dataset_name: dataset.name,
+        wave,
+        experiment_count: 0,
+        created_at: '2026-03-09T00:00:00Z',
+      };
+      state.groups = [...state.groups, group];
+      await fulfillJson(route, 200, group);
+      return;
+    }
+
     if (pathname === '/api/admin/experiments' && method === 'GET') {
       // Mirror the backend's archived filtering so the detail page's per-id
       // fetch (not the list) is what resolves an archived experiment:
@@ -244,10 +340,24 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/experiments' && method === 'POST') {
-      const payload = request.postDataJSON() as { name: string; num_ratings_per_question: number };
+      const payload = request.postDataJSON() as {
+        name: string;
+        num_ratings_per_question: number;
+        assistance_method?: string;
+        group_id?: number | null;
+      };
+      const group = payload.group_id
+        ? state.groups.find((item) => item.id === payload.group_id)
+        : undefined;
       const experiment = buildExperiment(state, {
         name: payload.name,
         num_ratings_per_question: payload.num_ratings_per_question,
+        assistance_method: payload.assistance_method ?? 'none',
+        group_id: group?.id ?? null,
+        group_name: group?.name ?? null,
+        dataset_id: group?.dataset_id ?? null,
+        dataset_name: group?.dataset_name ?? null,
+        wave: group?.wave ?? null,
       });
       state.experiments = [experiment];
       state.uploads[experiment.id] = [];
@@ -1313,4 +1423,93 @@ test.describe('analytics raters tab', () => {
     await expect(page).toHaveURL('/admin/experiments/1/analytics');
     await expect(page.getByText('Total Ratings')).toBeVisible();
   });
+});
+
+test('grouped list cards, wave chips, and create-panel group picker', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    { id: 1, name: 'medqa', waves: ['fall25', 'sp26'], created_at: '2026-03-09T00:00:00Z' },
+  ];
+  state.nextDatasetId = 2;
+  state.groups = [
+    {
+      id: 1,
+      name: 'MedQA Fall',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'fall25',
+      experiment_count: 2,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+  state.nextGroupId = 2;
+  state.experiments = [
+    buildExperiment(state, {
+      name: 'MedQA none',
+      assistance_method: 'none',
+      group_id: 1,
+      group_name: 'MedQA Fall',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'fall25',
+      spend_minor_units: 400,
+    }),
+    buildExperiment(state, {
+      name: 'MedQA top-n',
+      assistance_method: 'top_n',
+      group_id: 1,
+      group_name: 'MedQA Fall',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'fall25',
+      spend_minor_units: 250,
+      needs_attention: true,
+      attention_reason: 'A round draft is waiting to be published on Prolific.',
+    }),
+    buildExperiment(state, {
+      name: 'Scratch draft',
+      spend_minor_units: 0,
+    }),
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await expect(page.getByTestId('group-card-1')).toBeVisible();
+  await expect(page.getByTestId('group-spend-1')).toHaveText('$6.50');
+  await expect(page.getByTestId('group-card-toggle-1')).toContainText('MedQA Fall');
+  await expect(page.getByTestId('group-wave-fall25')).toBeVisible();
+  await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-none')).toBeVisible();
+  await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-top_n')).toBeVisible();
+  await expect(page.getByTestId('group-card-ungrouped')).toBeVisible();
+  await expect(page.getByText('Scratch draft')).toBeVisible();
+
+  await page.getByTestId('wave-filter-fall25').click();
+  await expect(page.getByText('Scratch draft')).toHaveCount(0);
+  await expect(page.getByText('MedQA none')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(page.getByText('Scratch draft')).toBeVisible();
+
+  await page.getByTestId('grouped-toggle').click();
+  await expect(page.getByTestId('group-card-1')).toHaveCount(0);
+  await expect(page.getByText('MedQA none')).toBeVisible();
+  await expect(page.getByTestId('experiment-wave-fall25').first()).toBeVisible();
+
+  await page.getByTestId('grouped-toggle').click();
+  await page.getByTestId('group-picker').selectOption('1');
+  await page.getByTestId('assistance-method-select').selectOption('none');
+  await expect(page.getByTestId('duplicate-method-warning')).toBeVisible();
+  await page.getByTestId('assistance-method-select').selectOption('human_as_a_tool');
+  await expect(page.getByTestId('duplicate-method-warning')).toHaveCount(0);
+
+  await page.getByTestId('group-picker').selectOption('new');
+  await page.getByTestId('new-group-name-input').fill('MedQA Spring');
+  await page.getByTestId('new-group-dataset').selectOption('1');
+  await page.getByTestId('new-group-wave').selectOption('sp26');
+  await page.getByTestId('experiment-name-input').fill('MedQA spring none');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
+  expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
 });

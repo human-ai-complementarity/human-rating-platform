@@ -30,6 +30,29 @@ export interface Experiment {
   // currency's minor units (sum of each round's Prolific `total_cost`).
   // 0 until a round has been synced from Prolific.
   spend_minor_units: number;
+  // Inherited from the experiment group when attached; all null if ungrouped.
+  group_id: number | null;
+  group_name: string | null;
+  dataset_id: number | null;
+  dataset_name: string | null;
+  wave: string | null;
+}
+
+export interface Dataset {
+  id: number;
+  name: string;
+  waves: string[];
+  created_at: string;
+}
+
+export interface ExperimentGroup {
+  id: number;
+  name: string;
+  dataset_id: number;
+  dataset_name: string;
+  wave: string;
+  experiment_count: number;
+  created_at: string;
 }
 
 // Keys an upload may declare as dataset-level metadata (CSV `#META:` line or
@@ -230,6 +253,7 @@ export interface ExperimentCreate {
   prolific?: ProlificStudyConfig;
   assistance_method?: string;
   assistance_params?: Record<string, unknown>;
+  group_id?: number | null;
 }
 
 export interface ExperimentRound {
