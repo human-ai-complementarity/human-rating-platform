@@ -163,6 +163,33 @@ def test_patch_name_and_wave_on_unlocked_group(client: TestClient) -> None:
     assert moved.json()["name"] == "MedQA Fall 25"
 
 
+def test_unlocked_dataset_move_preserves_shared_wave(client: TestClient) -> None:
+    source = _dataset(client, "medqa", ["fall25", "sp26"])
+    dest = _dataset(client, "argus", ["fall25", "winter26"])
+    group = _group(client, "MedQA Fall", source["id"], "fall25")
+
+    moved = client.patch(
+        f"/api/admin/experiment-groups/{group['id']}", json={"dataset_id": dest["id"]}
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["dataset_id"] == dest["id"]
+    assert moved.json()["dataset_name"] == "argus"
+    assert moved.json()["wave"] == "fall25"
+    assert moved.json()["name"] == "MedQA Fall"
+
+
+def test_unlocked_dataset_move_without_shared_wave_requires_pick(client: TestClient) -> None:
+    source = _dataset(client, "medqa", ["fall25", "sp26"])
+    dest = _dataset(client, "argus", ["sp26", "winter26"])
+    group = _group(client, "MedQA Fall", source["id"], "fall25")
+
+    moved = client.patch(
+        f"/api/admin/experiment-groups/{group['id']}", json={"dataset_id": dest["id"]}
+    )
+    assert moved.status_code == 400
+    assert "multiple waves" in moved.json()["detail"]
+
+
 def test_lock_blocks_dataset_and_wave_but_not_name(client: TestClient, sync_engine) -> None:
     dataset = _dataset(client, "medqa", ["fall25", "sp26"])
     other = _dataset(client, "argus", ["fall25"])

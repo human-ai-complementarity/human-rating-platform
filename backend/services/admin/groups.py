@@ -259,9 +259,8 @@ async def update_group(
     dataset = await fetch_dataset_or_404(dataset_id, db)
     # Keep the current wave across a dataset move when it is still a member;
     # otherwise auto-fill / require an explicit pick (see resolve_attribution_wave).
-    current_wave = None if dataset_changing else group.wave
     requested = payload.wave if payload.wave is not None else None
-    wave = resolve_attribution_wave(dataset, requested, current=current_wave)
+    wave = resolve_attribution_wave(dataset, requested, current=group.wave)
 
     if payload.name is not None:
         await _check_name_available(payload.name, dataset_id, db, exclude_id=group_id)
