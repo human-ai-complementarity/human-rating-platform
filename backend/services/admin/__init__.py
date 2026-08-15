@@ -15,6 +15,7 @@ from .groups import (
     list_groups,
     update_group,
 )
+from .tags import list_tags
 from .experiments import (
     archive_experiment,
     create_experiment,
@@ -62,6 +63,7 @@ __all__ = [
     "list_datasets",
     "list_experiments",
     "list_groups",
+    "list_tags",
     "list_experiment_rounds",
     "list_uploads",
     "publish_experiment_round",

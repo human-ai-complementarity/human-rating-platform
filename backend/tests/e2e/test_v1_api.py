@@ -258,6 +258,7 @@ _INTERNAL_FIELDS = {
     "group_dataset_id",
     "group_dataset_name",
     "wave",
+    "tags",
 }
 
 

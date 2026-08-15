@@ -598,6 +598,50 @@ class ExperimentGroup(SQLModel, table=True):
     )
 
 
+class Tag(SQLModel, table=True):
+    """Free-form label on an experiment (project, client, one-offs).
+
+    Names are unique case-insensitively (functional index + service-layer
+    reuse). First-seen casing is stored. Derived properties (method, wave,
+    status) are never stored as tags.
+    """
+
+    __tablename__ = "tags"
+    __table_args__ = (Index("uq_tags_name_lower", text("lower(name)"), unique=True),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(sa_column=Column(String(64), nullable=False))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+
+
+class ExperimentTag(SQLModel, table=True):
+    """Many-to-many link between experiments and tags."""
+
+    __tablename__ = "experiment_tags"
+
+    experiment_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("experiments.id", ondelete="CASCADE"),
+            primary_key=True,
+        )
+    )
+    tag_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("tags.id", ondelete="CASCADE"),
+            primary_key=True,
+        )
+    )
+
+
 class ApiKey(SQLModel, table=True):
     """A bearer credential for the programmatic /api/v1 read API.
 
