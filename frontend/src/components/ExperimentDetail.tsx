@@ -1242,8 +1242,12 @@ function OverviewPanel({
   // that crossed the finish line. effective_ratings caps each question at
   // its target, so overshoot on one question can't mask a shortfall on
   // another — 100% means every question is individually at target.
+  // Floor rather than round: at 3671 of 3681 the bar rounded up to a full 100%
+  // while 10 questions were still short, contradicting the question count
+  // printed beside it. Flooring reaches 100 only once every question is at
+  // target, which is what the line above promises.
   const completePct = stats && targetRatings > 0
-    ? Math.min(100, Math.round((stats.effective_ratings / targetRatings) * 100))
+    ? Math.min(100, Math.floor((stats.effective_ratings / targetRatings) * 100))
     : 0;
   // Once a main round has launched the experiment leaves DRAFT and setup is
   // no longer the user's job — the Overview becomes a monitoring dashboard.
