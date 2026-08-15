@@ -10,10 +10,20 @@ from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
-from models import Experiment, ExperimentRound, ExperimentStatus, Question, Rating, Rater, Upload
+from models import (
+    Experiment,
+    ExperimentGroup,
+    ExperimentRound,
+    ExperimentStatus,
+    Question,
+    Rating,
+    Rater,
+    Upload,
+)
 from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
+from .groups import fetch_group_or_404, fetch_group_snapshot, fetch_group_snapshots
 from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
@@ -37,6 +47,10 @@ async def create_experiment(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
+    group_id = payload.group_id
+    if group_id is not None:
+        await fetch_group_or_404(group_id, db)
+
     db_experiment = Experiment(
         name=payload.name,
         internal_name=(payload.internal_name.strip() or None) if payload.internal_name else None,
@@ -46,6 +60,7 @@ async def create_experiment(
         assistance_params=json.dumps(payload.assistance_params)
         if payload.assistance_params
         else None,
+        group_id=group_id,
     )
     db.add(db_experiment)
     await db.commit()
@@ -60,7 +75,12 @@ async def create_experiment(
             }
         },
     )
-    return build_experiment_response(db_experiment, question_count=0, rating_count=0)
+    return build_experiment_response(
+        db_experiment,
+        question_count=0,
+        rating_count=0,
+        group=await fetch_group_snapshot(db_experiment.group_id, db),
+    )
 
 
 async def list_experiments(
@@ -72,6 +92,9 @@ async def list_experiments(
     status: ExperimentStatus | None = None,
     search: str | None = None,
     ids: list[int] | None = None,
+    group_id: int | None = None,
+    dataset_id: int | None = None,
+    wave: str | None = None,
 ) -> list[ExperimentResponse]:
     question_counts = (
         select(
@@ -118,6 +141,15 @@ async def list_experiments(
 
     if status is not None:
         stmt = stmt.where(Experiment.status == status)
+
+    if group_id is not None:
+        stmt = stmt.where(Experiment.group_id == group_id)
+    if dataset_id is not None or wave is not None:
+        stmt = stmt.join(ExperimentGroup, Experiment.group_id == ExperimentGroup.id)
+        if dataset_id is not None:
+            stmt = stmt.where(ExperimentGroup.dataset_id == dataset_id)
+        if wave is not None:
+            stmt = stmt.where(ExperimentGroup.wave == wave.strip().lower())
 
     # Case-insensitive substring match against either the public or internal
     # name. `%`/`_` are escaped so a literal search term can't act as a wildcard.
@@ -224,6 +256,11 @@ async def _build_experiment_responses(
             if total_cost:
                 spend_by_experiment[exp_id] = spend_by_experiment.get(exp_id, 0) + int(total_cost)
 
+    snapshots = await fetch_group_snapshots(
+        [experiment.group_id for experiment, _, _ in rows if experiment.group_id is not None],
+        db,
+    )
+
     return [
         build_experiment_response(
             experiment,
@@ -236,6 +273,7 @@ async def _build_experiment_responses(
                 round_statuses=round_statuses_by_experiment.get(experiment.id, []),
             ),
             spend_minor_units=spend_by_experiment.get(experiment.id, 0),
+            group=snapshots.get(experiment.group_id) if experiment.group_id else None,
         )
         for experiment, question_count, rating_count in rows
     ]
@@ -304,10 +342,10 @@ async def duplicate_experiment(
     """Create a fresh DRAFT experiment from an existing one.
 
     Copied: names (with a " COPY" suffix), ratings per question, the dataset
-    (questions + upload provenance), and the instructions-page fields
-    (description, system prompt, prefix/suffix, prolific pool). Everything
-    else — status, assistance config, rounds, raters, ratings, participant
-    group — starts from defaults.
+    (questions + upload provenance), the experiment group, and the
+    instructions-page fields (description, system prompt, prefix/suffix,
+    prolific pool). Everything else — status, assistance config, rounds,
+    raters, ratings, participant group — starts from defaults.
     """
     source = await fetch_experiment_or_404(experiment_id, db)
 
@@ -330,6 +368,7 @@ async def duplicate_experiment(
         human_prompt_prefix=source.human_prompt_prefix,
         human_prompt_suffix=source.human_prompt_suffix,
         prolific_pool=source.prolific_pool,
+        group_id=source.group_id,
     )
     db.add(duplicate)
     await db.flush()
@@ -415,6 +454,7 @@ async def duplicate_experiment(
         question_count=question_count,
         rating_count=0,
         dataset_filenames=[upload.filename for upload in source_uploads],
+        group=await fetch_group_snapshot(duplicate.group_id, db),
     )
 
 
@@ -447,6 +487,8 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
         normalized = proposed.strip() or None
         if normalized != getattr(experiment, field_name):
             changes.append(field_name)
+    if "group_id" in payload.model_fields_set and payload.group_id != experiment.group_id:
+        changes.append("group_id")
     return changes
 
 
@@ -495,13 +537,21 @@ async def update_experiment(
         stripped = value.strip()
         setattr(experiment, field_name, stripped or None)
 
+    if "group_id" in payload.model_fields_set:
+        if payload.group_id is not None:
+            await fetch_group_or_404(payload.group_id, db)
+        experiment.group_id = payload.group_id
+
     await db.commit()
     await db.refresh(experiment)
 
     question_count = await fetch_total_questions_for_experiment(experiment_id, db)
     rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
     return build_experiment_response(
-        experiment, question_count=question_count, rating_count=rating_count
+        experiment,
+        question_count=question_count,
+        rating_count=rating_count,
+        group=await fetch_group_snapshot(experiment.group_id, db),
     )
 
 
@@ -524,7 +574,10 @@ async def finish_experiment(
     question_count = await fetch_total_questions_for_experiment(experiment_id, db)
     rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
     return build_experiment_response(
-        experiment, question_count=question_count, rating_count=rating_count
+        experiment,
+        question_count=question_count,
+        rating_count=rating_count,
+        group=await fetch_group_snapshot(experiment.group_id, db),
     )
 
 
@@ -549,7 +602,10 @@ async def _set_archived(
     question_count = await fetch_total_questions_for_experiment(experiment_id, db)
     rating_count = await fetch_total_ratings_for_experiment(experiment_id, db)
     return build_experiment_response(
-        experiment, question_count=question_count, rating_count=rating_count
+        experiment,
+        question_count=question_count,
+        rating_count=rating_count,
+        group=await fetch_group_snapshot(experiment.group_id, db),
     )
 
 
