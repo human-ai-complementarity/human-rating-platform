@@ -17,24 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Dataset
 from schemas import DatasetCreate, DatasetResponse, DatasetUpdate
+from services.queries import fetch_dataset_or_404
 from .groups import assert_waves_unused_except, dataset_has_groups
-
-
-def normalize_waves(waves: list[str]) -> list[str]:
-    """Lowercase and dedupe wave tokens, preserving first-seen order.
-
-    Waves are enum-like tokens ("fall25", "sp26"); lowercasing both here and
-    on the group's attribution wave (follow-up) makes membership checks
-    casing-proof.
-    """
-    seen: set[str] = set()
-    result: list[str] = []
-    for wave in waves:
-        token = wave.strip().lower()
-        if token and token not in seen:
-            seen.add(token)
-            result.append(token)
-    return result
+from .waves import normalize_waves
 
 
 def _to_response(dataset: Dataset) -> DatasetResponse:
@@ -51,13 +36,6 @@ def _conflict(name: str) -> HTTPException:
         status_code=409,
         detail=f'Dataset "{name}" already exists (names are case-insensitive).',
     )
-
-
-async def _fetch_dataset_or_404(dataset_id: int, db: AsyncSession) -> Dataset:
-    dataset = await db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    return dataset
 
 
 async def _check_name_available(name: str, db: AsyncSession, exclude_id: int | None = None) -> None:
@@ -98,13 +76,13 @@ async def list_datasets(db: AsyncSession) -> list[DatasetResponse]:
 
 
 async def get_dataset(dataset_id: int, db: AsyncSession) -> DatasetResponse:
-    return _to_response(await _fetch_dataset_or_404(dataset_id, db))
+    return _to_response(await fetch_dataset_or_404(dataset_id, db))
 
 
 async def update_dataset(
     dataset_id: int, payload: DatasetUpdate, db: AsyncSession
 ) -> DatasetResponse:
-    dataset = await _fetch_dataset_or_404(dataset_id, db)
+    dataset = await fetch_dataset_or_404(dataset_id, db)
 
     if payload.name is not None:
         await _check_name_available(payload.name, db, exclude_id=dataset_id)
@@ -119,7 +97,7 @@ async def update_dataset(
 
 
 async def delete_dataset(dataset_id: int, db: AsyncSession) -> None:
-    dataset = await _fetch_dataset_or_404(dataset_id, db)
+    dataset = await fetch_dataset_or_404(dataset_id, db)
     if await dataset_has_groups(dataset_id, db):
         raise HTTPException(
             status_code=409,

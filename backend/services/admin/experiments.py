@@ -29,6 +29,7 @@ from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.registry import get_method
 from services.queries import parent_question_ids_subquery
+from .waves import normalize_wave_token
 from .queries import (
     fetch_experiment_or_404,
     fetch_total_questions_for_experiment,
@@ -149,7 +150,7 @@ async def list_experiments(
         if dataset_id is not None:
             stmt = stmt.where(ExperimentGroup.dataset_id == dataset_id)
         if wave is not None:
-            stmt = stmt.where(ExperimentGroup.wave == wave.strip().lower())
+            stmt = stmt.where(ExperimentGroup.wave == normalize_wave_token(wave))
 
     # Case-insensitive substring match against either the public or internal
     # name. `%`/`_` are escaped so a literal search term can't act as a wildcard.

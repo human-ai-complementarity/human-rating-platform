@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Dataset, Experiment, ExperimentGroup, ExperimentStatus
 from schemas import ExperimentGroupCreate, ExperimentGroupResponse, ExperimentGroupUpdate
+from services.queries import fetch_dataset_or_404
+from .waves import normalize_wave_token
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ def resolve_attribution_wave(
     """
     waves = _dataset_waves(dataset)
     if requested is not None:
-        token = requested.strip().lower()
+        token = normalize_wave_token(requested)
         if token not in waves:
             raise HTTPException(
                 status_code=400,
@@ -70,13 +72,6 @@ def resolve_attribution_wave(
             "specify which one this group is for."
         ),
     )
-
-
-async def fetch_dataset_or_404(dataset_id: int, db: AsyncSession) -> Dataset:
-    dataset = await db.get(Dataset, dataset_id)
-    if dataset is None:
-        raise HTTPException(status_code=404, detail="Dataset not found")
-    return dataset
 
 
 async def fetch_group_or_404(group_id: int, db: AsyncSession) -> ExperimentGroup:
@@ -230,7 +225,7 @@ async def list_groups(
     if dataset_id is not None:
         stmt = stmt.where(ExperimentGroup.dataset_id == dataset_id)
     if wave is not None:
-        stmt = stmt.where(ExperimentGroup.wave == wave.strip().lower())
+        stmt = stmt.where(ExperimentGroup.wave == normalize_wave_token(wave))
     stmt = stmt.order_by(func.lower(ExperimentGroup.name))
     rows = (await db.execute(stmt)).all()
     counts = await _experiment_counts([group.id for group, _ in rows], db)
@@ -249,7 +244,7 @@ async def update_group(
 ) -> ExperimentGroupResponse:
     group = await fetch_group_or_404(group_id, db)
     dataset_changing = payload.dataset_id is not None and payload.dataset_id != group.dataset_id
-    wave_requested = payload.wave is not None and payload.wave.strip().lower() != group.wave
+    wave_requested = payload.wave is not None and normalize_wave_token(payload.wave) != group.wave
 
     if (dataset_changing or wave_requested) and await group_is_locked(group_id, db):
         raise HTTPException(

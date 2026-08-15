@@ -10,7 +10,14 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Experiment, Question, Rater, Rating
+from models import Dataset, Experiment, Question, Rater, Rating
+
+
+async def fetch_dataset_or_404(dataset_id: int, db: AsyncSession) -> Dataset:
+    dataset = await db.get(Dataset, dataset_id)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return dataset
 
 
 async def fetch_experiment_or_404(experiment_id: int, db: AsyncSession) -> Experiment:
