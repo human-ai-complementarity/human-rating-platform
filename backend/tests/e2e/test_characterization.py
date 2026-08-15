@@ -2092,6 +2092,66 @@ def test_prolific_round_close_handles_space_separated_status(client: TestClient,
 
 
 @respx.mock
+def test_prolific_round_awaiting_review_advances_to_completed(
+    client: TestClient,
+    enable_prolific,
+):
+    # AWAITING_REVIEW is terminal for round creation but not on Prolific's side:
+    # approving the submissions moves the study to COMPLETED. Keep polling so the
+    # stored status follows, instead of pinning at AWAITING_REVIEW forever.
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_publish_study()
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/publish").status_code
+        == 200
+    )
+
+    _mock_close_study(closed_status="AWAITING_REVIEW")
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/close").status_code
+        == 200
+    )
+
+    # Approving the submissions on Prolific settles both the status and the
+    # final cost; the review-window refresh is what lets either land.
+    route = _mock_get_study(study_status="COMPLETED", total_cost=1500)
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert route.called
+    assert rounds[0]["prolific_study_status"] == "COMPLETED"
+
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
+    assert item["spend_minor_units"] == 1500
+
+
+@respx.mock
+def test_prolific_round_completed_is_not_refetched(client: TestClient, enable_prolific):
+    # COMPLETED is the genuine end state: no further Prolific fetch should happen.
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_publish_study()
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/publish").status_code
+        == 200
+    )
+
+    _mock_close_study(closed_status="COMPLETED")
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/close").status_code
+        == 200
+    )
+
+    route = _mock_get_study(study_status="ACTIVE")
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert not route.called
+    assert rounds[0]["prolific_study_status"] == "COMPLETED"
+
+
+@respx.mock
 def test_prolific_delete_calls_prolific_api_for_all_rounds(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
