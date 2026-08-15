@@ -80,6 +80,20 @@ class ExportSettings(_StrictModel):
     )
 
 
+class UploadSettings(_StrictModel):
+    # Upper bound on the text payload of a single question INSERT.
+    #
+    # SQLAlchemy batches inserts by row count, which is fine for short rows and
+    # ruinous for long-context ones: a page of 500KB documents builds a
+    # statement with hundreds of MB of parameters and OOM-kills a small
+    # Postgres. Tune this down on a memory-constrained database, or up once the
+    # instance has room, without needing a code change.
+    max_insert_payload_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1024,
+    )
+
+
 class TestingSettings(_StrictModel):
     export_seed_row_count: int = Field(
         default=1500,
@@ -139,6 +153,7 @@ class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     exports: ExportSettings = Field(default_factory=ExportSettings)
+    uploads: UploadSettings = Field(default_factory=UploadSettings)
     testing: TestingSettings = Field(default_factory=TestingSettings)
     clerk: ClerkSettings = Field(default_factory=ClerkSettings)
     seeding: SeedingSettings = Field(default_factory=SeedingSettings)

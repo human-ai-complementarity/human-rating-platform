@@ -22,6 +22,7 @@ import {
 import {
   Banner,
   Field,
+  ProgressBar,
   SectionCard,
   Toast,
   ToggleSwitch,
@@ -690,6 +691,12 @@ function ExperimentDetail({
           });
         },
       });
+      // Clear before the success toast and the refresh round trips below.
+      // Leaving it to `finally` would paint "Processing on the server / don't
+      // close this tab" alongside "Uploaded N questions", with the form still
+      // disabled, for as long as those reloads take.
+      setUploadState(null);
+
       const parts: string[] = [result.message];
       if (result.meta_applied.length > 0) {
         parts.push(
@@ -1407,22 +1414,7 @@ function OverviewPanel({
             </span>
             <span style={{ font: '600 13px var(--font-mono)' }}>{completePct}%</span>
           </div>
-          <div
-            style={{
-              height: 10,
-              borderRadius: 99,
-              background: 'var(--surface-2)',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                width: `${Math.max(2, completePct)}%`,
-                height: '100%',
-                background: 'var(--accent)',
-              }}
-            />
-          </div>
+          <ProgressBar pct={completePct} />
           <div style={{ height: 1, background: 'var(--line)', margin: '22px 0' }} />
           <div style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
             {stats && stats.total_ratings > 0
@@ -1701,28 +1693,11 @@ function UploadProgressPanel({
         </span>
       </div>
 
-      <div
-        style={{
-          height: 10,
-          borderRadius: 99,
-          background: 'var(--surface-2)',
-          overflow: 'hidden',
-        }}
-      >
-        {sending ? (
-          <div
-            data-testid="upload-progress-bar"
-            style={{
-              width: `${Math.max(2, pct)}%`,
-              height: '100%',
-              background: 'var(--accent)',
-              transition: 'width 120ms linear',
-            }}
-          />
-        ) : (
-          <div className="indeterminate-bar" style={{ height: '100%', background: 'var(--accent)' }} />
-        )}
-      </div>
+      <ProgressBar
+        pct={sending ? pct : 'indeterminate'}
+        transition="width 120ms linear"
+        fillTestId="upload-progress-bar"
+      />
 
       <div
         style={{

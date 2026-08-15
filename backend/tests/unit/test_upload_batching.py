@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from models import Question
+from config import UploadSettings
 from services.admin.uploads import (
-    MAX_INSERT_PAYLOAD_BYTES,
     _batch_by_payload_size,
     _question_payload_size,
 )
+
+# The shipped default, so these cases exercise realistic batch boundaries and
+# stay in step if the default is ever retuned.
+MAX_INSERT_PAYLOAD_BYTES = UploadSettings().max_insert_payload_bytes
 
 
 def _question(question_id: str, text_bytes: int) -> Question:

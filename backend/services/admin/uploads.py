@@ -13,6 +13,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from models import Experiment, Question, Upload
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
@@ -22,21 +23,6 @@ from .validators import validate_csv_required_fields, validate_upload_filename
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
-
-# Upper bound on the text payload of a single INSERT, in bytes.
-#
-# SQLAlchemy's insertmanyvalues batches by *row count* (1000 by default), which
-# is fine for short rows and catastrophic for long-context ones: a 1000-row page
-# of longbenchv2 documents (hundreds of KB each) builds a single statement with
-# a parameter payload in the hundreds of MB. Postgres parses that in memory and
-# the server process gets OOM-killed, which surfaces to us as
-# `ConnectionDoesNotExistError: connection was closed in the middle of
-# operation` and takes the whole database through crash recovery.
-#
-# Batching on payload size instead keeps every statement small regardless of how
-# long individual rows are. All batches still run inside the caller's single
-# transaction, so an upload remains all-or-nothing.
-MAX_INSERT_PAYLOAD_BYTES = 4 * 1024 * 1024  # 4MB
 
 # The five fields a dataset can declare as file-level metadata. Keys are matched
 # against this allowlist so unknown keys surface as a clean 400 instead of
@@ -328,10 +314,13 @@ async def _insert_questions_in_batches(
     """Add and flush questions in payload-bounded batches. Returns batch count.
 
     Flushing per batch is what bounds memory: it forces each batch out as its
-    own INSERT instead of letting one flush emit every row at once.
+    own INSERT instead of letting one flush emit every row at once. The cap is
+    read per call so it can be retuned by env var without a code change.
     """
+    max_bytes = get_settings().uploads.max_insert_payload_bytes
+
     batch_count = 0
-    for batch in _batch_by_payload_size(new_questions, MAX_INSERT_PAYLOAD_BYTES):
+    for batch in _batch_by_payload_size(new_questions, max_bytes):
         db.add_all(batch)
         await db.flush()
         batch_count += 1

@@ -550,7 +550,10 @@ test('a slow upload shows progress and re-enables the form when it finishes', as
   releaseUpload();
 
   await expect(page.getByText('Uploaded 2 questions')).toBeVisible();
-  await expect(progress).toHaveCount(0);
+  // Snapshot, not a retrying assertion: the panel must already be gone the
+  // moment the success toast paints. A retrying toHaveCount(0) would happily
+  // pass while the two contradicted each other for a few hundred ms.
+  expect(await progress.count()).toBe(0);
   await expect(page.getByTestId('upload-csv-input')).toBeEnabled();
 });
 

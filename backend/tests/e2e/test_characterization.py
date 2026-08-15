@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from models import ExperimentRound
-from services.admin import uploads
 from services.participant_groups import _slugify_for_prolific
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -3930,7 +3929,7 @@ def test_upload_batches_long_context_rows_across_multiple_inserts(
     fixture crosses several batch boundaries, including between a parent and its
     children.
     """
-    monkeypatch.setattr(uploads, "MAX_INSERT_PAYLOAD_BYTES", 2048)
+    monkeypatch.setattr(get_settings().uploads, "max_insert_payload_bytes", 2048)
 
     document = "D" * 3000  # on its own exceeds the cap, so it batches alone
     rows = [
