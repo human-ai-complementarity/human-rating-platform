@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .analytics import get_experiment_analytics
+from .catalog import catalog_entries, sync_catalog
 from .datasets import (
     create_dataset,
     delete_dataset,
@@ -53,6 +54,7 @@ __all__ = [
     "build_documents_export_filename",
     "build_export_filename",
     "calculate_recommendation",
+    "catalog_entries",
     "create_dataset",
     "create_experiment",
     "create_group",
@@ -81,6 +83,7 @@ __all__ = [
     "run_pilot_study",
     "stream_documents_export_csv_chunks",
     "stream_export_csv_chunks",
+    "sync_catalog",
     "unarchive_experiment",
     "update_dataset",
     "update_experiment",
