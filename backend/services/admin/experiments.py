@@ -15,15 +15,22 @@ from models import (
     ExperimentGroup,
     ExperimentRound,
     ExperimentStatus,
+    ExperimentTag,
     Question,
     Rating,
     Rater,
+    Tag,
     Upload,
 )
 from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .groups import fetch_group_or_404, fetch_group_snapshot, fetch_group_snapshots
+from .tags import (
+    fetch_tag_names_by_experiment,
+    fetch_tag_names_for_experiment,
+    set_experiment_tags,
+)
 from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
@@ -64,6 +71,8 @@ async def create_experiment(
         group_id=group_id,
     )
     db.add(db_experiment)
+    await db.flush()
+    tag_names = await set_experiment_tags(db_experiment.id, payload.tags, db)
     await db.commit()
     await db.refresh(db_experiment)
 
@@ -81,6 +90,7 @@ async def create_experiment(
         question_count=0,
         rating_count=0,
         group=await fetch_group_snapshot(db_experiment.group_id, db),
+        tags=tag_names,
     )
 
 
@@ -96,6 +106,7 @@ async def list_experiments(
     group_id: int | None = None,
     dataset_id: int | None = None,
     wave: str | None = None,
+    tag: str | None = None,
 ) -> list[ExperimentResponse]:
     question_counts = (
         select(
@@ -151,6 +162,15 @@ async def list_experiments(
             stmt = stmt.where(ExperimentGroup.dataset_id == dataset_id)
         if wave is not None:
             stmt = stmt.where(ExperimentGroup.wave == normalize_wave_token(wave))
+
+    if tag and tag.strip():
+        stmt = stmt.where(
+            Experiment.id.in_(
+                select(ExperimentTag.experiment_id)
+                .join(Tag, Tag.id == ExperimentTag.tag_id)
+                .where(func.lower(Tag.name) == tag.strip().lower())
+            )
+        )
 
     # Case-insensitive substring match against either the public or internal
     # name. `%`/`_` are escaped so a literal search term can't act as a wildcard.
@@ -261,6 +281,7 @@ async def _build_experiment_responses(
         [experiment.group_id for experiment, _, _ in rows if experiment.group_id is not None],
         db,
     )
+    tags_by_experiment = await fetch_tag_names_by_experiment(experiment_ids, db)
 
     return [
         build_experiment_response(
@@ -275,6 +296,7 @@ async def _build_experiment_responses(
             ),
             spend_minor_units=spend_by_experiment.get(experiment.id, 0),
             group=snapshots.get(experiment.group_id) if experiment.group_id else None,
+            tags=tags_by_experiment.get(experiment.id, []),
         )
         for experiment, question_count, rating_count in rows
     ]
@@ -433,6 +455,9 @@ async def duplicate_experiment(
             )
         )
 
+    source_tags = await fetch_tag_names_for_experiment(experiment_id, db)
+    tag_names = await set_experiment_tags(duplicate.id, source_tags, db)
+
     await db.commit()
     await db.refresh(duplicate)
 
@@ -456,6 +481,7 @@ async def duplicate_experiment(
         rating_count=0,
         dataset_filenames=[upload.filename for upload in source_uploads],
         group=await fetch_group_snapshot(duplicate.group_id, db),
+        tags=tag_names,
     )
 
 
@@ -543,6 +569,11 @@ async def update_experiment(
             await fetch_group_or_404(payload.group_id, db)
         experiment.group_id = payload.group_id
 
+    if payload.tags is not None:
+        tag_names = await set_experiment_tags(experiment_id, payload.tags, db)
+    else:
+        tag_names = await fetch_tag_names_for_experiment(experiment_id, db)
+
     await db.commit()
     await db.refresh(experiment)
 
@@ -553,6 +584,7 @@ async def update_experiment(
         question_count=question_count,
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
+        tags=tag_names,
     )
 
 
@@ -579,6 +611,7 @@ async def finish_experiment(
         question_count=question_count,
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
+        tags=await fetch_tag_names_for_experiment(experiment_id, db),
     )
 
 
@@ -607,6 +640,7 @@ async def _set_archived(
         question_count=question_count,
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
+        tags=await fetch_tag_names_for_experiment(experiment_id, db),
     )
 
 
