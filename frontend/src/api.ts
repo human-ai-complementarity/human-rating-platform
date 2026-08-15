@@ -15,6 +15,7 @@ import type {
   Experiment,
   ExperimentCreate,
   ExperimentGroup,
+  Tag,
   ExperimentStats,
   ExperimentStatus,
   PilotStudyCreate,
@@ -86,6 +87,7 @@ const routes = {
     platformStatus: '/admin/platform-status',
     datasets: '/admin/datasets',
     experimentGroups: '/admin/experiment-groups',
+    tags: '/admin/tags',
     apiKeys: '/admin/api-keys',
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
@@ -457,6 +459,10 @@ export const api = {
         ...(query.wave ? { wave: query.wave } : {}),
       },
     });
+  },
+
+  async listTags(): Promise<Tag[]> {
+    return requestJson<Tag[]>(routes.admin.tags);
   },
 
   async createExperimentGroup(data: {
