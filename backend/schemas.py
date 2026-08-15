@@ -161,7 +161,7 @@ class ExperimentCreate(BaseModel):
     prolific: Optional[ProlificStudyConfig] = None
     assistance_method: str = "none"
     assistance_params: Optional[dict] = None
-    # Optional during backfill; required-for-launch is a follow-up.
+    # Optional — ungrouped experiments are valid (scratch / pilot).
     group_id: Optional[int] = None
 
 

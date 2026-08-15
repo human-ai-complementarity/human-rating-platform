@@ -156,7 +156,7 @@ class Experiment(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
-    # Nullable during backfill; required-for-launch is a follow-up. RESTRICT
+    # Optional — ungrouped experiments are valid (scratch / pilot). RESTRICT
     # so deleting a group with experiments attached is a clean 409, not a
     # silent ungroup.
     group_id: Optional[int] = Field(
