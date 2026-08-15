@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from models import ExperimentRound
+from services.admin import uploads
 from services.participant_groups import _slugify_for_prolific
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
@@ -3911,3 +3913,61 @@ def test_submit_auto_stops_active_round_when_target_met(client: TestClient, enab
 
     rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
     assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+
+
+# ── Long-context uploads (batched inserts) ────────────────────────────────────
+
+
+def test_upload_batches_long_context_rows_across_multiple_inserts(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Rows too large for one INSERT still land, with parent refs intact.
+
+    A single statement carrying every row is what OOM-killed the production
+    database on a longbenchv2 upload. The payload cap is lowered here so a small
+    fixture crosses several batch boundaries, including between a parent and its
+    children.
+    """
+    monkeypatch.setattr(uploads, "MAX_INSERT_PAYLOAD_BYTES", 2048)
+
+    document = "D" * 3000  # on its own exceeds the cap, so it batches alone
+    rows = [
+        "question_id,question_text,gt_answer,options,question_type,parent_question_id",
+        f'parent1,"{document}",,,,',
+    ]
+    rows += [f"sub{i},Question {i} about the document?,Yes,Yes|No,MC,parent1" for i in range(10)]
+    csv_data = "\n".join(rows)
+
+    experiment = _create_experiment(client)
+    with caplog.at_level(logging.INFO, logger="services.admin.uploads"):
+        response = client.post(
+            f"/api/admin/experiments/{experiment['id']}/upload",
+            files={"file": ("long_context.csv", csv_data, "text/csv")},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"] == "Uploaded 11 questions"
+
+    # Guards against the test passing vacuously: the fixture must actually have
+    # crossed a batch boundary, otherwise it proves nothing about batching.
+    batch_counts = [
+        record.attributes["insert_batches"]
+        for record in caplog.records
+        if getattr(record, "attributes", {}).get("insert_batches") is not None
+    ]
+    assert batch_counts and batch_counts[0] > 1, batch_counts
+
+    uploads_listed = client.get(f"/api/admin/experiments/{experiment['id']}/uploads").json()
+    assert uploads_listed[0]["question_count"] == 11
+
+    # Parent refs resolved even though parent and children landed in different
+    # batches, and the long document survived intact.
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LONG_CTX")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["question_id"].startswith("sub")
+    assert question["parent_question_text"] == document

@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import sys
+from collections.abc import Iterator
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -21,6 +22,21 @@ from .validators import validate_csv_required_fields, validate_upload_filename
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
+
+# Upper bound on the text payload of a single INSERT, in bytes.
+#
+# SQLAlchemy's insertmanyvalues batches by *row count* (1000 by default), which
+# is fine for short rows and catastrophic for long-context ones: a 1000-row page
+# of longbenchv2 documents (hundreds of KB each) builds a single statement with
+# a parameter payload in the hundreds of MB. Postgres parses that in memory and
+# the server process gets OOM-killed, which surfaces to us as
+# `ConnectionDoesNotExistError: connection was closed in the middle of
+# operation` and takes the whole database through crash recovery.
+#
+# Batching on payload size instead keeps every statement small regardless of how
+# long individual rows are. All batches still run inside the caller's single
+# transaction, so an upload remains all-or-nothing.
+MAX_INSERT_PAYLOAD_BYTES = 4 * 1024 * 1024  # 4MB
 
 # The five fields a dataset can declare as file-level metadata. Keys are matched
 # against this allowlist so unknown keys surface as a clean 400 instead of
@@ -262,6 +278,66 @@ def _build_questions_with_parent_refs(
     return new_questions, parent_refs
 
 
+def _question_payload_size(question: Question) -> int:
+    """Approximate bytes this row contributes to an INSERT's parameter payload.
+
+    Only the free-form text columns are worth counting — the fixed-width ones
+    are noise next to a 500KB `question_text`.
+    """
+    return sum(
+        len(value.encode("utf-8"))
+        for value in (
+            question.question_id,
+            question.question_text,
+            question.gt_answer,
+            question.options,
+            question.extra_data,
+        )
+        if value
+    )
+
+
+def _batch_by_payload_size(
+    questions: list[Question],
+    max_bytes: int,
+) -> Iterator[list[Question]]:
+    """Split questions into batches whose text payload stays under `max_bytes`.
+
+    A single row larger than the cap is yielded on its own rather than dropped —
+    one oversized statement is still far better than an unbounded one.
+    """
+    batch: list[Question] = []
+    batch_bytes = 0
+
+    for question in questions:
+        size = _question_payload_size(question)
+        if batch and batch_bytes + size > max_bytes:
+            yield batch
+            batch, batch_bytes = [], 0
+        batch.append(question)
+        batch_bytes += size
+
+    if batch:
+        yield batch
+
+
+async def _insert_questions_in_batches(
+    new_questions: list[Question],
+    db: AsyncSession,
+) -> int:
+    """Add and flush questions in payload-bounded batches. Returns batch count.
+
+    Flushing per batch is what bounds memory: it forces each batch out as its
+    own INSERT instead of letting one flush emit every row at once.
+    """
+    batch_count = 0
+    for batch in _batch_by_payload_size(new_questions, MAX_INSERT_PAYLOAD_BYTES):
+        db.add_all(batch)
+        await db.flush()
+        batch_count += 1
+    return batch_count
+
+
 async def _resolve_parent_refs(
     experiment_id: int,
     new_questions: list[Question],
@@ -341,11 +417,10 @@ async def upload_questions(
         meta_applied, meta_conflicts = _apply_meta_to_experiment(experiment, meta)
 
     new_questions, parent_refs = _build_questions_with_parent_refs(experiment_id, rows)
-    for question in new_questions:
-        db.add(question)
 
-    # Flush so newly inserted rows have DB ids before we resolve parent references.
-    await db.flush()
+    # Flushes in payload-bounded batches so the rows have DB ids before we
+    # resolve parent references, without handing Postgres one giant INSERT.
+    batch_count = await _insert_questions_in_batches(new_questions, db)
     await _resolve_parent_refs(experiment_id, new_questions, parent_refs, db)
 
     questions_added = len(new_questions)
@@ -367,6 +442,7 @@ async def upload_questions(
                 "question_count": questions_added,
                 "filename": file.filename,
                 "format": extension,
+                "insert_batches": batch_count,
                 "meta_keys": sorted(meta.keys()) if meta else [],
                 "meta_conflicts": meta_conflicts,
             }
