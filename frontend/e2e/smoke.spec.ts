@@ -309,6 +309,10 @@ async function installApiMocks(
         await fulfillJson(route, 400, { detail: 'Wave is not in the dataset set' });
         return;
       }
+      if (state.groups.some((item) => item.dataset_id === dataset.id && item.wave === wave)) {
+        await fulfillJson(route, 409, { detail: 'A group for this dataset in wave already exists.' });
+        return;
+      }
       const group: GroupRecord = {
         id: state.nextGroupId++,
         name: payload.name,
@@ -346,6 +350,10 @@ async function installApiMocks(
         assistance_method?: string;
         group_id?: number | null;
       };
+      if (payload.name === 'TRIGGER-FAIL') {
+        await fulfillJson(route, 400, { detail: 'Could not create experiment' });
+        return;
+      }
       const group = payload.group_id
         ? state.groups.find((item) => item.id === payload.group_id)
         : undefined;
@@ -1478,7 +1486,7 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   await expect(page.getByTestId('group-card-1')).toBeVisible();
   await expect(page.getByTestId('group-spend-1')).toHaveText('$6.50');
   await expect(page.getByTestId('group-card-toggle-1')).toContainText('MedQA Fall');
-  await expect(page.getByTestId('group-wave-fall25')).toBeVisible();
+  await expect(page.getByTestId('group-wave-1-fall25')).toBeVisible();
   await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-none')).toBeVisible();
   await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-top_n')).toBeVisible();
   await expect(page.getByTestId('group-card-ungrouped')).toBeVisible();
@@ -1512,4 +1520,52 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
 
   await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
   expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
+});
+
+test('new dataset with multiple waves shows a wave picker', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await page.getByTestId('group-picker').selectOption('new');
+  await page.getByTestId('new-group-name-input').fill('MedQA Spring');
+  await page.getByTestId('new-group-dataset').selectOption('new');
+  await page.getByTestId('new-dataset-name-input').fill('medqa');
+  await page.getByTestId('new-dataset-waves-input').fill('fall25, sp26');
+  await expect(page.getByTestId('new-group-wave')).toBeVisible();
+  await page.getByTestId('new-group-wave').selectOption('sp26');
+  await page.getByTestId('experiment-name-input').fill('MedQA spring none');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
+  expect(state.datasets.some((dataset) => dataset.name === 'medqa' && dataset.waves.includes('sp26'))).toBe(
+    true,
+  );
+  expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
+});
+
+test('failed experiment create reuses the group already made', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    { id: 1, name: 'medqa', waves: ['fall25', 'sp26'], created_at: '2026-03-09T00:00:00Z' },
+  ];
+  state.nextDatasetId = 2;
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await page.getByTestId('group-picker').selectOption('new');
+  await page.getByTestId('new-group-name-input').fill('MedQA Spring');
+  await page.getByTestId('new-group-dataset').selectOption('1');
+  await page.getByTestId('new-group-wave').selectOption('sp26');
+  await page.getByTestId('experiment-name-input').fill('TRIGGER-FAIL');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByText('Could not create experiment')).toBeVisible();
+  expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
+
+  await page.getByTestId('experiment-name-input').fill('MedQA spring none');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
+  expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
 });
