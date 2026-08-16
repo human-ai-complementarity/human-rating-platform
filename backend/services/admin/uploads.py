@@ -5,6 +5,7 @@ import io
 import json
 import logging
 import sys
+from collections.abc import Iterator
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -12,6 +13,7 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from models import Experiment, Question, Upload
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
@@ -262,6 +264,69 @@ def _build_questions_with_parent_refs(
     return new_questions, parent_refs
 
 
+def _question_payload_size(question: Question) -> int:
+    """Approximate bytes this row contributes to an INSERT's parameter payload.
+
+    Only the free-form text columns are worth counting — the fixed-width ones
+    are noise next to a 500KB `question_text`.
+    """
+    return sum(
+        len(value.encode("utf-8"))
+        for value in (
+            question.question_id,
+            question.question_text,
+            question.gt_answer,
+            question.options,
+            question.extra_data,
+        )
+        if value
+    )
+
+
+def _batch_by_payload_size(
+    questions: list[Question],
+    max_bytes: int,
+) -> Iterator[list[Question]]:
+    """Split questions into batches whose text payload stays under `max_bytes`.
+
+    A single row larger than the cap is yielded on its own rather than dropped —
+    one oversized statement is still far better than an unbounded one.
+    """
+    batch: list[Question] = []
+    batch_bytes = 0
+
+    for question in questions:
+        size = _question_payload_size(question)
+        if batch and batch_bytes + size > max_bytes:
+            yield batch
+            batch, batch_bytes = [], 0
+        batch.append(question)
+        batch_bytes += size
+
+    if batch:
+        yield batch
+
+
+async def _insert_questions_in_batches(
+    new_questions: list[Question],
+    db: AsyncSession,
+) -> int:
+    """Add and flush questions in payload-bounded batches. Returns batch count.
+
+    Flushing per batch is what bounds memory: it forces each batch out as its
+    own INSERT instead of letting one flush emit every row at once. The cap is
+    read per call so it can be retuned by env var without a code change.
+    """
+    max_bytes = get_settings().uploads.max_insert_payload_bytes
+
+    batch_count = 0
+    for batch in _batch_by_payload_size(new_questions, max_bytes):
+        db.add_all(batch)
+        await db.flush()
+        batch_count += 1
+    return batch_count
+
+
 async def _resolve_parent_refs(
     experiment_id: int,
     new_questions: list[Question],
@@ -341,11 +406,10 @@ async def upload_questions(
         meta_applied, meta_conflicts = _apply_meta_to_experiment(experiment, meta)
 
     new_questions, parent_refs = _build_questions_with_parent_refs(experiment_id, rows)
-    for question in new_questions:
-        db.add(question)
 
-    # Flush so newly inserted rows have DB ids before we resolve parent references.
-    await db.flush()
+    # Flushes in payload-bounded batches so the rows have DB ids before we
+    # resolve parent references, without handing Postgres one giant INSERT.
+    batch_count = await _insert_questions_in_batches(new_questions, db)
     await _resolve_parent_refs(experiment_id, new_questions, parent_refs, db)
 
     questions_added = len(new_questions)
@@ -367,6 +431,7 @@ async def upload_questions(
                 "question_count": questions_added,
                 "filename": file.filename,
                 "format": extension,
+                "insert_batches": batch_count,
                 "meta_keys": sorted(meta.keys()) if meta else [],
                 "meta_conflicts": meta_conflicts,
             }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api } from '../api';
+import { api, UploadAbortedError } from '../api';
 import StatusLabel from './StatusLabel';
 import type {
   DatasetMetaField,
@@ -22,6 +22,7 @@ import {
 import {
   Banner,
   Field,
+  ProgressBar,
   SectionCard,
   Toast,
   ToggleSwitch,
@@ -302,6 +303,11 @@ function ExperimentDetail({
     }, durationMs);
   }, []);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  // Non-null only while an upload is in flight. `phase` splits the wait into
+  // the part we can measure (bytes on the wire) and the part we can't (server
+  // parsing and inserting rows), so the UI can say which one is happening.
+  const [uploadState, setUploadState] = useState<UploadState | null>(null);
+  const uploadAbortRef = useRef<AbortController | null>(null);
   const [includePreview, setIncludePreview] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -654,7 +660,7 @@ function ExperimentDetail({
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!uploadFile) return;
+    if (!uploadFile || uploadState) return;
 
     if (experiment.rating_count > 0) {
       if (!window.confirm(
@@ -668,8 +674,29 @@ function ExperimentDetail({
     setError(null);
     clearSuccess();
 
+    const form = e.target as HTMLFormElement;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    setUploadState({ phase: 'sending', loaded: 0, total: uploadFile.size });
+
     try {
-      const result = await api.uploadQuestions(experiment.id, uploadFile);
+      const result = await api.uploadQuestions(experiment.id, uploadFile, {
+        signal: controller.signal,
+        onProgress: ({ loaded, total }) => {
+          const size = total ?? uploadFile.size;
+          setUploadState({
+            phase: loaded >= size ? 'processing' : 'sending',
+            loaded,
+            total: size,
+          });
+        },
+      });
+      // Clear before the success toast and the refresh round trips below.
+      // Leaving it to `finally` would paint "Processing on the server / don't
+      // close this tab" alongside "Uploaded N questions", with the form still
+      // disabled, for as long as those reloads take.
+      setUploadState(null);
+
       const parts: string[] = [result.message];
       if (result.meta_applied.length > 0) {
         parts.push(
@@ -685,15 +712,24 @@ function ExperimentDetail({
       }
       showSuccess(parts.join(' '));
       setUploadFile(null);
-      (e.target as HTMLFormElement).reset();
+      form.reset();
       await loadStats();
       await loadUploads();
       if (prolificEnabled === true) await loadRecommendation();
       onRefresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      // A cancel is the admin's own doing — clearing the progress UI is
+      // feedback enough, so don't raise it as an error.
+      if (!(err instanceof UploadAbortedError)) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
+    } finally {
+      uploadAbortRef.current = null;
+      setUploadState(null);
     }
   };
+
+  const handleCancelUpload = () => uploadAbortRef.current?.abort();
 
   const handleDelete = async () => {
     if (deleting) return;
@@ -1117,8 +1153,10 @@ function ExperimentDetail({
             experiment={experiment}
             uploads={uploads}
             uploadFile={uploadFile}
+            uploadState={uploadState}
             onFileChange={setUploadFile}
             onSubmit={handleUpload}
+            onCancelUpload={handleCancelUpload}
             isLocked={isLocked}
             onBack={() => setTab('overview')}
             onNext={() => setTab('instructions')}
@@ -1376,22 +1414,7 @@ function OverviewPanel({
             </span>
             <span style={{ font: '600 13px var(--font-mono)' }}>{completePct}%</span>
           </div>
-          <div
-            style={{
-              height: 10,
-              borderRadius: 99,
-              background: 'var(--surface-2)',
-              overflow: 'hidden',
-            }}
-          >
-            <div
-              style={{
-                width: `${Math.max(2, completePct)}%`,
-                height: '100%',
-                background: 'var(--accent)',
-              }}
-            />
-          </div>
+          <ProgressBar pct={completePct} />
           <div style={{ height: 1, background: 'var(--line)', margin: '22px 0' }} />
           <div style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
             {stats && stats.total_ratings > 0
@@ -1585,12 +1608,142 @@ function SpendTile({
 
 // ── Questions panel ─────────────────────────────────────────────────────
 
+type UploadState = {
+  /** 'sending' = bytes on the wire; 'processing' = server parsing + inserting. */
+  phase: 'sending' | 'processing';
+  loaded: number;
+  total: number;
+};
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const mb = bytes / (1024 * 1024);
+  if (mb < 1) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+}
+
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+// Live progress for an in-flight upload. The transfer half is measured; the
+// server half has no progress feed, so it gets an indeterminate bar and an
+// elapsed clock — enough to show the request is still alive on a big file.
+function UploadProgressPanel({
+  upload,
+  filename,
+  onCancel,
+}: {
+  upload: UploadState;
+  filename: string;
+  onCancel: () => void;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    const started = Date.now();
+    const id = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const sending = upload.phase === 'sending';
+  const pct = upload.total > 0 ? Math.min(100, Math.round((upload.loaded / upload.total) * 100)) : 0;
+
+  return (
+    <div
+      data-testid="upload-progress"
+      style={{
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        padding: '18px 22px',
+        background: 'var(--surface)',
+        boxShadow: 'var(--shadow)',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'baseline',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 10,
+        }}
+      >
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>
+            {sending ? 'Uploading' : 'Processing on the server'}
+          </div>
+          <div
+            style={{
+              font: '400 12.5px var(--font-mono)',
+              color: 'var(--muted)',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {filename}
+          </div>
+        </div>
+        <span style={{ font: '600 14px var(--font-mono)', flex: '0 0 auto' }}>
+          {sending ? `${pct}%` : formatElapsed(elapsed)}
+        </span>
+      </div>
+
+      <ProgressBar
+        pct={sending ? pct : 'indeterminate'}
+        transition="width 120ms linear"
+        fillTestId="upload-progress-bar"
+      />
+
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginTop: 10,
+        }}
+      >
+        <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
+          {sending ? (
+            <>
+              {formatBytes(upload.loaded)} of {formatBytes(upload.total)} sent ·{' '}
+              {formatElapsed(elapsed)} elapsed
+            </>
+          ) : (
+            <>
+              All {formatBytes(upload.total)} received. Parsing rows and writing questions — large
+              files can take a few minutes. Don't close this tab.
+            </>
+          )}
+        </div>
+        {sending && (
+          <button
+            type="button"
+            data-testid="upload-cancel-button"
+            onClick={onCancel}
+            style={{ ...secondaryButton, flex: '0 0 auto' }}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function QuestionsPanel({
   experiment,
   uploads,
   uploadFile,
+  uploadState,
   onFileChange,
   onSubmit,
+  onCancelUpload,
   isLocked,
   onBack,
   onNext,
@@ -1598,12 +1751,15 @@ function QuestionsPanel({
   experiment: Experiment;
   uploads: Upload[];
   uploadFile: File | null;
+  uploadState: UploadState | null;
   onFileChange: (f: File | null) => void;
   onSubmit: (e: React.FormEvent) => void;
+  onCancelUpload: () => void;
   isLocked: boolean;
   onBack: () => void;
   onNext: () => void;
 }) {
+  const uploading = uploadState !== null;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {uploads.length > 0 && (
@@ -1716,24 +1872,41 @@ function QuestionsPanel({
               data-testid="upload-csv-input"
               type="file"
               accept=".csv,.parquet"
-              disabled={isLocked}
+              disabled={isLocked || uploading}
               onChange={(e) => onFileChange(e.target.files?.[0] || null)}
-              style={{ fontSize: 14, opacity: isLocked ? 0.5 : 1 }}
+              style={{ fontSize: 14, opacity: isLocked || uploading ? 0.5 : 1 }}
             />
+            {uploadFile && !uploading && (
+              <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 8 }}>
+                Ready to upload{' '}
+                <span style={{ fontFamily: 'var(--font-mono)' }}>{formatBytes(uploadFile.size)}</span>
+                .
+              </div>
+            )}
           </div>
           <button
             data-testid="upload-csv-button"
             type="submit"
-            disabled={!uploadFile || isLocked}
+            disabled={!uploadFile || isLocked || uploading}
             style={{
               ...primaryButton,
-              opacity: uploadFile && !isLocked ? 1 : 0.55,
-              cursor: uploadFile && !isLocked ? 'pointer' : 'not-allowed',
+              opacity: uploadFile && !isLocked && !uploading ? 1 : 0.55,
+              cursor: uploadFile && !isLocked && !uploading ? 'pointer' : 'not-allowed',
             }}
           >
-            Upload
+            {uploading ? 'Uploading…' : 'Upload'}
           </button>
         </div>
+
+        {uploadState && (
+          <div style={{ marginTop: 18 }}>
+            <UploadProgressPanel
+              upload={uploadState}
+              filename={uploadFile?.name ?? 'file'}
+              onCancel={onCancelUpload}
+            />
+          </div>
+        )}
       </form>
 
       <StepNav

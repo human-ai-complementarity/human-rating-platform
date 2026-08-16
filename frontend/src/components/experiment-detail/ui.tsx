@@ -112,6 +112,50 @@ export function Banner({
 }
 
 /**
+ * Horizontal progress bar. Pass a percentage for a determinate bar, or
+ * 'indeterminate' when the work is in flight but its duration is unknown.
+ *
+ * Single source of truth for the track styling, which is shared by completion
+ * progress and upload progress. `fillTestId` tags the inner fill so a test can
+ * assert on the width the caller asked for.
+ */
+export function ProgressBar({
+  pct,
+  transition,
+  fillTestId,
+}: {
+  pct: number | 'indeterminate';
+  transition?: string;
+  fillTestId?: string;
+}) {
+  return (
+    <div
+      style={{
+        height: 10,
+        borderRadius: 99,
+        background: 'var(--surface-2)',
+        overflow: 'hidden',
+      }}
+    >
+      {pct === 'indeterminate' ? (
+        <div className="indeterminate-bar" style={{ height: '100%', background: 'var(--accent)' }} />
+      ) : (
+        <div
+          data-testid={fillTestId}
+          style={{
+            // Floor at 2% so a just-started bar is still visibly a bar.
+            width: `${Math.max(2, pct)}%`,
+            height: '100%',
+            background: 'var(--accent)',
+            transition,
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
  * Floating variant of Banner used for transient page-level toasts. Same
  * palette as Banner but adds a shadow (so it lifts off the page), a dismiss
  * button, and stronger visual weight since it can appear anywhere over the

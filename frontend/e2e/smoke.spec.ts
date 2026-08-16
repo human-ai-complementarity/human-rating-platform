@@ -513,6 +513,50 @@ test('create experiment and upload CSV shows the upload and success toast', asyn
   await expect(page.getByTestId('run-pilot-button')).toBeVisible();
 });
 
+test('a slow upload shows progress and re-enables the form when it finishes', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  // Hold the upload response open so the in-flight UI is observable. The
+  // bytes are already sent by then, so this exercises the 'processing' phase.
+  let releaseUpload: () => void = () => {};
+  const uploadHeld = new Promise<void>((resolve) => {
+    releaseUpload = resolve;
+  });
+  await page.route('**/experiments/*/upload', async (route) => {
+    await uploadHeld;
+    await route.fallback();
+  });
+
+  await page.goto('/admin');
+  await page.getByTestId('experiment-name-input').fill('Slow Upload Test');
+  await page.getByTestId('ratings-per-question-input').fill('3');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+  await expect(page.getByRole('heading', { name: 'Slow Upload Test' })).toBeVisible();
+
+  await page.getByTestId('tab-questions').click();
+  const csvPath = fileURLToPath(new URL('./fixtures/sample_questions.csv', import.meta.url));
+  await page.getByTestId('upload-csv-input').setInputFiles(csvPath);
+  await page.getByTestId('upload-csv-button').click();
+
+  // Which phase shows depends on when the bytes clear the wire, so assert the
+  // panel is up and naming the file rather than pinning it to one phase.
+  const progress = page.getByTestId('upload-progress');
+  await expect(progress).toBeVisible();
+  await expect(progress).toContainText('sample_questions.csv');
+  await expect(page.getByTestId('upload-csv-button')).toBeDisabled();
+  await expect(page.getByTestId('upload-csv-input')).toBeDisabled();
+
+  releaseUpload();
+
+  await expect(page.getByText('Uploaded 2 questions')).toBeVisible();
+  // Snapshot, not a retrying assertion: the panel must already be gone the
+  // moment the success toast paints. A retrying toHaveCount(0) would happily
+  // pass while the two contradicted each other for a few hundred ms.
+  expect(await progress.count()).toBe(0);
+  await expect(page.getByTestId('upload-csv-input')).toBeEnabled();
+});
+
 test('run pilot, close it, and launch a round from an experiment with uploaded questions', async ({ page }) => {
   const state = createMockState();
   state.experiments = [
