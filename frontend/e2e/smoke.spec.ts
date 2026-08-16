@@ -84,6 +84,7 @@ type RaterQuestionRecord = {
   question_text: string;
   options: string | null;
   question_type: string;
+  parent_question_text?: string | null;
 };
 
 type MockState = {
@@ -733,6 +734,95 @@ test('long-context question links document separately and shows only question in
 
   await expect(documentPopup.getByRole('heading', { name: 'Document for Question long-q' })).toBeVisible();
   await expect(documentPopup.getByText('Document line one')).toBeVisible();
+});
+
+// Seeds a rater session serving exactly one question, for the parent-context
+// rendering cases below.
+function seedRaterWithQuestion(state: MockState, question: RaterQuestionRecord) {
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Parent Context Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 302,
+    session_start: '2026-03-09T00:05:00Z',
+    session_end_time: '2099-03-09T01:05:00Z',
+    experiment_name: 'Parent Context Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-parent-context',
+  };
+  state.questionsBySessionToken['token-parent-context'] = question;
+}
+
+const RATER_URL = '/rate?experiment_id=1&PROLIFIC_PID=pid-1&STUDY_ID=study-1&SESSION_ID=session-1';
+
+test('a long parent question moves the document behind the link, not into the card', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `LONGBENCH DOCUMENT BODY ${'padding '.repeat(400)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 504,
+    question_id: 'parent-long-q',
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const documentLink = page.getByRole('link', { name: 'Open document in new tab' });
+  await expect(documentLink).toBeVisible();
+  await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
+  // The whole point: a 3KB document must not be dumped into the rating card.
+  await expect(page.getByText('Context', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('LONGBENCH DOCUMENT BODY')).toHaveCount(0);
+
+  const popupPromise = context.waitForEvent('page');
+  await documentLink.click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+  await expect(popup.getByText('LONGBENCH DOCUMENT BODY')).toBeVisible();
+});
+
+test('a short parent question stays inline in the context box', async ({ page }) => {
+  const state = createMockState();
+  const preamble = 'Customer review: arrived late but exceeded expectations.';
+
+  seedRaterWithQuestion(state, {
+    id: 505,
+    question_id: 'parent-short-q',
+    question_text: 'Does the review express satisfaction?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    parent_question_text: preamble,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.getByText('Context', { exact: true })).toBeVisible();
+  await expect(page.getByText(preamble)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
 });
 
 test('rater ignores a stored session from another experiment and starts a fresh one', async ({ page }) => {
