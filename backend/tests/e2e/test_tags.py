@@ -4,10 +4,16 @@ suggestions, list filtering, and lifecycle (edit/duplicate/archive/delete).
 
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from config import get_settings
+from models import Experiment, Tag
+from services.admin.tags import _insert_or_get_tag
 
 
 def _unique_name(prefix: str) -> str:
@@ -173,3 +179,51 @@ def test_too_many_tags_is_rejected(client: TestClient):
         },
     )
     assert response.status_code == 422
+
+
+def _async_session_maker():
+    engine = create_async_engine(get_settings().async_database_url)
+    return engine, async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+
+def test_tag_unique_index_race_reuses_row_and_keeps_the_experiment():
+    """A concurrent insert of the same tag must not 500 or abort the caller.
+
+    Two requests can both miss the SELECT and both INSERT; the unique index
+    rejects the loser. Recover the winner's row (including different casing)
+    and still commit the rest of the transaction — here, the new experiment.
+    """
+
+    async def _run() -> None:
+        engine, Session = _async_session_maker()
+        try:
+            async with Session() as setup:
+                setup.add(Tag(name="Vision"))
+                await setup.commit()
+
+            async with Session() as db:
+                experiment = Experiment(name=_unique_name("experiment"), num_ratings_per_question=1)
+                db.add(experiment)
+                await db.flush()
+                tag = await _insert_or_get_tag("vision", db)
+                await db.commit()
+                assert tag.name == "Vision"
+                experiment_id = experiment.id
+                tag_id = tag.id
+
+            async with Session() as verify:
+                stored = (
+                    await verify.execute(select(Experiment).where(Experiment.id == experiment_id))
+                ).scalar_one()
+                assert stored.id == experiment_id
+                rows = (await verify.execute(select(Tag))).scalars().all()
+                assert [(row.id, row.name) for row in rows] == [(tag_id, "Vision")]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
