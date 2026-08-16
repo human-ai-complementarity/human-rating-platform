@@ -47,6 +47,19 @@ const DEFAULT_FILTERS: Filters = {
   waveFilter: '',
 };
 
+function parseWaveList(raw: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const part of raw.split(',')) {
+    const token = part.trim().toLowerCase();
+    if (token && !seen.has(token)) {
+      seen.add(token);
+      result.push(token);
+    }
+  }
+  return result;
+}
+
 const ASSISTANCE_METHODS: { value: string; label: string }[] = [
   { value: 'none', label: 'None' },
   { value: 'top_n', label: 'Top-N' },
@@ -263,24 +276,20 @@ function AdminView() {
 
   const handleCreateExperiment = async (payload: ExperimentCreate) => {
     setError(null);
-    try {
-      // Backend normalises whitespace/empty → null for internal_name on both
-      // create and update, so we just forward the form value as-typed.
-      const created = await api.createExperiment(payload);
-      setNewExperiment({
-        name: '',
-        internal_name: '',
-        num_ratings_per_question: 3,
-        session_duration_minutes: 60,
-        prolific_completion_url: '',
-        assistance_method: 'none',
-        group_id: null,
-      });
-      await Promise.all([loadExperiments(), loadCatalog()]);
-      navigate(`/admin/experiments/${created.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    }
+    // Backend normalises whitespace/empty → null for internal_name on both
+    // create and update, so we just forward the form value as-typed.
+    const created = await api.createExperiment(payload);
+    setNewExperiment({
+      name: '',
+      internal_name: '',
+      num_ratings_per_question: 3,
+      session_duration_minutes: 60,
+      prolific_completion_url: '',
+      assistance_method: 'none',
+      group_id: null,
+    });
+    await Promise.all([loadExperiments(), loadCatalog()]);
+    navigate(`/admin/experiments/${created.id}`);
   };
 
   const archivedCount = useMemo(
@@ -364,6 +373,7 @@ function AdminView() {
           value={newExperiment}
           onChange={setNewExperiment}
           onSubmit={handleCreateExperiment}
+          onCatalogRefresh={loadCatalog}
           groups={groups}
           datasets={datasets}
           experiments={experiments}
@@ -789,7 +799,7 @@ function GroupCard({
               </span>
               {bucket.wave && (
                 <span
-                  data-testid={`group-wave-${bucket.wave}`}
+                  data-testid={`group-wave-${bucket.groupId ?? 'ungrouped'}-${bucket.wave}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onWaveClick(bucket.wave!);
@@ -1083,6 +1093,7 @@ function CreatePanel({
   value,
   onChange,
   onSubmit,
+  onCatalogRefresh,
   groups,
   datasets,
   experiments,
@@ -1090,6 +1101,7 @@ function CreatePanel({
   value: ExperimentCreate;
   onChange: (v: ExperimentCreate) => void;
   onSubmit: (data: ExperimentCreate) => Promise<void>;
+  onCatalogRefresh: () => Promise<void>;
   groups: ExperimentGroup[];
   datasets: Dataset[];
   experiments: Experiment[];
@@ -1108,6 +1120,8 @@ function CreatePanel({
   const selectedDataset =
     datasetMode === 'existing' ? datasets.find((d) => d.id === datasetId) ?? null : null;
   const datasetWaves = selectedDataset?.waves ?? [];
+  const typedWaves = useMemo(() => parseWaveList(newDatasetWaves), [newDatasetWaves]);
+  const pickerWaves = datasetMode === 'new' ? typedWaves : datasetWaves;
 
   const methodsInGroup = useMemo(() => {
     const groupId = selectedGroup?.id;
@@ -1128,19 +1142,23 @@ function CreatePanel({
       let groupId = value.group_id ?? null;
       if (groupMode === 'new') {
         let nextDatasetId = typeof datasetId === 'number' ? datasetId : null;
+        let wavesForGroup = datasetWaves;
         if (datasetMode === 'new') {
-          const waves = newDatasetWaves
-            .split(',')
-            .map((token) => token.trim())
-            .filter(Boolean);
+          wavesForGroup = typedWaves;
           if (!newDatasetName.trim()) {
             throw new Error('Dataset name is required.');
           }
-          if (waves.length === 0) {
+          if (wavesForGroup.length === 0) {
             throw new Error('Add at least one wave to the new dataset.');
           }
-          const created = await api.createDataset({ name: newDatasetName.trim(), waves });
+          const created = await api.createDataset({
+            name: newDatasetName.trim(),
+            waves: wavesForGroup,
+          });
           nextDatasetId = created.id;
+          setDatasetMode('existing');
+          setDatasetId(created.id);
+          await onCatalogRefresh();
         }
         if (nextDatasetId == null) {
           throw new Error('Pick a dataset for the new group.');
@@ -1148,16 +1166,19 @@ function CreatePanel({
         if (!newGroupName.trim()) {
           throw new Error('Group name is required.');
         }
-        const wave =
-          datasetWaves.length === 1
-            ? datasetWaves[0]
-            : newGroupWave.trim() || (datasetMode === 'new' ? newDatasetWaves.split(',')[0]?.trim() : '');
+        const wave = wavesForGroup.length === 1 ? wavesForGroup[0] : newGroupWave.trim();
+        if (!wave) {
+          throw new Error('Pick a wave for the new group.');
+        }
         const createdGroup = await api.createExperimentGroup({
           name: newGroupName.trim(),
           dataset_id: nextDatasetId,
-          wave: wave || undefined,
+          wave,
         });
         groupId = createdGroup.id;
+        setGroupMode('existing');
+        onChange({ ...value, group_id: createdGroup.id });
+        await onCatalogRefresh();
       }
       await onSubmit({
         ...value,
@@ -1361,13 +1382,17 @@ function CreatePanel({
                   label="Waves"
                   hint="Comma-separated tokens, e.g. fall25, sp26."
                   value={newDatasetWaves}
-                  onChange={setNewDatasetWaves}
+                  onChange={(v) => {
+                    setNewDatasetWaves(v);
+                    const next = parseWaveList(v);
+                    if (newGroupWave && !next.includes(newGroupWave)) setNewGroupWave('');
+                  }}
                   placeholder="fall25"
                   required
                 />
               </>
             )}
-            {datasetMode === 'existing' && datasetWaves.length > 1 && (
+            {pickerWaves.length > 1 && (
               <div style={{ marginBottom: 16 }}>
                 <label
                   htmlFor="new-group-wave"
@@ -1392,7 +1417,7 @@ function CreatePanel({
                   }}
                 >
                   <option value="">Select a wave…</option>
-                  {datasetWaves.map((wave) => (
+                  {pickerWaves.map((wave) => (
                     <option key={wave} value={wave}>
                       {wave}
                     </option>
