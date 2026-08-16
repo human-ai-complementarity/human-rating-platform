@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Dataset, Experiment, ExperimentGroup, Upload
@@ -32,8 +33,8 @@ from schemas import (
     CatalogSkip,
     CatalogSyncResponse,
 )
-from .datasets import normalize_waves
 from .groups import resolve_attribution_wave
+from .waves import normalize_waves
 
 # Scheduled inference-pipeline cards (`inclusion_reasons` non-empty).
 # Snapshot of pipeline/cards.py; names are stored verbatim.
@@ -144,13 +145,16 @@ async def _seed_datasets(
         catalog_waves = normalize_waves(list(waves))
         row = by_lower.get(name.lower())
         if row is None:
-            dataset = Dataset(name=name, waves=json.dumps(catalog_waves))
-            db.add(dataset)
-            await db.flush()
-            row = _DatasetRow(id=dataset.id, name=dataset.name, waves=catalog_waves)
+            dataset, created_now = await _insert_or_get_dataset(name, catalog_waves, db)
+            row = _DatasetRow(
+                id=dataset.id,
+                name=dataset.name,
+                waves=json.loads(dataset.waves),
+            )
             by_lower[name.lower()] = row
-            created.append(name)
-            continue
+            if created_now:
+                created.append(name)
+                continue
         merged = normalize_waves([*row.waves, *catalog_waves])
         if merged != row.waves:
             dataset = await db.get(Dataset, row.id)
@@ -162,14 +166,46 @@ async def _seed_datasets(
     return created, updated, by_lower
 
 
+async def _insert_or_get_dataset(
+    name: str, waves: list[str], db: AsyncSession
+) -> tuple[Dataset, bool]:
+    """Insert a catalog dataset, or return the row that won a concurrent insert.
+
+    Two syncs can both miss the SELECT and both INSERT; `uq_datasets_name_lower`
+    rejects the loser. Re-read rather than 409 — sync is meant to be
+    idempotent. A savepoint keeps datasets already inserted in this pass.
+    """
+    try:
+        async with db.begin_nested():
+            dataset = Dataset(name=name, waves=json.dumps(waves))
+            db.add(dataset)
+            await db.flush()
+            return dataset, True
+    except IntegrityError:
+        existing = (
+            await db.execute(select(Dataset).where(func.lower(Dataset.name) == name.lower()))
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing, False
+
+
 async def _assign_experiments(
     db: AsyncSession, by_lower: dict[str, _DatasetRow]
 ) -> tuple[list[str], list[CatalogAssignment], list[CatalogSkip]]:
-    experiments = (await db.execute(select(Experiment))).scalars().all()
-    uploads = (await db.execute(select(Upload))).scalars().all()
-    filenames_by_experiment: dict[int, list[str]] = {}
-    for upload in uploads:
-        filenames_by_experiment.setdefault(upload.experiment_id, []).append(upload.filename)
+    experiments = (
+        (await db.execute(select(Experiment).where(Experiment.group_id.is_(None)))).scalars().all()
+    )
+    experiment_ids = [experiment.id for experiment in experiments]
+    filenames_by_experiment: dict[int, list[str]] = {eid: [] for eid in experiment_ids}
+    if experiment_ids:
+        uploads = (
+            (await db.execute(select(Upload).where(Upload.experiment_id.in_(experiment_ids))))
+            .scalars()
+            .all()
+        )
+        for upload in uploads:
+            filenames_by_experiment[upload.experiment_id].append(upload.filename)
 
     groups_created: list[str] = []
     assigned: list[CatalogAssignment] = []
@@ -177,8 +213,6 @@ async def _assign_experiments(
     card_names = [name for name, _ in PIPELINE_DATASETS]
 
     for experiment in experiments:
-        if experiment.group_id is not None:
-            continue
         filenames = filenames_by_experiment.get(experiment.id, [])
         cards = {match_card_name(filename, card_names) for filename in filenames}
         cards.discard(None)
@@ -221,7 +255,7 @@ async def _assign_experiments(
 
         group, created = await _get_or_create_group(db, dataset, wave)
         if created:
-            groups_created.append(f"{group.name} ({wave})")
+            groups_created.append(group.name)
         experiment.group_id = group.id
         assigned.append(
             CatalogAssignment(
@@ -269,6 +303,27 @@ async def _get_or_create_group(
         name = f"{dataset.name} ({wave})"
 
     group = ExperimentGroup(name=name, dataset_id=dataset.id, wave=wave)
-    db.add(group)
-    await db.flush()
-    return group, True
+    return await _insert_or_get_group(db, group)
+
+
+async def _insert_or_get_group(
+    db: AsyncSession, group: ExperimentGroup
+) -> tuple[ExperimentGroup, bool]:
+    """Insert the group, or return the row that won a concurrent dataset×wave insert."""
+    try:
+        async with db.begin_nested():
+            db.add(group)
+            await db.flush()
+            return group, True
+    except IntegrityError:
+        existing = (
+            await db.execute(
+                select(ExperimentGroup).where(
+                    ExperimentGroup.dataset_id == group.dataset_id,
+                    ExperimentGroup.wave == group.wave,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing, False
