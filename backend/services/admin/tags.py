@@ -9,6 +9,7 @@ usage and the list can filter by them.
 from __future__ import annotations
 
 from sqlalchemy import and_, delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, ExperimentTag, Tag
@@ -54,12 +55,33 @@ async def get_or_create_tags(names: list[str], db: AsyncSession) -> list[Tag]:
     for name in normalized:
         tag = by_lower.get(name.lower())
         if tag is None:
-            tag = Tag(name=name)
-            db.add(tag)
+            tag = await _insert_or_get_tag(name, db)
             by_lower[name.lower()] = tag
         resolved.append(tag)
-    await db.flush()
     return resolved
+
+
+async def _insert_or_get_tag(name: str, db: AsyncSession) -> Tag:
+    """Insert `name`, or return the row that won a concurrent insert.
+
+    Two requests can both miss the SELECT and both INSERT; the unique index
+    `uq_tags_name_lower` rejects the loser. Sharing a tag is the intended
+    case, so recover by re-reading rather than 409. A savepoint keeps the
+    rest of the caller's transaction (the new experiment, etc.) intact.
+    """
+    try:
+        async with db.begin_nested():
+            tag = Tag(name=name)
+            db.add(tag)
+            await db.flush()
+            return tag
+    except IntegrityError:
+        existing = (
+            await db.execute(select(Tag).where(func.lower(Tag.name) == name.lower()))
+        ).scalar_one_or_none()
+        if existing is None:
+            raise
+        return existing
 
 
 async def set_experiment_tags(
@@ -84,18 +106,8 @@ async def set_experiment_tags(
 
 
 async def fetch_tag_names_for_experiment(experiment_id: int, db: AsyncSession) -> list[str]:
-    names = (
-        (
-            await db.execute(
-                select(Tag.name)
-                .join(ExperimentTag, ExperimentTag.tag_id == Tag.id)
-                .where(ExperimentTag.experiment_id == experiment_id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return sorted(names, key=str.lower)
+    """Tag names for one experiment; same join/sort as the batch helper."""
+    return (await fetch_tag_names_by_experiment([experiment_id], db)).get(experiment_id, [])
 
 
 async def fetch_tag_names_by_experiment(
