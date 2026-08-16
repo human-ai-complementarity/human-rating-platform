@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-from sqlalchemy import text
+import asyncio
+import json
 
-from services.admin.catalog import PIPELINE_DATASETS
+from fastapi.testclient import TestClient
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from config import get_settings
+from models import Dataset, Experiment, ExperimentGroup
+from services.admin.catalog import PIPELINE_DATASETS, _insert_or_get_dataset, _insert_or_get_group
 
 
 def _create_experiment(client: TestClient, name: str) -> dict:
@@ -78,7 +84,7 @@ def test_sync_assigns_singleton_wave_from_filename(client: TestClient):
     assert assigned[0]["experiment_id"] == experiment["id"]
     assert assigned[0]["dataset_name"] == "culturalbench_hard"
     assert assigned[0]["wave"] == "sp26"
-    assert any(name.startswith("culturalbench_hard sp26") for name in result["groups_created"])
+    assert result["groups_created"] == ["culturalbench_hard sp26"]
 
     listed = client.get("/api/admin/experiments").json()
     row = next(item for item in listed if item["id"] == experiment["id"])
@@ -95,6 +101,7 @@ def test_sync_assigns_dual_wave_when_name_has_token(client: TestClient):
     assigned = result["experiments_assigned"]
     assert assigned[0]["dataset_name"] == "bbeh_mini"
     assert assigned[0]["wave"] == "sp26"
+    assert result["groups_created"] == ["bbeh_mini sp26"]
 
 
 def test_sync_skips_dual_wave_without_signal(client: TestClient):
@@ -171,3 +178,105 @@ def test_sync_leaves_already_grouped_experiments_alone(client: TestClient):
     row = next(item for item in listed if item["id"] == experiment["id"])
     assert row["group_id"] == group["id"]
     assert row["group_name"] == "GPQA Fall"
+
+
+def _async_session_maker():
+    engine = create_async_engine(get_settings().async_database_url)
+    return engine, async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+
+def test_catalog_dataset_unique_race_reuses_row_and_keeps_sibling_insert():
+    """A concurrent insert of the same dataset must not 500 or abort the caller."""
+
+    async def _run() -> None:
+        engine, Session = _async_session_maker()
+        try:
+            async with Session() as setup:
+                setup.add(Dataset(name="gpqa_diamond", waves=json.dumps(["fall25"])))
+                await setup.commit()
+
+            async with Session() as db:
+                probe = Dataset(name="probe_dataset", waves=json.dumps(["sp26"]))
+                db.add(probe)
+                await db.flush()
+                dataset, created = await _insert_or_get_dataset("gpqa_diamond", ["fall25"], db)
+                await db.commit()
+                assert created is False
+                assert dataset.name == "gpqa_diamond"
+                probe_id = probe.id
+
+            async with Session() as verify:
+                assert (await verify.get(Dataset, probe_id)) is not None
+                names = [
+                    row.name
+                    for row in (await verify.execute(select(Dataset))).scalars().all()
+                    if row.name.lower() == "gpqa_diamond"
+                ]
+                assert names == ["gpqa_diamond"]
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
+
+
+def test_catalog_group_unique_race_reuses_row_and_keeps_the_experiment():
+    """A concurrent insert of the same dataset×wave must not 500 or abort the caller."""
+
+    async def _run() -> None:
+        engine, Session = _async_session_maker()
+        try:
+            async with Session() as setup:
+                dataset = Dataset(name="gpqa_diamond", waves=json.dumps(["fall25"]))
+                setup.add(dataset)
+                await setup.flush()
+                setup.add(
+                    ExperimentGroup(
+                        name="gpqa_diamond fall25",
+                        dataset_id=dataset.id,
+                        wave="fall25",
+                    )
+                )
+                await setup.commit()
+                dataset_id = dataset.id
+
+            async with Session() as db:
+                experiment = Experiment(name="probe-exp", num_ratings_per_question=1)
+                db.add(experiment)
+                await db.flush()
+                group, created = await _insert_or_get_group(
+                    db,
+                    ExperimentGroup(
+                        name="gpqa_diamond fall25",
+                        dataset_id=dataset_id,
+                        wave="fall25",
+                    ),
+                )
+                await db.commit()
+                assert created is False
+                assert group.wave == "fall25"
+                experiment_id = experiment.id
+
+            async with Session() as verify:
+                assert (await verify.get(Experiment, experiment_id)) is not None
+                rows = (
+                    (
+                        await verify.execute(
+                            select(ExperimentGroup).where(
+                                ExperimentGroup.dataset_id == dataset_id,
+                                ExperimentGroup.wave == "fall25",
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                assert len(rows) == 1
+        finally:
+            await engine.dispose()
+
+    asyncio.run(_run())
