@@ -75,12 +75,13 @@ async def _check_name_available(name: str, db: AsyncSession, exclude_id: int | N
 async def _commit_name_change(dataset: Dataset, db: AsyncSession) -> None:
     """Commit, converting a unique-index race on the name into the same 409
     the pre-check gives (the lower(name) index is the backstop)."""
+    name = dataset.name
     db.add(dataset)
     try:
         await db.commit()
     except IntegrityError as e:
         await db.rollback()
-        raise _conflict(dataset.name) from e
+        raise _conflict(name) from e
     await db.refresh(dataset)
 
 
