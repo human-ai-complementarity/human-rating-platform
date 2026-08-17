@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -328,6 +328,39 @@ class V1ExperimentResponse(BaseModel):
     archived_at: Optional[datetime] = None
     assistance_method: str = "none"
     description: Optional[str] = None
+
+
+# --- Datasets (identity anchor for experiment grouping) --------------------
+# Wave tokens are short enum-like identifiers ("fall25", "sp26"). They are
+# normalized to lowercase in the service layer so a group's attribution wave
+# (validated against this set in a follow-up) can never miss on casing.
+WaveToken = Annotated[str, Field(min_length=1, max_length=64)]
+MAX_WAVES_PER_DATASET = 20
+
+
+class DatasetCreate(BaseModel):
+    # Strip before length validation so a whitespace-only name is rejected as
+    # empty. Internal casing/punctuation is preserved — for pipeline datasets
+    # the name must match the card name verbatim (cross-repo join key).
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=255)
+    waves: list[WaveToken] = Field(default_factory=list, max_length=MAX_WAVES_PER_DATASET)
+
+
+class DatasetUpdate(BaseModel):
+    # None = leave unchanged; both fields optional so PATCH is partial.
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    waves: Optional[list[WaveToken]] = Field(default=None, max_length=MAX_WAVES_PER_DATASET)
+
+
+class DatasetResponse(BaseModel):
+    id: int
+    name: str
+    waves: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 # --- API key management (dashboard, cookie-authed) -------------------------

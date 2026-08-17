@@ -16,6 +16,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -485,6 +486,42 @@ class AssistanceSession(SQLModel, table=True):
     is_complete: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+
+
+class Dataset(SQLModel, table=True):
+    """Identity anchor for a rating dataset.
+
+    `name` is unique case-insensitively (functional index on lower(name), plus
+    a service-layer check for a clean 409). Where the dataset comes from the
+    inference pipeline, `name` matches the pipeline's card name — that is the
+    cross-repo join key, so it is stored verbatim (trimmed only, internal
+    punctuation/casing preserved).
+
+    `waves` mirrors the card's wave-inclusion *set* (which waves the dataset is
+    part of), not attribution — which wave a given run was for lives on the
+    experiment group (added in a follow-up migration). Maintained via the API
+    for now; automated card sync is a deferred follow-up.
+    """
+
+    __tablename__ = "datasets"
+    # Declared here as well as in the migration so autogenerate sees the
+    # functional index in model metadata and never proposes dropping it.
+    __table_args__ = (Index("uq_datasets_name_lower", text("lower(name)"), unique=True),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(sa_column=Column(String(255), nullable=False))
+    waves: str = Field(
+        default="[]",
+        sa_column=Column(Text, nullable=False, server_default=text("'[]'")),
+    )  # JSON-encoded list of wave tokens, e.g. '["fall25", "sp26"]'
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
     )
 
 
