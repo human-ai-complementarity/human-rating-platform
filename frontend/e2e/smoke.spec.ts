@@ -97,6 +97,7 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  submittedRatings: Record<string, unknown>[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
   statsByExperimentId: Record<number, Record<string, unknown>>;
@@ -133,6 +134,7 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    submittedRatings: [],
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
     statsByExperimentId: {},
@@ -459,6 +461,7 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/raters/submit' && method === 'POST') {
+      state.submittedRatings.push(request.postDataJSON());
       await fulfillJson(route, 200, { id: 1, success: true });
       return;
     }
@@ -823,6 +826,38 @@ test('a short parent question stays inline in the context box', async ({ page })
   await expect(page.getByText('Context', { exact: true })).toBeVisible();
   await expect(page.getByText(preamble)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
+});
+
+test('an MC question with no options submits the typed free-text answer', async ({ page }) => {
+  const state = createMockState();
+
+  // Datasets whose upload omitted `question_type` arrive typed MC with empty
+  // options. The card falls back to a textarea, so submit must read that.
+  seedRaterWithQuestion(state, {
+    id: 506,
+    question_id: 'mc-without-options',
+    question_text: 'Summarize what the document recommends.',
+    options: '',
+    question_type: 'MC',
+  });
+
+  await installApiMocks(page, state);
+  const dialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  await page.goto(RATER_URL);
+
+  const answer = page.getByPlaceholder('Type your answer here...');
+  await expect(answer).toBeVisible();
+  await answer.fill('It recommends staged rollout.');
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: 'It recommends staged rollout.' });
+  expect(dialogs).toEqual([]);
 });
 
 test('rater ignores a stored session from another experiment and starts a fresh one', async ({ page }) => {

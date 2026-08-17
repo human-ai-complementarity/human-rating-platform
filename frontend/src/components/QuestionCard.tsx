@@ -224,6 +224,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     () => parseQuestionDisplay(question),
     [question]
   );
+  const options = useMemo(() => parseOptions(question.options), [question.options]);
+
+  // An MC question with no usable options falls back to the free-text input, so
+  // every answer read below has to follow the input that is actually rendered.
+  const isMC = question.question_type === 'MC' && options.length > 0;
 
   useEffect(() => {
     setSelectedAnswer('');
@@ -252,15 +257,15 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
     if (!assistanceAnswer) return;
-    if (question.question_type === 'FT') {
-      setFreeTextAnswer(assistanceAnswer);
-    } else {
+    if (isMC) {
       setSelectedAnswer(assistanceAnswer);
+    } else {
+      setFreeTextAnswer(assistanceAnswer);
     }
   }, [assistanceAnswer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async () => {
-    const answer = question.question_type === 'FT' ? freeTextAnswer : selectedAnswer;
+    const answer = isMC ? selectedAnswer : freeTextAnswer;
 
     if (!answer.trim()) {
       alert('Please provide an answer');
@@ -275,9 +280,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
   };
 
-  const options = parseOptions(question.options);
-
-  const isMC = question.question_type === 'MC' && options.length > 0;
   const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
 
   return (
