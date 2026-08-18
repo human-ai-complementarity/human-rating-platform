@@ -95,13 +95,16 @@ def _extract_prolific_message(body: str) -> str | None:
 
 
 SESSION_DURATION_SECONDS = 3600  # 1 hour per Prolific place
-ROUND_SYNC_STATUSES = {
-    ProlificStudyStatus.UNPUBLISHED,
-    ProlificStudyStatus.PUBLISHING,
-    ProlificStudyStatus.ACTIVE,
-    ProlificStudyStatus.SCHEDULED,
-    ProlificStudyStatus.PAUSED,
-}
+# COMPLETED is the only status Prolific never moves a study out of, so it is
+# the only one worth skipping on refresh. Expressed as an exclusion rather than
+# an allow-list on purpose: an allow-list silently pins any status missing from
+# it, which is how rounds got stuck at AWAITING_REVIEW. A status we do not know
+# about yet now keeps being refreshed instead.
+#
+# Deliberately not ROUND_TERMINAL_STATUSES, which answers a different question.
+# That set means "finished collecting" and gates round creation and experiment
+# status; AWAITING_REVIEW belongs there and still needs polling.
+ROUND_SYNC_SKIP_STATUSES = frozenset({ProlificStudyStatus.COMPLETED})
 
 
 def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
@@ -261,7 +264,7 @@ async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSessio
 
     changed = False
     for round_ in rounds:
-        if round_.prolific_study_status not in ROUND_SYNC_STATUSES:
+        if round_.prolific_study_status in ROUND_SYNC_SKIP_STATUSES:
             continue
         try:
             prolific_study = await get_study(
@@ -290,8 +293,9 @@ async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSessio
             changed = True
 
         # Capture Prolific's authoritative study cost while we have the study.
-        # Reaches its final value at the transition into a terminal status,
-        # which this same fetch observes (stored status is still transient).
+        # Refreshes through AWAITING_REVIEW as well, so approving, rejecting or
+        # returning submissions during review is reflected; the value settles
+        # once the study reaches COMPLETED and polling stops.
         total_cost = prolific_study.get("total_cost")
         if isinstance(total_cost, int) and round_.total_cost != total_cost:
             round_.total_cost = total_cost

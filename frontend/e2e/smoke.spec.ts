@@ -84,6 +84,7 @@ type RaterQuestionRecord = {
   question_text: string;
   options: string | null;
   question_type: string;
+  parent_question_text?: string | null;
 };
 
 type MockState = {
@@ -96,8 +97,10 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  submittedRatings: Record<string, unknown>[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
+  statsByExperimentId: Record<number, Record<string, unknown>>;
   questionsBySessionToken: Record<string, RaterQuestionRecord>;
   nextExperimentId: number;
   nextUploadId: number;
@@ -131,8 +134,10 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    submittedRatings: [],
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
+    statsByExperimentId: {},
     questionsBySessionToken: {},
     nextExperimentId: 1,
     nextUploadId: 1,
@@ -293,7 +298,8 @@ async function installApiMocks(
       const experimentId = extractExperimentId(url);
       state.statsRequests.push(search);
       const experiment = state.experiments.find((item) => item.id === experimentId);
-      await fulfillJson(route, 200, {
+      const override = state.statsByExperimentId[experimentId];
+      await fulfillJson(route, 200, override ?? {
         experiment_name: experiment?.name ?? 'Unknown',
         total_questions: experiment?.question_count ?? 0,
         questions_complete: 0,
@@ -455,6 +461,7 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/raters/submit' && method === 'POST') {
+      state.submittedRatings.push(request.postDataJSON());
       await fulfillJson(route, 200, { id: 1, success: true });
       return;
     }
@@ -508,6 +515,50 @@ test('create experiment and upload CSV shows the upload and success toast', asyn
   await page.getByTestId('tab-launch').click();
   await expect(page.getByTestId('prolific-mode-notice')).toHaveCount(0);
   await expect(page.getByTestId('run-pilot-button')).toBeVisible();
+});
+
+test('a slow upload shows progress and re-enables the form when it finishes', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  // Hold the upload response open so the in-flight UI is observable. The
+  // bytes are already sent by then, so this exercises the 'processing' phase.
+  let releaseUpload: () => void = () => {};
+  const uploadHeld = new Promise<void>((resolve) => {
+    releaseUpload = resolve;
+  });
+  await page.route('**/experiments/*/upload', async (route) => {
+    await uploadHeld;
+    await route.fallback();
+  });
+
+  await page.goto('/admin');
+  await page.getByTestId('experiment-name-input').fill('Slow Upload Test');
+  await page.getByTestId('ratings-per-question-input').fill('3');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+  await expect(page.getByRole('heading', { name: 'Slow Upload Test' })).toBeVisible();
+
+  await page.getByTestId('tab-questions').click();
+  const csvPath = fileURLToPath(new URL('./fixtures/sample_questions.csv', import.meta.url));
+  await page.getByTestId('upload-csv-input').setInputFiles(csvPath);
+  await page.getByTestId('upload-csv-button').click();
+
+  // Which phase shows depends on when the bytes clear the wire, so assert the
+  // panel is up and naming the file rather than pinning it to one phase.
+  const progress = page.getByTestId('upload-progress');
+  await expect(progress).toBeVisible();
+  await expect(progress).toContainText('sample_questions.csv');
+  await expect(page.getByTestId('upload-csv-button')).toBeDisabled();
+  await expect(page.getByTestId('upload-csv-input')).toBeDisabled();
+
+  releaseUpload();
+
+  await expect(page.getByText('Uploaded 2 questions')).toBeVisible();
+  // Snapshot, not a retrying assertion: the panel must already be gone the
+  // moment the success toast paints. A retrying toHaveCount(0) would happily
+  // pass while the two contradicted each other for a few hundred ms.
+  expect(await progress.count()).toBe(0);
+  await expect(page.getByTestId('upload-csv-input')).toBeEnabled();
 });
 
 test('run pilot, close it, and launch a round from an experiment with uploaded questions', async ({ page }) => {
@@ -688,6 +739,127 @@ test('long-context question links document separately and shows only question in
   await expect(documentPopup.getByText('Document line one')).toBeVisible();
 });
 
+// Seeds a rater session serving exactly one question, for the parent-context
+// rendering cases below.
+function seedRaterWithQuestion(state: MockState, question: RaterQuestionRecord) {
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Parent Context Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 302,
+    session_start: '2026-03-09T00:05:00Z',
+    session_end_time: '2099-03-09T01:05:00Z',
+    experiment_name: 'Parent Context Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-parent-context',
+  };
+  state.questionsBySessionToken['token-parent-context'] = question;
+}
+
+const RATER_URL = '/rate?experiment_id=1&PROLIFIC_PID=pid-1&STUDY_ID=study-1&SESSION_ID=session-1';
+
+test('a long parent question moves the document behind the link, not into the card', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `LONGBENCH DOCUMENT BODY ${'padding '.repeat(400)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 504,
+    question_id: 'parent-long-q',
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const documentLink = page.getByRole('link', { name: 'Open document in new tab' });
+  await expect(documentLink).toBeVisible();
+  await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
+  // The whole point: a 3KB document must not be dumped into the rating card.
+  await expect(page.getByText('Context', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('LONGBENCH DOCUMENT BODY')).toHaveCount(0);
+
+  const popupPromise = context.waitForEvent('page');
+  await documentLink.click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+  await expect(popup.getByText('LONGBENCH DOCUMENT BODY')).toBeVisible();
+});
+
+test('a short parent question stays inline in the context box', async ({ page }) => {
+  const state = createMockState();
+  const preamble = 'Customer review: arrived late but exceeded expectations.';
+
+  seedRaterWithQuestion(state, {
+    id: 505,
+    question_id: 'parent-short-q',
+    question_text: 'Does the review express satisfaction?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    parent_question_text: preamble,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.getByText('Context', { exact: true })).toBeVisible();
+  await expect(page.getByText(preamble)).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
+});
+
+test('an MC question with no options submits the typed free-text answer', async ({ page }) => {
+  const state = createMockState();
+
+  // Datasets whose upload omitted `question_type` arrive typed MC with empty
+  // options. The card falls back to a textarea, so submit must read that.
+  seedRaterWithQuestion(state, {
+    id: 506,
+    question_id: 'mc-without-options',
+    question_text: 'Summarize what the document recommends.',
+    options: '',
+    question_type: 'MC',
+  });
+
+  await installApiMocks(page, state);
+  const dialogs: string[] = [];
+  page.on('dialog', async (dialog) => {
+    dialogs.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  await page.goto(RATER_URL);
+
+  const answer = page.getByPlaceholder('Type your answer here...');
+  await expect(answer).toBeVisible();
+  await answer.fill('It recommends staged rollout.');
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: 'It recommends staged rollout.' });
+  expect(dialogs).toEqual([]);
+});
+
 test('rater ignores a stored session from another experiment and starts a fresh one', async ({ page }) => {
   const state = createMockState();
   state.experiments = [
@@ -811,6 +983,82 @@ test('disabled mode explains why pilot controls are unavailable', async ({ page 
   await expect(page.getByTestId('prolific-mode-notice')).toContainText('Configure a Prolific API token');
   await expect(page.getByTestId('preview-participant-button')).toBeVisible();
   await expect(page.getByTestId('run-pilot-button')).toHaveCount(0);
+});
+
+test('completion progress stays under 100% while any question is short', async ({ page }) => {
+  // Real CulturalBench numbers: 3671 of 3681 effective ratings is 99.7%, which
+  // Math.round reported as a full 100% while 10 questions were still short.
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Nearly Complete Experiment',
+      question_count: 1227,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 10,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.statsByExperimentId[1] = {
+    experiment_name: 'Nearly Complete Experiment',
+    total_questions: 1227,
+    questions_complete: 1217,
+    total_ratings: 3865,
+    effective_ratings: 3671,
+    total_raters: 92,
+    target_ratings_per_question: 3,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  await expect(page.getByText('1217 of 1227 questions')).toBeVisible();
+  await expect(page.getByText('99%', { exact: true })).toBeVisible();
+  await expect(page.getByText('100%', { exact: true })).toHaveCount(0);
+});
+
+test('completion progress reaches 100% only when every question is at target', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Complete Experiment',
+      question_count: 1227,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: true,
+  };
+  state.statsByExperimentId[1] = {
+    experiment_name: 'Complete Experiment',
+    total_questions: 1227,
+    questions_complete: 1227,
+    total_ratings: 3865,
+    effective_ratings: 3681,
+    total_raters: 92,
+    target_ratings_per_question: 3,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  await expect(page.getByText('100%', { exact: true })).toBeVisible();
 });
 
 test('a non-numeric experiment id shows a friendly not-found message', async ({ page }) => {

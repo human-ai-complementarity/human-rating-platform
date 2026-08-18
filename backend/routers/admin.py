@@ -11,6 +11,9 @@ from schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyResponse,
+    DatasetCreate,
+    DatasetResponse,
+    DatasetUpdate,
     ExperimentRoundCreate,
     ExperimentRoundResponse,
     ExperimentRoundUpdate,
@@ -366,6 +369,58 @@ async def discard_experiment_round(
         round_id=round_id,
         db=db,
     )
+
+
+# ── Datasets (identity anchor for experiment grouping) ──────────────────────
+
+
+@secure_router.get("/datasets", response_model=list[DatasetResponse])
+async def list_datasets(db: AsyncSession = Depends(get_session)):
+    """List all datasets, ordered by name (case-insensitive)."""
+    return await admin_service.list_datasets(db)
+
+
+@secure_router.post("/datasets", response_model=DatasetResponse)
+async def create_dataset(
+    payload: DatasetCreate,
+    db: AsyncSession = Depends(get_session),
+):
+    """Register a dataset.
+
+    `name` is unique case-insensitively (409 on duplicate). For datasets from
+    the inference pipeline, use the card name verbatim — it is the cross-repo
+    join key. `waves` is the set of wave tokens the dataset is included in
+    (e.g. `["fall25", "sp26"]`), lowercased and deduped on write.
+    """
+    return await admin_service.create_dataset(payload, db)
+
+
+@secure_router.get("/datasets/{dataset_id}", response_model=DatasetResponse)
+async def get_dataset(
+    dataset_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.get_dataset(dataset_id, db)
+
+
+@secure_router.patch("/datasets/{dataset_id}", response_model=DatasetResponse)
+async def update_dataset(
+    dataset_id: int,
+    payload: DatasetUpdate,
+    db: AsyncSession = Depends(get_session),
+):
+    """Partially update a dataset. Omitted fields are left unchanged;
+    `waves` replaces the whole set when sent."""
+    return await admin_service.update_dataset(dataset_id, payload, db)
+
+
+@secure_router.delete("/datasets/{dataset_id}")
+async def delete_dataset(
+    dataset_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    await admin_service.delete_dataset(dataset_id, db)
+    return {"ok": True}
 
 
 # ── API keys (bearer credentials for the /api/v1 programmatic API) ──────────

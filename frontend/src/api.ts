@@ -187,19 +187,22 @@ async function readText(response: Response): Promise<string> {
   }
 }
 
-async function throwHttpError(response: Response, url: string): Promise<never> {
-  const body = await readText(response);
-
+function httpErrorMessage(status: number, statusText: string, body: string, url: string): string {
   if (body && looksLikeHtml(body)) {
-    throw new Error(buildRoutingHint(url));
+    return buildRoutingHint(url);
   }
 
   const detail = extractDetail(body);
   if (detail) {
-    throw new Error(detail);
+    return detail;
   }
-  const fallback = body.trim() || `${response.status} ${response.statusText}`;
-  throw new Error(`Request failed (${response.status}) for ${url}: ${fallback}`);
+  const fallback = body.trim() || `${status} ${statusText}`;
+  return `Request failed (${status}) for ${url}: ${fallback}`;
+}
+
+async function throwHttpError(response: Response, url: string): Promise<never> {
+  const body = await readText(response);
+  throw new Error(httpErrorMessage(response.status, response.statusText, body, url));
 }
 
 // FastAPI returns `{"detail": "..."}` for HTTPException; unwrap so users see
@@ -218,11 +221,8 @@ function extractDetail(body: string): string | null {
   return null;
 }
 
-async function parseJson<T>(response: Response, url: string): Promise<T> {
-  const contentType = (response.headers.get('content-type') || '').toLowerCase();
-
+function parseJsonBody<T>(body: string, contentType: string, url: string): T {
   if (!contentType.includes(JSON_CONTENT_TYPE)) {
-    const body = await readText(response);
     if (looksLikeHtml(body)) {
       throw new Error(buildRoutingHint(url));
     }
@@ -233,10 +233,15 @@ async function parseJson<T>(response: Response, url: string): Promise<T> {
   }
 
   try {
-    return (await response.json()) as T;
+    return JSON.parse(body) as T;
   } catch {
     throw new Error(`Invalid JSON returned from ${url}. Check API routing and response format.`);
   }
+}
+
+async function parseJson<T>(response: Response, url: string): Promise<T> {
+  const contentType = (response.headers.get('content-type') || '').toLowerCase();
+  return parseJsonBody<T>(await readText(response), contentType, url);
 }
 
 // ── Request pipeline ─────────────────────────────────────────────────────────
@@ -281,6 +286,98 @@ async function requestJson<T>(path: string, options: RequestOptions = {}): Promi
   }
 
   return parseJson<T>(response, url);
+}
+
+// ── Uploads with progress ────────────────────────────────────────────────────
+// fetch() cannot report request-body progress, so file uploads drop to
+// XMLHttpRequest, whose `upload.progress` event gives byte-level feedback. The
+// status/parse handling below mirrors requestJson() so callers see identical
+// error messages either way.
+
+export type UploadProgress = {
+  /** Request-body bytes sent so far. */
+  loaded: number;
+  /** Total bytes to send; null when the browser can't compute it. */
+  total: number | null;
+};
+
+/** Thrown when the caller aborts an upload — distinct from a real failure. */
+export class UploadAbortedError extends Error {
+  constructor() {
+    super('Upload canceled');
+    this.name = 'UploadAbortedError';
+  }
+}
+
+type UploadOptions = {
+  onProgress?: (progress: UploadProgress) => void;
+  signal?: AbortSignal;
+};
+
+function uploadFormData<T>(
+  path: string,
+  formData: FormData,
+  { onProgress, signal }: UploadOptions = {}
+): Promise<T> {
+  const url = buildUrl(path);
+
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new UploadAbortedError());
+      return;
+    }
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.withCredentials = true;
+
+    const abort = () => xhr.abort();
+    signal?.addEventListener('abort', abort);
+    const cleanup = () => signal?.removeEventListener('abort', abort);
+
+    if (onProgress) {
+      const report = (event: ProgressEvent) => {
+        onProgress({
+          loaded: event.loaded,
+          total: event.lengthComputable ? event.total : null,
+        });
+      };
+      xhr.upload.addEventListener('progress', report);
+      // `upload.load` fires once the whole body is on the wire, with
+      // loaded === total. Listening for it explicitly means the caller learns
+      // the transfer finished even if the last `progress` event never lands.
+      xhr.upload.addEventListener('load', report);
+    }
+
+    xhr.addEventListener('abort', () => {
+      cleanup();
+      reject(new UploadAbortedError());
+    });
+
+    xhr.addEventListener('error', () => {
+      cleanup();
+      reject(new Error(`Network error while uploading to ${url}. Check your connection.`));
+    });
+
+    xhr.addEventListener('load', () => {
+      cleanup();
+      const body = xhr.responseText || '';
+
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(httpErrorMessage(xhr.status, xhr.statusText, body, url)));
+        return;
+      }
+
+      const contentType = (xhr.getResponseHeader('content-type') || '').toLowerCase();
+      try {
+        resolve(parseJsonBody<T>(body, contentType, url));
+      } catch (err) {
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+
+    xhr.send(formData);
+  });
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -336,14 +433,19 @@ export const api = {
     return requestJson<Experiment>(routes.admin.experiment(experimentId));
   },
 
-  async uploadQuestions(experimentId: number, file: File): Promise<UploadResponse> {
+  // Reports transfer progress via `options.onProgress`. Note that progress
+  // reaching 100% means the bytes are sent, not that the upload is done — the
+  // server still has to parse the file and insert rows, which for a large
+  // dataset is the longer half of the wait.
+  async uploadQuestions(
+    experimentId: number,
+    file: File,
+    options: UploadOptions = {}
+  ): Promise<UploadResponse> {
     const formData = new FormData();
     formData.append('file', file);
 
-    return requestJson<UploadResponse>(routes.admin.upload(experimentId), {
-      method: 'POST',
-      formData,
-    });
+    return uploadFormData<UploadResponse>(routes.admin.upload(experimentId), formData, options);
   },
 
   async getExperimentStats(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import os
 import re
 import subprocess
@@ -2092,6 +2093,66 @@ def test_prolific_round_close_handles_space_separated_status(client: TestClient,
 
 
 @respx.mock
+def test_prolific_round_awaiting_review_advances_to_completed(
+    client: TestClient,
+    enable_prolific,
+):
+    # AWAITING_REVIEW is terminal for round creation but not on Prolific's side:
+    # approving the submissions moves the study to COMPLETED. Keep polling so the
+    # stored status follows, instead of pinning at AWAITING_REVIEW forever.
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_publish_study()
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/publish").status_code
+        == 200
+    )
+
+    _mock_close_study(closed_status="AWAITING_REVIEW")
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/close").status_code
+        == 200
+    )
+
+    # Approving the submissions on Prolific settles both the status and the
+    # final cost; the review-window refresh is what lets either land.
+    route = _mock_get_study(study_status="COMPLETED", total_cost=1500)
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert route.called
+    assert rounds[0]["prolific_study_status"] == "COMPLETED"
+
+    item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
+    assert item["spend_minor_units"] == 1500
+
+
+@respx.mock
+def test_prolific_round_completed_is_not_refetched(client: TestClient, enable_prolific):
+    # COMPLETED is the genuine end state: no further Prolific fetch should happen.
+    experiment, _pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    _mock_publish_study()
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/publish").status_code
+        == 200
+    )
+
+    _mock_close_study(closed_status="COMPLETED")
+    assert (
+        client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/1/close").status_code
+        == 200
+    )
+
+    route = _mock_get_study(study_status="ACTIVE")
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert not route.called
+    assert rounds[0]["prolific_study_status"] == "COMPLETED"
+
+
+@respx.mock
 def test_prolific_delete_calls_prolific_api_for_all_rounds(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
@@ -3851,3 +3912,61 @@ def test_submit_auto_stops_active_round_when_target_met(client: TestClient, enab
 
     rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
     assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+
+
+# ── Long-context uploads (batched inserts) ────────────────────────────────────
+
+
+def test_upload_batches_long_context_rows_across_multiple_inserts(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Rows too large for one INSERT still land, with parent refs intact.
+
+    A single statement carrying every row is what OOM-killed the production
+    database on a longbenchv2 upload. The payload cap is lowered here so a small
+    fixture crosses several batch boundaries, including between a parent and its
+    children.
+    """
+    monkeypatch.setattr(get_settings().uploads, "max_insert_payload_bytes", 2048)
+
+    document = "D" * 3000  # on its own exceeds the cap, so it batches alone
+    rows = [
+        "question_id,question_text,gt_answer,options,question_type,parent_question_id",
+        f'parent1,"{document}",,,,',
+    ]
+    rows += [f"sub{i},Question {i} about the document?,Yes,Yes|No,MC,parent1" for i in range(10)]
+    csv_data = "\n".join(rows)
+
+    experiment = _create_experiment(client)
+    with caplog.at_level(logging.INFO, logger="services.admin.uploads"):
+        response = client.post(
+            f"/api/admin/experiments/{experiment['id']}/upload",
+            files={"file": ("long_context.csv", csv_data, "text/csv")},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["message"] == "Uploaded 11 questions"
+
+    # Guards against the test passing vacuously: the fixture must actually have
+    # crossed a batch boundary, otherwise it proves nothing about batching.
+    batch_counts = [
+        record.attributes["insert_batches"]
+        for record in caplog.records
+        if getattr(record, "attributes", {}).get("insert_batches") is not None
+    ]
+    assert batch_counts and batch_counts[0] > 1, batch_counts
+
+    uploads_listed = client.get(f"/api/admin/experiments/{experiment['id']}/uploads").json()
+    assert uploads_listed[0]["question_count"] == 11
+
+    # Parent refs resolved even though parent and children landed in different
+    # batches, and the long document survived intact.
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LONG_CTX")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["question_id"].startswith("sub")
+    assert question["parent_question_text"] == document

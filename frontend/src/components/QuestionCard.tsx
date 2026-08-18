@@ -4,6 +4,12 @@ import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
+// Parent context longer than this is a document, not a preamble, so it goes
+// behind the "open in new tab" link instead of inline in the card. The two
+// real cases sit orders of magnitude apart (a sub-question preamble runs tens
+// of characters, a long-context document runs six figures), so the exact value
+// only matters if a dataset ever lands in between.
+const INLINE_CONTEXT_MAX_CHARS = 2000;
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
@@ -22,7 +28,10 @@ interface QuestionCardProps {
 }
 
 type QuestionDisplay = {
+  /** Rendered behind the "open document in new tab" link. */
   documentText: string | null;
+  /** Rendered inline in the "Context" box above the question. */
+  inlineContext: string | null;
   questionText: string;
 };
 
@@ -76,7 +85,12 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
   );
 }
 
-function parseQuestionDisplay(questionText: string): QuestionDisplay {
+// Splits `--- QUESTION ---`-delimited text into document and question. Returns
+// a null document when the delimiter is absent or either side is empty.
+function splitOnSeparator(questionText: string): {
+  documentText: string | null;
+  questionText: string;
+} {
   const separators = Array.from(questionText.matchAll(LONG_CONTEXT_SEPARATOR_PATTERN));
   const separator = separators[separators.length - 1];
   if (!separator || separator.index === undefined) {
@@ -93,6 +107,33 @@ function parseQuestionDisplay(questionText: string): QuestionDisplay {
   }
 
   return { documentText, questionText: displayQuestion };
+}
+
+/**
+ * Decides where a question's context is rendered.
+ *
+ * Two mechanisms feed this. `--- QUESTION ---` inside `question_text` splits a
+ * document off inline, and `parent_question_id` stores the document as its own
+ * row served back as `parent_question_text`. The parent shape is the direction
+ * we're moving in (see issue #85); the separator is kept working until the
+ * pipeline stops emitting it.
+ *
+ * A long parent is routed to the document link, which is the whole point of
+ * this function. The separator branch takes precedence so no data that renders
+ * a document today changes behaviour, which is what makes this additive.
+ */
+function parseQuestionDisplay(question: Question): QuestionDisplay {
+  const split = splitOnSeparator(question.question_text);
+  const parent = question.parent_question_text?.trim() || null;
+
+  const parentIsDocument =
+    parent !== null && split.documentText === null && parent.length > INLINE_CONTEXT_MAX_CHARS;
+
+  return {
+    documentText: split.documentText ?? (parentIsDocument ? parent : null),
+    inlineContext: parentIsDocument ? null : parent,
+    questionText: split.questionText,
+  };
 }
 
 function parseOptions(rawOptions: string | null): string[] {
@@ -180,9 +221,14 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const timeStartedRef = useRef(new Date().toISOString());
   const display = useMemo(
-    () => parseQuestionDisplay(question.question_text),
-    [question.question_text]
+    () => parseQuestionDisplay(question),
+    [question]
   );
+  const options = useMemo(() => parseOptions(question.options), [question.options]);
+
+  // An MC question with no usable options falls back to the free-text input, so
+  // every answer read below has to follow the input that is actually rendered.
+  const isMC = question.question_type === 'MC' && options.length > 0;
 
   useEffect(() => {
     setSelectedAnswer('');
@@ -211,15 +257,15 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
     if (!assistanceAnswer) return;
-    if (question.question_type === 'FT') {
-      setFreeTextAnswer(assistanceAnswer);
-    } else {
+    if (isMC) {
       setSelectedAnswer(assistanceAnswer);
+    } else {
+      setFreeTextAnswer(assistanceAnswer);
     }
   }, [assistanceAnswer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSubmit = async () => {
-    const answer = question.question_type === 'FT' ? freeTextAnswer : selectedAnswer;
+    const answer = isMC ? selectedAnswer : freeTextAnswer;
 
     if (!answer.trim()) {
       alert('Please provide an answer');
@@ -234,9 +280,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
   };
 
-  const options = parseOptions(question.options);
-
-  const isMC = question.question_type === 'MC' && options.length > 0;
   const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
 
   return (
@@ -261,7 +304,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         Question {question.question_id}
       </div>
 
-      {question.parent_question_text && (
+      {display.inlineContext && (
         <div
           style={{
             background: 'var(--surface-2)',
@@ -291,7 +334,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
               margin: 0,
             }}
           >
-            {question.parent_question_text}
+            {display.inlineContext}
           </p>
         </div>
       )}
