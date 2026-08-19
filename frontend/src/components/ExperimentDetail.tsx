@@ -2689,14 +2689,17 @@ function RoundCostLabel({
     ? (round.total_cost as number)
     : estimateStudyCost(round.reward, round.places_requested, pricing).total;
   if (minorUnits <= 0) return null;
+  // Without rates the estimate is rewards only, so the tooltip must not claim
+  // fee and VAT are in it. Same branch as the reward hint and recommendation.
+  const title = synced
+    ? "Prolific's cost for this study: rewards + platform fee + VAT. Excludes bonuses paid separately."
+    : pricing
+      ? "Estimated cost (rewards + platform fee + VAT). Replaced by Prolific's own figure once the round syncs."
+      : 'Estimated rewards only. Prolific fee rates are unavailable, so the platform fee and VAT are not included.';
   return (
     <span
       data-testid={`round-cost-${round.round_number}`}
-      title={
-        synced
-          ? "Prolific's cost for this study: rewards + platform fee + VAT. Excludes bonuses paid separately."
-          : 'Estimated cost (rewards + platform fee + VAT). Replaced by Prolific\'s own figure once the round syncs.'
-      }
+      title={title}
       style={{ fontSize: 13, color: 'var(--muted)', marginLeft: 8 }}
     >
       · {synced ? '' : '~'}

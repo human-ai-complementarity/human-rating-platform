@@ -2356,6 +2356,35 @@ def test_platform_status_pricing_null_when_prolific_disabled(client: TestClient)
         settings.prolific.api_token = original
 
 
+@respx.mock
+def test_platform_status_pricing_upgrades_from_researcher_to_study_rates(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A pre-pilot lookup can only read the researcher's own rates, which carry
+    # the wrong VAT for a workspace billed in another jurisdiction. Caching that
+    # would pin it for the life of the process, so the first study to exist has
+    # to win.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=0.333333, vat_percentage=0.0)
+
+    before = client.get("/api/admin/platform-status").json()
+    assert before["pricing"]["vat_percentage"] == 0.0
+
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0)
+    _mock_get_study(
+        study_id=f"STUDY_{exp['id']}_0",
+        fees_percentage=0.333333,
+        vat_percentage=0.2,
+    )
+
+    after = client.get("/api/admin/platform-status").json()
+    assert after["pricing"]["vat_percentage"] == 0.2
+
+
 def test_platform_status_currency_null_when_project_id_unset(
     client: TestClient,
     enable_prolific,

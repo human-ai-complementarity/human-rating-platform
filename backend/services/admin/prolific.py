@@ -490,13 +490,18 @@ async def get_current_user(*, settings: ProlificSettings) -> dict:
 async def _fetch_pricing(
     settings: ProlificSettings,
     reference_study_id: str | None,
-) -> ProlificPricing | None:
+) -> tuple[ProlificPricing | None, bool]:
+    """Return (pricing, came_from_a_study).
+
+    The flag drives caching: researcher-sourced rates are a stand-in until a
+    study exists, so they must not be cached (see `get_cached_pricing`).
+    """
     if reference_study_id:
         try:
             study = await get_study(settings=settings, study_id=reference_study_id)
             pricing = _pricing_from_payload(study)
             if pricing is not None:
-                return pricing
+                return pricing, True
         except Exception:
             logger.warning(
                 "Failed to read Prolific pricing from reference study; trying the researcher",
@@ -505,10 +510,10 @@ async def _fetch_pricing(
             )
 
     try:
-        return _pricing_from_payload(await get_current_user(settings=settings))
+        return _pricing_from_payload(await get_current_user(settings=settings)), False
     except Exception:
         logger.warning("Failed to fetch Prolific pricing rates", exc_info=True)
-        return None
+        return None, False
 
 
 async def get_cached_pricing(
@@ -520,8 +525,13 @@ async def get_cached_pricing(
 
     `reference_study_id` should be a study in the workspace we're pricing for
     (callers pass the most recent round's study). Returns None when the
-    integration is disabled or every source fails; failures are not cached, so
-    a transient outage self-heals on the next call.
+    integration is disabled or every source fails.
+
+    Only study-sourced rates are cached. A researcher-sourced fallback is
+    returned uncached, so the first round to exist upgrades the rates instead of
+    a pre-pilot lookup pinning the researcher's own VAT (0.0 for a US researcher
+    in a UK-billed workspace) for the life of the process. Failures are not
+    cached either, so a transient outage self-heals on the next call.
     """
     global _cached_pricing
     if not settings.enabled:
@@ -531,7 +541,7 @@ async def get_cached_pricing(
     async with _pricing_lock:
         if _cached_pricing is not None:
             return _cached_pricing
-        result = await _fetch_pricing(settings, reference_study_id)
-        if result is not None:
+        result, from_study = await _fetch_pricing(settings, reference_study_id)
+        if result is not None and from_study:
             _cached_pricing = result
         return result

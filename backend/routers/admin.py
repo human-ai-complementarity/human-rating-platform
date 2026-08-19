@@ -84,7 +84,10 @@ async def admin_logout(manager=Depends(get_admin_manager)):
     return resp
 
 
-@router.get("/platform-status", response_model=PlatformStatus)
+# Admin-only: the response carries the workspace's Prolific fee and VAT rates,
+# which no unauthenticated caller has a reason to read. Both callers are admin
+# pages that already hold a session by the time they fetch this.
+@secure_router.get("/platform-status", response_model=PlatformStatus)
 async def get_platform_status(db: AsyncSession = Depends(get_session)):
     settings = get_settings()
     code, symbol = await get_cached_workspace_currency(settings.prolific)
