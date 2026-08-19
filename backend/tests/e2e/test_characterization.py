@@ -1276,6 +1276,25 @@ def _mock_update_study(
     )
 
 
+def _mock_submissions(
+    *,
+    study_id: str = PROLIFIC_STUDY_ID,
+    statuses: list[str] | None = None,
+    count: int | None = None,
+    status: int = 200,
+) -> respx.Route:
+    """Mock a study's submission list, one entry per status in `statuses`."""
+    results = [{"id": f"SUB_{i}", "status": st} for i, st in enumerate(statuses or [])]
+    body = (
+        {"results": results, "meta": {"count": count if count is not None else len(results)}}
+        if status == 200
+        else {"error": "fail"}
+    )
+    return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/submissions/").mock(
+        return_value=Response(status, json=body)
+    )
+
+
 def _mock_current_user(
     *,
     fees_percentage: float | None = 0.3333333333333333,
@@ -2031,6 +2050,73 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
 
     item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
     assert item["spend_minor_units"] == 1860
+
+
+@respx.mock
+def test_prolific_round_sync_captures_submission_counts(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
+    )
+    assert (
+        client.post(
+            f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish"
+        ).status_code
+        == 200
+    )
+
+    _mock_get_study(study_status="ACTIVE")
+    # Returned and timed-out submissions release their place, so they count
+    # toward neither bucket and their places read as open again.
+    _mock_submissions(
+        statuses=[
+            "APPROVED",
+            "APPROVED",
+            "AWAITING REVIEW",
+            "ACTIVE",
+            "RETURNED",
+            "TIMED-OUT",
+        ]
+    )
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert rounds[0]["submissions_completed"] == 3
+    assert rounds[0]["submissions_in_progress"] == 1
+
+
+@respx.mock
+def test_prolific_round_sync_keeps_counts_when_submissions_fetch_fails(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
+    )
+    client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish")
+
+    _mock_get_study(study_status="ACTIVE")
+    _mock_submissions(statuses=["APPROVED", "ACTIVE"])
+    client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
+
+    # A failing submissions call must not blank the counts or break the status
+    # refresh: the round keeps its last-known numbers and the new status lands.
+    _mock_get_study(study_status="AWAITING_REVIEW")
+    _mock_submissions(status=500)
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+    assert rounds[0]["submissions_completed"] == 1
+    assert rounds[0]["submissions_in_progress"] == 1
 
 
 @respx.mock

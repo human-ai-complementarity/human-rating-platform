@@ -35,6 +35,8 @@ type ExperimentRoundRecord = {
   created_at: string;
   prolific_study_url: string;
   total_cost: number | null;
+  submissions_completed: number | null;
+  submissions_in_progress: number | null;
 };
 
 type RecommendationRecord = {
@@ -168,6 +170,8 @@ function buildRound(state: MockState, round: Partial<ExperimentRoundRecord>): Ex
     created_at: '2026-03-09T00:00:00Z',
     prolific_study_url: 'https://app.prolific.com/researcher/workspaces/studies/mock-study',
     total_cost: null,
+    submissions_completed: null,
+    submissions_in_progress: null,
     ...round,
   };
 }
@@ -1156,6 +1160,8 @@ test('round and next-round costs include Prolific\'s fee and VAT', async ({ page
       // Prolific's figure for 63 x £15.00: rewards + a third in fees + VAT on
       // the fee. The reward subtotal alone would read £945.00.
       total_cost: 132301,
+      submissions_completed: 12,
+      submissions_in_progress: 3,
     }),
   ];
   state.recommendations[1] = {
@@ -1175,6 +1181,11 @@ test('round and next-round costs include Prolific\'s fee and VAT', async ({ page
   await page.getByTestId('tab-launch').click();
 
   await expect(page.getByTestId('round-cost-0')).toContainText('£1323.01');
+  // 63 places, 12 submitted, 3 working: the rest are open. Returned and
+  // timed-out submissions are excluded upstream, so they read as open here.
+  await expect(page.getByTestId('round-progress-0')).toHaveText(
+    '12 completed · 3 in progress · 48 left'
+  );
 
   // Next round: 30 places at the pilot's £15.00, fee and VAT on top. Rewards
   // alone would read £450.00.

@@ -43,6 +43,7 @@ from .prolific import (
     generate_completion_code,
     get_cached_pricing,
     get_study,
+    get_study_submission_counts,
     publish_study,
     stop_study,
     update_study,
@@ -126,6 +127,8 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         created_at=round_.created_at,
         prolific_study_url=build_study_url(study_id=round_.prolific_study_id),
         total_cost=round_.total_cost,
+        submissions_completed=round_.submissions_completed,
+        submissions_in_progress=round_.submissions_in_progress,
     )
 
 
@@ -323,6 +326,35 @@ async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSessio
         total_cost = prolific_study.get("total_cost")
         if isinstance(total_cost, int) and round_.total_cost != total_cost:
             round_.total_cost = total_cost
+            changed = True
+
+        # Submission counts need a second call, so they ride along with the same
+        # sync rather than getting their own endpoint: a failure here leaves the
+        # last-known counts in place and never blocks the status refresh.
+        try:
+            counts = await get_study_submission_counts(
+                settings=settings.prolific,
+                study_id=round_.prolific_study_id,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to refresh Prolific submission counts for round; keeping cached counts",
+                exc_info=True,
+                extra={
+                    "attributes": {
+                        "round_id": round_.id,
+                        "study_id": round_.prolific_study_id,
+                    }
+                },
+            )
+            continue
+
+        if (round_.submissions_completed, round_.submissions_in_progress) != (
+            counts.completed,
+            counts.in_progress,
+        ):
+            round_.submissions_completed = counts.completed
+            round_.submissions_in_progress = counts.in_progress
             changed = True
 
     if changed:

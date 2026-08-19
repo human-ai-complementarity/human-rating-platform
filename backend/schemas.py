@@ -120,6 +120,11 @@ class ExperimentRoundResponse(BaseModel):
     # Prolific's own `total_cost` for this round's study (rewards + fee + VAT),
     # in minor units. Null until the round has been synced from Prolific.
     total_cost: Optional[int] = None
+    # Raters who submitted the study, and raters holding a place and still
+    # working. Null until the round has been synced from Prolific. Places still
+    # open = places_requested minus both.
+    submissions_completed: Optional[int] = None
+    submissions_in_progress: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

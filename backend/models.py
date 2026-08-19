@@ -384,6 +384,20 @@ class ExperimentRound(SQLModel, table=True):
         default=None,
         sa_column=Column(Integer, nullable=True),
     )
+    # Prolific submission counts for this round's study, tallied from the
+    # submission statuses on Prolific sync. "Completed" means the rater
+    # submitted the study (awaiting review or approved); "in progress" means
+    # they hold a place and are still working. Returned and timed-out
+    # submissions release their place, so they count toward neither. NULL until
+    # first sync; places still open = places_requested minus both.
+    submissions_completed: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
+    submissions_in_progress: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
