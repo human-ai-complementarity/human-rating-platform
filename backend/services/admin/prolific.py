@@ -11,6 +11,7 @@ import asyncio
 import logging
 import secrets
 import string
+from typing import NamedTuple
 
 import httpx
 
@@ -417,4 +418,120 @@ async def get_cached_workspace_currency(
         result = await _fetch_workspace_currency(settings)
         if result != (None, None):
             _cached_currency = result
+        return result
+
+
+# ── Study pricing rates ─────────────────────────────────────────────────────
+#
+# A study's `total_cost` is rewards + Prolific's platform fee + VAT on that fee,
+# which is the figure Prolific's own study page totals. Reproducing it before a
+# study exists needs the workspace's rates, and the API only carries them on a
+# study object (`fees_percentage`, `vat_percentage`, `fees_per_submission`).
+# `/users/me/` also reports rates, but they are the researcher's own: a US
+# researcher publishing into a UK-billed workspace reads vat_percentage 0.0
+# there while their studies are charged 0.2. So we prefer an existing study's
+# rates and fall back to the researcher's only when no study is available.
+
+
+class ProlificPricing(NamedTuple):
+    """Fee rates behind a study's `total_cost`, as fractions (0.2 = 20%).
+
+    `fees_percentage` and `fees_per_submission` apply to the reward subtotal;
+    `vat_percentage` applies to the fee, not to the rewards.
+    """
+
+    fees_percentage: float
+    vat_percentage: float
+    fees_per_submission: float
+
+
+_cached_pricing: ProlificPricing | None = None
+_pricing_lock = asyncio.Lock()
+
+
+def _reset_pricing_cache() -> None:
+    """Clear the cached pricing rates. Used by tests to isolate state."""
+    global _cached_pricing
+    _cached_pricing = None
+
+
+def _pricing_from_payload(payload: dict) -> ProlificPricing | None:
+    """Read the three rate fields off a study or user payload.
+
+    Returns None when the fee rate is missing or unparseable — VAT and the
+    per-submission fee are legitimately 0.0, but a missing fee percentage means
+    the payload isn't a pricing source and estimating from it would understate
+    the cost.
+    """
+    fees = payload.get("fees_percentage")
+    if not isinstance(fees, (int, float)):
+        return None
+    vat = payload.get("vat_percentage")
+    per_submission = payload.get("fees_per_submission")
+    return ProlificPricing(
+        fees_percentage=float(fees),
+        vat_percentage=float(vat) if isinstance(vat, (int, float)) else 0.0,
+        fees_per_submission=(
+            float(per_submission) if isinstance(per_submission, (int, float)) else 0.0
+        ),
+    )
+
+
+async def get_current_user(*, settings: ProlificSettings) -> dict:
+    if not settings.enabled:
+        raise RuntimeError("get_current_user called while Prolific is disabled")
+
+    async with _build_client(settings) as client:
+        response = await client.get("/users/me/")
+        _raise_for_status(response)
+        return response.json()
+
+
+async def _fetch_pricing(
+    settings: ProlificSettings,
+    reference_study_id: str | None,
+) -> ProlificPricing | None:
+    if reference_study_id:
+        try:
+            study = await get_study(settings=settings, study_id=reference_study_id)
+            pricing = _pricing_from_payload(study)
+            if pricing is not None:
+                return pricing
+        except Exception:
+            logger.warning(
+                "Failed to read Prolific pricing from reference study; trying the researcher",
+                exc_info=True,
+                extra={"attributes": {"study_id": reference_study_id}},
+            )
+
+    try:
+        return _pricing_from_payload(await get_current_user(settings=settings))
+    except Exception:
+        logger.warning("Failed to fetch Prolific pricing rates", exc_info=True)
+        return None
+
+
+async def get_cached_pricing(
+    settings: ProlificSettings,
+    *,
+    reference_study_id: str | None = None,
+) -> ProlificPricing | None:
+    """Resolve and cache the workspace's fee/VAT rates.
+
+    `reference_study_id` should be a study in the workspace we're pricing for
+    (callers pass the most recent round's study). Returns None when the
+    integration is disabled or every source fails; failures are not cached, so
+    a transient outage self-heals on the next call.
+    """
+    global _cached_pricing
+    if not settings.enabled:
+        return None
+    if _cached_pricing is not None:
+        return _cached_pricing
+    async with _pricing_lock:
+        if _cached_pricing is not None:
+            return _cached_pricing
+        result = await _fetch_pricing(settings, reference_study_id)
+        if result is not None:
+            _cached_pricing = result
         return result

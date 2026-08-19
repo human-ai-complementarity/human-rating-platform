@@ -32,6 +32,7 @@ from schemas import (
 
 from .prolific import (
     ProlificAPIError,
+    ProlificPricing,
     build_completion_url,
     build_exclusion_filters,
     build_external_study_url,
@@ -40,6 +41,7 @@ from .prolific import (
     create_study,
     delete_study,
     generate_completion_code,
+    get_cached_pricing,
     get_study,
     publish_study,
     stop_study,
@@ -123,6 +125,7 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         excluded_experiment_ids=_parse_excluded_experiment_ids(round_.excluded_experiment_ids),
         created_at=round_.created_at,
         prolific_study_url=build_study_url(study_id=round_.prolific_study_id),
+        total_cost=round_.total_cost,
     )
 
 
@@ -257,6 +260,27 @@ def _build_round_internal_name(
     return f"{experiment_internal_name.strip()} - {suffix}"
 
 
+async def get_prolific_pricing(db: AsyncSession) -> ProlificPricing | None:
+    """Resolve the workspace's fee/VAT rates for pre-launch cost estimates.
+
+    Prolific only exposes the rates on a study, so the most recently created
+    round's study acts as the reference (see `get_cached_pricing`). Returns None
+    when Prolific is disabled or the rates can't be fetched.
+    """
+    settings = get_settings()
+    if not settings.prolific.enabled:
+        return None
+    reference_study_id = (
+        await db.execute(
+            select(ExperimentRound.prolific_study_id).order_by(ExperimentRound.id.desc()).limit(1)
+        )
+    ).scalar_one_or_none()
+    return await get_cached_pricing(
+        settings.prolific,
+        reference_study_id=reference_study_id,
+    )
+
+
 async def _refresh_round_statuses(rounds: list[ExperimentRound], db: AsyncSession) -> None:
     settings = get_settings()
     if not settings.prolific.enabled:
@@ -312,7 +336,8 @@ async def refresh_experiment_spend(experiment_id: int, db: AsyncSession) -> int:
     Unlike the status sync, this refreshes terminal rounds too, so already-closed
     rounds get their cost hydrated (the status sync skips them). A round whose
     study can't be fetched keeps its last-known cost. `total_cost` is the study's
-    base cost (rewards + Prolific fee); it excludes bonuses paid separately.
+    full charge (rewards + Prolific's fee + VAT on that fee), matching the total
+    on Prolific's study page; it excludes bonuses paid separately.
     """
     await fetch_experiment_or_404(experiment_id, db)
     settings = get_settings()

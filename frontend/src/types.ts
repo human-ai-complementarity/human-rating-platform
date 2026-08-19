@@ -202,10 +202,24 @@ export interface ProlificStudyConfig {
   device_compatibility: string[];
 }
 
+/**
+ * Prolific's fee rates, as fractions (0.2 = 20%). `fees_percentage` and
+ * `fees_per_submission` apply to the reward subtotal; `vat_percentage` applies
+ * to the resulting fee, not to the rewards.
+ */
+export interface ProlificPricing {
+  fees_percentage: number;
+  vat_percentage: number;
+  fees_per_submission: number;
+}
+
 export interface PlatformStatus {
   prolific_enabled: boolean;
   currency_code: string | null;
   currency_symbol: string | null;
+  // Null when Prolific is disabled or the rates could not be fetched; cost
+  // estimates then fall back to showing the reward subtotal alone.
+  pricing: ProlificPricing | null;
 }
 
 export interface ExperimentCreate {
@@ -233,6 +247,9 @@ export interface ExperimentRound {
   excluded_experiment_ids: number[];
   created_at: string;
   prolific_study_url: string;
+  // Prolific's own cost for this round's study (rewards + platform fee + VAT),
+  // in minor units. Null until the round has been synced from Prolific.
+  total_cost: number | null;
 }
 
 export interface ExperimentRoundUpdate {
