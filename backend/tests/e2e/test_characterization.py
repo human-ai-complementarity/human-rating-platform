@@ -1282,14 +1282,20 @@ def _mock_submissions(
     statuses: list[str] | None = None,
     count: int | None = None,
     status: int = 200,
+    results_key: bool = True,
 ) -> respx.Route:
-    """Mock a study's submission list, one entry per status in `statuses`."""
+    """Mock a study's submission list, one entry per status in `statuses`.
+
+    `results_key=False` sends a 200 with no submission list, the malformed-body
+    case that must not be mistaken for a study with zero submissions.
+    """
     results = [{"id": f"SUB_{i}", "status": st} for i, st in enumerate(statuses or [])]
-    body = (
-        {"results": results, "meta": {"count": count if count is not None else len(results)}}
-        if status == 200
-        else {"error": "fail"}
-    )
+    if status != 200:
+        body: dict = {"error": "fail"}
+    elif not results_key:
+        body = {"results": None, "meta": {"count": 0}}
+    else:
+        body = {"results": results, "meta": {"count": count if count is not None else len(results)}}
     return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/submissions/").mock(
         return_value=Response(status, json=body)
     )
@@ -2115,6 +2121,15 @@ def test_prolific_round_sync_keeps_counts_when_submissions_fetch_fails(
     rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
 
     assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+    assert rounds[0]["submissions_completed"] == 1
+    assert rounds[0]["submissions_in_progress"] == 1
+
+    # A 200 carrying no submission list is unusable, not a study with zero
+    # submissions, so it must not overwrite the counts either.
+    _mock_submissions(results_key=False)
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
     assert rounds[0]["submissions_completed"] == 1
     assert rounds[0]["submissions_in_progress"] == 1
 

@@ -316,6 +316,12 @@ async def get_study_submission_counts(
     Prolific has no count-only endpoint and ignores `limit`, so this returns the
     full submission list in one request; `meta.count` is checked against what
     arrived so a future paginated response is logged rather than under-reported.
+
+    Raises ValueError when a 200 carries no submission list. Returning zeros
+    there would look like a real result and overwrite a round's cached counts,
+    so an unusable body has to fail the same way a non-2xx does. A study with no
+    submissions yet sends `results: []`, which is a list and correctly tallies
+    to zeros.
     """
     if not settings.enabled:
         raise RuntimeError("get_study_submission_counts called while Prolific is disabled")
@@ -327,7 +333,7 @@ async def get_study_submission_counts(
 
     results = payload.get("results")
     if not isinstance(results, list):
-        return SubmissionCounts(completed=0, in_progress=0)
+        raise ValueError(f"Prolific submissions response for {study_id} has no results list")
 
     total = (payload.get("meta") or {}).get("count")
     if isinstance(total, int) and total > len(results):
