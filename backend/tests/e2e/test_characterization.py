@@ -3514,6 +3514,59 @@ def test_duplicate_missing_experiment_returns_404(client: TestClient):
     assert response.status_code == 404
 
 
+def test_duplicate_batches_long_context_rows_across_multiple_inserts(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Copying long-context rows splits into several INSERTs, parent refs intact.
+
+    The upload path batches, but duplicate flushed every clone in one statement,
+    which OOM-killed the production database on a 760-row longbenchv2 copy. The
+    payload cap is lowered here so a small fixture crosses batch boundaries,
+    including between a parent and its children.
+    """
+    monkeypatch.setattr(get_settings().uploads, "max_insert_payload_bytes", 2048)
+
+    document = "D" * 3000  # on its own exceeds the cap, so it batches alone
+    rows = [
+        "question_id,question_text,gt_answer,options,question_type,parent_question_id",
+        f'parent1,"{document}",,,,',
+    ]
+    rows += [f"sub{i},Question {i} about the document?,Yes,Yes|No,MC,parent1" for i in range(10)]
+
+    source = _create_experiment(client)
+    upload = client.post(
+        f"/api/admin/experiments/{source['id']}/upload",
+        files={"file": ("long_context.csv", "\n".join(rows), "text/csv")},
+    )
+    assert upload.status_code == 200, upload.text
+
+    with caplog.at_level(logging.INFO, logger="services.admin.experiments"):
+        response = client.post(f"/api/admin/experiments/{source['id']}/duplicate")
+
+    assert response.status_code == 200, response.text
+    copy = response.json()
+    assert copy["question_count"] == 10  # parent rows aren't ratable
+
+    # Guards against passing vacuously: the copy must actually have crossed a
+    # batch boundary, otherwise it proves nothing about batching.
+    batch_counts = [
+        record.attributes["insert_batches"]
+        for record in caplog.records
+        if getattr(record, "attributes", {}).get("insert_batches") is not None
+    ]
+    assert batch_counts and batch_counts[0] > 1, batch_counts
+
+    # Parent refs must survive being remapped across batch boundaries.
+    session_payload = _start_session(client, copy["id"], prolific_pid="PID_DUP_LONG")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["parent_question_text"] == document
+
+
 def _list_entry(client: TestClient, experiment_id: int) -> dict:
     return next(
         item for item in client.get("/api/admin/experiments").json() if item["id"] == experiment_id

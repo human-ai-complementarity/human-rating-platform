@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from models import Question
 from config import UploadSettings
-from services.admin.uploads import (
+from services.admin.question_inserts import (
     _batch_by_payload_size,
     _question_payload_size,
 )
