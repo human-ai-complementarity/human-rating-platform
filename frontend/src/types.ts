@@ -250,6 +250,10 @@ export interface ExperimentRound {
   // Prolific's own cost for this round's study (rewards + platform fee + VAT),
   // in minor units. Null until the round has been synced from Prolific.
   total_cost: number | null;
+  // Raters who submitted the study, and raters holding a place and still
+  // working. Null until the round has been synced from Prolific.
+  submissions_completed: number | null;
+  submissions_in_progress: number | null;
 }
 
 export interface ExperimentRoundUpdate {

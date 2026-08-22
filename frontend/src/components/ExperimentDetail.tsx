@@ -2668,6 +2668,32 @@ function RoundStatusPill({ status }: { status: string }) {
 }
 
 /**
+ * Rater progress for a round: submitted, still working, and places nobody has
+ * taken. Counts come from Prolific's submission statuses, so a rater who
+ * returned or timed out is not stuck in "in progress" and their place shows as
+ * open again. Renders nothing until the round has been synced.
+ */
+function RoundProgressLine({ round }: { round: ExperimentRound }) {
+  const { submissions_completed: completed, submissions_in_progress: inProgress } = round;
+  if (completed == null || inProgress == null) return null;
+  // Prolific can seat more raters than requested when returned places are
+  // reallocated, so the remainder is floored at zero rather than going negative.
+  const left = Math.max(0, round.places_requested - completed - inProgress);
+  return (
+    <div
+      data-testid={`round-progress-${round.round_number}`}
+      style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}
+    >
+      <strong style={{ color: 'var(--ink)' }}>{completed}</strong> completed
+      {' · '}
+      <strong style={{ color: 'var(--ink)' }}>{inProgress}</strong> in progress
+      {' · '}
+      <strong style={{ color: 'var(--ink)' }}>{left}</strong> left
+    </div>
+  );
+}
+
+/**
  * Per-round cost in the round header. Prefers Prolific's own `total_cost`
  * (rewards + platform fee + VAT, the figure their study page totals) and falls
  * back to an estimate from the round's reward and places until the first sync
@@ -2765,7 +2791,7 @@ function RoundCard(props: {
           borderBottom: '1px solid var(--faint)',
         }}
       >
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 16 }}>
             {round.round_number === 0 ? 'Pilot Round' : `Round ${round.round_number}`}
           </span>
@@ -2778,6 +2804,7 @@ function RoundCard(props: {
             currencySymbol={currencySymbol}
             pricing={pricing}
           />
+          <RoundProgressLine round={round} />
         </div>
         <RoundStatusPill status={round.prolific_study_status} />
         <button

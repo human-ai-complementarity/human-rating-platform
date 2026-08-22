@@ -261,6 +261,96 @@ async def get_study(
         return response.json()
 
 
+# Prolific submission statuses, split by what they mean for a round's progress.
+# Observed across this workspace's studies: ACTIVE, APPROVED, RETURNED,
+# TIMED-OUT. The rest are documented statuses we classify defensively so a study
+# under manual review or with rejections still tallies sensibly.
+#
+# A place is consumed by exactly the submitted and in-progress statuses:
+# `places_taken` on the study equals their sum (verified against a live study
+# with 35 APPROVED + 1 ACTIVE and places_taken 36). Returned, timed-out,
+# rejected and screened-out submissions release the place for someone else, so
+# they belong to neither bucket.
+SUBMISSION_SUBMITTED_STATUSES = frozenset({"AWAITING REVIEW", "APPROVED", "PARTIALLY APPROVED"})
+SUBMISSION_IN_PROGRESS_STATUSES = frozenset({"ACTIVE", "RESERVED"})
+
+
+class SubmissionCounts(NamedTuple):
+    """How many of a study's raters have submitted vs are still working."""
+
+    completed: int
+    in_progress: int
+
+
+def summarize_submissions(results: list[dict]) -> SubmissionCounts:
+    completed = 0
+    in_progress = 0
+    unknown: set[str] = set()
+    for submission in results:
+        status = submission.get("status")
+        if status in SUBMISSION_SUBMITTED_STATUSES:
+            completed += 1
+        elif status in SUBMISSION_IN_PROGRESS_STATUSES:
+            in_progress += 1
+        elif isinstance(status, str) and status:
+            # RETURNED / TIMED-OUT / REJECTED / SCREENED OUT release the place,
+            # so they are counted in neither bucket. Anything genuinely new gets
+            # logged once rather than silently landing in a bucket.
+            unknown.add(status)
+    if unknown - {"RETURNED", "TIMED-OUT", "REJECTED", "SCREENED OUT"}:
+        logger.info(
+            "Unclassified Prolific submission statuses; counted as neither "
+            "completed nor in progress",
+            extra={"attributes": {"statuses": sorted(unknown)}},
+        )
+    return SubmissionCounts(completed=completed, in_progress=in_progress)
+
+
+async def get_study_submission_counts(
+    *,
+    settings: ProlificSettings,
+    study_id: str,
+) -> SubmissionCounts:
+    """Tally a study's submissions by status.
+
+    Prolific has no count-only endpoint and ignores `limit`, so this returns the
+    full submission list in one request; `meta.count` is checked against what
+    arrived so a future paginated response is logged rather than under-reported.
+
+    Raises ValueError when a 200 carries no submission list. Returning zeros
+    there would look like a real result and overwrite a round's cached counts,
+    so an unusable body has to fail the same way a non-2xx does. A study with no
+    submissions yet sends `results: []`, which is a list and correctly tallies
+    to zeros.
+    """
+    if not settings.enabled:
+        raise RuntimeError("get_study_submission_counts called while Prolific is disabled")
+
+    async with _build_client(settings) as client:
+        response = await client.get(f"/studies/{study_id}/submissions/")
+        _raise_for_status(response)
+        payload = response.json()
+
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError(f"Prolific submissions response for {study_id} has no results list")
+
+    total = (payload.get("meta") or {}).get("count")
+    if isinstance(total, int) and total > len(results):
+        logger.warning(
+            "Prolific returned a partial submission page; counts may be low",
+            extra={
+                "attributes": {
+                    "study_id": study_id,
+                    "returned": len(results),
+                    "count": total,
+                }
+            },
+        )
+
+    return summarize_submissions(results)
+
+
 async def get_project(
     *,
     settings: ProlificSettings,
