@@ -1209,11 +1209,20 @@ def _mock_get_study(
     study_id: str = PROLIFIC_STUDY_ID,
     study_status: str = "ACTIVE",
     total_cost: int | None = None,
+    fees_percentage: float | None = None,
+    vat_percentage: float | None = None,
+    fees_per_submission: float | None = None,
     status: int = 200,
 ) -> respx.Route:
     body = {"id": study_id, "status": study_status} if status == 200 else {"error": "fail"}
     if status == 200 and total_cost is not None:
         body["total_cost"] = total_cost
+    if status == 200 and fees_percentage is not None:
+        body["fees_percentage"] = fees_percentage
+        body["vat_percentage"] = vat_percentage if vat_percentage is not None else 0.0
+        body["fees_per_submission"] = (
+            fees_per_submission if fees_per_submission is not None else 0.0
+        )
     return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/").mock(
         return_value=Response(status, json=body)
     )
@@ -1267,15 +1276,32 @@ def _mock_update_study(
     )
 
 
+def _mock_current_user(
+    *,
+    fees_percentage: float | None = 0.3333333333333333,
+    vat_percentage: float = 0.0,
+    fees_per_submission: float = 0.0,
+    status: int = 200,
+) -> respx.Route:
+    body: dict = {"id": "USER_ABC"}
+    if status == 200 and fees_percentage is not None:
+        body["fees_percentage"] = fees_percentage
+        body["vat_percentage"] = vat_percentage
+        body["fees_per_submission"] = fees_per_submission
+    return respx.get(f"{PROLIFIC_BASE}/users/me/").mock(return_value=Response(status, json=body))
+
+
 @pytest.fixture(autouse=True)
 def _reset_prolific_currency_cache():
     # Module-level cache in services.admin.prolific persists across tests in
     # the same process; reset it so each test sees a clean lookup state.
-    from services.admin.prolific import _reset_currency_cache
+    from services.admin.prolific import _reset_currency_cache, _reset_pricing_cache
 
     _reset_currency_cache()
+    _reset_pricing_cache()
     yield
     _reset_currency_cache()
+    _reset_pricing_cache()
 
 
 def _patch_commit_to_fail_for_round(
@@ -1997,7 +2023,11 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
     # Listing rounds triggers the Prolific status sync, which also stores the
     # study's total_cost on the round; the experiment list then sums it as spend.
     _mock_get_study(study_status="ACTIVE", total_cost=1860)
-    client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    # The per-round figure is exposed too, so the round card can show Prolific's
+    # own cost instead of a reward-only subtotal.
+    assert [r["total_cost"] for r in rounds] == [1860]
 
     item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
     assert item["spend_minor_units"] == 1860
@@ -2248,6 +2278,111 @@ def test_platform_status_returns_workspace_currency(
     body = resp.json()
     assert body["currency_code"] == "USD"
     assert body["currency_symbol"] == "$"
+
+
+@respx.mock
+def test_platform_status_pricing_comes_from_an_existing_study(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A study's `total_cost` is rewards + fee + VAT, so the round form needs the
+    # fee/VAT rates to estimate it before a study exists. Prolific only carries
+    # them on a study, and the most recent round's study is the reference.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0)
+    _mock_get_study(
+        study_id=f"STUDY_{exp['id']}_0",
+        fees_percentage=0.333333,
+        vat_percentage=0.2,
+        fees_per_submission=0.0,
+    )
+
+    body = client.get("/api/admin/platform-status").json()
+
+    assert body["pricing"] == {
+        "fees_percentage": 0.333333,
+        "vat_percentage": 0.2,
+        "fees_per_submission": 0.0,
+    }
+
+
+@respx.mock
+def test_platform_status_pricing_falls_back_to_the_researcher(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # No rounds yet, so there is no study to read rates off; the researcher's
+    # own rates are the fallback.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=0.25, vat_percentage=0.2, fees_per_submission=1.0)
+
+    body = client.get("/api/admin/platform-status").json()
+
+    assert body["pricing"] == {
+        "fees_percentage": 0.25,
+        "vat_percentage": 0.2,
+        "fees_per_submission": 1.0,
+    }
+
+
+@respx.mock
+def test_platform_status_pricing_null_when_prolific_has_no_rates(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Rates missing everywhere leaves pricing null rather than a zero-fee
+    # estimate, so the UI shows the reward subtotal instead of a wrong total.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=None)
+
+    body = client.get("/api/admin/platform-status").json()
+
+    assert body["pricing"] is None
+
+
+def test_platform_status_pricing_null_when_prolific_disabled(client: TestClient):
+    settings = get_settings()
+    original = settings.prolific.api_token
+    settings.prolific.api_token = ""
+    try:
+        body = client.get("/api/admin/platform-status").json()
+        assert body["pricing"] is None
+    finally:
+        settings.prolific.api_token = original
+
+
+@respx.mock
+def test_platform_status_pricing_upgrades_from_researcher_to_study_rates(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A pre-pilot lookup can only read the researcher's own rates, which carry
+    # the wrong VAT for a workspace billed in another jurisdiction. Caching that
+    # would pin it for the life of the process, so the first study to exist has
+    # to win.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=0.333333, vat_percentage=0.0)
+
+    before = client.get("/api/admin/platform-status").json()
+    assert before["pricing"]["vat_percentage"] == 0.0
+
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0)
+    _mock_get_study(
+        study_id=f"STUDY_{exp['id']}_0",
+        fees_percentage=0.333333,
+        vat_percentage=0.2,
+    )
+
+    after = client.get("/api/admin/platform-status").json()
+    assert after["pricing"]["vat_percentage"] == 0.2
 
 
 def test_platform_status_currency_null_when_project_id_unset(

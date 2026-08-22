@@ -117,14 +117,31 @@ class ExperimentRoundResponse(BaseModel):
     excluded_experiment_ids: list[int] = Field(default_factory=list)
     created_at: datetime
     prolific_study_url: str
+    # Prolific's own `total_cost` for this round's study (rewards + fee + VAT),
+    # in minor units. Null until the round has been synced from Prolific.
+    total_cost: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProlificPricingResponse(BaseModel):
+    """Prolific's fee rates, as fractions (0.2 = 20%).
+
+    Lets the round form estimate what Prolific will charge (rewards + fee + VAT
+    on the fee) before a study exists to read `total_cost` from. Null when the
+    integration is disabled or the rates could not be fetched.
+    """
+
+    fees_percentage: float
+    vat_percentage: float
+    fees_per_submission: float
 
 
 class PlatformStatus(BaseModel):
     prolific_enabled: bool
     currency_code: str | None = None
     currency_symbol: str | None = None
+    pricing: ProlificPricingResponse | None = None
 
 
 # Experiment schemas
