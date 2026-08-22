@@ -161,8 +161,10 @@ function parseOptions(rawOptions: string | null): string[] {
   return rawOptions.split(',').map(option => option.trim()).filter(Boolean);
 }
 
-function buildLongContextDocumentHtml(question: Question, documentText: string): string {
-  const title = `Document for Question ${question.question_id}`;
+// The title is deliberately generic: it shows up in the popup's tab, and the
+// external question id would tell a rater which dataset the item came from.
+function buildLongContextDocumentHtml(documentText: string): string {
+  const title = 'Document';
 
   return `<!doctype html>
 <html lang="en">
@@ -244,7 +246,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       return;
     }
 
-    const html = buildLongContextDocumentHtml(question, display.documentText);
+    const html = buildLongContextDocumentHtml(display.documentText);
     const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
     setDocumentUrl(url);
 
@@ -252,7 +254,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
-  }, [display.documentText, question]);
+  }, [display.documentText]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -301,7 +303,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           marginBottom: 16,
         }}
       >
-        Question {question.question_id}
+        Question
       </div>
 
       {display.inlineContext && (

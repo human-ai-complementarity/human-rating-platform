@@ -200,8 +200,9 @@ class ExperimentUpdate(BaseModel):
 
 # Question schemas
 class QuestionResponse(BaseModel):
+    # `question_id` is deliberately absent: it is the dataset's own identifier,
+    # and serving it to a rater points straight at the source rows.
     id: int
-    question_id: str
     question_text: str
     options: Optional[str] = None
     question_type: str

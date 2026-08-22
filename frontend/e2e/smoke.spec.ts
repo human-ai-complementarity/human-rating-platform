@@ -80,7 +80,6 @@ type AnalyticsRecord = {
 
 type RaterQuestionRecord = {
   id: number;
-  question_id: string;
   question_text: string;
   options: string | null;
   question_type: string;
@@ -451,7 +450,6 @@ async function installApiMocks(
         200,
         state.questionsBySessionToken[sessionToken] || {
           id: 500,
-          question_id: 'q-1',
           question_text: 'Is this workflow ready for release?',
           options: 'Yes|No',
           question_type: 'MC',
@@ -716,7 +714,6 @@ test('long-context question links document separately and shows only question in
   };
   state.questionsBySessionToken['token-long-context'] = {
     id: 503,
-    question_id: 'long-q',
     question_text: 'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
@@ -735,7 +732,9 @@ test('long-context question links document separately and shows only question in
   const documentPopup = await documentPopupPromise;
   await documentPopup.waitForLoadState('domcontentloaded');
 
-  await expect(documentPopup.getByRole('heading', { name: 'Document for Question long-q' })).toBeVisible();
+  await expect(documentPopup.getByRole('heading', { name: 'Document', exact: true })).toBeVisible();
+  // The external question id must not leak into the popup a rater can read.
+  await expect(documentPopup).toHaveTitle('Document');
   await expect(documentPopup.getByText('Document line one')).toBeVisible();
 });
 
@@ -783,7 +782,6 @@ test('a long parent question moves the document behind the link, not into the ca
 
   seedRaterWithQuestion(state, {
     id: 504,
-    question_id: 'parent-long-q',
     question_text: 'Which answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
@@ -813,7 +811,6 @@ test('a short parent question stays inline in the context box', async ({ page })
 
   seedRaterWithQuestion(state, {
     id: 505,
-    question_id: 'parent-short-q',
     question_text: 'Does the review express satisfaction?',
     options: 'Yes|No',
     question_type: 'MC',
@@ -835,7 +832,6 @@ test('an MC question with no options submits the typed free-text answer', async 
   // options. The card falls back to a textarea, so submit must read that.
   seedRaterWithQuestion(state, {
     id: 506,
-    question_id: 'mc-without-options',
     question_text: 'Summarize what the document recommends.',
     options: '',
     question_type: 'MC',
@@ -905,14 +901,12 @@ test('rater ignores a stored session from another experiment and starts a fresh 
   };
   state.questionsBySessionToken['token-exp-1'] = {
     id: 501,
-    question_id: 'old-q',
     question_text: 'Old experiment question',
     options: 'Yes,No',
     question_type: 'MC',
   };
   state.questionsBySessionToken['token-exp-2'] = {
     id: 502,
-    question_id: 'fresh-q',
     question_text: 'Fresh experiment question',
     options: 'Yes,No',
     question_type: 'MC',
