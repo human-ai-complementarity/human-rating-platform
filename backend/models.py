@@ -377,8 +377,24 @@ class ExperimentRound(SQLModel, table=True):
     )  # JSON-encoded list of experiment IDs whose participant groups block this round
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
     # Prolific's own `total_cost` for this round's study, in the workspace
-    # currency's minor units. Captured on Prolific sync; NULL until first sync.
+    # currency's minor units. This is the full charge Prolific's study page
+    # totals: rewards + platform fee + VAT on that fee. Captured on Prolific
+    # sync; NULL until first sync.
     total_cost: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
+    # Prolific submission counts for this round's study, tallied from the
+    # submission statuses on Prolific sync. "Completed" means the rater
+    # submitted the study (awaiting review or approved); "in progress" means
+    # they hold a place and are still working. Returned and timed-out
+    # submissions release their place, so they count toward neither. NULL until
+    # first sync; places still open = places_requested minus both.
+    submissions_completed: Optional[int] = Field(
+        default=None,
+        sa_column=Column(Integer, nullable=True),
+    )
+    submissions_in_progress: Optional[int] = Field(
         default=None,
         sa_column=Column(Integer, nullable=True),
     )

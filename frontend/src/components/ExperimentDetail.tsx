@@ -8,6 +8,7 @@ import type {
   ExperimentRound,
   ExperimentStats,
   PilotStudyCreate,
+  ProlificPricing,
   RecommendationResponse,
   Screener,
   Upload,
@@ -32,6 +33,8 @@ import {
   textareaStyle,
 } from './experiment-detail/ui';
 import {
+  estimateStudyCost,
+  formatMinorUnits,
   rewardDecimals,
   rewardHintText,
   rewardInputToMinor,
@@ -383,6 +386,10 @@ function ExperimentDetail({
   const [platformStatusMessage, setPlatformStatusMessage] = useState<string | null>(null);
   const [currencyCode, setCurrencyCode] = useState<string | null>(null);
   const [currencySymbol, setCurrencySymbol] = useState<string | null>(null);
+  // Prolific's fee/VAT rates, used to estimate what a study will actually cost
+  // before it exists on Prolific (rewards alone read ~30% low against their
+  // study page). Null until platform status loads, or when it has no rates.
+  const [pricing, setPricing] = useState<ProlificPricing | null>(null);
   const [pilotForm, setPilotForm] = useState<Omit<PilotStudyCreate, 'reward'>>({
     description: experiment.description ?? '',
     estimated_completion_time: 60,
@@ -546,6 +553,7 @@ function ExperimentDetail({
         setProlificEnabled(s.prolific_enabled);
         setCurrencyCode(s.currency_code);
         setCurrencySymbol(s.currency_symbol);
+        setPricing(s.pricing ?? null);
         setPlatformStatusMessage(null);
       })
       .catch(() => {
@@ -1210,6 +1218,7 @@ function ExperimentDetail({
             platformStatusMessage={platformStatusMessage}
             currencyCode={currencyCode}
             currencySymbol={currencySymbol}
+            pricing={pricing}
             rounds={rounds}
             recommendation={recommendation}
             latestRoundClosed={latestRoundClosed}
@@ -1555,7 +1564,7 @@ function StatTile({ label, value }: { label: string; value: number }) {
  * Spend counterpart to StatTile: a currency figure that hydrates in the
  * background from Prolific. Shows the last-known value with a subtle "syncing"
  * hint until the live cost lands. The figure is each study's Prolific cost
- * (rewards + fees) summed over rounds; it excludes bonuses paid separately.
+ * (rewards + fee + VAT) summed over rounds; it excludes bonuses paid separately.
  */
 function SpendTile({
   minorUnits,
@@ -1577,7 +1586,7 @@ function SpendTile({
       : `${symbol || '$'}${(minorUnits / 10 ** decimals).toFixed(decimals)}`;
   return (
     <div
-      title="Prolific study cost (rewards + fees) across all rounds. Excludes bonuses paid separately."
+      title="Prolific study cost (rewards + platform fee + VAT) across all rounds. Excludes bonuses paid separately."
       style={{
         background: 'var(--surface)',
         border: '1px solid var(--faint)',
@@ -2345,6 +2354,7 @@ function LaunchPanel(props: {
   platformStatusMessage: string | null;
   currencyCode: string | null;
   currencySymbol: string | null;
+  pricing: ProlificPricing | null;
   rounds: ExperimentRound[];
   recommendation: RecommendationResponse | null;
   latestRoundClosed: boolean;
@@ -2387,6 +2397,7 @@ function LaunchPanel(props: {
     platformStatusMessage,
     currencyCode,
     currencySymbol,
+    pricing,
     rounds,
     recommendation,
     latestRoundClosed,
@@ -2541,6 +2552,7 @@ function LaunchPanel(props: {
                       round={round}
                       currencyCode={currencyCode}
                       currencySymbol={currencySymbol}
+                      pricing={pricing}
                       isEditing={editingRoundId === round.id}
                       editForm={editForm}
                       editRewardInput={editRewardInput}
@@ -2569,6 +2581,10 @@ function LaunchPanel(props: {
                   latestRoundClosed={latestRoundClosed}
                   roundLaunchBlockedMessage={roundLaunchBlockedMessage}
                   onRunRound={onRunRound}
+                  roundReward={rounds.length > 0 ? rounds[0].reward : null}
+                  currencyCode={currencyCode}
+                  currencySymbol={currencySymbol}
+                  pricing={pricing}
                 />
               )}
 
@@ -2580,6 +2596,7 @@ function LaunchPanel(props: {
                   onPilotRewardChange={onPilotRewardChange}
                   currencyCode={currencyCode}
                   currencySymbol={currencySymbol}
+                  pricing={pricing}
                   onSubmit={onRunPilot}
                   otherExperiments={otherExperiments}
                   datasetDescription={experiment.description}
@@ -2650,10 +2667,78 @@ function RoundStatusPill({ status }: { status: string }) {
   );
 }
 
+/**
+ * Rater progress for a round: submitted, still working, and places nobody has
+ * taken. Counts come from Prolific's submission statuses, so a rater who
+ * returned or timed out is not stuck in "in progress" and their place shows as
+ * open again. Renders nothing until the round has been synced.
+ */
+function RoundProgressLine({ round }: { round: ExperimentRound }) {
+  const { submissions_completed: completed, submissions_in_progress: inProgress } = round;
+  if (completed == null || inProgress == null) return null;
+  // Prolific can seat more raters than requested when returned places are
+  // reallocated, so the remainder is floored at zero rather than going negative.
+  const left = Math.max(0, round.places_requested - completed - inProgress);
+  return (
+    <div
+      data-testid={`round-progress-${round.round_number}`}
+      style={{ fontSize: 13, color: 'var(--muted)', marginTop: 4 }}
+    >
+      <strong style={{ color: 'var(--ink)' }}>{completed}</strong> completed
+      {' · '}
+      <strong style={{ color: 'var(--ink)' }}>{inProgress}</strong> in progress
+      {' · '}
+      <strong style={{ color: 'var(--ink)' }}>{left}</strong> left
+    </div>
+  );
+}
+
+/**
+ * Per-round cost in the round header. Prefers Prolific's own `total_cost`
+ * (rewards + platform fee + VAT, the figure their study page totals) and falls
+ * back to an estimate from the round's reward and places until the first sync
+ * lands. Renders nothing when there is no cost to show at all.
+ */
+function RoundCostLabel({
+  round,
+  currencyCode,
+  currencySymbol,
+  pricing,
+}: {
+  round: ExperimentRound;
+  currencyCode: string | null;
+  currencySymbol: string | null;
+  pricing: ProlificPricing | null;
+}) {
+  const synced = round.total_cost != null;
+  const minorUnits = synced
+    ? (round.total_cost as number)
+    : estimateStudyCost(round.reward, round.places_requested, pricing).total;
+  if (minorUnits <= 0) return null;
+  // Without rates the estimate is rewards only, so the tooltip must not claim
+  // fee and VAT are in it. Same branch as the reward hint and recommendation.
+  const title = synced
+    ? "Prolific's cost for this study: rewards + platform fee + VAT. Excludes bonuses paid separately."
+    : pricing
+      ? "Estimated cost (rewards + platform fee + VAT). Replaced by Prolific's own figure once the round syncs."
+      : 'Estimated rewards only. Prolific fee rates are unavailable, so the platform fee and VAT are not included.';
+  return (
+    <span
+      data-testid={`round-cost-${round.round_number}`}
+      title={title}
+      style={{ fontSize: 13, color: 'var(--muted)', marginLeft: 8 }}
+    >
+      · {synced ? '' : '~'}
+      {formatMinorUnits(minorUnits, currencyCode, currencySymbol)}
+    </span>
+  );
+}
+
 function RoundCard(props: {
   round: ExperimentRound;
   currencyCode: string | null;
   currencySymbol: string | null;
+  pricing: ProlificPricing | null;
   isEditing: boolean;
   editForm: any;
   editRewardInput: string;
@@ -2675,6 +2760,7 @@ function RoundCard(props: {
     round,
     currencyCode,
     currencySymbol,
+    pricing,
     isEditing,
     editForm,
     editRewardInput,
@@ -2705,13 +2791,20 @@ function RoundCard(props: {
           borderBottom: '1px solid var(--faint)',
         }}
       >
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 16 }}>
             {round.round_number === 0 ? 'Pilot Round' : `Round ${round.round_number}`}
           </span>
           <span style={{ fontSize: 13, color: 'var(--muted)', marginLeft: 8 }}>
             {round.places_requested} places
           </span>
+          <RoundCostLabel
+            round={round}
+            currencyCode={currencyCode}
+            currencySymbol={currencySymbol}
+            pricing={pricing}
+          />
+          <RoundProgressLine round={round} />
         </div>
         <RoundStatusPill status={round.prolific_study_status} />
         <button
@@ -2871,6 +2964,7 @@ function RoundCard(props: {
               currencySymbol,
               editForm.estimated_completion_time,
               editForm.places,
+              pricing,
             );
             return text ? (
               <div style={{ fontSize: 12.5, color: 'var(--muted)', marginBottom: 12 }}>{text}</div>
@@ -2946,12 +3040,21 @@ function RecommendationCard({
   latestRoundClosed,
   roundLaunchBlockedMessage,
   onRunRound,
+  roundReward,
+  currencyCode,
+  currencySymbol,
+  pricing,
 }: {
   recommendation: RecommendationResponse;
   nextRoundNumber: number;
   latestRoundClosed: boolean;
   roundLaunchBlockedMessage: string | null;
   onRunRound: () => void;
+  /** Reward the next round will use: rounds inherit the pilot's reward. */
+  roundReward: number | null;
+  currencyCode: string | null;
+  currencySymbol: string | null;
+  pricing: ProlificPricing | null;
 }) {
   if (recommendation.is_complete) {
     return (
@@ -2967,6 +3070,28 @@ function RecommendationCard({
         Avg time/question: <strong>{recommendation.avg_time_per_question_seconds.toFixed(0)}s</strong>
         {' · '}Remaining actions: <strong>{recommendation.remaining_rating_actions}</strong>
         {' · '}Hours left: <strong>{recommendation.total_hours_remaining.toFixed(1)}</strong>
+        {roundReward !== null && recommendation.recommended_places > 0 && (
+          <>
+            {' · '}
+            {pricing ? 'Est. cost' : 'Est. rewards'}:{' '}
+            <strong
+              data-testid="recommendation-cost"
+              title={
+                `${recommendation.recommended_places} places at the pilot's reward` +
+                (pricing
+                  ? ", plus Prolific's platform fee and VAT. Prolific's own figure replaces this once the draft exists."
+                  : '. Prolific fee rates are unavailable, so the platform fee and VAT are not included.')
+              }
+            >
+              ~
+              {formatMinorUnits(
+                estimateStudyCost(roundReward, recommendation.recommended_places, pricing).total,
+                currencyCode,
+                currencySymbol,
+              )}
+            </strong>
+          </>
+        )}
       </div>
       {latestRoundClosed ? (
         <button
@@ -2995,6 +3120,7 @@ function PilotForm(props: {
   onPilotRewardChange: (v: string) => void;
   currencyCode: string | null;
   currencySymbol: string | null;
+  pricing: ProlificPricing | null;
   onSubmit: (e: React.FormEvent) => void;
   otherExperiments: Experiment[];
   datasetDescription: string | null;
@@ -3006,6 +3132,7 @@ function PilotForm(props: {
     onPilotRewardChange,
     currencyCode,
     currencySymbol,
+    pricing,
     onSubmit,
     otherExperiments,
     datasetDescription,
@@ -3119,6 +3246,7 @@ function PilotForm(props: {
               currencySymbol,
               pilotForm.estimated_completion_time,
               pilotForm.pilot_places,
+              pricing,
             ) ?? "Enter the amount as you'd see it on Prolific."
           }
         >

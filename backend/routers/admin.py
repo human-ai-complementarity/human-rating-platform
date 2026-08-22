@@ -22,6 +22,7 @@ from schemas import (
     ExperimentUpdate,
     PilotStudyCreate,
     PlatformStatus,
+    ProlificPricingResponse,
     RecommendationResponse,
 )
 from models import ApiKey
@@ -83,14 +84,27 @@ async def admin_logout(manager=Depends(get_admin_manager)):
     return resp
 
 
-@router.get("/platform-status", response_model=PlatformStatus)
-async def get_platform_status():
+# Admin-only: the response carries the workspace's Prolific fee and VAT rates,
+# which no unauthenticated caller has a reason to read. Both callers are admin
+# pages that already hold a session by the time they fetch this.
+@secure_router.get("/platform-status", response_model=PlatformStatus)
+async def get_platform_status(db: AsyncSession = Depends(get_session)):
     settings = get_settings()
     code, symbol = await get_cached_workspace_currency(settings.prolific)
+    pricing = await admin_service.get_prolific_pricing(db)
     return PlatformStatus(
         prolific_enabled=settings.prolific.enabled,
         currency_code=code,
         currency_symbol=symbol,
+        pricing=(
+            ProlificPricingResponse(
+                fees_percentage=pricing.fees_percentage,
+                vat_percentage=pricing.vat_percentage,
+                fees_per_submission=pricing.fees_per_submission,
+            )
+            if pricing is not None
+            else None
+        ),
     )
 
 

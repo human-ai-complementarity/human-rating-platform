@@ -34,6 +34,9 @@ type ExperimentRoundRecord = {
   device_compatibility: string[];
   created_at: string;
   prolific_study_url: string;
+  total_cost: number | null;
+  submissions_completed: number | null;
+  submissions_in_progress: number | null;
 };
 
 type RecommendationRecord = {
@@ -165,6 +168,9 @@ function buildRound(state: MockState, round: Partial<ExperimentRoundRecord>): Ex
     device_compatibility: ['desktop'],
     created_at: '2026-03-09T00:00:00Z',
     prolific_study_url: 'https://app.prolific.com/researcher/workspaces/studies/mock-study',
+    total_cost: null,
+    submissions_completed: null,
+    submissions_in_progress: null,
     ...round,
   };
 }
@@ -213,6 +219,9 @@ async function installApiMocks(
         prolific_enabled: prolificEnabled,
         currency_code: currencyCode,
         currency_symbol: currencySymbol,
+        // Prolific's real rates for a GBP academic workspace: a third on top of
+        // rewards, plus VAT on that fee.
+        pricing: { fees_percentage: 0.333333, vat_percentage: 0.2, fees_per_submission: 0 },
       });
       return;
     }
@@ -1125,6 +1134,62 @@ test('spend card formats a zero-decimal currency (ISK) without decimals', async 
 
   await expect(page.getByText('kr90000')).toBeVisible();
   await expect(page.getByText('kr900.00')).toHaveCount(0);
+});
+
+test('round and next-round costs include Prolific\'s fee and VAT', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'Cost Experiment', question_count: 2 }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [
+    buildRound(state, {
+      round_number: 0,
+      // Unpublished: Prolific costs drafts too, so the round card has a real
+      // total to show while the round is still editable.
+      prolific_study_status: 'UNPUBLISHED',
+      places_requested: 63,
+      reward: 1500,
+      // Prolific's figure for 63 x £15.00: rewards + a third in fees + VAT on
+      // the fee. The reward subtotal alone would read £945.00.
+      total_cost: 132301,
+      submissions_completed: 12,
+      submissions_in_progress: 3,
+    }),
+  ];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 42,
+    remaining_rating_actions: 600,
+    total_hours_remaining: 7,
+    recommended_places: 30,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state, {
+    prolificEnabled: true,
+    currencyCode: 'GBP',
+    currencySymbol: '£',
+  });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await expect(page.getByTestId('round-cost-0')).toContainText('£1323.01');
+  // 63 places, 12 submitted, 3 working: the rest are open. Returned and
+  // timed-out submissions are excluded upstream, so they read as open here.
+  await expect(page.getByTestId('round-progress-0')).toHaveText(
+    '12 completed · 3 in progress · 48 left'
+  );
+
+  // Next round: 30 places at the pilot's £15.00, fee and VAT on top. Rewards
+  // alone would read £450.00.
+  await expect(page.getByTestId('recommendation-cost')).toHaveText('~£630.00');
+
+  // The same figure has to be estimable before launch, so editing the round
+  // breaks out rewards, fee and VAT rather than showing rewards alone.
+  await page.getByTestId('edit-round-0').click();
+  await expect(page.getByText(/Est\. Prolific total: £1323\.00 for 63 raters/)).toBeVisible();
+  await expect(page.getByText(/£945\.00 rewards \+ £315\.00 fee \+ £63\.00 VAT/)).toBeVisible();
 });
 
 // Locale and timezone are pinned so the rendered timestamp is comparable.
