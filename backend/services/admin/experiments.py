@@ -15,6 +15,7 @@ from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
 from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .prolific import delete_study
+from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.registry import get_method
 from services.queries import parent_question_ids_subquery
@@ -356,10 +357,11 @@ async def duplicate_experiment(
         )
         for question in source_questions
     ]
-    for question in cloned_questions:
-        db.add(question)
-    # Flush so clones have DB ids, then remap parent references onto them.
-    await db.flush()
+    # Flushes in payload-bounded batches so the clones have DB ids before we
+    # remap parent references, without handing Postgres one giant INSERT. A
+    # single flush here OOM-killed the production database on a 760-row
+    # longbenchv2 copy, taking the whole cluster down with it.
+    batch_count = await insert_questions_in_batches(cloned_questions, db)
     clone_id_by_source_id = {
         source_question.id: clone.id
         for source_question, clone in zip(source_questions, cloned_questions)
@@ -402,6 +404,7 @@ async def duplicate_experiment(
                 "experiment_id": duplicate.id,
                 "experiment_name": duplicate.name,
                 "question_count": len(cloned_questions),
+                "insert_batches": batch_count,
             }
         },
     )
