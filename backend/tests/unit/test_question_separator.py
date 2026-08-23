@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from services.question_separator import (
-    question_ids_with_separator,
+    separator_upload_offenders,
     split_separator_question,
 )
 
@@ -35,7 +35,7 @@ def test_split_accepts_crlf():
     assert split_separator_question(text) == ("Document line", "Which answer?")
 
 
-def test_question_ids_with_separator_skips_clean_rows():
+def test_offenders_skip_clean_rows():
     rows = [
         {"question_id": "q1", "question_text": "Plain question?"},
         {
@@ -44,4 +44,48 @@ def test_question_ids_with_separator_skips_clean_rows():
         },
         {"question_id": "q3", "question_text": ""},
     ]
-    assert question_ids_with_separator(rows) == ["q2"]
+    assert separator_upload_offenders(rows) == ["'q2'"]
+
+
+def test_offenders_skip_parent_rows_referenced_in_the_same_upload():
+    rows = [
+        {
+            "question_id": "parent1",
+            "question_text": "Keep me intact\n\n--- QUESTION ---\nstill the document",
+            "parent_question_id": "",
+        },
+        {
+            "question_id": "child1",
+            "question_text": "What follows?",
+            "parent_question_id": "parent1",
+        },
+    ]
+    assert separator_upload_offenders(rows) == []
+
+
+def test_offenders_still_flag_a_child_that_uses_the_delimiter():
+    rows = [
+        {"question_id": "parent1", "question_text": "Short context", "parent_question_id": ""},
+        {
+            "question_id": "child1",
+            "question_text": "Doc\n\n--- QUESTION ---\nWhat follows?",
+            "parent_question_id": "parent1",
+        },
+    ]
+    assert separator_upload_offenders(rows) == ["'child1'"]
+
+
+def test_offenders_label_blank_question_id_by_row_number():
+    rows = [
+        {"question_id": "", "question_text": "Doc\n\n--- QUESTION ---\nWhat follows?"},
+        {"question_id": "q2", "question_text": "Fine"},
+    ]
+    assert separator_upload_offenders(rows) == ["row 1"]
+
+
+def test_offenders_collapse_duplicate_question_ids():
+    rows = [
+        {"question_id": "q1", "question_text": "Doc\n\n--- QUESTION ---\nFirst?"},
+        {"question_id": "q1", "question_text": "Doc\n\n--- QUESTION ---\nSecond?"},
+    ]
+    assert separator_upload_offenders(rows) == ["'q1'"]
