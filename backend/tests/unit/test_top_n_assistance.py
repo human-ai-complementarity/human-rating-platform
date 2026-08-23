@@ -17,6 +17,7 @@ import pytest
 from models import Question, StepType
 from services.assistance.methods.top_n import (
     TopNAssistance,
+    _SCHEMA_REJECTED_MODELS,
     _SYSTEM_PROMPT,
     _clamp_top_n,
     _compose_system_prompt,
@@ -31,6 +32,13 @@ from services.assistance.methods.top_n import (
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+
+@pytest.fixture(autouse=True)
+def _clear_schema_rejected_models():
+    _SCHEMA_REJECTED_MODELS.clear()
+    yield
+    _SCHEMA_REJECTED_MODELS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -598,14 +606,21 @@ async def test_start_returns_none_step_on_complete_runtime_error():
     assert step.payload == {}
 
 
-def _bad_request_error() -> openai.BadRequestError:
+def _api_status_error(status: int) -> openai.APIStatusError:
     request = httpx.Request("POST", "https://example")
-    response = httpx.Response(400, request=request)
-    return openai.BadRequestError("Invalid schema", response=response, body=None)
+    response = httpx.Response(status, request=request)
+    cls = {
+        400: openai.BadRequestError,
+        404: openai.NotFoundError,
+        422: openai.UnprocessableEntityError,
+        500: openai.InternalServerError,
+    }[status]
+    return cls("rejected", response=response, body=None)
 
 
 @pytest.mark.asyncio
-async def test_start_retries_without_schema_when_provider_rejects_it():
+@pytest.mark.parametrize("status", [400, 404, 422])
+async def test_start_retries_without_schema_when_provider_rejects_it(status):
     method = TopNAssistance()
     question = _make_question()
     llm_payload = _llm_response(
@@ -613,7 +628,7 @@ async def test_start_retries_without_schema_when_provider_rejects_it():
             {"option_index": 1, "confidence": 80, "rationale": "ok"},
         ]
     )
-    mock_complete = AsyncMock(side_effect=[_bad_request_error(), llm_payload])
+    mock_complete = AsyncMock(side_effect=[_api_status_error(status), llm_payload])
 
     with patch("services.assistance.methods.top_n.complete", new=mock_complete):
         step = await method.start(question, {})
@@ -624,6 +639,40 @@ async def test_start_retries_without_schema_when_provider_rejects_it():
         multiple_choice=True, n=2, option_count=2
     )
     assert "response_format" not in mock_complete.call_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_skips_schema_after_model_has_been_rejected():
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "ok"},
+        ]
+    )
+    mock_complete = AsyncMock(side_effect=[_api_status_error(400), llm_payload, llm_payload])
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        first = await method.start(question, {})
+        second = await method.start(question, {})
+
+    assert first.type == StepType.DISPLAY
+    assert second.type == StepType.DISPLAY
+    assert mock_complete.call_count == 3
+    assert "response_format" not in mock_complete.call_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_retry_schema_on_server_error():
+    method = TopNAssistance()
+    question = _make_question()
+    mock_complete = AsyncMock(side_effect=_api_status_error(500))
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert mock_complete.call_count == 1
 
 
 @pytest.mark.asyncio

@@ -30,7 +30,7 @@ from typing import Any
 
 import openai
 
-from config import get_settings
+from config import LLMSettings, get_settings
 from models import Question
 
 from ..base import AssistanceMethod, InteractionStep, StepType
@@ -41,6 +41,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TOP_N = 3
 _MAX_TOP_N = 10
 _OPTION_LABEL_PATTERN = re.compile(r"(?:^|[,\r\n])\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+")
+_SCHEMA_REJECT_STATUS_CODES = (400, 404, 422)
+# Models whose provider rejected json_schema this process. Skip the schema on
+# later questions so a rejecting model costs one 400, not one per question.
+_SCHEMA_REJECTED_MODELS: set[str] = set()
 
 _SYSTEM_PROMPT = """\
 You help human raters answer evaluation questions. Rank the most likely answers
@@ -140,8 +144,9 @@ def _top_n_response_format(
     either was not applied or did not constrain the value. A schema that
     types `confidence` as an integer is the structural fix; the prompt
     examples remain as a fallback for models that ignore `response_format`.
-    If a provider rejects the schema, the caller retries once without
-    `response_format` rather than failing the whole round.
+    If a provider rejects the schema (HTTP 400/404/422), we retry once
+    without `response_format` and remember the model for the rest of the
+    process so later questions skip the schema.
     """
     return {
         "type": "json_schema",
@@ -175,62 +180,40 @@ def _none_step(parse_status: str) -> InteractionStep:
     )
 
 
-def _log_parse_status(
-    parse_status: str,
-    *,
-    question: Question,
-    model: str,
-    raw: str | None = None,
-) -> None:
-    """Structured warning so a miss is queryable after the NONE session is deleted."""
-    attributes = {
-        "question_id": question.id,
-        "experiment_id": question.experiment_id,
-        "model": model,
-        "parse_status": parse_status,
-    }
-    if parse_status == "unparseable":
-        logger.warning(
-            "Failed to parse top-N assistance response: %r",
-            raw,
-            extra={"attributes": attributes},
-        )
-        return
-    logger.warning(
-        "Top-N JSON parsed but no usable candidates remained",
-        extra={"attributes": attributes},
-    )
-
-
 async def _complete_with_schema_fallback(
     messages: list[dict[str, str]],
     *,
     model: str,
-    settings: Any,
+    settings: LLMSettings,
     response_format: dict[str, Any],
 ) -> str:
-    """Ask for json_schema; if the provider rejects it, retry once unconstrained.
+    """Ask for json_schema; if the provider rejects it, skip it for this model.
 
     OpenRouter's default without `require_parameters` is to drop unsupported
     params, but a provider that *rejects* `strict` json_schema would otherwise
-    400 every question in the round (`OpenAIError` → no assistance). Retrying
-    without `response_format` keeps the previous fail-soft behaviour; the
-    prompt examples are then the only constraint.
+    fail every question in the round. Retrying without `response_format` keeps
+    the previous fail-soft behaviour; remembered model ids keep that to one
+    extra call per process, not per question. The prompt examples are then
+    the only constraint.
     """
-    try:
-        return await complete(
-            messages,
-            model=model,
-            settings=settings,
-            response_format=response_format,
-            temperature=0,
-        )
-    except openai.BadRequestError:
-        logger.warning(
-            "Top-N json_schema rejected by the provider; retrying without response_format",
-            extra={"attributes": {"model": model}},
-        )
-        return await complete(messages, model=model, settings=settings, temperature=0)
+    if model not in _SCHEMA_REJECTED_MODELS:
+        try:
+            return await complete(
+                messages,
+                model=model,
+                settings=settings,
+                response_format=response_format,
+                temperature=0,
+            )
+        except openai.APIStatusError as exc:
+            if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
+                raise
+            _SCHEMA_REJECTED_MODELS.add(model)
+            logger.warning(
+                "Top-N json_schema rejected by the provider; retrying without response_format",
+                extra={"attributes": {"model": model, "status_code": exc.status_code}},
+            )
+    return await complete(messages, model=model, settings=settings, temperature=0)
 
 
 def _parse_top_n_response(raw: str) -> dict:
@@ -375,12 +358,33 @@ class TopNAssistance(AssistanceMethod):
             # truncation (max_tokens=4096). Salvaging the intact prefix would
             # drop the hedged candidate more often than not, which is a
             # silently biased shortlist.
-            _log_parse_status("unparseable", question=question, model=model, raw=raw)
+            logger.warning(
+                "Failed to parse top-N assistance response: %r",
+                raw,
+                extra={
+                    "attributes": {
+                        "question_id": question.id,
+                        "experiment_id": question.experiment_id,
+                        "model": model,
+                        "parse_status": "unparseable",
+                    }
+                },
+            )
             return _none_step("unparseable")
 
         candidates = _normalize_candidates(parsed.get("candidates"), options, n)
         if not candidates:
-            _log_parse_status("no_candidates", question=question, model=model)
+            logger.warning(
+                "Top-N JSON parsed but no usable candidates remained",
+                extra={
+                    "attributes": {
+                        "question_id": question.id,
+                        "experiment_id": question.experiment_id,
+                        "model": model,
+                        "parse_status": "no_candidates",
+                    }
+                },
+            )
             return _none_step("no_candidates")
 
         # Payload order is display order, so shuffle here rather than in the UI:

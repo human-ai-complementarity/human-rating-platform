@@ -78,4 +78,8 @@ async def complete(
     if temperature is not None:
         kwargs["temperature"] = temperature
     response = await client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+    if not response.choices:
+        # OpenRouter sometimes returns HTTP 200 with an error body and no
+        # choices; indexing [0] would 500 the rater's assistance fetch.
+        raise RuntimeError("LLM returned no choices")
     return response.choices[0].message.content or ""
