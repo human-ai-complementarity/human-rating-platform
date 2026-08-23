@@ -267,7 +267,8 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `APP__CORS_ORIGINS` — JSON array, e.g. `["http://localhost:5173","http://localhost:8000"]`
 - `APP__LOG_LEVEL` — log verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default: `INFO`). Logs are emitted as structured JSON with OpenTelemetry-compatible field names (`timestamp`, `severity`, `body`, `attributes`).
 - `DATABASE__URL` — Postgres connection string
-- `EXPORTS__STREAM_BATCH_SIZE` — CSV export chunking (memory/throughput tradeoff)
+- `EXPORTS__STREAM_BATCH_SIZE` — CSV export row-chunking for the ratings file (memory/throughput tradeoff)
+- `EXPORTS__STREAM_CHUNK_MAX_BYTES` — byte ceiling for one documents.csv chunk in the API process (independent of upload INSERT batching)
 - `TESTING__EXPORT_SEED_ROW_COUNT` — export-path e2e test dataset volume
 - `SEEDING__*` — local seed generation (`enabled`, `experiment_name`, `question_count`, etc.)
 - `PROLIFIC__API_TOKEN` — Prolific API token (optional; enables automated study management)
