@@ -203,14 +203,23 @@ def test_compose_without_extra_is_the_method_prompt():
     assert _compose_system_prompt("   ") == _SYSTEM_PROMPT
 
 
+def test_system_prompt_shows_a_concrete_confidence_integer():
+    # Fallback for providers that ignore json_schema. `"confidence":0-100` in
+    # the example is what led claude-sonnet-4-6 to emit `"confidence">80`.
+    compact = _SYSTEM_PROMPT.replace(" ", "")
+    assert '"confidence":80' in compact
+    assert '"confidence":0-100' not in compact
+
+
 class TestTopNResponseFormat:
     def test_multiple_choice_requires_option_index_and_integer_confidence(self):
-        fmt = _top_n_response_format(multiple_choice=True, n=3)
+        fmt = _top_n_response_format(multiple_choice=True, n=3, option_count=3)
         assert fmt["type"] == "json_schema"
         item = fmt["json_schema"]["schema"]["properties"]["candidates"]["items"]
         assert item["properties"]["confidence"]["type"] == "integer"
         assert "option_index" in item["required"]
         assert "answer" not in item["properties"]
+        assert item["properties"]["option_index"]["maximum"] == 3
         assert fmt["json_schema"]["schema"]["properties"]["candidates"]["maxItems"] == 3
 
     def test_free_response_requires_answer_and_integer_confidence(self):
@@ -453,7 +462,26 @@ async def test_start_returns_none_step_on_empty_candidates():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
-    assert step.payload["parse_status"] == "clean"
+    assert step.payload["parse_status"] == "no_candidates"
+
+
+@pytest.mark.asyncio
+async def test_start_marks_no_candidates_when_all_normalized_away():
+    method = TopNAssistance()
+    question = _make_question(options="Yes|No")
+    llm_payload = _llm_response(
+        [
+            {"option_index": 99, "confidence": 90, "rationale": "hallucinated"},
+        ]
+    )
+
+    with patch(
+        "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.payload == {"kind": "top_n", "parse_status": "no_candidates"}
 
 
 @pytest.mark.asyncio
@@ -470,6 +498,26 @@ async def test_start_returns_none_step_on_unparseable_llm_response():
     assert step.type == StepType.NONE
     assert step.is_terminal is True
     assert step.payload == {"kind": "top_n", "parse_status": "unparseable"}
+
+
+@pytest.mark.asyncio
+async def test_start_logs_unparseable_with_structured_attributes(caplog):
+    method = TopNAssistance()
+    question = _make_question()
+
+    with (
+        caplog.at_level("WARNING", logger="services.assistance.methods.top_n"),
+        patch(
+            "services.assistance.methods.top_n.complete",
+            new=AsyncMock(return_value="not json at all"),
+        ),
+    ):
+        await method.start(question, {})
+
+    record = next(r for r in caplog.records if "Failed to parse" in r.getMessage())
+    assert record.attributes["parse_status"] == "unparseable"
+    assert record.attributes["question_id"] == question.id
+    assert record.attributes["experiment_id"] == question.experiment_id
 
 
 @pytest.mark.asyncio
@@ -530,7 +578,7 @@ async def test_start_requests_json_schema_and_puts_study_prompt_first():
         _SYSTEM_PROMPT
     )
     response_format = mock_complete.call_args.kwargs["response_format"]
-    assert response_format == _top_n_response_format(multiple_choice=True, n=2)
+    assert response_format == _top_n_response_format(multiple_choice=True, n=2, option_count=2)
 
 
 @pytest.mark.asyncio
@@ -548,6 +596,34 @@ async def test_start_returns_none_step_on_complete_runtime_error():
     assert step.is_terminal is True
     # Call never reached the parser, so there is no parse_status to record.
     assert step.payload == {}
+
+
+def _bad_request_error() -> openai.BadRequestError:
+    request = httpx.Request("POST", "https://example")
+    response = httpx.Response(400, request=request)
+    return openai.BadRequestError("Invalid schema", response=response, body=None)
+
+
+@pytest.mark.asyncio
+async def test_start_retries_without_schema_when_provider_rejects_it():
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "ok"},
+        ]
+    )
+    mock_complete = AsyncMock(side_effect=[_bad_request_error(), llm_payload])
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.DISPLAY
+    assert mock_complete.call_count == 2
+    assert mock_complete.call_args_list[0].kwargs["response_format"] == _top_n_response_format(
+        multiple_choice=True, n=2, option_count=2
+    )
+    assert "response_format" not in mock_complete.call_args_list[1].kwargs
 
 
 @pytest.mark.asyncio

@@ -137,6 +137,23 @@ async def start_assistance(
         )
         step = InteractionStep(type=StepType.NONE, is_terminal=True)
 
+    parse_status = (step.payload or {}).get("parse_status")
+    if parse_status in ("unparseable", "no_candidates"):
+        # NONE sessions are deleted on the next visit, so this log — not the
+        # payload — is the durable signal that assistance missed.
+        logger.warning(
+            "Assistance parse was not clean",
+            extra={
+                "attributes": {
+                    "rater_id": rater_id,
+                    "question_id": question_id,
+                    "method": experiment.assistance_method,
+                    "parse_status": parse_status,
+                    "model": params.get("model"),
+                }
+            },
+        )
+
     assistance_session = AssistanceSession(
         rater_id=rater_id,
         experiment_id=rater.experiment_id,

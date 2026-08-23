@@ -8,10 +8,12 @@ Candidates are returned in a random order rather than best-first, and the UI
 shows neither the rank nor the model's confidence, so the rater sees the
 shortlist without the model's ordering anchoring their choice. Each candidate
 still carries its `rank`, persisted with the session payload for analysis.
-The payload also records `parse_status` (`clean` / `unparseable`). Unparseable
-JSON — a comparison token, a truncated wrapper, anything the decoder rejects —
-fails closed rather than salvaging a biased subset; the status is persisted so
-a recurrence is visible in the data even when the rater saw no suggestions.
+The payload also records `parse_status` (`clean` / `unparseable` /
+`no_candidates`) on the step the rater saw. NONE sessions are deleted on the
+next visit, so that field is not durable; recurrence is the structured
+warning log (`parse_status`, question, model), which survives the delete.
+Unparseable JSON — a comparison token, a truncated wrapper, anything the
+decoder rejects — fails closed rather than salvaging a biased subset.
 
 assistance_params:
     model: LLM to use for ranking (default: settings.llm.default_model)
@@ -98,11 +100,16 @@ def _strip_markdown_json(raw: str) -> str:
     return re.sub(r"```json?\n?|```\n?", "", raw).strip()
 
 
-def _candidate_item_schema(*, multiple_choice: bool) -> dict[str, Any]:
+def _candidate_item_schema(
+    *, multiple_choice: bool, option_count: int | None = None
+) -> dict[str, Any]:
     confidence = {"type": "integer", "minimum": 0, "maximum": 100}
     if multiple_choice:
+        option_index: dict[str, Any] = {"type": "integer", "minimum": 1}
+        if option_count:
+            option_index["maximum"] = option_count
         properties = {
-            "option_index": {"type": "integer", "minimum": 1},
+            "option_index": option_index,
             "confidence": confidence,
             "rationale": {"type": "string"},
         }
@@ -122,15 +129,19 @@ def _candidate_item_schema(*, multiple_choice: bool) -> dict[str, Any]:
     }
 
 
-def _top_n_response_format(*, multiple_choice: bool, n: int) -> dict[str, Any]:
+def _top_n_response_format(
+    *, multiple_choice: bool, n: int, option_count: int | None = None
+) -> dict[str, Any]:
     """Constrained JSON schema for the Top-N completion.
 
     `json_object` is not enough: OpenRouter advertises `structured_outputs` for
-    the default model (`anthropic/claude-sonnet-4.6`), and the production
+    the default model (`anthropic/claude-sonnet-4-6`), and the production
     failure (`"confidence">80`) was invalid JSON, so a type-only JSON mode
     either was not applied or did not constrain the value. A schema that
     types `confidence` as an integer is the structural fix; the prompt
     examples remain as a fallback for models that ignore `response_format`.
+    If a provider rejects the schema, the caller retries once without
+    `response_format` rather than failing the whole round.
     """
     return {
         "type": "json_schema",
@@ -144,7 +155,9 @@ def _top_n_response_format(*, multiple_choice: bool, n: int) -> dict[str, Any]:
                         "type": "array",
                         "minItems": 1,
                         "maxItems": n,
-                        "items": _candidate_item_schema(multiple_choice=multiple_choice),
+                        "items": _candidate_item_schema(
+                            multiple_choice=multiple_choice, option_count=option_count
+                        ),
                     }
                 },
                 "required": ["candidates"],
@@ -160,6 +173,64 @@ def _none_step(parse_status: str) -> InteractionStep:
         payload={"kind": "top_n", "parse_status": parse_status},
         is_terminal=True,
     )
+
+
+def _log_parse_status(
+    parse_status: str,
+    *,
+    question: Question,
+    model: str,
+    raw: str | None = None,
+) -> None:
+    """Structured warning so a miss is queryable after the NONE session is deleted."""
+    attributes = {
+        "question_id": question.id,
+        "experiment_id": question.experiment_id,
+        "model": model,
+        "parse_status": parse_status,
+    }
+    if parse_status == "unparseable":
+        logger.warning(
+            "Failed to parse top-N assistance response: %r",
+            raw,
+            extra={"attributes": attributes},
+        )
+        return
+    logger.warning(
+        "Top-N JSON parsed but no usable candidates remained",
+        extra={"attributes": attributes},
+    )
+
+
+async def _complete_with_schema_fallback(
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    settings: Any,
+    response_format: dict[str, Any],
+) -> str:
+    """Ask for json_schema; if the provider rejects it, retry once unconstrained.
+
+    OpenRouter's default without `require_parameters` is to drop unsupported
+    params, but a provider that *rejects* `strict` json_schema would otherwise
+    400 every question in the round (`OpenAIError` → no assistance). Retrying
+    without `response_format` keeps the previous fail-soft behaviour; the
+    prompt examples are then the only constraint.
+    """
+    try:
+        return await complete(
+            messages,
+            model=model,
+            settings=settings,
+            response_format=response_format,
+            temperature=0,
+        )
+    except openai.BadRequestError:
+        logger.warning(
+            "Top-N json_schema rejected by the provider; retrying without response_format",
+            extra={"attributes": {"model": model}},
+        )
+        return await complete(messages, model=model, settings=settings, temperature=0)
 
 
 def _parse_top_n_response(raw: str) -> dict:
@@ -277,16 +348,21 @@ class TopNAssistance(AssistanceMethod):
             f"{return_instruction}"
         )
 
+        messages = [
+            {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
+            {"role": "user", "content": user_prompt},
+        ]
+        response_format = _top_n_response_format(
+            multiple_choice=bool(options),
+            n=n,
+            option_count=len(options) if options else None,
+        )
         try:
-            raw = await complete(
-                [
-                    {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
-                    {"role": "user", "content": user_prompt},
-                ],
+            raw = await _complete_with_schema_fallback(
+                messages,
                 model=model,
                 settings=settings.llm,
-                response_format=_top_n_response_format(multiple_choice=bool(options), n=n),
-                temperature=0,
+                response_format=response_format,
             )
         except (RuntimeError, ValueError, openai.OpenAIError):
             logger.exception("Top-N LLM call failed; returning no-assistance step")
@@ -298,13 +374,14 @@ class TopNAssistance(AssistanceMethod):
             # Fail closed on any undecodable body, including mid-candidate
             # truncation (max_tokens=4096). Salvaging the intact prefix would
             # drop the hedged candidate more often than not, which is a
-            # silently biased shortlist; parse_status records the miss instead.
-            logger.warning("Failed to parse top-N assistance response: %r", raw)
+            # silently biased shortlist.
+            _log_parse_status("unparseable", question=question, model=model, raw=raw)
             return _none_step("unparseable")
 
         candidates = _normalize_candidates(parsed.get("candidates"), options, n)
         if not candidates:
-            return _none_step("clean")
+            _log_parse_status("no_candidates", question=question, model=model)
+            return _none_step("no_candidates")
 
         # Payload order is display order, so shuffle here rather than in the UI:
         # the shuffled list is what gets persisted with the session, which keeps

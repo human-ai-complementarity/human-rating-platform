@@ -62,7 +62,7 @@ async def complete(
                          {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}.
                          Honored by OpenRouter models that advertise
                          `structured_outputs` / `response_format` (including
-                         anthropic/claude-sonnet-4.6); ignored by models that
+                         anthropic/claude-sonnet-4-6); ignored by models that
                          don't.
     """
     if not settings.openrouter_api_key:
