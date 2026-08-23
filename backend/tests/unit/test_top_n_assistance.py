@@ -17,6 +17,7 @@ import pytest
 from models import Question, StepType
 from services.assistance.methods.top_n import (
     TopNAssistance,
+    _SYSTEM_PROMPT,
     _clamp_top_n,
     _normalize_candidates,
     _parse_options,
@@ -159,108 +160,39 @@ class TestParseTopNResponse:
         with pytest.raises(json.JSONDecodeError):
             _parse_top_n_response('{"something_else": []}')
 
-
-# ---------------------------------------------------------------------------
-# Salvaging candidates from a malformed wrapper
-# ---------------------------------------------------------------------------
-
-
-# Verbatim from production (claude-sonnet-4-6, CulturalBench Hard). The middle
-# candidate carries `"confidence">80` — a comparison instead of a value — which
-# makes the enclosing object undecodable even though candidates 1 and 3 are
-# intact.
-MALFORMED_PRODUCTION_RESPONSE = (
-    '```json\n{"candidates":['
-    '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE","confidence":85,'
-    '"rationale":"Sandwiches and empanadas are both popular hand-held foods."},'
-    '{"answer":"1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE","confidence">80,'
-    '"rationale":"Empanadas are the most iconic Argentine hand-held food."},'
-    '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE","confidence":75,'
-    '"rationale":"Both sandwiches and empanadas are popular Argentine foods."}'
-    "]}\n```"
-)
-
-
-class TestRepairMalformedWrapper:
-    def test_repairs_the_comparison_and_keeps_every_candidate(self):
-        # Repair is preferred over salvage precisely because it keeps the
-        # hedged candidate, which is the one proposing a different answer.
-        result = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
-        answers = [c["answer"] for c in result["candidates"]]
-        assert answers == [
-            "1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE",
-            "1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE",
-            "1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE",
-        ]
-        assert result["candidates"][1]["confidence"] == 80
-
-    def test_repaired_candidates_survive_normalization(self):
-        parsed = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
-        normalized = _normalize_candidates(parsed["candidates"], [], n=3)
-        assert [c["rank"] for c in normalized] == [1, 2, 3]
-        assert normalized[0]["confidence"] == 85
-
-    def test_repairs_multiple_choice_candidates(self):
+    def test_raises_on_comparison_instead_of_colon(self):
+        # Verbatim from production (claude-sonnet-4-6, CulturalBench Hard).
+        # Parser recovery was removed in favour of prompting a real integer;
+        # a leftover comparison token must fail closed (no assistance), not be
+        # repaired or salvaged.
         raw = (
-            '{"candidates":[{"option_index":1,"confidence":90,"rationale":"a"},'
-            '{"option_index":2,"confidence">50,"rationale":"b"},'
-            '{"option_index":3,"confidence":20,"rationale":"c"}]}'
+            '```json\n{"candidates":['
+            '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE","confidence":85,'
+            '"rationale":"Sandwiches and empanadas are both popular hand-held foods."},'
+            '{"answer":"1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE","confidence">80,'
+            '"rationale":"Empanadas are the most iconic Argentine hand-held food."},'
+            '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE","confidence":75,'
+            '"rationale":"Both sandwiches and empanadas are popular Argentine foods."}'
+            "]}\n```"
         )
-        result = _parse_top_n_response(raw)
-        assert [c["option_index"] for c in result["candidates"]] == [1, 2, 3]
+        with pytest.raises(json.JSONDecodeError):
+            _parse_top_n_response(raw)
 
-
-class TestSalvageMalformedWrapper:
-    def test_salvages_when_repair_cannot_fix_the_response(self):
-        # Truncated mid-candidate: no comparison token to repair, but the first
-        # candidate is complete and usable.
+    def test_raises_on_truncated_wrapper(self):
         raw = (
             '{"candidates":[{"answer":"A","confidence":90,"rationale":"a"},'
             '{"answer":"B","confidence":'
         )
-        result = _parse_top_n_response(raw)
-        assert [c["answer"] for c in result["candidates"]] == ["A"]
-
-    def test_well_formed_response_is_untouched(self):
-        # The salvage path must never engage for a response that parses today,
-        # so an experiment that is working keeps identical behaviour.
-        payload = {
-            "candidates": [
-                {"answer": "A", "confidence": 90, "rationale": "r"},
-                {"answer": "B", "confidence": 10, "rationale": "s"},
-            ]
-        }
-        assert _parse_top_n_response(json.dumps(payload)) == payload
-
-    def test_raises_on_a_degenerate_response(self):
-        # Seen once in production: the model returned essentially nothing.
-        # Neither repair nor salvage can invent candidates from this.
         with pytest.raises(json.JSONDecodeError):
-            _parse_top_n_response('{"')
-
-    def test_objects_that_are_not_candidates_normalize_away(self):
-        # Repair can make this decodable, but the entries carry neither
-        # "answer" nor "option_index", so normalization still yields nothing
-        # and the caller falls through to StepType.NONE.
-        parsed = _parse_top_n_response('{"candidates":[{"foo":1,"bar">2}]}')
-        assert _normalize_candidates(parsed["candidates"], [], n=3) == []
+            _parse_top_n_response(raw)
 
 
-@pytest.mark.asyncio
-async def test_start_displays_salvaged_candidates_instead_of_no_assistance():
-    # Before salvaging, this response produced StepType.NONE and the rater saw
-    # an empty assistance panel while still being able to submit a rating.
-    method = TopNAssistance()
-    question = _make_question(options=None, question_type="FT")
-
-    with patch(
-        "services.assistance.methods.top_n.complete",
-        new=AsyncMock(return_value=MALFORMED_PRODUCTION_RESPONSE),
-    ):
-        step = await method.start(question, {})
-
-    assert step.type == StepType.DISPLAY
-    assert len(step.payload["candidates"]) == 3
+def test_system_prompt_shows_a_concrete_confidence_integer():
+    # `"confidence":0-100` in the schema example is what led claude-sonnet-4-6
+    # to emit `"confidence">80`. The examples must be valid JSON fragments.
+    compact = _SYSTEM_PROMPT.replace(" ", "")
+    assert '"confidence":80' in compact
+    assert '"confidence":0-100' not in compact
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +436,28 @@ async def test_start_returns_none_step_on_unparseable_llm_response():
     with patch(
         "services.assistance.methods.top_n.complete",
         new=AsyncMock(return_value="not json at all"),
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.is_terminal is True
+
+
+@pytest.mark.asyncio
+async def test_start_returns_none_step_on_comparison_instead_of_colon():
+    method = TopNAssistance()
+    question = _make_question(options=None, question_type="FT")
+    raw = (
+        '{"candidates":['
+        '{"answer":"A","confidence":85,"rationale":"a"},'
+        '{"answer":"B","confidence">80,"rationale":"b"},'
+        '{"answer":"C","confidence":75,"rationale":"c"}'
+        "]}"
+    )
+
+    with patch(
+        "services.assistance.methods.top_n.complete",
+        new=AsyncMock(return_value=raw),
     ):
         step = await method.start(question, {})
 
