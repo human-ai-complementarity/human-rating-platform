@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import io
 import json
 import logging
@@ -23,9 +24,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from models import ExperimentRound
 from services.participant_groups import _slugify_for_prolific
-from services.question_separator import migrate_separator_questions
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def _migrate_separator_questions(connection):
+    """Load the frozen Alembic rewrite so tests exercise the version file."""
+    path = BACKEND_DIR / "alembic/versions/20260823000000_migrate_separator_questions.py"
+    spec = importlib.util.spec_from_file_location("separator_migration_rev", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.migrate_separator_questions(connection)
 
 
 def _unique_name(prefix: str) -> str:
@@ -1009,6 +1019,7 @@ def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync
 
     parsed_rows = list(csv.reader(io.StringIO("".join(chunks))))
     assert parsed_rows[0][0] == "rating_id"
+    assert "parent_question_text" in parsed_rows[0]
     assert len(parsed_rows) == row_count + 1
 
 
@@ -2654,6 +2665,83 @@ def test_upload_rejects_separator_shaped_question_text(client: TestClient):
     assert "--- QUESTION ---" in detail
 
 
+def test_upload_accepts_parent_document_that_contains_the_delimiter(client: TestClient):
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "parent_question_id"])
+    writer.writerow(
+        [
+            "parent1",
+            "Keep me intact\n\n--- QUESTION ---\nthis is still the document",
+            "",
+        ]
+    )
+    writer.writerow(["child1", "What follows from the document?", "parent1"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("parent_delimiter.csv", output.getvalue(), "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PARENT_DELIM")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["question_id"] == "child1"
+    assert question["question_text"] == "What follows from the document?"
+    assert question["parent_question_text"] == (
+        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    )
+
+
+def test_upload_rejects_separator_on_a_blank_question_id(client: TestClient):
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text"])
+    writer.writerow(["", "Document line\n\n--- QUESTION ---\nWhat follows?"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("blank_id.csv", output.getvalue(), "text/csv")},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "row 1" in detail
+    assert "parent_question_id" in detail
+
+
+def test_export_includes_parent_question_text(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_EXPORT_PARENT")
+    headers = _rater_headers(session_payload)
+    question = client.get("/api/raters/next-question", headers=headers).json()
+    submit = client.post(
+        "/api/raters/submit",
+        headers=headers,
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert submit.status_code == 200
+
+    with client.stream("GET", f"/api/admin/experiments/{experiment['id']}/export") as response:
+        assert response.status_code == 200
+        body = "".join(response.iter_text())
+
+    rows = list(csv.DictReader(io.StringIO(body)))
+    assert len(rows) == 1
+    assert rows[0]["parent_question_text"] == PARENT_TEXT
+    assert rows[0]["question_text"] == question["question_text"]
+
+
 def _insert_question(
     sync_engine,
     *,
@@ -2689,7 +2777,9 @@ def _insert_question(
     return int(db_id)
 
 
-def test_migrate_separator_questions_rewrites_legacy_rows(client: TestClient, sync_engine):
+def test_migrate_separator_questions_rewrites_legacy_rows(
+    client: TestClient, sync_engine, caplog: pytest.LogCaptureFixture
+):
     experiment = _create_experiment(client)
     shared_doc = "Shared document body"
     unique_doc = "Unique document body"
@@ -2734,23 +2824,33 @@ def test_migrate_separator_questions_rewrites_legacy_rows(client: TestClient, sy
         question_id="near_miss",
         question_text="Document\n--- QUESTION ---\nNot a split?",
     )
+    # Both mechanisms on one child: skipped (already has a parent) and warned.
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="dual_child",
+        question_text=f"{shared_doc}\n\n--- QUESTION ---\nShould not split?",
+        parent_db_id=parent_db_id,
+    )
 
-    with sync_engine.begin() as conn:
-        parents, children = migrate_separator_questions(conn)
-        again = migrate_separator_questions(conn)
+    with caplog.at_level(logging.WARNING):
+        with sync_engine.begin() as conn:
+            parents, children = _migrate_separator_questions(conn)
+            again = _migrate_separator_questions(conn)
 
     assert parents == 2
     assert children == 3
     assert again == (0, 0)
+    assert "already have a parent" in caplog.text
 
     listed = client.get("/api/admin/experiments").json()
     matching = next(item for item in listed if item["id"] == experiment["id"])
-    assert matching["question_count"] == 5
+    assert matching["question_count"] == 6
 
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_SEP_MIG")
     headers = _rater_headers(session_payload)
     seen: dict[str, dict] = {}
-    for _ in range(5):
+    for _ in range(6):
         resp = client.get("/api/raters/next-question", headers=headers)
         assert resp.status_code == 200
         question = resp.json()
@@ -2778,6 +2878,12 @@ def test_migrate_separator_questions_rewrites_legacy_rows(client: TestClient, sy
     assert "real_parent" not in seen
     assert seen["real_child"]["question_text"] == "Already a child?"
     assert seen["real_child"]["parent_question_text"] == (
+        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    )
+    assert seen["dual_child"]["question_text"] == (
+        f"{shared_doc}\n\n--- QUESTION ---\nShould not split?"
+    )
+    assert seen["dual_child"]["parent_question_text"] == (
         "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
     )
 

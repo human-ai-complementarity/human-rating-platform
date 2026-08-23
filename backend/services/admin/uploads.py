@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, Question, Upload
-from services.question_separator import question_ids_with_separator
+from services.question_separator import separator_upload_offenders
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -246,10 +246,10 @@ def _reject_separator_question_text(rows: list[dict[str, Any]]) -> None:
     that OOM-killed the database, and would be invisible once the frontend
     stops splitting on it.
     """
-    offenders = [qid for qid in question_ids_with_separator(rows) if qid]
+    offenders = separator_upload_offenders(rows)
     if not offenders:
         return
-    preview = ", ".join(f"'{qid}'" for qid in offenders[:_SEPARATOR_REJECT_PREVIEW])
+    preview = ", ".join(offenders[:_SEPARATOR_REJECT_PREVIEW])
     extra = (
         f" (and {len(offenders) - _SEPARATOR_REJECT_PREVIEW} more)"
         if len(offenders) > _SEPARATOR_REJECT_PREVIEW
