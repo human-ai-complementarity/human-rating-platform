@@ -1020,6 +1020,7 @@ def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync
     parsed_rows = list(csv.reader(io.StringIO("".join(chunks))))
     assert parsed_rows[0][0] == "rating_id"
     assert "parent_question_id" in parsed_rows[0]
+    assert "parent_row_id" in parsed_rows[0]
     assert "parent_question_text" not in parsed_rows[0]
     assert len(parsed_rows) == row_count + 1
 
@@ -2740,6 +2741,7 @@ def test_export_ratings_reference_parent_id_not_document_text(client: TestClient
     rating_rows = list(csv.DictReader(io.StringIO(ratings_body)))
     assert len(rating_rows) == 1
     assert rating_rows[0]["parent_question_id"] == "parent1"
+    assert rating_rows[0]["parent_row_id"]
     assert "parent_question_text" not in rating_rows[0]
     assert PARENT_TEXT not in ratings_body
     assert rating_rows[0]["question_text"] == question["question_text"]
@@ -2751,7 +2753,70 @@ def test_export_ratings_reference_parent_id_not_document_text(client: TestClient
         documents_body = "".join(response.iter_text())
 
     document_rows = list(csv.DictReader(io.StringIO(documents_body)))
-    assert document_rows == [{"question_id": "parent1", "question_text": PARENT_TEXT}]
+    assert len(document_rows) == 1
+    assert document_rows[0]["question_id"] == "parent1"
+    assert document_rows[0]["question_text"] == PARENT_TEXT
+    assert document_rows[0]["row_id"] == rating_rows[0]["parent_row_id"]
+
+
+def test_export_joins_duplicate_parent_question_ids_by_row_id(client: TestClient, sync_engine):
+    """question_id strings are not unique; the join key is the numeric PK."""
+    experiment = _create_experiment(client)
+    parent_a = _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="dup-parent",
+        question_text="Document A",
+    )
+    parent_b = _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="dup-parent",
+        question_text="Document B",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="child_a",
+        question_text="Question about A?",
+        parent_db_id=parent_a,
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="child_b",
+        question_text="Question about B?",
+        parent_db_id=parent_b,
+    )
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_EXPORT_DUP_PARENT")
+    for _ in range(2):
+        question = _get_next_question(client, session_payload)
+        assert question is not None
+        _submit(client, session_payload, question)
+
+    with client.stream("GET", f"/api/admin/experiments/{experiment['id']}/export") as response:
+        assert response.status_code == 200
+        ratings_body = "".join(response.iter_text())
+    with client.stream(
+        "GET", f"/api/admin/experiments/{experiment['id']}/export/documents"
+    ) as response:
+        assert response.status_code == 200
+        documents_body = "".join(response.iter_text())
+
+    rating_rows = list(csv.DictReader(io.StringIO(ratings_body)))
+    document_rows = list(csv.DictReader(io.StringIO(documents_body)))
+    ratings_by_question = {row["question_id"]: row for row in rating_rows}
+    docs_by_row_id = {row["row_id"]: row for row in document_rows}
+
+    assert {row["question_id"] for row in document_rows} == {"dup-parent"}
+    assert len(document_rows) == 2
+    assert ratings_by_question["child_a"]["parent_question_id"] == "dup-parent"
+    assert ratings_by_question["child_b"]["parent_question_id"] == "dup-parent"
+    assert ratings_by_question["child_a"]["parent_row_id"] == str(parent_a)
+    assert ratings_by_question["child_b"]["parent_row_id"] == str(parent_b)
+    assert docs_by_row_id[str(parent_a)]["question_text"] == "Document A"
+    assert docs_by_row_id[str(parent_b)]["question_text"] == "Document B"
 
 
 def _insert_question(

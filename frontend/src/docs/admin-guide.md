@@ -87,7 +87,7 @@ Once the pilot closes, a **Recommendation for next round** panel appears with a 
 
 ## 6. View results
 
-The **Overview** section shows live progress. From there you can open analytics or export CSVs: **ratings** (one row per rating, with `parent_question_id` when the question has a parent) and **documents** (one row per parent, so a shared long document is not repeated on every rating). The *include preview data* toggle controls whether your own test ratings count.
+The **Overview** section shows live progress. From there you can open analytics or export CSVs: **ratings** (one row per rating, with `parent_question_id` when the question has a parent) and **documents** (one row per parent, so a shared long document is not repeated on every rating). Join them on `parent_row_id` = `row_id` — the numeric database ids — not on the string `question_id`, which is allowed to repeat within an experiment. The *include preview data* toggle controls whether your own test ratings count.
 
 ## 7. Fetch data programmatically (optional)
 
