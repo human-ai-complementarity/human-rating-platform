@@ -81,5 +81,19 @@ async def complete(
     if not response.choices:
         # OpenRouter sometimes returns HTTP 200 with an error body and no
         # choices; indexing [0] would 500 the rater's assistance fetch.
-        raise RuntimeError("LLM returned no choices")
+        raise RuntimeError(_empty_choices_message(response))
     return response.choices[0].message.content or ""
+
+
+def _empty_choices_message(response: object) -> str:
+    detail = getattr(response, "error", None)
+    if detail is None:
+        dump = getattr(response, "model_dump_json", None)
+        if callable(dump):
+            detail = dump()
+    if not detail:
+        return "LLM returned no choices"
+    text = str(detail)
+    if len(text) > 500:
+        text = text[:500]
+    return f"LLM returned no choices: {text}"

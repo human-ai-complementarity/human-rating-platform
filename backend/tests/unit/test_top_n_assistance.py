@@ -676,6 +676,32 @@ async def test_start_does_not_retry_schema_on_server_error():
 
 
 @pytest.mark.asyncio
+async def test_start_does_not_remember_model_when_unconstrained_retry_fails():
+    # 404 is also used for unknown model ids, which is not a schema rejection.
+    # If the unconstrained retry also fails, the memo must not be poisoned.
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "ok"},
+        ]
+    )
+    mock_complete = AsyncMock(
+        side_effect=[_api_status_error(404), _api_status_error(404), llm_payload]
+    )
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        first = await method.start(question, {})
+        second = await method.start(question, {})
+
+    assert first.type == StepType.NONE
+    assert second.type == StepType.DISPLAY
+    assert not _SCHEMA_REJECTED_MODELS
+    assert mock_complete.call_count == 3
+    assert "response_format" in mock_complete.call_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
 async def test_start_returns_none_step_on_openai_error():
     method = TopNAssistance()
     question = _make_question()

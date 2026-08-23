@@ -192,9 +192,11 @@ async def _complete_with_schema_fallback(
     OpenRouter's default without `require_parameters` is to drop unsupported
     params, but a provider that *rejects* `strict` json_schema would otherwise
     fail every question in the round. Retrying without `response_format` keeps
-    the previous fail-soft behaviour; remembered model ids keep that to one
-    extra call per process, not per question. The prompt examples are then
-    the only constraint.
+    the previous fail-soft behaviour; the model is remembered only once that
+    unconstrained retry succeeds, so a 404 for an unknown id does not poison
+    the memo. Later questions then skip the schema (one extra call per
+    process, not per question). The prompt examples are then the only
+    constraint.
     """
     if model not in _SCHEMA_REJECTED_MODELS:
         try:
@@ -208,11 +210,13 @@ async def _complete_with_schema_fallback(
         except openai.APIStatusError as exc:
             if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
                 raise
-            _SCHEMA_REJECTED_MODELS.add(model)
             logger.warning(
                 "Top-N json_schema rejected by the provider; retrying without response_format",
                 extra={"attributes": {"model": model, "status_code": exc.status_code}},
             )
+            raw = await complete(messages, model=model, settings=settings, temperature=0)
+            _SCHEMA_REJECTED_MODELS.add(model)
+            return raw
     return await complete(messages, model=model, settings=settings, temperature=0)
 
 
