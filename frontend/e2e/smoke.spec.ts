@@ -695,59 +695,6 @@ test('preview participant link opens /rate with preview mode and starts one prev
   await expect(state.previewStartRequests[0]).toContain('preview=true');
 });
 
-test('long-context question links document separately and shows only question in rater card', async ({ page, context }) => {
-  const state = createMockState();
-  state.experiments = [
-    buildExperiment(state, {
-      id: 1,
-      name: 'Long Context Experiment',
-      question_count: 1,
-      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
-    }),
-  ];
-  state.nextExperimentId = 2;
-  state.uploads[1] = [];
-  state.rounds[1] = [];
-  state.recommendations[1] = {
-    avg_time_per_question_seconds: 0,
-    remaining_rating_actions: 0,
-    total_hours_remaining: 0,
-    recommended_places: 0,
-    is_complete: false,
-  };
-  state.sessionsByExperimentId[1] = {
-    rater_id: 301,
-    session_start: '2026-03-09T00:05:00Z',
-    session_end_time: '2099-03-09T01:05:00Z',
-    experiment_name: 'Long Context Experiment',
-    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
-    rater_session_token: 'token-long-context',
-  };
-  state.questionsBySessionToken['token-long-context'] = {
-    id: 503,
-    question_id: 'long-q',
-    question_text: 'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
-    options: 'A|B',
-    question_type: 'MC',
-  };
-
-  await installApiMocks(page, state);
-  await page.goto('/rate?experiment_id=1&PROLIFIC_PID=pid-1&STUDY_ID=study-1&SESSION_ID=session-1');
-
-  const documentLink = page.getByRole('link', { name: 'Open document in new tab' });
-  await expect(documentLink).toBeVisible();
-  await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
-  await expect(page.getByText('Document line one')).toHaveCount(0);
-
-  const documentPopupPromise = context.waitForEvent('page');
-  await documentLink.click();
-  const documentPopup = await documentPopupPromise;
-  await documentPopup.waitForLoadState('domcontentloaded');
-
-  await expect(documentPopup.getByRole('heading', { name: 'Document for Question long-q' })).toBeVisible();
-  await expect(documentPopup.getByText('Document line one')).toBeVisible();
-});
-
 // Seeds a rater session serving exactly one question, for the parent-context
 // rendering cases below.
 function seedRaterWithQuestion(state: MockState, question: RaterQuestionRecord) {
@@ -835,6 +782,27 @@ test('a short parent question stays inline in the context box', async ({ page })
   await expect(page.getByText('Context', { exact: true })).toBeVisible();
   await expect(page.getByText(preamble)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
+});
+
+test('a --- QUESTION --- delimiter in question text is not treated as a document', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 503,
+    question_id: 'legacy-separator-q',
+    question_text:
+      'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
+  await expect(page.getByText('Document line one')).toBeVisible();
+  await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
 });
 
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {

@@ -3,7 +3,6 @@ import type { CSSProperties } from 'react';
 import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
-const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
 // Parent context longer than this is a document, not a preamble, so it goes
 // behind the "open in new tab" link instead of inline in the card. The two
 // real cases sit orders of magnitude apart (a sub-question preamble runs tens
@@ -85,54 +84,23 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
   );
 }
 
-// Splits `--- QUESTION ---`-delimited text into document and question. Returns
-// a null document when the delimiter is absent or either side is empty.
-function splitOnSeparator(questionText: string): {
-  documentText: string | null;
-  questionText: string;
-} {
-  const separators = Array.from(questionText.matchAll(LONG_CONTEXT_SEPARATOR_PATTERN));
-  const separator = separators[separators.length - 1];
-  if (!separator || separator.index === undefined) {
-    return { documentText: null, questionText };
-  }
-
-  const documentText = questionText.slice(0, separator.index).trim();
-  const displayQuestion = questionText
-    .slice(separator.index + separator[0].length)
-    .trim();
-
-  if (!documentText || !displayQuestion) {
-    return { documentText: null, questionText };
-  }
-
-  return { documentText, questionText: displayQuestion };
-}
-
 /**
- * Decides where a question's context is rendered.
+ * Decides where a question's parent context is rendered.
  *
- * Two mechanisms feed this. `--- QUESTION ---` inside `question_text` splits a
- * document off inline, and `parent_question_id` stores the document as its own
- * row served back as `parent_question_text`. The parent shape is the direction
- * we're moving in (see issue #85); the separator is kept working until the
- * pipeline stops emitting it.
- *
- * A long parent is routed to the document link, which is the whole point of
- * this function. The separator branch takes precedence so no data that renders
- * a document today changes behaviour, which is what makes this additive.
+ * Long documents live on a parent row (`parent_question_text`). Over
+ * INLINE_CONTEXT_MAX_CHARS they go behind the "open in new tab" link; shorter
+ * preambles stay inline in the Context box. There is no in-text delimiter —
+ * concatenating a document into `question_text` with `--- QUESTION ---` is
+ * rejected on upload (issue #85).
  */
 function parseQuestionDisplay(question: Question): QuestionDisplay {
-  const split = splitOnSeparator(question.question_text);
   const parent = question.parent_question_text?.trim() || null;
-
-  const parentIsDocument =
-    parent !== null && split.documentText === null && parent.length > INLINE_CONTEXT_MAX_CHARS;
+  const parentIsDocument = parent !== null && parent.length > INLINE_CONTEXT_MAX_CHARS;
 
   return {
-    documentText: split.documentText ?? (parentIsDocument ? parent : null),
+    documentText: parentIsDocument ? parent : null,
     inlineContext: parentIsDocument ? null : parent,
-    questionText: split.questionText,
+    questionText: question.question_text,
   };
 }
 

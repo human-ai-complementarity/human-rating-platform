@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from models import ExperimentRound
 from services.participant_groups import _slugify_for_prolific
+from services.question_separator import migrate_separator_questions
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
@@ -2632,6 +2633,153 @@ def test_upload_rejects_unresolvable_parent_reference(client: TestClient):
     detail = response.json()["detail"]
     assert "does_not_exist" in detail
     assert "orphan" in detail
+
+
+def test_upload_rejects_separator_shaped_question_text(client: TestClient):
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text"])
+    writer.writerow(["q1", "Document line\n\n--- QUESTION ---\nWhat follows?"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("separator.csv", output.getvalue(), "text/csv")},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "q1" in detail
+    assert "parent_question_id" in detail
+    assert "--- QUESTION ---" in detail
+
+
+def _insert_question(
+    sync_engine,
+    *,
+    experiment_id: int,
+    question_id: str,
+    question_text: str,
+    parent_db_id: int | None = None,
+) -> int:
+    with sync_engine.begin() as conn:
+        db_id = conn.execute(
+            text(
+                """
+                INSERT INTO questions (
+                    experiment_id, question_id, question_text,
+                    gt_answer, options, question_type, extra_data,
+                    parent_question_id
+                )
+                VALUES (
+                    :experiment_id, :question_id, :question_text,
+                    '', '', 'MC', '{}',
+                    :parent_question_id
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "experiment_id": experiment_id,
+                "question_id": question_id,
+                "question_text": question_text,
+                "parent_question_id": parent_db_id,
+            },
+        ).scalar_one()
+    return int(db_id)
+
+
+def test_migrate_separator_questions_rewrites_legacy_rows(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    shared_doc = "Shared document body"
+    unique_doc = "Unique document body"
+
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="a1",
+        question_text=f"{shared_doc}\n\n--- QUESTION ---\nQuestion A1?",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="a2",
+        question_text=f"{shared_doc}\n\n--- QUESTION ---\nQuestion A2?",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="b1",
+        question_text=f"{unique_doc}\n\n--- QUESTION ---\nQuestion B1?",
+    )
+    # Already parent-shaped: the document happens to contain the marker as
+    # content, and must not be split.
+    parent_db_id = _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="real_parent",
+        question_text="Keep me intact\n\n--- QUESTION ---\nthis is still the document",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="real_child",
+        question_text="Already a child?",
+        parent_db_id=parent_db_id,
+    )
+    # Near-miss: single newline, which the old frontend also refused to split.
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="near_miss",
+        question_text="Document\n--- QUESTION ---\nNot a split?",
+    )
+
+    with sync_engine.begin() as conn:
+        parents, children = migrate_separator_questions(conn)
+        again = migrate_separator_questions(conn)
+
+    assert parents == 2
+    assert children == 3
+    assert again == (0, 0)
+
+    listed = client.get("/api/admin/experiments").json()
+    matching = next(item for item in listed if item["id"] == experiment["id"])
+    assert matching["question_count"] == 5
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_SEP_MIG")
+    headers = _rater_headers(session_payload)
+    seen: dict[str, dict] = {}
+    for _ in range(5):
+        resp = client.get("/api/raters/next-question", headers=headers)
+        assert resp.status_code == 200
+        question = resp.json()
+        seen[question["question_id"]] = question
+        submit = client.post(
+            "/api/raters/submit",
+            headers=headers,
+            json={
+                "question_id": question["id"],
+                "answer": "Yes",
+                "confidence": 4,
+                "time_started": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert submit.status_code == 200
+
+    assert seen["a1"]["question_text"] == "Question A1?"
+    assert seen["a1"]["parent_question_text"] == shared_doc
+    assert seen["a2"]["question_text"] == "Question A2?"
+    assert seen["a2"]["parent_question_text"] == shared_doc
+    assert seen["b1"]["question_text"] == "Question B1?"
+    assert seen["b1"]["parent_question_text"] == unique_doc
+    assert seen["near_miss"]["question_text"] == "Document\n--- QUESTION ---\nNot a split?"
+    assert seen["near_miss"]["parent_question_text"] is None
+    assert "real_parent" not in seen
+    assert seen["real_child"]["question_text"] == "Already a child?"
+    assert seen["real_child"]["parent_question_text"] == (
+        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    )
 
 
 def test_next_question_never_returns_parent_rows(client: TestClient):

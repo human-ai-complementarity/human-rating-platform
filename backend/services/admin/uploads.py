@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, Question, Upload
+from services.question_separator import question_ids_with_separator
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -38,6 +39,7 @@ DATASET_META_FIELDS = (
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
+_SEPARATOR_REJECT_PREVIEW = 5
 
 
 def _configure_csv_field_limit() -> None:
@@ -236,6 +238,33 @@ def _read_parquet(
     return rows, meta
 
 
+def _reject_separator_question_text(rows: list[dict[str, Any]]) -> None:
+    """Fail the upload if any row still concatenates document + question.
+
+    The parent-row shape is the supported long-context model (issue #85).
+    Accepting the old delimiter would reintroduce the duplicated 500KB+ rows
+    that OOM-killed the database, and would be invisible once the frontend
+    stops splitting on it.
+    """
+    offenders = [qid for qid in question_ids_with_separator(rows) if qid]
+    if not offenders:
+        return
+    preview = ", ".join(f"'{qid}'" for qid in offenders[:_SEPARATOR_REJECT_PREVIEW])
+    extra = (
+        f" (and {len(offenders) - _SEPARATOR_REJECT_PREVIEW} more)"
+        if len(offenders) > _SEPARATOR_REJECT_PREVIEW
+        else ""
+    )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Question(s) {preview}{extra} embed a document using the "
+            "`--- QUESTION ---` separator. Store the document as its own row "
+            "and set parent_question_id to that row's question_id."
+        ),
+    )
+
+
 def _build_questions_with_parent_refs(
     experiment_id: int,
     rows: list[dict[str, Any]],
@@ -335,6 +364,8 @@ async def upload_questions(
         rows, meta = _read_csv(file)
     else:
         rows, meta = _read_parquet(file)
+
+    _reject_separator_question_text(rows)
 
     meta_applied: list[str] = []
     meta_conflicts: list[str] = []
