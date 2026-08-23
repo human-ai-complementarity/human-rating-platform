@@ -8,6 +8,10 @@ Candidates are returned in a random order rather than best-first, and the UI
 shows neither the rank nor the model's confidence, so the rater sees the
 shortlist without the model's ordering anchoring their choice. Each candidate
 still carries its `rank`, persisted with the session payload for analysis.
+The payload also records `parse_status` (`clean` / `unparseable`). Unparseable
+JSON — a comparison token, a truncated wrapper, anything the decoder rejects —
+fails closed rather than salvaging a biased subset; the status is persisted so
+a recurrence is visible in the data even when the rater saw no suggestions.
 
 assistance_params:
     model: LLM to use for ranking (default: settings.llm.default_model)
@@ -94,6 +98,70 @@ def _strip_markdown_json(raw: str) -> str:
     return re.sub(r"```json?\n?|```\n?", "", raw).strip()
 
 
+def _candidate_item_schema(*, multiple_choice: bool) -> dict[str, Any]:
+    confidence = {"type": "integer", "minimum": 0, "maximum": 100}
+    if multiple_choice:
+        properties = {
+            "option_index": {"type": "integer", "minimum": 1},
+            "confidence": confidence,
+            "rationale": {"type": "string"},
+        }
+        required = ["option_index", "confidence", "rationale"]
+    else:
+        properties = {
+            "answer": {"type": "string"},
+            "confidence": confidence,
+            "rationale": {"type": "string"},
+        }
+        required = ["answer", "confidence", "rationale"]
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _top_n_response_format(*, multiple_choice: bool, n: int) -> dict[str, Any]:
+    """Constrained JSON schema for the Top-N completion.
+
+    `json_object` is not enough: OpenRouter advertises `structured_outputs` for
+    the default model (`anthropic/claude-sonnet-4.6`), and the production
+    failure (`"confidence">80`) was invalid JSON, so a type-only JSON mode
+    either was not applied or did not constrain the value. A schema that
+    types `confidence` as an integer is the structural fix; the prompt
+    examples remain as a fallback for models that ignore `response_format`.
+    """
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "top_n_candidates",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "candidates": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": n,
+                        "items": _candidate_item_schema(multiple_choice=multiple_choice),
+                    }
+                },
+                "required": ["candidates"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _none_step(parse_status: str) -> InteractionStep:
+    return InteractionStep(
+        type=StepType.NONE,
+        payload={"kind": "top_n", "parse_status": parse_status},
+        is_terminal=True,
+    )
+
+
 def _parse_top_n_response(raw: str) -> dict:
     content = _strip_markdown_json(raw)
     decoder = json.JSONDecoder()
@@ -162,14 +230,14 @@ def _normalize_candidates(raw_candidates: Any, options: list[str], n: int) -> li
 
 
 def _compose_system_prompt(extra: str | None) -> str:
-    """Append a researcher-supplied system prompt to the method's own.
+    """Put researcher framing first so the JSON-output contract stays last.
 
-    Kept after the method prompt so the JSON-output contract stays last and
-    is least likely to be overridden by free-form study framing.
+    Recency: instructions at the end of the system prompt are less likely to
+    be overridden by free-form study framing.
     """
     if not extra or not extra.strip():
         return _SYSTEM_PROMPT
-    return f"{_SYSTEM_PROMPT}\n\nStudy-specific context:\n{extra.strip()}"
+    return f"Study-specific context:\n{extra.strip()}\n\n{_SYSTEM_PROMPT}"
 
 
 class TopNAssistance(AssistanceMethod):
@@ -217,7 +285,7 @@ class TopNAssistance(AssistanceMethod):
                 ],
                 model=model,
                 settings=settings.llm,
-                response_format={"type": "json_object"},
+                response_format=_top_n_response_format(multiple_choice=bool(options), n=n),
                 temperature=0,
             )
         except (RuntimeError, ValueError, openai.OpenAIError):
@@ -227,12 +295,16 @@ class TopNAssistance(AssistanceMethod):
         try:
             parsed = _parse_top_n_response(raw)
         except json.JSONDecodeError:
+            # Fail closed on any undecodable body, including mid-candidate
+            # truncation (max_tokens=4096). Salvaging the intact prefix would
+            # drop the hedged candidate more often than not, which is a
+            # silently biased shortlist; parse_status records the miss instead.
             logger.warning("Failed to parse top-N assistance response: %r", raw)
-            parsed = {}
+            return _none_step("unparseable")
 
         candidates = _normalize_candidates(parsed.get("candidates"), options, n)
         if not candidates:
-            return InteractionStep(type=StepType.NONE, is_terminal=True)
+            return _none_step("clean")
 
         # Payload order is display order, so shuffle here rather than in the UI:
         # the shuffled list is what gets persisted with the session, which keeps
@@ -246,6 +318,7 @@ class TopNAssistance(AssistanceMethod):
                 "top_n": n,
                 "candidates": shuffled,
                 "has_options": bool(options),
+                "parse_status": "clean",
             },
             is_terminal=True,
         )

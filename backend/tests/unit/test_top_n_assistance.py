@@ -19,10 +19,12 @@ from services.assistance.methods.top_n import (
     TopNAssistance,
     _SYSTEM_PROMPT,
     _clamp_top_n,
+    _compose_system_prompt,
     _normalize_candidates,
     _parse_options,
     _parse_top_n_response,
     _strip_markdown_json,
+    _top_n_response_format,
 )
 
 
@@ -179,6 +181,9 @@ class TestParseTopNResponse:
             _parse_top_n_response(raw)
 
     def test_raises_on_truncated_wrapper(self):
+        # Truncation is a separate failure from the comparison token. Salvaging
+        # the intact prefix is an explicit non-goal: fail closed instead of a
+        # silently shorter, less diverse shortlist.
         raw = (
             '{"candidates":[{"answer":"A","confidence":90,"rationale":"a"},'
             '{"answer":"B","confidence":'
@@ -187,12 +192,33 @@ class TestParseTopNResponse:
             _parse_top_n_response(raw)
 
 
-def test_system_prompt_shows_a_concrete_confidence_integer():
-    # `"confidence":0-100` in the schema example is what led claude-sonnet-4-6
-    # to emit `"confidence">80`. The examples must be valid JSON fragments.
-    compact = _SYSTEM_PROMPT.replace(" ", "")
-    assert '"confidence":80' in compact
-    assert '"confidence":0-100' not in compact
+def test_compose_puts_json_contract_after_study_context():
+    composed = _compose_system_prompt("Be a pirate.")
+    assert composed.index("Be a pirate.") < composed.index(_SYSTEM_PROMPT)
+    assert composed.endswith(_SYSTEM_PROMPT)
+
+
+def test_compose_without_extra_is_the_method_prompt():
+    assert _compose_system_prompt(None) == _SYSTEM_PROMPT
+    assert _compose_system_prompt("   ") == _SYSTEM_PROMPT
+
+
+class TestTopNResponseFormat:
+    def test_multiple_choice_requires_option_index_and_integer_confidence(self):
+        fmt = _top_n_response_format(multiple_choice=True, n=3)
+        assert fmt["type"] == "json_schema"
+        item = fmt["json_schema"]["schema"]["properties"]["candidates"]["items"]
+        assert item["properties"]["confidence"]["type"] == "integer"
+        assert "option_index" in item["required"]
+        assert "answer" not in item["properties"]
+        assert fmt["json_schema"]["schema"]["properties"]["candidates"]["maxItems"] == 3
+
+    def test_free_response_requires_answer_and_integer_confidence(self):
+        fmt = _top_n_response_format(multiple_choice=False, n=2)
+        item = fmt["json_schema"]["schema"]["properties"]["candidates"]["items"]
+        assert "answer" in item["required"]
+        assert "option_index" not in item["properties"]
+        assert fmt["json_schema"]["schema"]["properties"]["candidates"]["maxItems"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +367,7 @@ async def test_start_returns_display_step_with_candidates():
     assert {c["answer"] for c in candidates} == {"Yes", "No"}
     assert next(c for c in candidates if c["answer"] == "Yes")["rank"] == 1
     assert step.payload["has_options"] is True
+    assert step.payload["parse_status"] == "clean"
 
 
 @pytest.mark.asyncio
@@ -426,6 +453,7 @@ async def test_start_returns_none_step_on_empty_candidates():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.payload["parse_status"] == "clean"
 
 
 @pytest.mark.asyncio
@@ -441,28 +469,7 @@ async def test_start_returns_none_step_on_unparseable_llm_response():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
-
-
-@pytest.mark.asyncio
-async def test_start_returns_none_step_on_comparison_instead_of_colon():
-    method = TopNAssistance()
-    question = _make_question(options=None, question_type="FT")
-    raw = (
-        '{"candidates":['
-        '{"answer":"A","confidence":85,"rationale":"a"},'
-        '{"answer":"B","confidence">80,"rationale":"b"},'
-        '{"answer":"C","confidence":75,"rationale":"c"}'
-        "]}"
-    )
-
-    with patch(
-        "services.assistance.methods.top_n.complete",
-        new=AsyncMock(return_value=raw),
-    ):
-        step = await method.start(question, {})
-
-    assert step.type == StepType.NONE
-    assert step.is_terminal is True
+    assert step.payload == {"kind": "top_n", "parse_status": "unparseable"}
 
 
 @pytest.mark.asyncio
@@ -504,6 +511,29 @@ async def test_start_includes_parent_question_context():
 
 
 @pytest.mark.asyncio
+async def test_start_requests_json_schema_and_puts_study_prompt_first():
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "given context"},
+        ]
+    )
+
+    mock_complete = AsyncMock(return_value=llm_payload)
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        await method.start(question, {"n": 2}, experiment_system_prompt="Be precise.")
+
+    messages = mock_complete.call_args[0][0]
+    system_message = next(m for m in messages if m["role"] == "system")
+    assert system_message["content"].index("Be precise.") < system_message["content"].index(
+        _SYSTEM_PROMPT
+    )
+    response_format = mock_complete.call_args.kwargs["response_format"]
+    assert response_format == _top_n_response_format(multiple_choice=True, n=2)
+
+
+@pytest.mark.asyncio
 async def test_start_returns_none_step_on_complete_runtime_error():
     method = TopNAssistance()
     question = _make_question()
@@ -516,6 +546,8 @@ async def test_start_returns_none_step_on_complete_runtime_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    # Call never reached the parser, so there is no parse_status to record.
+    assert step.payload == {}
 
 
 @pytest.mark.asyncio

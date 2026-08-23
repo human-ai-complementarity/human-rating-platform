@@ -60,7 +60,10 @@ async def complete(
         response_format: Optional response format dict, e.g.
                          {"type": "json_object"} or
                          {"type": "json_schema", "json_schema": {"name": "...", "schema": {...}}}.
-                         Supported by Gemini and GPT models; ignored by models that don't support it.
+                         Honored by OpenRouter models that advertise
+                         `structured_outputs` / `response_format` (including
+                         anthropic/claude-sonnet-4.6); ignored by models that
+                         don't.
     """
     if not settings.openrouter_api_key:
         raise RuntimeError("LLM__OPENROUTER_API_KEY is not set.")

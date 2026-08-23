@@ -151,6 +151,7 @@ export interface AssistanceStep {
       rationale?: string;
     }>;
     has_options?: boolean;
+    parse_status?: 'clean' | 'unparseable';
     subtasks?: Subtask[];
     iteration?: number;
     max_rounds?: number;
