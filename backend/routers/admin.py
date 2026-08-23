@@ -192,6 +192,23 @@ async def export_ratings(
     )
 
 
+@secure_router.get("/experiments/{experiment_id}/export/documents")
+async def export_documents(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return StreamingResponse(
+        admin_service.stream_documents_export_csv_chunks(experiment_id=experiment_id, db=db),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": (
+                "attachment; filename="
+                f"{admin_service.build_documents_export_filename(experiment_id)}"
+            )
+        },
+    )
+
+
 @secure_router.patch("/experiments/{experiment_id}", response_model=ExperimentResponse)
 async def update_experiment(
     experiment_id: int,

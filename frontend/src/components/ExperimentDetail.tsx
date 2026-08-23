@@ -1063,7 +1063,15 @@ function ExperimentDetail({
             download
             style={{ ...secondaryButton, textDecoration: 'none' }}
           >
-            Export CSV
+            Export ratings CSV
+          </a>
+          <a
+            data-testid="export-documents-link"
+            href={api.getDocumentsExportUrl(experiment.id)}
+            download
+            style={{ ...secondaryButton, textDecoration: 'none' }}
+          >
+            Export documents CSV
           </a>
           <button
             type="button"

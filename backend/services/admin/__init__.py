@@ -20,7 +20,12 @@ from .experiments import (
     unarchive_experiment,
     update_experiment,
 )
-from .exports import build_export_filename, stream_export_csv_chunks
+from .exports import (
+    build_documents_export_filename,
+    build_export_filename,
+    stream_documents_export_csv_chunks,
+    stream_export_csv_chunks,
+)
 from .rounds import (
     calculate_recommendation,
     close_experiment_round,
@@ -37,6 +42,7 @@ from .uploads import list_uploads, upload_questions
 
 __all__ = [
     "archive_experiment",
+    "build_documents_export_filename",
     "build_export_filename",
     "calculate_recommendation",
     "create_dataset",
@@ -60,6 +66,7 @@ __all__ = [
     "refresh_experiment_spend",
     "run_experiment_round",
     "run_pilot_study",
+    "stream_documents_export_csv_chunks",
     "stream_export_csv_chunks",
     "unarchive_experiment",
     "update_dataset",

@@ -636,6 +636,10 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
 
   const exportLink = page.getByTestId('export-link');
   await expect(exportLink).toHaveAttribute('href', /\/api\/admin\/experiments\/1\/export$/);
+  await expect(page.getByTestId('export-documents-link')).toHaveAttribute(
+    'href',
+    /\/api\/admin\/experiments\/1\/export\/documents$/
+  );
   // include-preview toggle lives on the Overview panel.
   await page.getByTestId('tab-overview').click();
   await page.getByTestId('include-preview-toggle').click();

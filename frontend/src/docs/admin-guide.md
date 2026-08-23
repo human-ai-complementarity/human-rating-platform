@@ -18,7 +18,7 @@ Upload a CSV or Parquet file in the **Questions** section. You can upload multip
 | `options` | No | Pipe-separated choices for multiple-choice (e.g. `Yes\|No\|Maybe`). Required if `question_type=MC` and you want preset options. |
 | `question_type` | No | `MC` (multiple-choice) or `FT` (free-text). Defaults to `MC`. |
 | `metadata` | No | Per-row JSON blob you can attach for your own use. Surfaced in exports. |
-| `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. |
+| `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. The delimiter check looks at the current file only, so a document that contains that marker as content must be referenced by a child in the same upload. |
 
 ### Dataset-level metadata (optional)
 
@@ -87,7 +87,7 @@ Once the pilot closes, a **Recommendation for next round** panel appears with a 
 
 ## 6. View results
 
-The **Overview** section shows live progress. From there you can open analytics or export the raw ratings as CSV. The *include preview data* toggle controls whether your own test ratings count.
+The **Overview** section shows live progress. From there you can open analytics or export CSVs: **ratings** (one row per rating, with `parent_question_id` when the question has a parent) and **documents** (one row per parent, so a shared long document is not repeated on every rating). The *include preview data* toggle controls whether your own test ratings count.
 
 ## 7. Fetch data programmatically (optional)
 

@@ -1019,7 +1019,8 @@ def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync
 
     parsed_rows = list(csv.reader(io.StringIO("".join(chunks))))
     assert parsed_rows[0][0] == "rating_id"
-    assert "parent_question_text" in parsed_rows[0]
+    assert "parent_question_id" in parsed_rows[0]
+    assert "parent_question_text" not in parsed_rows[0]
     assert len(parsed_rows) == row_count + 1
 
 
@@ -2714,7 +2715,7 @@ def test_upload_rejects_separator_on_a_blank_question_id(client: TestClient):
     assert "parent_question_id" in detail
 
 
-def test_export_includes_parent_question_text(client: TestClient):
+def test_export_ratings_reference_parent_id_not_document_text(client: TestClient):
     experiment = _create_experiment(client)
     _upload_parent_and_children(client, experiment["id"])
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_EXPORT_PARENT")
@@ -2734,12 +2735,23 @@ def test_export_includes_parent_question_text(client: TestClient):
 
     with client.stream("GET", f"/api/admin/experiments/{experiment['id']}/export") as response:
         assert response.status_code == 200
-        body = "".join(response.iter_text())
+        ratings_body = "".join(response.iter_text())
 
-    rows = list(csv.DictReader(io.StringIO(body)))
-    assert len(rows) == 1
-    assert rows[0]["parent_question_text"] == PARENT_TEXT
-    assert rows[0]["question_text"] == question["question_text"]
+    rating_rows = list(csv.DictReader(io.StringIO(ratings_body)))
+    assert len(rating_rows) == 1
+    assert rating_rows[0]["parent_question_id"] == "parent1"
+    assert "parent_question_text" not in rating_rows[0]
+    assert PARENT_TEXT not in ratings_body
+    assert rating_rows[0]["question_text"] == question["question_text"]
+
+    with client.stream(
+        "GET", f"/api/admin/experiments/{experiment['id']}/export/documents"
+    ) as response:
+        assert response.status_code == 200
+        documents_body = "".join(response.iter_text())
+
+    document_rows = list(csv.DictReader(io.StringIO(documents_body)))
+    assert document_rows == [{"question_id": "parent1", "question_text": PARENT_TEXT}]
 
 
 def _insert_question(

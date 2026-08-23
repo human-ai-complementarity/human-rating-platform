@@ -74,6 +74,7 @@ const routes = {
     stats: (id: number) => `/admin/experiments/${id}/stats`,
     analytics: (id: number) => `/admin/experiments/${id}/analytics`,
     export: (id: number) => `/admin/experiments/${id}/export`,
+    exportDocuments: (id: number) => `/admin/experiments/${id}/export/documents`,
     authLogin: '/admin/auth/login',
     authLogout: '/admin/auth/logout',
     platformStatus: '/admin/platform-status',
@@ -630,6 +631,10 @@ export const api = {
     return buildUrl(routes.admin.export(experimentId), {
       ...(includePreview ? { include_preview: 'true' } : {}),
     });
+  },
+
+  getDocumentsExportUrl(experimentId: number): string {
+    return buildUrl(routes.admin.exportDocuments(experimentId));
   },
 
   // ── Rater ────────────────────────────────────────────────────────────────
