@@ -35,24 +35,37 @@ def split_separator_question(question_text: str) -> tuple[str, str] | None:
 def separator_upload_offenders(rows: list[dict]) -> list[str]:
     """Labels for upload rows that still concatenate document + question.
 
-    Rows that another row in the same file points at via `parent_question_id`
-    are skipped: their `question_text` is the document, and a genuine document
-    may contain the delimiter as content. Rows with a blank `question_id` are
-    labeled by 1-based position so they cannot slip through the guard.
-    Duplicate labels are collapsed so the error preview does not repeat an id.
+    The last row whose `question_id` another row in the same file points at is
+    skipped: that is the document last-write-wins will attach the child to, and
+    a genuine document may contain the delimiter as content. Earlier rows that
+    share the same `question_id` string are not parents — they would be inserted
+    as standalone questions — so a concatenated duplicate still fails the guard.
+    Rows with a blank `question_id` are labeled by 1-based position so they
+    cannot slip through. Duplicate labels are collapsed so the error preview
+    does not repeat an id.
     """
     referenced_parents = {str(row.get("parent_question_id") or "").strip() for row in rows}
     referenced_parents.discard("")
 
+    last_index_by_id: dict[str, int] = {}
+    for index, row in enumerate(rows):
+        question_id = str(row.get("question_id") or "").strip()
+        if question_id:
+            last_index_by_id[question_id] = index
+
     labels: list[str] = []
     seen: set[str] = set()
-    for index, row in enumerate(rows, start=1):
+    for index, row in enumerate(rows):
         question_id = str(row.get("question_id") or "").strip()
-        if question_id in referenced_parents:
+        if (
+            question_id
+            and question_id in referenced_parents
+            and last_index_by_id[question_id] == index
+        ):
             continue
         if split_separator_question(str(row.get("question_text") or "")) is None:
             continue
-        label = f"'{question_id}'" if question_id else f"row {index}"
+        label = f"'{question_id}'" if question_id else f"row {index + 1}"
         if label in seen:
             continue
         seen.add(label)

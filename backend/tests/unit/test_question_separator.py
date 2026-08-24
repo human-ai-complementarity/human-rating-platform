@@ -89,3 +89,40 @@ def test_offenders_collapse_duplicate_question_ids():
         {"question_id": "q1", "question_text": "Doc\n\n--- QUESTION ---\nSecond?"},
     ]
     assert separator_upload_offenders(rows) == ["'q1'"]
+
+
+def test_offenders_flag_concatenated_duplicate_of_a_referenced_parent():
+    """Last-write-wins: only the last Q1 is the parent. The earlier concatenated
+    row would land as a standalone question and must still be rejected.
+    """
+    rows = [
+        {
+            "question_id": "Q1",
+            "question_text": "BigDoc\n\n--- QUESTION ---\nWhat is X?",
+            "parent_question_id": "",
+        },
+        {"question_id": "Q1", "question_text": "other doc", "parent_question_id": ""},
+        {
+            "question_id": "child1",
+            "question_text": "actual question",
+            "parent_question_id": "Q1",
+        },
+    ]
+    assert separator_upload_offenders(rows) == ["'Q1'"]
+
+
+def test_offenders_still_skip_the_last_referenced_parent_when_ids_collide():
+    rows = [
+        {"question_id": "Q1", "question_text": "other doc", "parent_question_id": ""},
+        {
+            "question_id": "Q1",
+            "question_text": "Keep me intact\n\n--- QUESTION ---\nstill the document",
+            "parent_question_id": "",
+        },
+        {
+            "question_id": "child1",
+            "question_text": "actual question",
+            "parent_question_id": "Q1",
+        },
+    ]
+    assert separator_upload_offenders(rows) == []

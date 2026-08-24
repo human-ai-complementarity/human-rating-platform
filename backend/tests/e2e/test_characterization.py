@@ -2667,6 +2667,26 @@ def test_upload_rejects_separator_shaped_question_text(client: TestClient):
     assert "--- QUESTION ---" in detail
 
 
+def test_upload_rejects_concatenated_duplicate_of_a_referenced_parent(client: TestClient):
+    """A child pointing at Q1 must not exempt an earlier concatenated Q1 row."""
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "parent_question_id"])
+    writer.writerow(["Q1", "BigDoc\n\n--- QUESTION ---\nWhat is X?", ""])
+    writer.writerow(["Q1", "other doc", ""])
+    writer.writerow(["child1", "actual question", "Q1"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("dup_parent.csv", output.getvalue(), "text/csv")},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "Q1" in detail
+    assert "parent_question_id" in detail
+
+
 def test_upload_accepts_parent_document_that_contains_the_delimiter(client: TestClient):
     experiment = _create_experiment(client)
     output = io.StringIO()
