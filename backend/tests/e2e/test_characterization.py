@@ -2667,6 +2667,62 @@ def test_upload_rejects_separator_shaped_question_text(client: TestClient):
     assert "--- QUESTION ---" in detail
 
 
+def test_upload_parent_ref_binds_to_latest_duplicate_question_id(client: TestClient, sync_engine):
+    """Highest questions.id wins when the same question_id string already exists.
+
+    The separator guard only sees the current file; the resolver must still
+    attach the child to this upload's Q1, not a pre-existing one.
+    """
+    experiment = _create_experiment(client)
+    first = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "first.csv",
+                "question_id,question_text,parent_question_id\nQ1,old document,\n",
+                "text/csv",
+            )
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "parent_question_id"])
+    writer.writerow(["Q1", "Keep me intact\n\n--- QUESTION ---\nstill the document", ""])
+    writer.writerow(["child1", "actual question", "Q1"])
+    second = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("second.csv", output.getvalue(), "text/csv")},
+    )
+    assert second.status_code == 200, second.text
+
+    with sync_engine.begin() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    """
+                SELECT id, question_id, question_text, parent_question_id
+                FROM questions
+                WHERE experiment_id = :experiment_id
+                ORDER BY id
+                """
+                ),
+                {"experiment_id": experiment["id"]},
+            )
+            .mappings()
+            .all()
+        )
+
+    q1_rows = [row for row in rows if row["question_id"] == "Q1"]
+    child = next(row for row in rows if row["question_id"] == "child1")
+    latest_q1 = q1_rows[-1]
+    assert len(q1_rows) == 2
+    assert "Keep me intact" in latest_q1["question_text"]
+    assert child["parent_question_id"] == latest_q1["id"]
+    assert child["parent_question_id"] != q1_rows[0]["id"]
+
+
 def test_upload_rejects_concatenated_duplicate_of_a_referenced_parent(client: TestClient):
     """A child pointing at Q1 must not exempt an earlier concatenated Q1 row."""
     experiment = _create_experiment(client)

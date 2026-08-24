@@ -308,16 +308,21 @@ async def _resolve_parent_refs(
 
     # Build {question_id_string -> db id} for this experiment, covering both rows
     # just inserted and any pre-existing ones from earlier uploads.
+    #
+    # ORDER BY id is load-bearing: last-write-wins must be the highest id
+    # (last row in the newest file — inserts walk file order). The separator
+    # guard exempts only that last occurrence; an unordered SELECT could bind
+    # the child to an earlier duplicate and leave a concatenated twin standing
+    # as a rateable question.
     existing = (
         await db.execute(
-            select(Question.question_id, Question.id).where(Question.experiment_id == experiment_id)
+            select(Question.question_id, Question.id)
+            .where(Question.experiment_id == experiment_id)
+            .order_by(Question.id)
         )
     ).all()
     question_id_to_db_id: dict[str, int] = {}
     for qid_string, db_id in existing:
-        # Last write wins on duplicate question_id strings — questions already
-        # allow duplicates within an experiment, and the CSV-string parent ref
-        # is inherently ambiguous in that case. We pick whichever the DB returns.
         question_id_to_db_id[qid_string] = db_id
 
     for question, parent_ref in zip(new_questions, parent_refs):
