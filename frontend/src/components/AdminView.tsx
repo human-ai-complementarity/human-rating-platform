@@ -110,7 +110,7 @@ function bucketExperiments(experiments: Experiment[]): GroupBucket[] {
       key,
       groupId: exp.group_id,
       name: exp.group_name ?? 'Ungrouped',
-      datasetName: exp.dataset_name,
+      datasetName: exp.group_dataset_name,
       wave: exp.wave,
       experiments: [exp],
     });
@@ -314,7 +314,7 @@ function AdminView() {
           (e.internal_name || '').toLowerCase().includes(q) ||
           e.name.toLowerCase().includes(q) ||
           (e.group_name || '').toLowerCase().includes(q) ||
-          (e.dataset_name || '').toLowerCase().includes(q)
+          (e.group_dataset_name || '').toLowerCase().includes(q)
         )
       )
         return false;
