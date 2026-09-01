@@ -33,8 +33,10 @@ export interface Experiment {
   // Inherited from the experiment group when attached; all null if ungrouped.
   group_id: number | null;
   group_name: string | null;
-  dataset_id: number | null;
-  dataset_name: string | null;
+  // Prefixed to keep the group's dataset entity distinct from
+  // `dataset_filenames` above, which lists the uploaded question files.
+  group_dataset_id: number | null;
+  group_dataset_name: string | null;
   wave: string | null;
 }
 

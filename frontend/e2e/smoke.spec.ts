@@ -18,8 +18,8 @@ type ExperimentRecord = {
   spend_minor_units: number;
   group_id: number | null;
   group_name: string | null;
-  dataset_id: number | null;
-  dataset_name: string | null;
+  group_dataset_id: number | null;
+  group_dataset_name: string | null;
   wave: string | null;
 };
 
@@ -158,8 +158,8 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     spend_minor_units: 0,
     group_id: null,
     group_name: null,
-    dataset_id: null,
-    dataset_name: null,
+    group_dataset_id: null,
+    group_dataset_name: null,
     wave: null,
     ...partial,
   };
@@ -363,8 +363,8 @@ async function installApiMocks(
         assistance_method: payload.assistance_method ?? 'none',
         group_id: group?.id ?? null,
         group_name: group?.name ?? null,
-        dataset_id: group?.dataset_id ?? null,
-        dataset_name: group?.dataset_name ?? null,
+        group_dataset_id: group?.dataset_id ?? null,
+        group_dataset_name: group?.dataset_name ?? null,
         wave: group?.wave ?? null,
       });
       state.experiments = [experiment];
@@ -1457,8 +1457,8 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
       assistance_method: 'none',
       group_id: 1,
       group_name: 'MedQA Fall',
-      dataset_id: 1,
-      dataset_name: 'medqa',
+      group_dataset_id: 1,
+      group_dataset_name: 'medqa',
       wave: 'fall25',
       spend_minor_units: 400,
     }),
@@ -1467,8 +1467,8 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
       assistance_method: 'top_n',
       group_id: 1,
       group_name: 'MedQA Fall',
-      dataset_id: 1,
-      dataset_name: 'medqa',
+      group_dataset_id: 1,
+      group_dataset_name: 'medqa',
       wave: 'fall25',
       spend_minor_units: 250,
       needs_attention: true,
