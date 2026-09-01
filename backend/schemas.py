@@ -443,6 +443,33 @@ class ExperimentGroupResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class CatalogEntry(BaseModel):
+    name: str
+    waves: list[str]
+
+
+class CatalogAssignment(BaseModel):
+    experiment_id: int
+    experiment_name: str
+    dataset_name: str
+    wave: str
+    group_id: int
+
+
+class CatalogSkip(BaseModel):
+    experiment_id: int
+    experiment_name: str
+    reason: str
+
+
+class CatalogSyncResponse(BaseModel):
+    datasets_created: list[str] = Field(default_factory=list)
+    datasets_updated: list[str] = Field(default_factory=list)
+    groups_created: list[str] = Field(default_factory=list)
+    experiments_assigned: list[CatalogAssignment] = Field(default_factory=list)
+    experiments_skipped: list[CatalogSkip] = Field(default_factory=list)
+
+
 # --- API key management (dashboard, cookie-authed) -------------------------
 class ApiKeyCreate(BaseModel):
     # Strip before length validation so a whitespace-only name (" ") is rejected
