@@ -11,8 +11,10 @@ import type {
   AssistanceStep,
   ExperimentRound,
   ExperimentRoundUpdate,
+  Dataset,
   Experiment,
   ExperimentCreate,
+  ExperimentGroup,
   ExperimentStats,
   ExperimentStatus,
   PilotStudyCreate,
@@ -77,6 +79,8 @@ const routes = {
     authLogin: '/admin/auth/login',
     authLogout: '/admin/auth/logout',
     platformStatus: '/admin/platform-status',
+    datasets: '/admin/datasets',
+    experimentGroups: '/admin/experiment-groups',
     apiKeys: '/admin/api-keys',
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
@@ -429,6 +433,37 @@ export const api = {
 
   // Single-experiment fetch. Resolves by id regardless of archived state, so
   // the detail page can open an archived experiment (the list hides those).
+  async listDatasets(): Promise<Dataset[]> {
+    return requestJson<Dataset[]>(routes.admin.datasets);
+  },
+
+  async createDataset(data: { name: string; waves?: string[] }): Promise<Dataset> {
+    return requestJson<Dataset>(routes.admin.datasets, {
+      method: 'POST',
+      json: data,
+    });
+  },
+
+  async listExperimentGroups(query: { dataset_id?: number; wave?: string } = {}): Promise<ExperimentGroup[]> {
+    return requestJson<ExperimentGroup[]>(routes.admin.experimentGroups, {
+      query: {
+        ...(query.dataset_id != null ? { dataset_id: query.dataset_id } : {}),
+        ...(query.wave ? { wave: query.wave } : {}),
+      },
+    });
+  },
+
+  async createExperimentGroup(data: {
+    name: string;
+    dataset_id: number;
+    wave?: string | null;
+  }): Promise<ExperimentGroup> {
+    return requestJson<ExperimentGroup>(routes.admin.experimentGroups, {
+      method: 'POST',
+      json: data,
+    });
+  },
+
   async getExperiment(experimentId: number): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId));
   },

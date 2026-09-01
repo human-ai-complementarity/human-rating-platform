@@ -1,7 +1,13 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { Experiment, ExperimentCreate, ExperimentStatus } from '../types';
+import type {
+  Dataset,
+  Experiment,
+  ExperimentCreate,
+  ExperimentGroup,
+  ExperimentStatus,
+} from '../types';
 import StatusLabel from './StatusLabel';
 import RowActionMenu from './RowActionMenu';
 import ConfirmDialog from './ConfirmDialog';
@@ -25,9 +31,44 @@ const STATUS_TABS: { value: StatusTab; label: string }[] = [
 ];
 
 // Search + filter selections persist across refreshes.
-const FILTER_STORAGE_KEY = 'hrp.experiments.filters.v1';
-type Filters = { query: string; statusFilter: StatusTab; needsOnly: boolean };
-const DEFAULT_FILTERS: Filters = { query: '', statusFilter: 'ALL', needsOnly: false };
+const FILTER_STORAGE_KEY = 'hrp.experiments.filters.v2';
+type Filters = {
+  query: string;
+  statusFilter: StatusTab;
+  needsOnly: boolean;
+  grouped: boolean;
+  waveFilter: string;
+};
+const DEFAULT_FILTERS: Filters = {
+  query: '',
+  statusFilter: 'ALL',
+  needsOnly: false,
+  grouped: true,
+  waveFilter: '',
+};
+
+function parseWaveList(raw: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const part of raw.split(',')) {
+    const token = part.trim().toLowerCase();
+    if (token && !seen.has(token)) {
+      seen.add(token);
+      result.push(token);
+    }
+  }
+  return result;
+}
+
+const ASSISTANCE_METHODS: { value: string; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'top_n', label: 'Top-N' },
+  { value: 'human_as_a_tool', label: 'Human as a tool' },
+];
+
+function methodLabel(method: string): string {
+  return ASSISTANCE_METHODS.find((m) => m.value === method)?.label ?? method;
+}
 
 function loadFilters(): Filters {
   try {
@@ -39,10 +80,46 @@ function loadFilters(): Filters {
       query: typeof parsed.query === 'string' ? parsed.query : '',
       statusFilter: validStatus ? (parsed.statusFilter as StatusTab) : 'ALL',
       needsOnly: Boolean(parsed.needsOnly),
+      grouped: parsed.grouped !== false,
+      waveFilter: typeof parsed.waveFilter === 'string' ? parsed.waveFilter : '',
     };
   } catch {
     return DEFAULT_FILTERS;
   }
+}
+
+type GroupBucket = {
+  key: string;
+  groupId: number | null;
+  name: string;
+  datasetName: string | null;
+  wave: string | null;
+  experiments: Experiment[];
+};
+
+function bucketExperiments(experiments: Experiment[]): GroupBucket[] {
+  const buckets = new Map<string, GroupBucket>();
+  for (const exp of experiments) {
+    const key = exp.group_id != null ? `group:${exp.group_id}` : 'ungrouped';
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.experiments.push(exp);
+      continue;
+    }
+    buckets.set(key, {
+      key,
+      groupId: exp.group_id,
+      name: exp.group_name ?? 'Ungrouped',
+      datasetName: exp.group_dataset_name,
+      wave: exp.wave,
+      experiments: [exp],
+    });
+  }
+  return [...buckets.values()].sort((a, b) => {
+    if (a.groupId == null) return 1;
+    if (b.groupId == null) return -1;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
 }
 
 // Zero-decimal currencies (JPY, KRW, …) have no minor unit, so the divisor and
@@ -71,6 +148,10 @@ function AdminView() {
   const [query, setQuery] = useState(() => loadFilters().query);
   const [statusFilter, setStatusFilter] = useState<StatusTab>(() => loadFilters().statusFilter);
   const [needsOnly, setNeedsOnly] = useState(() => loadFilters().needsOnly);
+  const [grouped, setGrouped] = useState(() => loadFilters().grouped);
+  const [waveFilter, setWaveFilter] = useState(() => loadFilters().waveFilter);
+  const [groups, setGroups] = useState<ExperimentGroup[]>([]);
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
 
   // Delete is the one destructive/irreversible action, so it still confirms;
   // archive/restore apply immediately with a toast (per the mock).
@@ -85,10 +166,13 @@ function AdminView() {
     internal_name: '',
     num_ratings_per_question: 3,
     prolific_completion_url: '',
+    assistance_method: 'none',
+    group_id: null,
   });
 
   useEffect(() => {
     loadExperiments();
+    loadCatalog();
     api
       .getPlatformStatus()
       .then((s) => {
@@ -103,8 +187,11 @@ function AdminView() {
 
   // Persist filters so they survive a refresh.
   useEffect(() => {
-    localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({ query, statusFilter, needsOnly }));
-  }, [query, statusFilter, needsOnly]);
+    localStorage.setItem(
+      FILTER_STORAGE_KEY,
+      JSON.stringify({ query, statusFilter, needsOnly, grouped, waveFilter }),
+    );
+  }, [query, statusFilter, needsOnly, grouped, waveFilter]);
 
   const loadExperiments = async () => {
     try {
@@ -115,6 +202,19 @@ function AdminView() {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadCatalog = async () => {
+    try {
+      const [nextGroups, nextDatasets] = await Promise.all([
+        api.listExperimentGroups(),
+        api.listDatasets(),
+      ]);
+      setGroups(nextGroups);
+      setDatasets(nextDatasets);
+    } catch {
+      // Catalog is additive (picker + grouped labels); the list still works.
     }
   };
 
@@ -173,23 +273,21 @@ function AdminView() {
     }
   };
 
-  const handleCreateExperiment = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateExperiment = async (payload: ExperimentCreate) => {
     setError(null);
-    try {
-      // Backend normalises whitespace/empty → null for internal_name on both
-      // create and update, so we just forward the form value as-typed.
-      const created = await api.createExperiment(newExperiment);
-      setNewExperiment({
-        name: '',
-        internal_name: '',
-        num_ratings_per_question: 3,
-        prolific_completion_url: '',
-      });
-      navigate(`/admin/experiments/${created.id}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    }
+    // Backend normalises whitespace/empty → null for internal_name on both
+    // create and update, so we just forward the form value as-typed.
+    const created = await api.createExperiment(payload);
+    setNewExperiment({
+      name: '',
+      internal_name: '',
+      num_ratings_per_question: 3,
+      prolific_completion_url: '',
+      assistance_method: 'none',
+      group_id: null,
+    });
+    await Promise.all([loadExperiments(), loadCatalog()]);
+    navigate(`/admin/experiments/${created.id}`);
   };
 
   const archivedCount = useMemo(
@@ -210,24 +308,42 @@ function AdminView() {
       if (statusFilter !== 'ALL' && statusFilter !== 'ARCHIVED' && e.status !== statusFilter)
         return false;
       if (needsOnly && !e.needs_attention) return false;
-      if (q && !((e.internal_name || '').toLowerCase().includes(q) || e.name.toLowerCase().includes(q)))
+      if (
+        q &&
+        !(
+          (e.internal_name || '').toLowerCase().includes(q) ||
+          e.name.toLowerCase().includes(q) ||
+          (e.group_name || '').toLowerCase().includes(q) ||
+          (e.group_dataset_name || '').toLowerCase().includes(q)
+        )
+      )
         return false;
+      if (waveFilter && e.wave !== waveFilter) return false;
       return true;
     });
-  }, [experiments, query, statusFilter, needsOnly]);
+  }, [experiments, query, statusFilter, needsOnly, waveFilter]);
 
   const totalSpendMinor = useMemo(
     () => filtered.reduce((sum, e) => sum + e.spend_minor_units, 0),
     [filtered],
   );
 
-  const filtersActive = query.trim() !== '' || statusFilter !== 'ALL' || needsOnly;
+  const filtersActive = query.trim() !== '' || statusFilter !== 'ALL' || needsOnly || waveFilter !== '';
 
   const clearFilters = () => {
     setQuery('');
     setStatusFilter('ALL');
     setNeedsOnly(false);
+    setWaveFilter('');
   };
+
+  const availableWaves = useMemo(() => {
+    const waves = new Set<string>();
+    for (const exp of experiments) {
+      if (exp.archived_at === null && exp.wave) waves.add(exp.wave);
+    }
+    return [...waves].sort();
+  }, [experiments]);
 
   return (
     <div className="admin-page">
@@ -251,7 +367,15 @@ function AdminView() {
       {error && <ErrorBanner text={error} />}
 
       <div style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}>
-        <CreatePanel value={newExperiment} onChange={setNewExperiment} onSubmit={handleCreateExperiment} />
+        <CreatePanel
+          value={newExperiment}
+          onChange={setNewExperiment}
+          onSubmit={handleCreateExperiment}
+          onCatalogRefresh={loadCatalog}
+          groups={groups}
+          datasets={datasets}
+          experiments={experiments}
+        />
         <ListPanel
           experiments={filtered}
           loading={loading}
@@ -265,6 +389,11 @@ function AdminView() {
           archivedCount={archivedCount}
           needsOnly={needsOnly}
           onToggleNeeds={() => setNeedsOnly((v) => !v)}
+          grouped={grouped}
+          onToggleGrouped={() => setGrouped((v) => !v)}
+          waveFilter={waveFilter}
+          waves={availableWaves}
+          onWaveFilterChange={setWaveFilter}
           filtersActive={filtersActive}
           onClearFilters={clearFilters}
           onSelect={(exp) => navigate(`/admin/experiments/${exp.id}`)}
@@ -312,6 +441,11 @@ function ListPanel({
   archivedCount,
   needsOnly,
   onToggleNeeds,
+  grouped,
+  onToggleGrouped,
+  waveFilter,
+  waves,
+  onWaveFilterChange,
   filtersActive,
   onClearFilters,
   onSelect,
@@ -331,6 +465,11 @@ function ListPanel({
   archivedCount: number;
   needsOnly: boolean;
   onToggleNeeds: () => void;
+  grouped: boolean;
+  onToggleGrouped: () => void;
+  waveFilter: string;
+  waves: string[];
+  onWaveFilterChange: (wave: string) => void;
   filtersActive: boolean;
   onClearFilters: () => void;
   onSelect: (exp: Experiment) => void;
@@ -443,6 +582,29 @@ function ListPanel({
 
         <button
           type="button"
+          onClick={onToggleGrouped}
+          aria-pressed={grouped}
+          data-testid="grouped-toggle"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            border: `1px solid ${grouped ? 'var(--accent)' : 'var(--faint)'}`,
+            borderRadius: 'var(--radius-sm)',
+            padding: '8px 13px',
+            font: `${grouped ? 600 : 500} 13px var(--font-body)`,
+            color: grouped ? 'var(--accent-soft-ink)' : 'var(--muted)',
+            background: grouped ? 'var(--accent-soft)' : 'var(--surface)',
+            cursor: 'pointer',
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          Grouped
+        </button>
+
+        <button
+          type="button"
           onClick={onToggleNeeds}
           aria-pressed={needsOnly}
           style={{
@@ -462,6 +624,35 @@ function ListPanel({
         >
           <span style={{ fontSize: 9 }}>●</span> Needs attention
         </button>
+
+        {waves.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            {waves.map((wave) => {
+              const active = waveFilter === wave;
+              return (
+                <button
+                  key={wave}
+                  type="button"
+                  data-testid={`wave-filter-${wave}`}
+                  aria-pressed={active}
+                  onClick={() => onWaveFilterChange(active ? '' : wave)}
+                  style={{
+                    border: `1px solid ${active ? 'var(--accent)' : 'var(--faint)'}`,
+                    borderRadius: 999,
+                    padding: '4px 10px',
+                    font: `${active ? 600 : 500} 12px var(--font-mono)`,
+                    letterSpacing: '0.02em',
+                    color: active ? 'var(--accent-soft-ink)' : 'var(--muted)',
+                    background: active ? 'var(--accent-soft)' : 'var(--surface)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {wave}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {filtersActive && (
           <button
@@ -489,6 +680,21 @@ function ListPanel({
           <EmptyState text="Loading…" />
         ) : experiments.length === 0 ? (
           <EmptyState text={filtersActive ? 'No experiments match your filters.' : 'No experiments yet. Create one to get started.'} />
+        ) : grouped ? (
+          bucketExperiments(experiments).map((bucket, bucketIdx, all) => (
+            <GroupCard
+              key={bucket.key}
+              bucket={bucket}
+              currencySymbol={currencySymbol}
+              currencyCode={currencyCode}
+              isLast={bucketIdx === all.length - 1}
+              onSelect={onSelect}
+              onDuplicate={onDuplicate}
+              onArchiveToggle={onArchiveToggle}
+              onDelete={onDelete}
+              onWaveClick={(wave) => onWaveFilterChange(waveFilter === wave ? '' : wave)}
+            />
+          ))
         ) : (
           experiments.map((exp, idx) => (
             <ExperimentRow
@@ -509,11 +715,149 @@ function ListPanel({
   );
 }
 
+function GroupCard({
+  bucket,
+  currencySymbol,
+  currencyCode,
+  isLast,
+  onSelect,
+  onDuplicate,
+  onArchiveToggle,
+  onDelete,
+  onWaveClick,
+}: {
+  bucket: GroupBucket;
+  currencySymbol: string;
+  currencyCode: string | null;
+  isLast: boolean;
+  onSelect: (exp: Experiment) => void;
+  onDuplicate: (exp: Experiment) => void;
+  onArchiveToggle: (exp: Experiment) => void;
+  onDelete: (exp: Experiment) => void;
+  onWaveClick: (wave: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const spend = bucket.experiments.reduce((sum, exp) => sum + (exp.spend_minor_units || 0), 0);
+  const attention = bucket.experiments.find((exp) => exp.needs_attention);
+
+  return (
+    <div
+      data-testid={bucket.groupId != null ? `group-card-${bucket.groupId}` : 'group-card-ungrouped'}
+      style={{
+        borderBottom: isLast ? 'none' : '1px solid var(--line)',
+        borderBottomLeftRadius: isLast ? 'var(--radius)' : undefined,
+        borderBottomRightRadius: isLast ? 'var(--radius)' : undefined,
+      }}
+    >
+      <div
+        data-testid={
+          bucket.groupId != null ? `group-card-toggle-${bucket.groupId}` : 'group-card-toggle-ungrouped'
+        }
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        style={{
+          width: '100%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          padding: '16px 24px',
+          border: 'none',
+          background: 'var(--surface-2)',
+          cursor: 'pointer',
+          textAlign: 'left',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+          <span aria-hidden style={{ color: 'var(--muted)', fontSize: 12, width: 10 }}>
+            {open ? '▾' : '▸'}
+          </span>
+          <div style={{ width: 9, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
+            {attention && <AttentionDot reason={attention.attention_reason} />}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  fontFamily: 'var(--font-head)',
+                  fontSize: 16,
+                  fontWeight: 600,
+                  letterSpacing: '-0.01em',
+                }}
+              >
+                {bucket.name}
+              </span>
+              {bucket.wave && (
+                <span
+                  data-testid={`group-wave-${bucket.groupId ?? 'ungrouped'}-${bucket.wave}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onWaveClick(bucket.wave!);
+                  }}
+                  style={{
+                    border: '1px solid var(--faint)',
+                    borderRadius: 999,
+                    padding: '2px 8px',
+                    font: '600 11px var(--font-mono)',
+                    color: 'var(--muted)',
+                    background: 'var(--surface)',
+                  }}
+                >
+                  {bucket.wave}
+                </span>
+              )}
+            </div>
+            <div style={{ marginTop: 3, fontSize: 12.5, color: 'var(--muted)' }}>
+              {bucket.datasetName ? `${bucket.datasetName} · ` : ''}
+              {bucket.experiments.length} experiment{bucket.experiments.length === 1 ? '' : 's'}
+            </div>
+          </div>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <div
+            data-testid={
+              bucket.groupId != null ? `group-spend-${bucket.groupId}` : 'group-spend-ungrouped'
+            }
+            style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}
+          >
+            {formatSpend(spend, currencySymbol, currencyCode)}
+          </div>
+          <div style={{ fontSize: 11, color: 'var(--muted)' }}>group spend</div>
+        </div>
+      </div>
+      {open &&
+        bucket.experiments.map((exp, idx) => (
+          <ExperimentRow
+            key={exp.id}
+            exp={exp}
+            currencySymbol={currencySymbol}
+            currencyCode={currencyCode}
+            isLast={idx === bucket.experiments.length - 1}
+            nested
+            onSelect={() => onSelect(exp)}
+            onDuplicate={() => onDuplicate(exp)}
+            onArchiveToggle={() => onArchiveToggle(exp)}
+            onDelete={() => onDelete(exp)}
+          />
+        ))}
+    </div>
+  );
+}
+
 function ExperimentRow({
   exp,
   currencySymbol,
   currencyCode,
   isLast,
+  nested = false,
   onSelect,
   onDuplicate,
   onArchiveToggle,
@@ -523,6 +867,7 @@ function ExperimentRow({
   currencySymbol: string;
   currencyCode: string | null;
   isLast: boolean;
+  nested?: boolean;
   onSelect: () => void;
   onDuplicate: () => void;
   onArchiveToggle: () => void;
@@ -539,7 +884,7 @@ function ExperimentRow({
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 20,
-        padding: '20px 24px',
+        padding: nested ? '16px 24px 16px 48px' : '20px 24px',
         borderBottom: isLast ? 'none' : '1px solid var(--line)',
         // Round the last row's bottom so its full-bleed hover fill follows the
         // card's rounded bottom corners.
@@ -567,6 +912,34 @@ function ExperimentRow({
               {exp.internal_name || exp.name}
             </span>
             <StatusLabel status={exp.status} size="sm" />
+            <span
+              data-testid={`experiment-method-${exp.assistance_method || 'none'}`}
+              style={{
+                border: '1px solid var(--faint)',
+                borderRadius: 999,
+                padding: '2px 8px',
+                font: '600 11px var(--font-body)',
+                color: 'var(--muted)',
+                background: 'var(--surface-2)',
+              }}
+            >
+              {methodLabel(exp.assistance_method || 'none')}
+            </span>
+            {exp.wave && !nested && (
+              <span
+                data-testid={`experiment-wave-${exp.wave}`}
+                style={{
+                  border: '1px solid var(--faint)',
+                  borderRadius: 999,
+                  padding: '2px 8px',
+                  font: '600 11px var(--font-mono)',
+                  color: 'var(--muted)',
+                  background: 'var(--surface-2)',
+                }}
+              >
+                {exp.wave}
+              </span>
+            )}
           </div>
           {exp.internal_name && (
             <div style={{ marginTop: 5, fontSize: 13, color: 'var(--muted)' }}>Public: {exp.name}</div>
@@ -718,11 +1091,105 @@ function CreatePanel({
   value,
   onChange,
   onSubmit,
+  onCatalogRefresh,
+  groups,
+  datasets,
+  experiments,
 }: {
   value: ExperimentCreate;
   onChange: (v: ExperimentCreate) => void;
-  onSubmit: (e: React.FormEvent) => void;
+  onSubmit: (data: ExperimentCreate) => Promise<void>;
+  onCatalogRefresh: () => Promise<void>;
+  groups: ExperimentGroup[];
+  datasets: Dataset[];
+  experiments: Experiment[];
 }) {
+  const [groupMode, setGroupMode] = useState<'none' | 'existing' | 'new'>('none');
+  const [newGroupName, setNewGroupName] = useState('');
+  const [datasetMode, setDatasetMode] = useState<'existing' | 'new'>('existing');
+  const [datasetId, setDatasetId] = useState<number | ''>('');
+  const [newDatasetName, setNewDatasetName] = useState('');
+  const [newDatasetWaves, setNewDatasetWaves] = useState('');
+  const [newGroupWave, setNewGroupWave] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const selectedGroup = groups.find((g) => g.id === value.group_id) ?? null;
+  const selectedDataset =
+    datasetMode === 'existing' ? datasets.find((d) => d.id === datasetId) ?? null : null;
+  const datasetWaves = selectedDataset?.waves ?? [];
+  const typedWaves = useMemo(() => parseWaveList(newDatasetWaves), [newDatasetWaves]);
+  const pickerWaves = datasetMode === 'new' ? typedWaves : datasetWaves;
+
+  const methodsInGroup = useMemo(() => {
+    const groupId = selectedGroup?.id;
+    if (groupId == null) return new Set<string>();
+    return new Set(
+      experiments.filter((exp) => exp.group_id === groupId).map((exp) => exp.assistance_method || 'none'),
+    );
+  }, [experiments, selectedGroup]);
+
+  const chosenMethod = value.assistance_method || 'none';
+  const methodAlreadyInGroup = selectedGroup != null && methodsInGroup.has(chosenMethod);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+    setSubmitting(true);
+    try {
+      let groupId = value.group_id ?? null;
+      if (groupMode === 'new') {
+        let nextDatasetId = typeof datasetId === 'number' ? datasetId : null;
+        let wavesForGroup = datasetWaves;
+        if (datasetMode === 'new') {
+          wavesForGroup = typedWaves;
+          if (!newDatasetName.trim()) {
+            throw new Error('Dataset name is required.');
+          }
+          if (wavesForGroup.length === 0) {
+            throw new Error('Add at least one wave to the new dataset.');
+          }
+          const created = await api.createDataset({
+            name: newDatasetName.trim(),
+            waves: wavesForGroup,
+          });
+          nextDatasetId = created.id;
+          setDatasetMode('existing');
+          setDatasetId(created.id);
+          await onCatalogRefresh();
+        }
+        if (nextDatasetId == null) {
+          throw new Error('Pick a dataset for the new group.');
+        }
+        if (!newGroupName.trim()) {
+          throw new Error('Group name is required.');
+        }
+        const wave = wavesForGroup.length === 1 ? wavesForGroup[0] : newGroupWave.trim();
+        if (!wave) {
+          throw new Error('Pick a wave for the new group.');
+        }
+        const createdGroup = await api.createExperimentGroup({
+          name: newGroupName.trim(),
+          dataset_id: nextDatasetId,
+          wave,
+        });
+        groupId = createdGroup.id;
+        setGroupMode('existing');
+        onChange({ ...value, group_id: createdGroup.id });
+        await onCatalogRefresh();
+      }
+      await onSubmit({
+        ...value,
+        group_id: groupId,
+        assistance_method: chosenMethod,
+      });
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <section
       style={{
@@ -733,7 +1200,7 @@ function CreatePanel({
       }}
     >
       <SectionHeader label="Create new" />
-      <form onSubmit={onSubmit} style={{ padding: 24 }}>
+      <form onSubmit={handleSubmit} style={{ padding: 24 }}>
         <Field
           id="experiment-name"
           testId="experiment-name-input"
@@ -769,6 +1236,259 @@ function CreatePanel({
           min={1}
           required
         />
+
+        <div style={{ marginBottom: 16 }}>
+          <label
+            htmlFor="experiment-group"
+            style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
+          >
+            Experiment group{' '}
+            <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
+          </label>
+          <select
+            id="experiment-group"
+            data-testid="group-picker"
+            value={groupMode === 'new' ? 'new' : groupMode === 'existing' && value.group_id != null ? String(value.group_id) : ''}
+            onChange={(e) => {
+              const next = e.target.value;
+              if (next === 'new') {
+                setGroupMode('new');
+                onChange({ ...value, group_id: null });
+                return;
+              }
+              if (next === '') {
+                setGroupMode('none');
+                onChange({ ...value, group_id: null });
+                return;
+              }
+              setGroupMode('existing');
+              onChange({ ...value, group_id: Number(next) });
+            }}
+            style={{
+              width: '100%',
+              padding: '11px 13px',
+              border: '1px solid var(--faint)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface)',
+              font: '400 15px var(--font-body)',
+              color: 'var(--ink)',
+            }}
+          >
+            <option value="">No group (scratch / pilot)</option>
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>
+                {group.name} · {group.dataset_name} · {group.wave}
+              </option>
+            ))}
+            <option value="new">Create new group…</option>
+          </select>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>
+            Groups are a dataset × wave. Skip this for scratch work.
+          </div>
+        </div>
+
+        {groupMode === 'new' && (
+          <div
+            style={{
+              border: '1px solid var(--faint)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '14px 14px 2px',
+              marginBottom: 16,
+              background: 'var(--surface-2)',
+            }}
+          >
+            <Field
+              id="new-group-name"
+              testId="new-group-name-input"
+              label="Group name"
+              value={newGroupName}
+              onChange={setNewGroupName}
+              placeholder="e.g., MedQA Fall 25"
+              required
+            />
+            <div style={{ marginBottom: 16 }}>
+              <label
+                htmlFor="new-group-dataset"
+                style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
+              >
+                Dataset
+              </label>
+              <select
+                id="new-group-dataset"
+                data-testid="new-group-dataset"
+                value={datasetMode === 'new' ? 'new' : datasetId === '' ? '' : String(datasetId)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  if (next === 'new') {
+                    setDatasetMode('new');
+                    setDatasetId('');
+                    setNewGroupWave('');
+                    return;
+                  }
+                  setDatasetMode('existing');
+                  setDatasetId(next ? Number(next) : '');
+                  setNewGroupWave('');
+                }}
+                required
+                style={{
+                  width: '100%',
+                  padding: '11px 13px',
+                  border: '1px solid var(--faint)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--surface)',
+                  font: '400 15px var(--font-body)',
+                  color: 'var(--ink)',
+                }}
+              >
+                <option value="">Select a dataset…</option>
+                {datasets.map((dataset) => (
+                  <option key={dataset.id} value={dataset.id}>
+                    {dataset.name}
+                    {dataset.waves.length ? ` (${dataset.waves.join(', ')})` : ''}
+                  </option>
+                ))}
+                <option value="new">Create new dataset…</option>
+              </select>
+            </div>
+            {datasetMode === 'new' && (
+              <>
+                <Field
+                  id="new-dataset-name"
+                  testId="new-dataset-name-input"
+                  label="Dataset name"
+                  hint="For pipeline datasets, use the card name verbatim."
+                  value={newDatasetName}
+                  onChange={setNewDatasetName}
+                  placeholder="e.g., medqa"
+                  required
+                />
+                <Field
+                  id="new-dataset-waves"
+                  testId="new-dataset-waves-input"
+                  label="Waves"
+                  hint="Comma-separated tokens, e.g. fall25, sp26."
+                  value={newDatasetWaves}
+                  onChange={(v) => {
+                    setNewDatasetWaves(v);
+                    const next = parseWaveList(v);
+                    if (newGroupWave && !next.includes(newGroupWave)) setNewGroupWave('');
+                  }}
+                  placeholder="fall25"
+                  required
+                />
+              </>
+            )}
+            {pickerWaves.length > 1 && (
+              <div style={{ marginBottom: 16 }}>
+                <label
+                  htmlFor="new-group-wave"
+                  style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
+                >
+                  Wave
+                </label>
+                <select
+                  id="new-group-wave"
+                  data-testid="new-group-wave"
+                  value={newGroupWave}
+                  onChange={(e) => setNewGroupWave(e.target.value)}
+                  required
+                  style={{
+                    width: '100%',
+                    padding: '11px 13px',
+                    border: '1px solid var(--faint)',
+                    borderRadius: 'var(--radius-sm)',
+                    background: 'var(--surface)',
+                    font: '400 15px var(--font-body)',
+                    color: 'var(--ink)',
+                  }}
+                >
+                  <option value="">Select a wave…</option>
+                  {pickerWaves.map((wave) => (
+                    <option key={wave} value={wave}>
+                      {wave}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {datasetMode === 'existing' && selectedDataset && datasetWaves.length === 0 && (
+              <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 16 }}>
+                This dataset has no waves yet. Create a new dataset (or add waves via the API)
+                before opening a group.
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginBottom: 16 }}>
+          <label
+            htmlFor="assistance-method"
+            style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
+          >
+            Assistance method
+          </label>
+          <select
+            id="assistance-method"
+            data-testid="assistance-method-select"
+            value={chosenMethod}
+            onChange={(e) => onChange({ ...value, assistance_method: e.target.value })}
+            style={{
+              width: '100%',
+              padding: '11px 13px',
+              border: '1px solid var(--faint)',
+              borderRadius: 'var(--radius-sm)',
+              background: 'var(--surface)',
+              font: '400 15px var(--font-body)',
+              color: 'var(--ink)',
+            }}
+          >
+            {ASSISTANCE_METHODS.map((method) => {
+              const already = methodsInGroup.has(method.value);
+              return (
+                <option key={method.value} value={method.value}>
+                  {already ? `${method.label} — already in group` : method.label}
+                </option>
+              );
+            })}
+          </select>
+          {selectedGroup && (
+            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>
+              In this group:{' '}
+              {ASSISTANCE_METHODS.filter((m) => !methodsInGroup.has(m.value))
+                .map((m) => m.label)
+                .join(', ') || 'every method is already used'}
+              {ASSISTANCE_METHODS.some((m) => !methodsInGroup.has(m.value))
+                ? ' still missing.'
+                : '.'}
+            </div>
+          )}
+          {methodAlreadyInGroup && (
+            <div
+              data-testid="duplicate-method-warning"
+              style={{ fontSize: 12.5, color: AMBER, marginTop: 7 }}
+            >
+              This group already has a {methodLabel(chosenMethod)} experiment. Duplicates are
+              allowed (param variants, re-collections) but usually you want a missing method.
+            </div>
+          )}
+        </div>
+
+        {formError && (
+          <div
+            role="alert"
+            style={{
+              background: 'var(--danger-soft)',
+              color: 'var(--danger)',
+              borderRadius: 'var(--radius-sm)',
+              padding: '10px 12px',
+              fontSize: 13,
+              marginBottom: 16,
+            }}
+          >
+            {formError}
+          </div>
+        )}
+
         <div
           style={{
             background: 'var(--accent-soft)',
@@ -785,6 +1505,7 @@ function CreatePanel({
         </div>
         <button
           type="submit"
+          disabled={submitting}
           style={{
             width: '100%',
             padding: 13,
@@ -794,7 +1515,7 @@ function CreatePanel({
             borderRadius: 'var(--radius-sm)',
             fontWeight: 600,
             fontSize: 15,
-            cursor: 'pointer',
+            cursor: submitting ? 'wait' : 'pointer',
           }}
         >
           Create experiment
