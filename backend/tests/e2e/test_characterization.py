@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import io
 import json
 import logging
@@ -25,6 +26,16 @@ from models import ExperimentRound
 from services.participant_groups import _slugify_for_prolific
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def _migrate_separator_questions(connection):
+    """Load the frozen Alembic rewrite so tests exercise the version file."""
+    path = BACKEND_DIR / "alembic/versions/20260823000000_migrate_separator_questions.py"
+    spec = importlib.util.spec_from_file_location("separator_migration_rev", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.migrate_separator_questions(connection)
 
 
 def _unique_name(prefix: str) -> str:
@@ -1008,6 +1019,9 @@ def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync
 
     parsed_rows = list(csv.reader(io.StringIO("".join(chunks))))
     assert parsed_rows[0][0] == "rating_id"
+    assert "parent_question_id" in parsed_rows[0]
+    assert "parent_row_id" in parsed_rows[0]
+    assert "parent_question_text" not in parsed_rows[0]
     assert len(parsed_rows) == row_count + 1
 
 
@@ -2632,6 +2646,399 @@ def test_upload_rejects_unresolvable_parent_reference(client: TestClient):
     detail = response.json()["detail"]
     assert "does_not_exist" in detail
     assert "orphan" in detail
+
+
+def test_upload_rejects_separator_shaped_question_text(client: TestClient):
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text"])
+    writer.writerow(["q1", "Document line\n\n--- QUESTION ---\nWhat follows?"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("separator.csv", output.getvalue(), "text/csv")},
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "q1" in detail
+    assert "parent_question_id" in detail
+    assert "--- QUESTION ---" in detail
+
+
+def test_upload_parent_ref_binds_to_latest_duplicate_question_id(client: TestClient, sync_engine):
+    """Highest questions.id wins when the same question_id string already exists.
+
+    The separator guard only sees the current file; the resolver must still
+    attach the child to this upload's Q1, not a pre-existing one.
+    """
+    experiment = _create_experiment(client)
+    first = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "first.csv",
+                "question_id,question_text,parent_question_id\nQ1,old document,\n",
+                "text/csv",
+            )
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "parent_question_id"])
+    writer.writerow(["Q1", "Keep me intact\n\n--- QUESTION ---\nstill the document", ""])
+    writer.writerow(["child1", "actual question", "Q1"])
+    second = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("second.csv", output.getvalue(), "text/csv")},
+    )
+    assert second.status_code == 200, second.text
+
+    with sync_engine.begin() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    """
+                SELECT id, question_id, question_text, parent_question_id
+                FROM questions
+                WHERE experiment_id = :experiment_id
+                ORDER BY id
+                """
+                ),
+                {"experiment_id": experiment["id"]},
+            )
+            .mappings()
+            .all()
+        )
+
+    q1_rows = [row for row in rows if row["question_id"] == "Q1"]
+    child = next(row for row in rows if row["question_id"] == "child1")
+    latest_q1 = q1_rows[-1]
+    assert len(q1_rows) == 2
+    assert "Keep me intact" in latest_q1["question_text"]
+    assert child["parent_question_id"] == latest_q1["id"]
+    assert child["parent_question_id"] != q1_rows[0]["id"]
+
+
+def test_upload_rejects_concatenated_duplicate_of_a_referenced_parent(client: TestClient):
+    """A child pointing at Q1 must not exempt an earlier concatenated Q1 row."""
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "parent_question_id"])
+    writer.writerow(["Q1", "BigDoc\n\n--- QUESTION ---\nWhat is X?", ""])
+    writer.writerow(["Q1", "other doc", ""])
+    writer.writerow(["child1", "actual question", "Q1"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("dup_parent.csv", output.getvalue(), "text/csv")},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "Q1" in detail
+    assert "parent_question_id" in detail
+
+
+def test_upload_accepts_parent_document_that_contains_the_delimiter(client: TestClient):
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text", "parent_question_id"])
+    writer.writerow(
+        [
+            "parent1",
+            "Keep me intact\n\n--- QUESTION ---\nthis is still the document",
+            "",
+        ]
+    )
+    writer.writerow(["child1", "What follows from the document?", "parent1"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("parent_delimiter.csv", output.getvalue(), "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PARENT_DELIM")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["question_id"] == "child1"
+    assert question["question_text"] == "What follows from the document?"
+    assert question["parent_question_text"] == (
+        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    )
+
+
+def test_upload_rejects_separator_on_a_blank_question_id(client: TestClient):
+    experiment = _create_experiment(client)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["question_id", "question_text"])
+    writer.writerow(["", "Document line\n\n--- QUESTION ---\nWhat follows?"])
+
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={"file": ("blank_id.csv", output.getvalue(), "text/csv")},
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "row 1" in detail
+    assert "parent_question_id" in detail
+
+
+def test_export_ratings_reference_parent_id_not_document_text(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_parent_and_children(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_EXPORT_PARENT")
+    headers = _rater_headers(session_payload)
+    question = client.get("/api/raters/next-question", headers=headers).json()
+    submit = client.post(
+        "/api/raters/submit",
+        headers=headers,
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert submit.status_code == 200
+
+    with client.stream("GET", f"/api/admin/experiments/{experiment['id']}/export") as response:
+        assert response.status_code == 200
+        ratings_body = "".join(response.iter_text())
+
+    rating_rows = list(csv.DictReader(io.StringIO(ratings_body)))
+    assert len(rating_rows) == 1
+    assert rating_rows[0]["parent_question_id"] == "parent1"
+    assert rating_rows[0]["parent_row_id"]
+    assert "parent_question_text" not in rating_rows[0]
+    assert PARENT_TEXT not in ratings_body
+    assert rating_rows[0]["question_text"] == question["question_text"]
+
+    with client.stream(
+        "GET", f"/api/admin/experiments/{experiment['id']}/export/documents"
+    ) as response:
+        assert response.status_code == 200
+        documents_body = "".join(response.iter_text())
+
+    document_rows = list(csv.DictReader(io.StringIO(documents_body)))
+    assert len(document_rows) == 1
+    assert document_rows[0]["question_id"] == "parent1"
+    assert document_rows[0]["question_text"] == PARENT_TEXT
+    assert document_rows[0]["row_id"] == rating_rows[0]["parent_row_id"]
+
+
+def test_export_joins_duplicate_parent_question_ids_by_row_id(client: TestClient, sync_engine):
+    """question_id strings are not unique; the join key is the numeric PK."""
+    experiment = _create_experiment(client)
+    parent_a = _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="dup-parent",
+        question_text="Document A",
+    )
+    parent_b = _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="dup-parent",
+        question_text="Document B",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="child_a",
+        question_text="Question about A?",
+        parent_db_id=parent_a,
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="child_b",
+        question_text="Question about B?",
+        parent_db_id=parent_b,
+    )
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_EXPORT_DUP_PARENT")
+    for _ in range(2):
+        question = _get_next_question(client, session_payload)
+        assert question is not None
+        _submit(client, session_payload, question)
+
+    with client.stream("GET", f"/api/admin/experiments/{experiment['id']}/export") as response:
+        assert response.status_code == 200
+        ratings_body = "".join(response.iter_text())
+    with client.stream(
+        "GET", f"/api/admin/experiments/{experiment['id']}/export/documents"
+    ) as response:
+        assert response.status_code == 200
+        documents_body = "".join(response.iter_text())
+
+    rating_rows = list(csv.DictReader(io.StringIO(ratings_body)))
+    document_rows = list(csv.DictReader(io.StringIO(documents_body)))
+    ratings_by_question = {row["question_id"]: row for row in rating_rows}
+    docs_by_row_id = {row["row_id"]: row for row in document_rows}
+
+    assert {row["question_id"] for row in document_rows} == {"dup-parent"}
+    assert len(document_rows) == 2
+    assert ratings_by_question["child_a"]["parent_question_id"] == "dup-parent"
+    assert ratings_by_question["child_b"]["parent_question_id"] == "dup-parent"
+    assert ratings_by_question["child_a"]["parent_row_id"] == str(parent_a)
+    assert ratings_by_question["child_b"]["parent_row_id"] == str(parent_b)
+    assert docs_by_row_id[str(parent_a)]["question_text"] == "Document A"
+    assert docs_by_row_id[str(parent_b)]["question_text"] == "Document B"
+
+
+def _insert_question(
+    sync_engine,
+    *,
+    experiment_id: int,
+    question_id: str,
+    question_text: str,
+    parent_db_id: int | None = None,
+) -> int:
+    with sync_engine.begin() as conn:
+        db_id = conn.execute(
+            text(
+                """
+                INSERT INTO questions (
+                    experiment_id, question_id, question_text,
+                    gt_answer, options, question_type, extra_data,
+                    parent_question_id
+                )
+                VALUES (
+                    :experiment_id, :question_id, :question_text,
+                    '', '', 'MC', '{}',
+                    :parent_question_id
+                )
+                RETURNING id
+                """
+            ),
+            {
+                "experiment_id": experiment_id,
+                "question_id": question_id,
+                "question_text": question_text,
+                "parent_question_id": parent_db_id,
+            },
+        ).scalar_one()
+    return int(db_id)
+
+
+def test_migrate_separator_questions_rewrites_legacy_rows(
+    client: TestClient, sync_engine, caplog: pytest.LogCaptureFixture
+):
+    experiment = _create_experiment(client)
+    shared_doc = "Shared document body"
+    unique_doc = "Unique document body"
+
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="a1",
+        question_text=f"{shared_doc}\n\n--- QUESTION ---\nQuestion A1?",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="a2",
+        question_text=f"{shared_doc}\n\n--- QUESTION ---\nQuestion A2?",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="b1",
+        question_text=f"{unique_doc}\n\n--- QUESTION ---\nQuestion B1?",
+    )
+    # Already parent-shaped: the document happens to contain the marker as
+    # content, and must not be split.
+    parent_db_id = _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="real_parent",
+        question_text="Keep me intact\n\n--- QUESTION ---\nthis is still the document",
+    )
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="real_child",
+        question_text="Already a child?",
+        parent_db_id=parent_db_id,
+    )
+    # Near-miss: single newline, which the old frontend also refused to split.
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="near_miss",
+        question_text="Document\n--- QUESTION ---\nNot a split?",
+    )
+    # Both mechanisms on one child: skipped (already has a parent) and warned.
+    _insert_question(
+        sync_engine,
+        experiment_id=experiment["id"],
+        question_id="dual_child",
+        question_text=f"{shared_doc}\n\n--- QUESTION ---\nShould not split?",
+        parent_db_id=parent_db_id,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with sync_engine.begin() as conn:
+            parents, children = _migrate_separator_questions(conn)
+            again = _migrate_separator_questions(conn)
+
+    assert parents == 2
+    assert children == 3
+    assert again == (0, 0)
+    assert "already have a parent" in caplog.text
+
+    listed = client.get("/api/admin/experiments").json()
+    matching = next(item for item in listed if item["id"] == experiment["id"])
+    assert matching["question_count"] == 6
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_SEP_MIG")
+    headers = _rater_headers(session_payload)
+    seen: dict[str, dict] = {}
+    for _ in range(6):
+        resp = client.get("/api/raters/next-question", headers=headers)
+        assert resp.status_code == 200
+        question = resp.json()
+        seen[question["question_id"]] = question
+        submit = client.post(
+            "/api/raters/submit",
+            headers=headers,
+            json={
+                "question_id": question["id"],
+                "answer": "Yes",
+                "confidence": 4,
+                "time_started": datetime.now(UTC).isoformat(),
+            },
+        )
+        assert submit.status_code == 200
+
+    assert seen["a1"]["question_text"] == "Question A1?"
+    assert seen["a1"]["parent_question_text"] == shared_doc
+    assert seen["a2"]["question_text"] == "Question A2?"
+    assert seen["a2"]["parent_question_text"] == shared_doc
+    assert seen["b1"]["question_text"] == "Question B1?"
+    assert seen["b1"]["parent_question_text"] == unique_doc
+    assert seen["near_miss"]["question_text"] == "Document\n--- QUESTION ---\nNot a split?"
+    assert seen["near_miss"]["parent_question_text"] is None
+    assert "real_parent" not in seen
+    assert seen["real_child"]["question_text"] == "Already a child?"
+    assert seen["real_child"]["parent_question_text"] == (
+        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    )
+    assert seen["dual_child"]["question_text"] == (
+        f"{shared_doc}\n\n--- QUESTION ---\nShould not split?"
+    )
+    assert seen["dual_child"]["parent_question_text"] == (
+        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    )
 
 
 def test_next_question_never_returns_parent_rows(client: TestClient):
