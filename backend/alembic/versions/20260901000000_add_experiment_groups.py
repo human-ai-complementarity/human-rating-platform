@@ -1,8 +1,8 @@
 """add_experiment_groups
 
-Revision ID: 20260815000000
+Revision ID: 20260901000000
 Revises: 20260819000000
-Create Date: 2026-08-15 18:45:00.000000
+Create Date: 2026-09-01 00:00:00.000000
 
 """
 
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = "20260815000000"
+revision: str = "20260901000000"
 down_revision: Union[str, Sequence[str], None] = "20260819000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

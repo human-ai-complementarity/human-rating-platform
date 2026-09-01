@@ -205,8 +205,10 @@ class ExperimentResponse(BaseModel):
     # when the experiment is ungrouped.
     group_id: Optional[int] = None
     group_name: Optional[str] = None
-    dataset_id: Optional[int] = None
-    dataset_name: Optional[str] = None
+    # Prefixed to keep the group's dataset entity distinct from
+    # `dataset_filenames` above, which lists the uploaded question files.
+    group_dataset_id: Optional[int] = None
+    group_dataset_name: Optional[str] = None
     wave: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

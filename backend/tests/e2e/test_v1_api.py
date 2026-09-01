@@ -255,8 +255,8 @@ _INTERNAL_FIELDS = {
     "human_prompt_suffix",
     "group_id",
     "group_name",
-    "dataset_id",
-    "dataset_name",
+    "group_dataset_id",
+    "group_dataset_name",
     "wave",
 }
 

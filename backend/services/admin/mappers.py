@@ -60,8 +60,8 @@ def build_experiment_response(
         spend_minor_units=spend_minor_units,
         group_id=group.group_id if group else None,
         group_name=group.group_name if group else None,
-        dataset_id=group.dataset_id if group else None,
-        dataset_name=group.dataset_name if group else None,
+        group_dataset_id=group.dataset_id if group else None,
+        group_dataset_name=group.dataset_name if group else None,
         wave=group.wave if group else None,
     )
 

@@ -227,8 +227,8 @@ def test_attach_experiment_inherits_group_and_filters(client: TestClient) -> Non
 
     assert attached["group_id"] == group["id"]
     assert attached["group_name"] == "MedQA Fall"
-    assert attached["dataset_id"] == dataset["id"]
-    assert attached["dataset_name"] == "medqa"
+    assert attached["group_dataset_id"] == dataset["id"]
+    assert attached["group_dataset_name"] == "medqa"
     assert attached["wave"] == "fall25"
 
     listed = client.get("/api/admin/experiments", params={"group_id": group["id"]}).json()
