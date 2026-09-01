@@ -156,6 +156,18 @@ class Experiment(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
+    # Optional — ungrouped experiments are valid (scratch / pilot). RESTRICT
+    # so deleting a group with experiments attached is a clean 409, not a
+    # silent ungroup.
+    group_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("experiment_groups.id", ondelete="RESTRICT"),
+            nullable=True,
+            index=True,
+        ),
+    )
 
 
 class Question(SQLModel, table=True):
@@ -516,8 +528,8 @@ class Dataset(SQLModel, table=True):
 
     `waves` mirrors the card's wave-inclusion *set* (which waves the dataset is
     part of), not attribution — which wave a given run was for lives on the
-    experiment group (added in a follow-up migration). Maintained via the API
-    for now; automated card sync is a deferred follow-up.
+    experiment group. Maintained via the API for now; automated card sync is
+    a deferred follow-up.
     """
 
     __tablename__ = "datasets"
@@ -531,6 +543,51 @@ class Dataset(SQLModel, table=True):
         default="[]",
         sa_column=Column(Text, nullable=False, server_default=text("'[]'")),
     )  # JSON-encoded list of wave tokens, e.g. '["fall25", "sp26"]'
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+
+
+class ExperimentGroup(SQLModel, table=True):
+    """Collection-run container: one dataset × one attribution wave.
+
+    `wave` is picked from the parent dataset's membership set (auto-filled
+    when that set is a singleton). `dataset_id` and `wave` lock once any
+    experiment in the group leaves DRAFT — same idea as the experiment
+    config lock. Name stays editable (organizational).
+    """
+
+    __tablename__ = "experiment_groups"
+    __table_args__ = (
+        UniqueConstraint(
+            "dataset_id",
+            "wave",
+            name="uq_experiment_groups_dataset_wave",
+        ),
+        # Same name on the same dataset, any casing, is the same group.
+        Index(
+            "uq_experiment_groups_dataset_name_lower",
+            "dataset_id",
+            text("lower(name)"),
+            unique=True,
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    name: str = Field(sa_column=Column(String(255), nullable=False))
+    dataset_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("datasets.id", ondelete="RESTRICT"),
+            nullable=False,
+        )
+    )
+    wave: str = Field(sa_column=Column(String(64), nullable=False))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(
