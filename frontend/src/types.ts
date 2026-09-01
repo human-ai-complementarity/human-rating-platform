@@ -38,6 +38,12 @@ export interface Experiment {
   group_dataset_id: number | null;
   group_dataset_name: string | null;
   wave: string | null;
+  tags: string[];
+}
+
+export interface Tag {
+  name: string;
+  usage_count: number;
 }
 
 export interface Dataset {
@@ -256,6 +262,7 @@ export interface ExperimentCreate {
   assistance_method?: string;
   assistance_params?: Record<string, unknown>;
   group_id?: number | null;
+  tags?: string[];
 }
 
 export interface ExperimentRound {

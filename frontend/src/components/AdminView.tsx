@@ -7,6 +7,7 @@ import type {
   ExperimentCreate,
   ExperimentGroup,
   ExperimentStatus,
+  Tag,
 } from '../types';
 import StatusLabel from './StatusLabel';
 import RowActionMenu from './RowActionMenu';
@@ -31,13 +32,14 @@ const STATUS_TABS: { value: StatusTab; label: string }[] = [
 ];
 
 // Search + filter selections persist across refreshes.
-const FILTER_STORAGE_KEY = 'hrp.experiments.filters.v2';
+const FILTER_STORAGE_KEY = 'hrp.experiments.filters.v3';
 type Filters = {
   query: string;
   statusFilter: StatusTab;
   needsOnly: boolean;
   grouped: boolean;
   waveFilter: string;
+  tagFilter: string;
 };
 const DEFAULT_FILTERS: Filters = {
   query: '',
@@ -45,6 +47,7 @@ const DEFAULT_FILTERS: Filters = {
   needsOnly: false,
   grouped: true,
   waveFilter: '',
+  tagFilter: '',
 };
 
 function parseWaveList(raw: string): string[] {
@@ -82,6 +85,7 @@ function loadFilters(): Filters {
       needsOnly: Boolean(parsed.needsOnly),
       grouped: parsed.grouped !== false,
       waveFilter: typeof parsed.waveFilter === 'string' ? parsed.waveFilter : '',
+      tagFilter: typeof parsed.tagFilter === 'string' ? parsed.tagFilter : '',
     };
   } catch {
     return DEFAULT_FILTERS;
@@ -150,8 +154,10 @@ function AdminView() {
   const [needsOnly, setNeedsOnly] = useState(() => loadFilters().needsOnly);
   const [grouped, setGrouped] = useState(() => loadFilters().grouped);
   const [waveFilter, setWaveFilter] = useState(() => loadFilters().waveFilter);
+  const [tagFilter, setTagFilter] = useState(() => loadFilters().tagFilter);
   const [groups, setGroups] = useState<ExperimentGroup[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [tagSuggestions, setTagSuggestions] = useState<Tag[]>([]);
 
   // Delete is the one destructive/irreversible action, so it still confirms;
   // archive/restore apply immediately with a toast (per the mock).
@@ -168,6 +174,7 @@ function AdminView() {
     prolific_completion_url: '',
     assistance_method: 'none',
     group_id: null,
+    tags: [],
   });
 
   useEffect(() => {
@@ -189,9 +196,9 @@ function AdminView() {
   useEffect(() => {
     localStorage.setItem(
       FILTER_STORAGE_KEY,
-      JSON.stringify({ query, statusFilter, needsOnly, grouped, waveFilter }),
+      JSON.stringify({ query, statusFilter, needsOnly, grouped, waveFilter, tagFilter }),
     );
-  }, [query, statusFilter, needsOnly, grouped, waveFilter]);
+  }, [query, statusFilter, needsOnly, grouped, waveFilter, tagFilter]);
 
   const loadExperiments = async () => {
     try {
@@ -207,12 +214,14 @@ function AdminView() {
 
   const loadCatalog = async () => {
     try {
-      const [nextGroups, nextDatasets] = await Promise.all([
+      const [nextGroups, nextDatasets, nextTags] = await Promise.all([
         api.listExperimentGroups(),
         api.listDatasets(),
+        api.listTags(),
       ]);
       setGroups(nextGroups);
       setDatasets(nextDatasets);
+      setTagSuggestions(nextTags);
     } catch {
       // Catalog is additive (picker + grouped labels); the list still works.
     }
@@ -285,6 +294,7 @@ function AdminView() {
       prolific_completion_url: '',
       assistance_method: 'none',
       group_id: null,
+      tags: [],
     });
     await Promise.all([loadExperiments(), loadCatalog()]);
     navigate(`/admin/experiments/${created.id}`);
@@ -314,27 +324,32 @@ function AdminView() {
           (e.internal_name || '').toLowerCase().includes(q) ||
           e.name.toLowerCase().includes(q) ||
           (e.group_name || '').toLowerCase().includes(q) ||
-          (e.group_dataset_name || '').toLowerCase().includes(q)
+          (e.group_dataset_name || '').toLowerCase().includes(q) ||
+          (e.tags || []).some((tag) => tag.toLowerCase().includes(q))
         )
       )
         return false;
       if (waveFilter && e.wave !== waveFilter) return false;
+      if (tagFilter && !(e.tags || []).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase()))
+        return false;
       return true;
     });
-  }, [experiments, query, statusFilter, needsOnly, waveFilter]);
+  }, [experiments, query, statusFilter, needsOnly, waveFilter, tagFilter]);
 
   const totalSpendMinor = useMemo(
     () => filtered.reduce((sum, e) => sum + e.spend_minor_units, 0),
     [filtered],
   );
 
-  const filtersActive = query.trim() !== '' || statusFilter !== 'ALL' || needsOnly || waveFilter !== '';
+  const filtersActive =
+    query.trim() !== '' || statusFilter !== 'ALL' || needsOnly || waveFilter !== '' || tagFilter !== '';
 
   const clearFilters = () => {
     setQuery('');
     setStatusFilter('ALL');
     setNeedsOnly(false);
     setWaveFilter('');
+    setTagFilter('');
   };
 
   const availableWaves = useMemo(() => {
@@ -375,6 +390,7 @@ function AdminView() {
           groups={groups}
           datasets={datasets}
           experiments={experiments}
+          tagSuggestions={tagSuggestions}
         />
         <ListPanel
           experiments={filtered}
@@ -394,6 +410,8 @@ function AdminView() {
           waveFilter={waveFilter}
           waves={availableWaves}
           onWaveFilterChange={setWaveFilter}
+          tagFilter={tagFilter}
+          onTagFilterChange={setTagFilter}
           filtersActive={filtersActive}
           onClearFilters={clearFilters}
           onSelect={(exp) => navigate(`/admin/experiments/${exp.id}`)}
@@ -446,6 +464,8 @@ function ListPanel({
   waveFilter,
   waves,
   onWaveFilterChange,
+  tagFilter,
+  onTagFilterChange,
   filtersActive,
   onClearFilters,
   onSelect,
@@ -470,6 +490,8 @@ function ListPanel({
   waveFilter: string;
   waves: string[];
   onWaveFilterChange: (wave: string) => void;
+  tagFilter: string;
+  onTagFilterChange: (tag: string) => void;
   filtersActive: boolean;
   onClearFilters: () => void;
   onSelect: (exp: Experiment) => void;
@@ -625,6 +647,25 @@ function ListPanel({
           <span style={{ fontSize: 9 }}>●</span> Needs attention
         </button>
 
+        {tagFilter && (
+          <button
+            type="button"
+            data-testid="tag-filter-chip"
+            onClick={() => onTagFilterChange('')}
+            style={{
+              border: '1px solid var(--accent)',
+              borderRadius: 999,
+              padding: '4px 10px',
+              font: '600 12px var(--font-body)',
+              color: 'var(--accent-soft-ink)',
+              background: 'var(--accent-soft)',
+              cursor: 'pointer',
+            }}
+          >
+            tag: {tagFilter} ✕
+          </button>
+        )}
+
         {waves.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
             {waves.map((wave) => {
@@ -693,6 +734,7 @@ function ListPanel({
               onArchiveToggle={onArchiveToggle}
               onDelete={onDelete}
               onWaveClick={(wave) => onWaveFilterChange(waveFilter === wave ? '' : wave)}
+              onTagClick={onTagFilterChange}
             />
           ))
         ) : (
@@ -707,6 +749,7 @@ function ListPanel({
               onDuplicate={() => onDuplicate(exp)}
               onArchiveToggle={() => onArchiveToggle(exp)}
               onDelete={() => onDelete(exp)}
+              onTagClick={onTagFilterChange}
             />
           ))
         )}
@@ -725,6 +768,7 @@ function GroupCard({
   onArchiveToggle,
   onDelete,
   onWaveClick,
+  onTagClick,
 }: {
   bucket: GroupBucket;
   currencySymbol: string;
@@ -735,6 +779,7 @@ function GroupCard({
   onArchiveToggle: (exp: Experiment) => void;
   onDelete: (exp: Experiment) => void;
   onWaveClick: (wave: string) => void;
+  onTagClick: (tag: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const spend = bucket.experiments.reduce((sum, exp) => sum + (exp.spend_minor_units || 0), 0);
@@ -846,6 +891,7 @@ function GroupCard({
             onDuplicate={() => onDuplicate(exp)}
             onArchiveToggle={() => onArchiveToggle(exp)}
             onDelete={() => onDelete(exp)}
+            onTagClick={onTagClick}
           />
         ))}
     </div>
@@ -862,6 +908,7 @@ function ExperimentRow({
   onDuplicate,
   onArchiveToggle,
   onDelete,
+  onTagClick,
 }: {
   exp: Experiment;
   currencySymbol: string;
@@ -872,6 +919,7 @@ function ExperimentRow({
   onDuplicate: () => void;
   onArchiveToggle: () => void;
   onDelete: () => void;
+  onTagClick: (tag: string) => void;
 }) {
   const isArchived = exp.archived_at !== null;
   return (
@@ -947,6 +995,33 @@ function ExperimentRow({
           <div style={{ marginTop: 3, fontSize: 13, color: 'var(--muted)' }}>
             {exp.question_count} questions · {exp.rating_count} ratings
           </div>
+          {(exp.tags ?? []).length > 0 && (
+            <div style={{ marginTop: 7, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+              {(exp.tags ?? []).map((tag) => (
+                <button
+                  key={tag}
+                  type="button"
+                  data-testid={`experiment-tag-${tag}`}
+                  title={`Filter by “${tag}”`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onTagClick(tag);
+                  }}
+                  style={{
+                    border: '1px solid var(--faint)',
+                    borderRadius: 999,
+                    padding: '3px 10px',
+                    font: '500 12px var(--font-body)',
+                    color: 'var(--accent-soft-ink)',
+                    background: 'var(--accent-soft)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {tag}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1095,6 +1170,7 @@ function CreatePanel({
   groups,
   datasets,
   experiments,
+  tagSuggestions,
 }: {
   value: ExperimentCreate;
   onChange: (v: ExperimentCreate) => void;
@@ -1103,6 +1179,7 @@ function CreatePanel({
   groups: ExperimentGroup[];
   datasets: Dataset[];
   experiments: Experiment[];
+  tagSuggestions: Tag[];
 }) {
   const [groupMode, setGroupMode] = useState<'none' | 'existing' | 'new'>('none');
   const [newGroupName, setNewGroupName] = useState('');
@@ -1473,6 +1550,12 @@ function CreatePanel({
           )}
         </div>
 
+        <TagInput
+          value={value.tags ?? []}
+          onChange={(tags) => onChange({ ...value, tags })}
+          suggestions={tagSuggestions}
+        />
+
         {formError && (
           <div
             role="alert"
@@ -1522,6 +1605,167 @@ function CreatePanel({
         </button>
       </form>
     </section>
+  );
+}
+
+function TagInput({
+  value,
+  onChange,
+  suggestions,
+}: {
+  value: string[];
+  onChange: (tags: string[]) => void;
+  suggestions: Tag[];
+}) {
+  const [draft, setDraft] = useState('');
+
+  const selectedLower = useMemo(() => new Set(value.map((tag) => tag.toLowerCase())), [value]);
+  const available = suggestions.filter((s) => !selectedLower.has(s.name.toLowerCase()));
+  const q = draft.trim().toLowerCase();
+  const shown = q
+    ? available.filter((s) => s.name.toLowerCase().includes(q))
+    : available.slice(0, 3);
+  const draftMatchesExisting = suggestions.some((s) => s.name.toLowerCase() === q);
+
+  const add = (name: string) => {
+    const cleaned = name.trim().replace(/\s+/g, ' ');
+    if (!cleaned || selectedLower.has(cleaned.toLowerCase())) {
+      setDraft('');
+      return;
+    }
+    const existing = suggestions.find((s) => s.name.toLowerCase() === cleaned.toLowerCase());
+    onChange([...value, existing ? existing.name : cleaned]);
+    setDraft('');
+  };
+
+  const remove = (name: string) => onChange(value.filter((tag) => tag !== name));
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label
+        htmlFor="experiment-tags"
+        style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
+      >
+        Tags <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
+      </label>
+
+      {value.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+          {value.map((tag) => (
+            <span
+              key={tag}
+              data-testid={`selected-tag-${tag}`}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                border: '1px solid var(--faint)',
+                borderRadius: 999,
+                padding: '4px 6px 4px 11px',
+                font: '500 12.5px var(--font-body)',
+                color: 'var(--accent-soft-ink)',
+                background: 'var(--accent-soft)',
+              }}
+            >
+              {tag}
+              <button
+                type="button"
+                onClick={() => remove(tag)}
+                aria-label={`Remove tag ${tag}`}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'inherit',
+                  cursor: 'pointer',
+                  fontSize: 11,
+                  lineHeight: 1,
+                  padding: '2px 4px',
+                }}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <input
+        id="experiment-tags"
+        data-testid="experiment-tags-input"
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            add(draft);
+          } else if (e.key === 'Backspace' && draft === '' && value.length > 0) {
+            remove(value[value.length - 1]);
+          }
+        }}
+        placeholder="e.g., needs-review, pilot-batch-2"
+        style={{
+          width: '100%',
+          padding: '11px 13px',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius-sm)',
+          background: 'var(--surface)',
+          font: '400 15px var(--font-body)',
+          color: 'var(--ink)',
+        }}
+      />
+
+      {(shown.length > 0 || (q !== '' && !draftMatchesExisting)) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
+          {shown.map((s) => (
+            <button
+              key={s.name}
+              type="button"
+              data-testid={`tag-suggestion-${s.name}`}
+              onClick={() => add(s.name)}
+              title={`Used by ${s.usage_count} experiment${s.usage_count === 1 ? '' : 's'}`}
+              style={{
+                border: '1px solid var(--faint)',
+                borderRadius: 999,
+                padding: '4px 11px',
+                font: '500 12.5px var(--font-body)',
+                color: 'var(--muted)',
+                background: 'var(--surface-2)',
+                cursor: 'pointer',
+              }}
+            >
+              {s.name}
+              {s.usage_count > 0 && (
+                <span style={{ marginLeft: 5, fontSize: 11, opacity: 0.7 }}>{s.usage_count}</span>
+              )}
+            </button>
+          ))}
+          {q !== '' && !draftMatchesExisting && (
+            <button
+              type="button"
+              data-testid="tag-create-new"
+              onClick={() => add(draft)}
+              style={{
+                border: '1px dashed var(--accent)',
+                borderRadius: 999,
+                padding: '4px 11px',
+                font: '500 12.5px var(--font-body)',
+                color: 'var(--accent)',
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              + New tag “{draft.trim()}”
+            </button>
+          )}
+        </div>
+      )}
+
+      <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>
+        Free-form labels (project, client, one-offs). Method, wave, and status are derived — don&apos;t
+        store those as tags.
+      </div>
+    </div>
   );
 }
 
