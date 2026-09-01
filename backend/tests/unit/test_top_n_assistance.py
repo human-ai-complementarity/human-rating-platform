@@ -17,17 +17,28 @@ import pytest
 from models import Question, StepType
 from services.assistance.methods.top_n import (
     TopNAssistance,
+    _SCHEMA_REJECTED_MODELS,
+    _SYSTEM_PROMPT,
     _clamp_top_n,
+    _compose_system_prompt,
     _normalize_candidates,
     _parse_options,
     _parse_top_n_response,
     _strip_markdown_json,
+    _top_n_response_format,
 )
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+
+
+@pytest.fixture(autouse=True)
+def _clear_schema_rejected_models():
+    _SCHEMA_REJECTED_MODELS.clear()
+    yield
+    _SCHEMA_REJECTED_MODELS.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -159,108 +170,72 @@ class TestParseTopNResponse:
         with pytest.raises(json.JSONDecodeError):
             _parse_top_n_response('{"something_else": []}')
 
-
-# ---------------------------------------------------------------------------
-# Salvaging candidates from a malformed wrapper
-# ---------------------------------------------------------------------------
-
-
-# Verbatim from production (claude-sonnet-4-6, CulturalBench Hard). The middle
-# candidate carries `"confidence">80` — a comparison instead of a value — which
-# makes the enclosing object undecodable even though candidates 1 and 3 are
-# intact.
-MALFORMED_PRODUCTION_RESPONSE = (
-    '```json\n{"candidates":['
-    '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE","confidence":85,'
-    '"rationale":"Sandwiches and empanadas are both popular hand-held foods."},'
-    '{"answer":"1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE","confidence">80,'
-    '"rationale":"Empanadas are the most iconic Argentine hand-held food."},'
-    '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE","confidence":75,'
-    '"rationale":"Both sandwiches and empanadas are popular Argentine foods."}'
-    "]}\n```"
-)
-
-
-class TestRepairMalformedWrapper:
-    def test_repairs_the_comparison_and_keeps_every_candidate(self):
-        # Repair is preferred over salvage precisely because it keeps the
-        # hedged candidate, which is the one proposing a different answer.
-        result = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
-        answers = [c["answer"] for c in result["candidates"]]
-        assert answers == [
-            "1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE",
-            "1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE",
-            "1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE",
-        ]
-        assert result["candidates"][1]["confidence"] == 80
-
-    def test_repaired_candidates_survive_normalization(self):
-        parsed = _parse_top_n_response(MALFORMED_PRODUCTION_RESPONSE)
-        normalized = _normalize_candidates(parsed["candidates"], [], n=3)
-        assert [c["rank"] for c in normalized] == [1, 2, 3]
-        assert normalized[0]["confidence"] == 85
-
-    def test_repairs_multiple_choice_candidates(self):
+    def test_raises_on_comparison_instead_of_colon(self):
+        # Verbatim from production (claude-sonnet-4-6, CulturalBench Hard).
+        # Parser recovery was removed in favour of prompting a real integer;
+        # a leftover comparison token must fail closed (no assistance), not be
+        # repaired or salvaged.
         raw = (
-            '{"candidates":[{"option_index":1,"confidence":90,"rationale":"a"},'
-            '{"option_index":2,"confidence">50,"rationale":"b"},'
-            '{"option_index":3,"confidence":20,"rationale":"c"}]}'
+            '```json\n{"candidates":['
+            '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. FALSE","confidence":85,'
+            '"rationale":"Sandwiches and empanadas are both popular hand-held foods."},'
+            '{"answer":"1. FALSE, 2. TRUE, 3. FALSE, 4. FALSE","confidence">80,'
+            '"rationale":"Empanadas are the most iconic Argentine hand-held food."},'
+            '{"answer":"1. TRUE, 2. TRUE, 3. FALSE, 4. TRUE","confidence":75,'
+            '"rationale":"Both sandwiches and empanadas are popular Argentine foods."}'
+            "]}\n```"
         )
-        result = _parse_top_n_response(raw)
-        assert [c["option_index"] for c in result["candidates"]] == [1, 2, 3]
+        with pytest.raises(json.JSONDecodeError):
+            _parse_top_n_response(raw)
 
-
-class TestSalvageMalformedWrapper:
-    def test_salvages_when_repair_cannot_fix_the_response(self):
-        # Truncated mid-candidate: no comparison token to repair, but the first
-        # candidate is complete and usable.
+    def test_raises_on_truncated_wrapper(self):
+        # Truncation is a separate failure from the comparison token. Salvaging
+        # the intact prefix is an explicit non-goal: fail closed instead of a
+        # silently shorter, less diverse shortlist.
         raw = (
             '{"candidates":[{"answer":"A","confidence":90,"rationale":"a"},'
             '{"answer":"B","confidence":'
         )
-        result = _parse_top_n_response(raw)
-        assert [c["answer"] for c in result["candidates"]] == ["A"]
-
-    def test_well_formed_response_is_untouched(self):
-        # The salvage path must never engage for a response that parses today,
-        # so an experiment that is working keeps identical behaviour.
-        payload = {
-            "candidates": [
-                {"answer": "A", "confidence": 90, "rationale": "r"},
-                {"answer": "B", "confidence": 10, "rationale": "s"},
-            ]
-        }
-        assert _parse_top_n_response(json.dumps(payload)) == payload
-
-    def test_raises_on_a_degenerate_response(self):
-        # Seen once in production: the model returned essentially nothing.
-        # Neither repair nor salvage can invent candidates from this.
         with pytest.raises(json.JSONDecodeError):
-            _parse_top_n_response('{"')
-
-    def test_objects_that_are_not_candidates_normalize_away(self):
-        # Repair can make this decodable, but the entries carry neither
-        # "answer" nor "option_index", so normalization still yields nothing
-        # and the caller falls through to StepType.NONE.
-        parsed = _parse_top_n_response('{"candidates":[{"foo":1,"bar">2}]}')
-        assert _normalize_candidates(parsed["candidates"], [], n=3) == []
+            _parse_top_n_response(raw)
 
 
-@pytest.mark.asyncio
-async def test_start_displays_salvaged_candidates_instead_of_no_assistance():
-    # Before salvaging, this response produced StepType.NONE and the rater saw
-    # an empty assistance panel while still being able to submit a rating.
-    method = TopNAssistance()
-    question = _make_question(options=None, question_type="FT")
+def test_compose_puts_json_contract_after_study_context():
+    composed = _compose_system_prompt("Be a pirate.")
+    assert composed.index("Be a pirate.") < composed.index(_SYSTEM_PROMPT)
+    assert composed.endswith(_SYSTEM_PROMPT)
 
-    with patch(
-        "services.assistance.methods.top_n.complete",
-        new=AsyncMock(return_value=MALFORMED_PRODUCTION_RESPONSE),
-    ):
-        step = await method.start(question, {})
 
-    assert step.type == StepType.DISPLAY
-    assert len(step.payload["candidates"]) == 3
+def test_compose_without_extra_is_the_method_prompt():
+    assert _compose_system_prompt(None) == _SYSTEM_PROMPT
+    assert _compose_system_prompt("   ") == _SYSTEM_PROMPT
+
+
+def test_system_prompt_shows_a_concrete_confidence_integer():
+    # Fallback for providers that ignore json_schema. `"confidence":0-100` in
+    # the example is what led claude-sonnet-4-6 to emit `"confidence">80`.
+    compact = _SYSTEM_PROMPT.replace(" ", "")
+    assert '"confidence":80' in compact
+    assert '"confidence":0-100' not in compact
+
+
+class TestTopNResponseFormat:
+    def test_multiple_choice_requires_option_index_and_integer_confidence(self):
+        fmt = _top_n_response_format(multiple_choice=True, n=3, option_count=3)
+        assert fmt["type"] == "json_schema"
+        item = fmt["json_schema"]["schema"]["properties"]["candidates"]["items"]
+        assert item["properties"]["confidence"]["type"] == "integer"
+        assert "option_index" in item["required"]
+        assert "answer" not in item["properties"]
+        assert item["properties"]["option_index"]["maximum"] == 3
+        assert fmt["json_schema"]["schema"]["properties"]["candidates"]["maxItems"] == 3
+
+    def test_free_response_requires_answer_and_integer_confidence(self):
+        fmt = _top_n_response_format(multiple_choice=False, n=2)
+        item = fmt["json_schema"]["schema"]["properties"]["candidates"]["items"]
+        assert "answer" in item["required"]
+        assert "option_index" not in item["properties"]
+        assert fmt["json_schema"]["schema"]["properties"]["candidates"]["maxItems"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +384,7 @@ async def test_start_returns_display_step_with_candidates():
     assert {c["answer"] for c in candidates} == {"Yes", "No"}
     assert next(c for c in candidates if c["answer"] == "Yes")["rank"] == 1
     assert step.payload["has_options"] is True
+    assert step.payload["parse_status"] == "clean"
 
 
 @pytest.mark.asyncio
@@ -494,6 +470,26 @@ async def test_start_returns_none_step_on_empty_candidates():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.payload["parse_status"] == "no_candidates"
+
+
+@pytest.mark.asyncio
+async def test_start_marks_no_candidates_when_all_normalized_away():
+    method = TopNAssistance()
+    question = _make_question(options="Yes|No")
+    llm_payload = _llm_response(
+        [
+            {"option_index": 99, "confidence": 90, "rationale": "hallucinated"},
+        ]
+    )
+
+    with patch(
+        "services.assistance.methods.top_n.complete", new=AsyncMock(return_value=llm_payload)
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.payload == {"kind": "top_n", "parse_status": "no_candidates"}
 
 
 @pytest.mark.asyncio
@@ -509,6 +505,27 @@ async def test_start_returns_none_step_on_unparseable_llm_response():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.payload == {"kind": "top_n", "parse_status": "unparseable"}
+
+
+@pytest.mark.asyncio
+async def test_start_logs_unparseable_with_structured_attributes(caplog):
+    method = TopNAssistance()
+    question = _make_question()
+
+    with (
+        caplog.at_level("WARNING", logger="services.assistance.methods.top_n"),
+        patch(
+            "services.assistance.methods.top_n.complete",
+            new=AsyncMock(return_value="not json at all"),
+        ),
+    ):
+        await method.start(question, {})
+
+    record = next(r for r in caplog.records if "Failed to parse" in r.getMessage())
+    assert record.attributes["parse_status"] == "unparseable"
+    assert record.attributes["question_id"] == question.id
+    assert record.attributes["experiment_id"] == question.experiment_id
 
 
 @pytest.mark.asyncio
@@ -550,6 +567,29 @@ async def test_start_includes_parent_question_context():
 
 
 @pytest.mark.asyncio
+async def test_start_requests_json_schema_and_puts_study_prompt_first():
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "given context"},
+        ]
+    )
+
+    mock_complete = AsyncMock(return_value=llm_payload)
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        await method.start(question, {"n": 2}, experiment_system_prompt="Be precise.")
+
+    messages = mock_complete.call_args[0][0]
+    system_message = next(m for m in messages if m["role"] == "system")
+    assert system_message["content"].index("Be precise.") < system_message["content"].index(
+        _SYSTEM_PROMPT
+    )
+    response_format = mock_complete.call_args.kwargs["response_format"]
+    assert response_format == _top_n_response_format(multiple_choice=True, n=2, option_count=2)
+
+
+@pytest.mark.asyncio
 async def test_start_returns_none_step_on_complete_runtime_error():
     method = TopNAssistance()
     question = _make_question()
@@ -562,6 +602,103 @@ async def test_start_returns_none_step_on_complete_runtime_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    # Call never reached the parser, so there is no parse_status to record.
+    assert step.payload == {}
+
+
+def _api_status_error(status: int) -> openai.APIStatusError:
+    request = httpx.Request("POST", "https://example")
+    response = httpx.Response(status, request=request)
+    cls = {
+        400: openai.BadRequestError,
+        404: openai.NotFoundError,
+        422: openai.UnprocessableEntityError,
+        500: openai.InternalServerError,
+    }[status]
+    return cls("rejected", response=response, body=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [400, 404, 422])
+async def test_start_retries_without_schema_when_provider_rejects_it(status):
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "ok"},
+        ]
+    )
+    mock_complete = AsyncMock(side_effect=[_api_status_error(status), llm_payload])
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.DISPLAY
+    assert mock_complete.call_count == 2
+    assert mock_complete.call_args_list[0].kwargs["response_format"] == _top_n_response_format(
+        multiple_choice=True, n=2, option_count=2
+    )
+    assert "response_format" not in mock_complete.call_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_skips_schema_after_model_has_been_rejected():
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "ok"},
+        ]
+    )
+    mock_complete = AsyncMock(side_effect=[_api_status_error(400), llm_payload, llm_payload])
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        first = await method.start(question, {})
+        second = await method.start(question, {})
+
+    assert first.type == StepType.DISPLAY
+    assert second.type == StepType.DISPLAY
+    assert mock_complete.call_count == 3
+    assert "response_format" not in mock_complete.call_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_retry_schema_on_server_error():
+    method = TopNAssistance()
+    question = _make_question()
+    mock_complete = AsyncMock(side_effect=_api_status_error(500))
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert mock_complete.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_remember_model_when_unconstrained_retry_fails():
+    # 404 is also used for unknown model ids, which is not a schema rejection.
+    # If the unconstrained retry also fails, the memo must not be poisoned.
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response(
+        [
+            {"option_index": 1, "confidence": 80, "rationale": "ok"},
+        ]
+    )
+    mock_complete = AsyncMock(
+        side_effect=[_api_status_error(404), _api_status_error(404), llm_payload]
+    )
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        first = await method.start(question, {})
+        second = await method.start(question, {})
+
+    assert first.type == StepType.NONE
+    assert second.type == StepType.DISPLAY
+    assert not _SCHEMA_REJECTED_MODELS
+    assert mock_complete.call_count == 3
+    assert "response_format" in mock_complete.call_args_list[2].kwargs
 
 
 @pytest.mark.asyncio
