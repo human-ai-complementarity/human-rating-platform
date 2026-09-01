@@ -88,7 +88,7 @@ def test_sync_assigns_singleton_wave_from_filename(client: TestClient):
 
     listed = client.get("/api/admin/experiments").json()
     row = next(item for item in listed if item["id"] == experiment["id"])
-    assert row["dataset_name"] == "culturalbench_hard"
+    assert row["group_dataset_name"] == "culturalbench_hard"
     assert row["wave"] == "sp26"
     assert row["group_name"] == "culturalbench_hard sp26"
 
