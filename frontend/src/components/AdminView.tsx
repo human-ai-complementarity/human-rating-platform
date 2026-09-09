@@ -60,11 +60,32 @@ function parseWaveList(raw: string): string[] {
   return result;
 }
 
-const ASSISTANCE_METHODS: { value: string; label: string }[] = [
-  { value: 'none', label: 'None' },
-  { value: 'top_n', label: 'Top-N' },
-  { value: 'human_as_a_tool', label: 'Human as a tool' },
+// `value` is the API contract and must not change. `label` is display only —
+// "Unassisted" rather than "None" so a control row reads as a condition, not a
+// missing setting.
+const ASSISTANCE_METHODS: { value: string; label: string; description: string }[] = [
+  { value: 'none', label: 'Unassisted', description: 'Control condition — raters work alone.' },
+  { value: 'top_n', label: 'Top-N', description: 'Model surfaces N candidate answers.' },
+  {
+    value: 'human_as_a_tool',
+    label: 'Human as a tool',
+    description: 'Model delegates to the rater.',
+  },
 ];
+
+// Selectable pill shared by the dataset and wave rows in the group builder.
+function chipStyle(active: boolean): React.CSSProperties {
+  return {
+    border: `1px solid ${active ? 'var(--accent)' : 'var(--faint)'}`,
+    borderRadius: 999,
+    padding: '5px 11px',
+    font: `${active ? 600 : 500} 12px var(--font-mono)`,
+    color: active ? 'var(--accent-soft-ink)' : 'var(--muted)',
+    background: active ? 'var(--accent-soft)' : 'var(--surface)',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  };
+}
 
 function methodLabel(method: string): string {
   return ASSISTANCE_METHODS.find((m) => m.value === method)?.label ?? method;
@@ -478,46 +499,30 @@ function ListPanel({
   onDelete: (exp: Experiment) => void;
 }) {
   return (
-    <section
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        boxShadow: 'var(--shadow)',
-      }}
-    >
-      {/* Header + filter bar share the panel's horizontal padding; the rows
-          below are full-bleed so hover and separators span the card edge. */}
-      <div style={{ padding: '20px 24px 16px' }}>
+    <div>
+      {/* Filters live in their own card. The list below is not wrapped in a
+          shared card: each group card sits directly on the page ground, which
+          is what frees --surface-2 to mean "row hover" and nothing else. */}
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius)',
+          boxShadow: 'var(--shadow)',
+          padding: '18px 20px 16px',
+          marginBottom: 16,
+        }}
+      >
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          marginBottom: 18,
+          gap: 16,
+          marginBottom: 13,
         }}
       >
-        <div
-          style={{
-            font: '600 11px/1 var(--font-mono)',
-            letterSpacing: '0.16em',
-            textTransform: 'uppercase',
-            color: 'var(--muted)',
-          }}
-        >
-          Your experiments
-        </div>
-        <div style={{ fontSize: 13, color: 'var(--muted)' }}>
-          Total spent{' '}
-          <span style={{ fontWeight: 700, color: 'var(--ink)', fontVariantNumeric: 'tabular-nums' }}>
-            {totalSpendLabel}
-          </span>
-        </div>
-      </div>
-
-      {/* Search on its own row so it stays full-width and stable — the filter
-          controls below never squeeze it. */}
-      <div style={{ position: 'relative', marginBottom: 12 }}>
+      <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
         <span
           aria-hidden
           style={{
@@ -536,8 +541,8 @@ function ListPanel({
           type="search"
           value={query}
           onChange={(e) => onQueryChange(e.target.value)}
-          placeholder="Search by name…"
-          aria-label="Search experiments by name"
+          placeholder="Search experiments, groups, datasets…"
+          aria-label="Search"
           style={{
             width: '100%',
             padding: '9px 12px 9px 31px',
@@ -549,9 +554,16 @@ function ListPanel({
           }}
         />
       </div>
+        <div style={{ fontSize: 13, color: 'var(--muted)', flexShrink: 0 }}>
+          Total spent{' '}
+          <span style={{ fontWeight: 700, color: 'var(--ink)', fontVariantNumeric: 'tabular-nums' }}>
+            {totalSpendLabel}
+          </span>
+        </div>
+      </div>
 
       {/* Filter controls row: status segmented control, needs toggle, clear. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
 
         <div style={{ display: 'flex', gap: 4, background: 'var(--surface-2)', padding: 4, borderRadius: 9, flexShrink: 0 }}>
           {STATUS_TABS.map((tab) => {
@@ -675,28 +687,52 @@ function ListPanel({
       </div>
       </div>
 
-      <div style={{ borderTop: '1px solid var(--line)' }}>
-        {loading ? (
-          <EmptyState text="Loading…" />
-        ) : experiments.length === 0 ? (
-          <EmptyState text={filtersActive ? 'No experiments match your filters.' : 'No experiments yet. Create one to get started.'} />
-        ) : grouped ? (
-          bucketExperiments(experiments).map((bucket, bucketIdx, all) => (
+      {loading || experiments.length === 0 ? (
+        <div
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            boxShadow: 'var(--shadow)',
+            padding: '48px 24px',
+            textAlign: 'center',
+            fontSize: 14,
+            color: 'var(--muted)',
+          }}
+        >
+          {loading
+            ? 'Loading…'
+            : filtersActive
+              ? 'No experiments match your filters.'
+              : 'No experiments yet. Create one to get started.'}
+        </div>
+      ) : grouped ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {bucketExperiments(experiments).map((bucket) => (
             <GroupCard
               key={bucket.key}
               bucket={bucket}
               currencySymbol={currencySymbol}
               currencyCode={currencyCode}
-              isLast={bucketIdx === all.length - 1}
               onSelect={onSelect}
               onDuplicate={onDuplicate}
               onArchiveToggle={onArchiveToggle}
               onDelete={onDelete}
               onWaveClick={(wave) => onWaveFilterChange(waveFilter === wave ? '' : wave)}
             />
-          ))
-        ) : (
-          experiments.map((exp, idx) => (
+          ))}
+        </div>
+      ) : (
+        <section
+          style={{
+            background: 'var(--surface)',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius)',
+            boxShadow: 'var(--shadow)',
+            overflow: 'hidden',
+          }}
+        >
+          {experiments.map((exp, idx) => (
             <ExperimentRow
               key={exp.id}
               exp={exp}
@@ -708,10 +744,10 @@ function ListPanel({
               onArchiveToggle={() => onArchiveToggle(exp)}
               onDelete={() => onDelete(exp)}
             />
-          ))
-        )}
-      </div>
-    </section>
+          ))}
+        </section>
+      )}
+    </div>
   );
 }
 
@@ -719,7 +755,6 @@ function GroupCard({
   bucket,
   currencySymbol,
   currencyCode,
-  isLast,
   onSelect,
   onDuplicate,
   onArchiveToggle,
@@ -729,7 +764,6 @@ function GroupCard({
   bucket: GroupBucket;
   currencySymbol: string;
   currencyCode: string | null;
-  isLast: boolean;
   onSelect: (exp: Experiment) => void;
   onDuplicate: (exp: Experiment) => void;
   onArchiveToggle: (exp: Experiment) => void;
@@ -739,20 +773,25 @@ function GroupCard({
   const [open, setOpen] = useState(true);
   const spend = bucket.experiments.reduce((sum, exp) => sum + (exp.spend_minor_units || 0), 0);
   const attention = bucket.experiments.find((exp) => exp.needs_attention);
+  const isGroup = bucket.groupId != null;
+  const methodsPresent = new Set(
+    bucket.experiments.map((exp) => exp.assistance_method || 'none'),
+  );
 
   return (
-    <div
-      data-testid={bucket.groupId != null ? `group-card-${bucket.groupId}` : 'group-card-ungrouped'}
+    <section
+      data-testid={isGroup ? `group-card-${bucket.groupId}` : 'group-card-ungrouped'}
       style={{
-        borderBottom: isLast ? 'none' : '1px solid var(--line)',
-        borderBottomLeftRadius: isLast ? 'var(--radius)' : undefined,
-        borderBottomRightRadius: isLast ? 'var(--radius)' : undefined,
+        background: 'var(--surface)',
+        // The ungrouped bucket is recessed — no shadow, plainer border — so
+        // scratch work doesn't compete with real groups for attention.
+        border: `1px solid ${isGroup ? 'var(--faint)' : 'var(--line)'}`,
+        borderRadius: 'var(--radius)',
+        boxShadow: isGroup ? 'var(--shadow)' : 'none',
       }}
     >
       <div
-        data-testid={
-          bucket.groupId != null ? `group-card-toggle-${bucket.groupId}` : 'group-card-toggle-ungrouped'
-        }
+        data-testid={isGroup ? `group-card-toggle-${bucket.groupId}` : 'group-card-toggle-ungrouped'}
         role="button"
         tabIndex={0}
         aria-expanded={open}
@@ -763,41 +802,51 @@ function GroupCard({
             setOpen((v) => !v);
           }
         }}
+        // Header hover is a lift off --surface rather than --surface-2, which
+        // now belongs to row hover alone.
+        onMouseEnter={(e) => (e.currentTarget.style.background = '#fcfbf7')}
+        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         style={{
           width: '100%',
           display: 'flex',
-          alignItems: 'center',
+          alignItems: 'flex-start',
           justifyContent: 'space-between',
           gap: 16,
-          padding: '16px 24px',
+          padding: '18px 22px 16px',
           border: 'none',
-          background: 'var(--surface-2)',
+          background: 'transparent',
+          borderRadius: 'var(--radius) var(--radius) 0 0',
           cursor: 'pointer',
           textAlign: 'left',
+          transition: 'background 0.15s',
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-          <span aria-hidden style={{ color: 'var(--muted)', fontSize: 12, width: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, minWidth: 0 }}>
+          <span
+            aria-hidden
+            style={{ color: 'var(--muted)', fontSize: 12, width: 10, paddingTop: 7 }}
+          >
             {open ? '▾' : '▸'}
           </span>
-          <div style={{ width: 9, flexShrink: 0, display: 'flex', justifyContent: 'center' }}>
-            {attention && <AttentionDot reason={attention.attention_reason} />}
-          </div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+              {attention && (
+                <AttentionDot reason={attention.attention_reason} testId="group-attention-dot" />
+              )}
               <span
                 style={{
                   fontFamily: 'var(--font-head)',
-                  fontSize: 16,
+                  fontSize: 21,
                   fontWeight: 600,
-                  letterSpacing: '-0.01em',
+                  letterSpacing: '-0.015em',
+                  lineHeight: 1.2,
                 }}
               >
                 {bucket.name}
               </span>
               {bucket.wave && (
                 <span
-                  data-testid={`group-wave-${bucket.groupId ?? 'ungrouped'}-${bucket.wave}`}
+                  data-testid={`group-wave-${bucket.groupId ?? 'ungrouped'}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onWaveClick(bucket.wave!);
@@ -805,50 +854,120 @@ function GroupCard({
                   style={{
                     border: '1px solid var(--faint)',
                     borderRadius: 999,
-                    padding: '2px 8px',
+                    padding: '2px 9px',
                     font: '600 11px var(--font-mono)',
                     color: 'var(--muted)',
-                    background: 'var(--surface)',
+                    background: 'var(--surface-2)',
                   }}
                 >
                   {bucket.wave}
                 </span>
               )}
             </div>
-            <div style={{ marginTop: 3, fontSize: 12.5, color: 'var(--muted)' }}>
-              {bucket.datasetName ? `${bucket.datasetName} · ` : ''}
-              {bucket.experiments.length} experiment{bucket.experiments.length === 1 ? '' : 's'}
+            <div style={{ marginTop: 5, font: '500 12.5px var(--font-mono)', color: 'var(--muted)' }}>
+              {isGroup
+                ? `${bucket.datasetName ? `${bucket.datasetName} · ` : ''}${bucket.experiments.length} experiment${bucket.experiments.length === 1 ? '' : 's'}`
+                : `scratch work and pilots · ${bucket.experiments.length} experiment${bucket.experiments.length === 1 ? '' : 's'}`}
             </div>
           </div>
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div
-            data-testid={
-              bucket.groupId != null ? `group-spend-${bucket.groupId}` : 'group-spend-ungrouped'
-            }
-            style={{ fontSize: 15, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}
+            data-testid={isGroup ? `group-spend-${bucket.groupId}` : 'group-spend-ungrouped'}
+            style={{
+              fontSize: 17,
+              fontWeight: 700,
+              fontVariantNumeric: 'tabular-nums',
+              lineHeight: 1.2,
+            }}
           >
             {formatSpend(spend, currencySymbol, currencyCode)}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>group spend</div>
+          <div
+            style={{
+              marginTop: 3,
+              font: '500 10.5px var(--font-mono)',
+              letterSpacing: '0.1em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+            }}
+          >
+            group spend
+          </div>
         </div>
       </div>
-      {open &&
-        bucket.experiments.map((exp, idx) => (
-          <ExperimentRow
-            key={exp.id}
-            exp={exp}
-            currencySymbol={currencySymbol}
-            currencyCode={currencyCode}
-            isLast={idx === bucket.experiments.length - 1}
-            nested
-            onSelect={() => onSelect(exp)}
-            onDuplicate={() => onDuplicate(exp)}
-            onArchiveToggle={() => onArchiveToggle(exp)}
-            onDelete={() => onDelete(exp)}
-          />
-        ))}
-    </div>
+
+      {/* Arm coverage for the group. Hiding the "Unassisted" row tag removed the
+          only place the control arm was visible; this states it once per group
+          instead of once per row. Never shown for the ungrouped bucket. */}
+      {isGroup && (
+        <div
+          data-testid={`group-assistance-${bucket.groupId}`}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+            padding: '0 22px 16px 44px',
+          }}
+        >
+          <span
+            style={{
+              font: '600 10.5px var(--font-mono)',
+              letterSpacing: '0.12em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+            }}
+          >
+            assistance
+          </span>
+          {ASSISTANCE_METHODS.map((method) => {
+            const has = methodsPresent.has(method.value);
+            return (
+              <span
+                key={method.value}
+                title={
+                  has
+                    ? `${method.label} is already in this group`
+                    : `No ${method.label} experiment in this group yet`
+                }
+                style={{
+                  borderRadius: 999,
+                  padding: '2px 10px',
+                  whiteSpace: 'nowrap',
+                  border: has ? '1px solid var(--accent-soft)' : '1px dashed var(--faint)',
+                  background: has ? 'var(--accent-soft)' : 'transparent',
+                  color: has ? 'var(--accent-soft-ink)' : 'var(--muted)',
+                  font: `${has ? 600 : 500} 11px var(--font-mono)`,
+                  opacity: has ? 1 : 0.85,
+                }}
+              >
+                {method.label}
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {open && (
+        <div style={{ borderTop: '1px solid var(--line)' }}>
+          {bucket.experiments.map((exp, idx) => (
+            <ExperimentRow
+              key={exp.id}
+              exp={exp}
+              currencySymbol={currencySymbol}
+              currencyCode={currencyCode}
+              isLast={idx === bucket.experiments.length - 1}
+              nested
+              onSelect={() => onSelect(exp)}
+              onDuplicate={() => onDuplicate(exp)}
+              onArchiveToggle={() => onArchiveToggle(exp)}
+              onDelete={() => onDelete(exp)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -874,6 +993,14 @@ function ExperimentRow({
   onDelete: () => void;
 }) {
   const isArchived = exp.archived_at !== null;
+  const method = exp.assistance_method || 'none';
+  // A control row carries no tag at all. "None" read as a missing setting
+  // rather than a condition, and absence is the clearer signal.
+  const showMethod = method !== 'none';
+  const groupLine = exp.group_name
+    ? [exp.group_name, exp.group_dataset_name, exp.wave].filter(Boolean).join(' · ')
+    : 'Ungrouped · scratch work';
+
   return (
     <div
       onClick={onSelect}
@@ -884,7 +1011,7 @@ function ExperimentRow({
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 20,
-        padding: nested ? '16px 24px 16px 48px' : '20px 24px',
+        padding: nested ? '14px 22px 14px 44px' : '18px 22px',
         borderBottom: isLast ? 'none' : '1px solid var(--line)',
         // Round the last row's bottom so its full-bleed hover fill follows the
         // card's rounded bottom corners.
@@ -894,68 +1021,69 @@ function ExperimentRow({
         transition: 'background 0.15s',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, minWidth: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: nested ? 11 : 12, minWidth: 0 }}>
         {/* Fixed gutter reserves space so titles align whether or not a dot shows. */}
-        <div style={{ width: 9, flexShrink: 0, display: 'flex', justifyContent: 'center', paddingTop: 9 }}>
+        <div style={{ width: 8, flexShrink: 0, display: 'flex', justifyContent: 'center', paddingTop: 7 }}>
           {exp.needs_attention && <AttentionDot reason={exp.attention_reason} />}
         </div>
         <div style={{ minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
             <span
               style={{
                 fontFamily: 'var(--font-head)',
-                fontSize: 18,
+                fontSize: nested ? 15.5 : 17,
                 fontWeight: 600,
-                letterSpacing: '-0.01em',
+                letterSpacing: nested ? '-0.005em' : '-0.01em',
               }}
             >
               {exp.internal_name || exp.name}
             </span>
             <StatusLabel status={exp.status} size="sm" />
-            <span
-              data-testid={`experiment-method-${exp.assistance_method || 'none'}`}
-              style={{
-                border: '1px solid var(--faint)',
-                borderRadius: 999,
-                padding: '2px 8px',
-                font: '600 11px var(--font-body)',
-                color: 'var(--muted)',
-                background: 'var(--surface-2)',
-              }}
-            >
-              {methodLabel(exp.assistance_method || 'none')}
-            </span>
-            {exp.wave && !nested && (
+            {showMethod && (
               <span
-                data-testid={`experiment-wave-${exp.wave}`}
+                data-testid={`experiment-method-${method}`}
                 style={{
-                  border: '1px solid var(--faint)',
                   borderRadius: 999,
-                  padding: '2px 8px',
-                  font: '600 11px var(--font-mono)',
-                  color: 'var(--muted)',
-                  background: 'var(--surface-2)',
+                  padding: '2px 9px',
+                  border: '1px solid var(--accent-soft)',
+                  background: 'var(--accent-soft)',
+                  color: 'var(--accent-soft-ink)',
+                  font: '600 10.5px var(--font-mono)',
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  whiteSpace: 'nowrap',
                 }}
               >
-                {exp.wave}
+                {methodLabel(method)}
               </span>
             )}
           </div>
-          {exp.internal_name && (
-            <div style={{ marginTop: 5, fontSize: 13, color: 'var(--muted)' }}>Public: {exp.name}</div>
+          {/* Flat mode has no group card above it, so the row states its own
+              group · dataset · wave. Nested rows inherit it from the header. */}
+          {!nested && (
+            <div style={{ marginTop: 4, font: '500 12px var(--font-mono)', color: 'var(--muted)' }}>
+              {groupLine}
+            </div>
           )}
-          <div style={{ marginTop: 3, fontSize: 13, color: 'var(--muted)' }}>
+          <div style={{ marginTop: nested ? 4 : 3, fontSize: 12.5, color: 'var(--muted)' }}>
+            {exp.internal_name ? `Public: ${exp.name} · ` : ''}
             {exp.question_count} questions · {exp.rating_count} ratings
           </div>
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexShrink: 0 }}>
-        <div style={{ width: 96, textAlign: 'right' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+        <div style={{ width: nested ? 88 : 92, textAlign: 'right' }}>
+          <div
+            style={{
+              fontSize: nested ? 14.5 : 15,
+              fontWeight: nested ? 600 : 700,
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
             {formatSpend(exp.spend_minor_units, currencySymbol, currencyCode)}
           </div>
-          <div style={{ fontSize: 12, color: 'var(--muted)', letterSpacing: '0.02em' }}>spent</div>
+          <div style={{ fontSize: 11.5, color: 'var(--muted)' }}>spent</div>
         </div>
         <RowActionMenu
           label={`Actions for ${exp.internal_name || exp.name}`}
@@ -979,7 +1107,13 @@ function ExperimentRow({
  * StatusLabel tooltip. Only rendered when there's something to flag (the caller
  * guards on `needs_attention`).
  */
-function AttentionDot({ reason }: { reason: string | null }) {
+function AttentionDot({
+  reason,
+  testId = 'experiment-attention-dot',
+}: {
+  reason: string | null;
+  testId?: string;
+}) {
   const [hovered, setHovered] = useState(false);
 
   return (
@@ -992,13 +1126,13 @@ function AttentionDot({ reason }: { reason: string | null }) {
         role="img"
         aria-label={reason ? `Action needed: ${reason}` : 'Needs attention'}
         tabIndex={0}
-        data-testid="experiment-attention-dot"
+        data-testid={testId}
         title={reason ? undefined : 'Needs attention'}
         onFocus={() => setHovered(true)}
         onBlur={() => setHovered(false)}
         style={{
-          width: 9,
-          height: 9,
+          width: 8,
+          height: 8,
           borderRadius: '50%',
           background: AMBER,
           boxShadow: `0 0 0 4px ${AMBER_HALO}`,
@@ -1087,6 +1221,312 @@ function ErrorBanner({ text }: { text: string }) {
   );
 }
 
+/**
+ * Group picker for the create panel. Replaces a `<select>` whose
+ * "Create new group…" option disguised a create action as a value: picking a
+ * group and starting a new one looked identical. Here the list is for choosing
+ * and the footer button is for creating, and whatever was typed into the filter
+ * seeds the inline builder instead of being thrown away.
+ */
+function GroupCombobox({
+  groups,
+  experiments,
+  groupMode,
+  selectedGroupId,
+  newGroupName,
+  onPick,
+  onStartNew,
+}: {
+  groups: ExperimentGroup[];
+  experiments: Experiment[];
+  groupMode: 'none' | 'existing' | 'new';
+  selectedGroupId: number | null;
+  newGroupName: string;
+  onPick: (groupId: number | null) => void;
+  onStartNew: (seedName: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+
+  const counts = useMemo(() => {
+    const byGroup = new Map<number, number>();
+    for (const exp of experiments) {
+      if (exp.group_id != null) byGroup.set(exp.group_id, (byGroup.get(exp.group_id) ?? 0) + 1);
+    }
+    return byGroup;
+  }, [experiments]);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return groups;
+    return groups.filter((g) => `${g.name} ${g.dataset_name} ${g.wave}`.toLowerCase().includes(q));
+  }, [groups, query]);
+
+  // Index 0 is always "No group"; the filtered groups follow it.
+  const optionCount = matches.length + 1;
+
+  useEffect(() => setActiveIndex(0), [query]);
+
+  // Click-outside closes. The listener only exists while the panel is open.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [open]);
+
+  // Keep the keyboard-active option in view inside the scrolling list.
+  useEffect(() => {
+    if (!open) return;
+    document
+      .getElementById(`group-option-${activeIndex}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [open, activeIndex]);
+
+  const close = (refocus: boolean) => {
+    setOpen(false);
+    setQuery('');
+    if (refocus) triggerRef.current?.focus();
+  };
+
+  const commit = (index: number) => {
+    onPick(index === 0 ? null : matches[index - 1].id);
+    close(true);
+  };
+
+  const startNew = () => {
+    onStartNew(query.trim());
+    close(false);
+  };
+
+  const selected = groups.find((g) => g.id === selectedGroupId) ?? null;
+  const triggerName = selected
+    ? selected.name
+    : groupMode === 'new'
+      ? newGroupName.trim() || 'New group'
+      : 'No group';
+  const triggerMeta = selected
+    ? `${selected.dataset_name} · ${selected.wave}`
+    : groupMode === 'new'
+      ? 'being created below'
+      : 'scratch work — ungrouped';
+
+  const wavePill = {
+    border: '1px solid var(--faint)',
+    borderRadius: 999,
+    padding: '1px 7px',
+    font: '600 10.5px var(--font-mono)',
+    background: 'var(--surface-2)',
+    color: 'var(--muted)',
+  } as const;
+
+  if (!open) {
+    return (
+      <div ref={wrapRef}>
+        <button
+          ref={triggerRef}
+          type="button"
+          data-testid="group-picker"
+          aria-haspopup="listbox"
+          aria-expanded={false}
+          onClick={() => setOpen(true)}
+          onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--accent)')}
+          onMouseLeave={(e) => (e.currentTarget.style.borderColor = 'var(--faint)')}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10,
+            textAlign: 'left',
+            padding: '11px 13px',
+            border: '1px solid var(--faint)',
+            borderRadius: 'var(--radius-sm)',
+            background: 'var(--surface)',
+            cursor: 'pointer',
+          }}
+        >
+          <span style={{ minWidth: 0 }}>
+            <span
+              style={{
+                display: 'block',
+                fontSize: 14.5,
+                fontWeight: 600,
+                color: 'var(--ink)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {triggerName}
+            </span>
+            <span
+              style={{
+                display: 'block',
+                marginTop: 2,
+                font: '500 11.5px var(--font-mono)',
+                color: 'var(--muted)',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {triggerMeta}
+            </span>
+          </span>
+          <span aria-hidden style={{ color: 'var(--muted)', fontSize: 11, flexShrink: 0 }}>
+            ▾
+          </span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={wrapRef}>
+      <div
+        style={{
+          border: '1px solid var(--accent)',
+          borderRadius: 'var(--radius-sm)',
+          boxShadow: 'var(--shadow)',
+          overflow: 'hidden',
+          background: 'var(--surface)',
+        }}
+      >
+        <input
+          autoFocus
+          type="text"
+          role="combobox"
+          aria-expanded
+          aria-controls="group-picker-listbox"
+          aria-activedescendant={`group-option-${activeIndex}`}
+          aria-label="Find or name a group"
+          data-testid="group-picker-input"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              setActiveIndex((i) => (i + 1) % optionCount);
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              setActiveIndex((i) => (i - 1 + optionCount) % optionCount);
+            } else if (e.key === 'Enter') {
+              e.preventDefault();
+              commit(activeIndex);
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              close(true);
+            }
+          }}
+          placeholder="Find or name a group…"
+          style={{
+            width: '100%',
+            padding: '11px 13px',
+            border: 'none',
+            borderBottom: '1px solid var(--line)',
+            borderRadius: 0,
+            outline: 'none',
+            background: 'var(--surface)',
+            font: '400 14.5px var(--font-body)',
+            color: 'var(--ink)',
+          }}
+        />
+        <div
+          id="group-picker-listbox"
+          role="listbox"
+          style={{ maxHeight: 232, overflow: 'auto', padding: 5 }}
+        >
+          {[null, ...matches].map((group, index) => {
+            const isActive = index === activeIndex;
+            const isSelected = group == null ? selectedGroupId == null : group.id === selectedGroupId;
+            const count = group ? counts.get(group.id) ?? 0 : 0;
+            return (
+              <div
+                key={group ? group.id : 'none'}
+                id={`group-option-${index}`}
+                role="option"
+                aria-selected={isSelected}
+                data-testid={group ? `group-option-${group.id}` : 'group-option-none'}
+                onMouseEnter={() => setActiveIndex(index)}
+                onClick={() => commit(index)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 10,
+                  padding: '9px 10px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  background: isSelected
+                    ? 'var(--accent-soft)'
+                    : isActive
+                      ? 'var(--surface-2)'
+                      : 'transparent',
+                }}
+              >
+                <span
+                  style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}
+                >
+                  <span
+                    style={{
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: 'var(--ink)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {group ? group.name : 'No group'}
+                  </span>
+                  {group && <span style={wavePill}>{group.wave}</span>}
+                </span>
+                <span
+                  style={{
+                    font: '500 11.5px var(--font-mono)',
+                    color: 'var(--muted)',
+                    flexShrink: 0,
+                  }}
+                >
+                  {group ? `${group.dataset_name} · ${count}` : 'scratch'}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ borderTop: '1px solid var(--line)', padding: 5 }}>
+          <button
+            type="button"
+            data-testid="group-picker-create"
+            onClick={startNew}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-soft)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+            style={{
+              width: '100%',
+              textAlign: 'left',
+              padding: '9px 10px',
+              border: 'none',
+              borderRadius: 6,
+              background: 'transparent',
+              font: '600 13.5px var(--font-body)',
+              color: 'var(--accent)',
+              cursor: 'pointer',
+            }}
+          >
+            {query.trim() ? `＋ Create “${query.trim()}”` : '＋ Create a new group'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CreatePanel({
   value,
   onChange,
@@ -1109,7 +1549,10 @@ function CreatePanel({
   const [datasetMode, setDatasetMode] = useState<'existing' | 'new'>('existing');
   const [datasetId, setDatasetId] = useState<number | ''>('');
   const [newDatasetName, setNewDatasetName] = useState('');
-  const [newDatasetWaves, setNewDatasetWaves] = useState('');
+  // Waves are collected one token at a time rather than as a comma blob, so the
+  // chip row and the group's wave pick read from the same list.
+  const [newDatasetWaves, setNewDatasetWaves] = useState<string[]>([]);
+  const [waveDraft, setWaveDraft] = useState('');
   const [newGroupWave, setNewGroupWave] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -1118,8 +1561,27 @@ function CreatePanel({
   const selectedDataset =
     datasetMode === 'existing' ? datasets.find((d) => d.id === datasetId) ?? null : null;
   const datasetWaves = selectedDataset?.waves ?? [];
-  const typedWaves = useMemo(() => parseWaveList(newDatasetWaves), [newDatasetWaves]);
-  const pickerWaves = datasetMode === 'new' ? typedWaves : datasetWaves;
+  const pickerWaves = datasetMode === 'new' ? newDatasetWaves : datasetWaves;
+
+  const resetBuilder = () => {
+    setNewGroupName('');
+    setDatasetMode('existing');
+    setDatasetId('');
+    setNewDatasetName('');
+    setNewDatasetWaves([]);
+    setWaveDraft('');
+    setNewGroupWave('');
+  };
+
+  const commitWaveDraft = () => {
+    const tokens = parseWaveList(waveDraft);
+    if (tokens.length === 0) return;
+    const next = [...newDatasetWaves];
+    for (const token of tokens) if (!next.includes(token)) next.push(token);
+    setNewDatasetWaves(next);
+    setWaveDraft('');
+    if (!newGroupWave) setNewGroupWave(tokens[0]);
+  };
 
   const methodsInGroup = useMemo(() => {
     const groupId = selectedGroup?.id;
@@ -1142,7 +1604,7 @@ function CreatePanel({
         let nextDatasetId = typeof datasetId === 'number' ? datasetId : null;
         let wavesForGroup = datasetWaves;
         if (datasetMode === 'new') {
-          wavesForGroup = typedWaves;
+          wavesForGroup = newDatasetWaves;
           if (!newDatasetName.trim()) {
             throw new Error('Dataset name is required.');
           }
@@ -1238,50 +1700,41 @@ function CreatePanel({
         />
 
         <div style={{ marginBottom: 16 }}>
-          <label
-            htmlFor="experiment-group"
-            style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
-          >
-            Experiment group{' '}
-            <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
-          </label>
-          <select
-            id="experiment-group"
-            data-testid="group-picker"
-            value={groupMode === 'new' ? 'new' : groupMode === 'existing' && value.group_id != null ? String(value.group_id) : ''}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (next === 'new') {
-                setGroupMode('new');
-                onChange({ ...value, group_id: null });
-                return;
-              }
-              if (next === '') {
-                setGroupMode('none');
-                onChange({ ...value, group_id: null });
-                return;
-              }
-              setGroupMode('existing');
-              onChange({ ...value, group_id: Number(next) });
-            }}
+          <div
             style={{
-              width: '100%',
-              padding: '11px 13px',
-              border: '1px solid var(--faint)',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--surface)',
-              font: '400 15px var(--font-body)',
-              color: 'var(--ink)',
+              display: 'flex',
+              alignItems: 'baseline',
+              justifyContent: 'space-between',
+              gap: 12,
+              marginBottom: 7,
             }}
           >
-            <option value="">No group (scratch / pilot)</option>
-            {groups.map((group) => (
-              <option key={group.id} value={group.id}>
-                {group.name} · {group.dataset_name} · {group.wave}
-              </option>
-            ))}
-            <option value="new">Create new group…</option>
-          </select>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              Experiment group{' '}
+              <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
+            </span>
+            <span style={{ font: '500 11.5px var(--font-mono)', color: 'var(--muted)' }}>
+              dataset × wave
+            </span>
+          </div>
+          <GroupCombobox
+            groups={groups}
+            experiments={experiments}
+            groupMode={groupMode}
+            selectedGroupId={value.group_id ?? null}
+            newGroupName={newGroupName}
+            onPick={(groupId) => {
+              setGroupMode(groupId == null ? 'none' : 'existing');
+              resetBuilder();
+              onChange({ ...value, group_id: groupId });
+            }}
+            onStartNew={(seedName) => {
+              setGroupMode('new');
+              resetBuilder();
+              setNewGroupName(seedName);
+              onChange({ ...value, group_id: null });
+            }}
+          />
           <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>
             Groups are a dataset × wave. Skip this for scratch work.
           </div>
@@ -1289,14 +1742,55 @@ function CreatePanel({
 
         {groupMode === 'new' && (
           <div
+            data-testid="new-group-panel"
             style={{
               border: '1px solid var(--faint)',
               borderRadius: 'var(--radius-sm)',
-              padding: '14px 14px 2px',
-              marginBottom: 16,
+              padding: '15px 15px 16px',
+              marginBottom: 18,
               background: 'var(--surface-2)',
             }}
           >
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 12,
+                marginBottom: 12,
+              }}
+            >
+              <span
+                style={{
+                  font: '600 11px/1 var(--font-mono)',
+                  letterSpacing: '0.14em',
+                  textTransform: 'uppercase',
+                  color: 'var(--muted)',
+                }}
+              >
+                New group
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setGroupMode('none');
+                  resetBuilder();
+                  onChange({ ...value, group_id: null });
+                }}
+                onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--ink)')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--muted)')}
+                style={{
+                  border: 'none',
+                  background: 'transparent',
+                  padding: 0,
+                  fontSize: 13,
+                  color: 'var(--muted)',
+                  cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
             <Field
               id="new-group-name"
               testId="new-group-name-input"
@@ -1307,110 +1801,125 @@ function CreatePanel({
               required
             />
             <div style={{ marginBottom: 16 }}>
-              <label
-                htmlFor="new-group-dataset"
-                style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
-              >
-                Dataset
-              </label>
-              <select
-                id="new-group-dataset"
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 7 }}>Dataset</div>
+              <div
                 data-testid="new-group-dataset"
-                value={datasetMode === 'new' ? 'new' : datasetId === '' ? '' : String(datasetId)}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  if (next === 'new') {
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}
+              >
+                {datasets.map((dataset) => {
+                  const active = datasetMode === 'existing' && datasetId === dataset.id;
+                  return (
+                    <button
+                      key={dataset.id}
+                      type="button"
+                      data-testid={`dataset-chip-${dataset.id}`}
+                      aria-pressed={active}
+                      onClick={() => {
+                        setDatasetMode('existing');
+                        setDatasetId(dataset.id);
+                        setNewGroupWave(dataset.waves[0] ?? '');
+                      }}
+                      style={chipStyle(active)}
+                    >
+                      {dataset.name}
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  data-testid="dataset-chip-new"
+                  aria-pressed={datasetMode === 'new'}
+                  onClick={() => {
                     setDatasetMode('new');
                     setDatasetId('');
                     setNewGroupWave('');
-                    return;
-                  }
-                  setDatasetMode('existing');
-                  setDatasetId(next ? Number(next) : '');
-                  setNewGroupWave('');
-                }}
-                required
-                style={{
-                  width: '100%',
-                  padding: '11px 13px',
-                  border: '1px solid var(--faint)',
-                  borderRadius: 'var(--radius-sm)',
-                  background: 'var(--surface)',
-                  font: '400 15px var(--font-body)',
-                  color: 'var(--ink)',
-                }}
-              >
-                <option value="">Select a dataset…</option>
-                {datasets.map((dataset) => (
-                  <option key={dataset.id} value={dataset.id}>
-                    {dataset.name}
-                    {dataset.waves.length ? ` (${dataset.waves.join(', ')})` : ''}
-                  </option>
-                ))}
-                <option value="new">Create new dataset…</option>
-              </select>
+                  }}
+                  style={{
+                    ...chipStyle(datasetMode === 'new'),
+                    borderStyle: datasetMode === 'new' ? 'solid' : 'dashed',
+                  }}
+                >
+                  ＋ new dataset
+                </button>
+              </div>
             </div>
             {datasetMode === 'new' && (
-              <>
-                <Field
-                  id="new-dataset-name"
-                  testId="new-dataset-name-input"
-                  label="Dataset name"
-                  hint="For pipeline datasets, use the card name verbatim."
-                  value={newDatasetName}
-                  onChange={setNewDatasetName}
-                  placeholder="e.g., medqa"
-                  required
-                />
-                <Field
-                  id="new-dataset-waves"
-                  testId="new-dataset-waves-input"
-                  label="Waves"
-                  hint="Comma-separated tokens, e.g. fall25, sp26."
-                  value={newDatasetWaves}
-                  onChange={(v) => {
-                    setNewDatasetWaves(v);
-                    const next = parseWaveList(v);
-                    if (newGroupWave && !next.includes(newGroupWave)) setNewGroupWave('');
-                  }}
-                  placeholder="fall25"
-                  required
-                />
-              </>
+              <Field
+                id="new-dataset-name"
+                testId="new-dataset-name-input"
+                label="Dataset name"
+                hint="For pipeline datasets, use the card name verbatim."
+                value={newDatasetName}
+                onChange={setNewDatasetName}
+                placeholder="e.g., medqa"
+                required
+              />
             )}
-            {pickerWaves.length > 1 && (
-              <div style={{ marginBottom: 16 }}>
-                <label
-                  htmlFor="new-group-wave"
-                  style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
-                >
-                  Wave
-                </label>
-                <select
-                  id="new-group-wave"
-                  data-testid="new-group-wave"
-                  value={newGroupWave}
-                  onChange={(e) => setNewGroupWave(e.target.value)}
-                  required
-                  style={{
-                    width: '100%',
-                    padding: '11px 13px',
-                    border: '1px solid var(--faint)',
-                    borderRadius: 'var(--radius-sm)',
-                    background: 'var(--surface)',
-                    font: '400 15px var(--font-body)',
-                    color: 'var(--ink)',
-                  }}
-                >
-                  <option value="">Select a wave…</option>
-                  {pickerWaves.map((wave) => (
-                    <option key={wave} value={wave}>
-                      {wave}
-                    </option>
-                  ))}
-                </select>
+            {/* Always rendered. Gating this on "more than one wave" made a
+                control appear and vanish as the dataset changed. */}
+            <div style={{ marginBottom: 16 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  marginBottom: 7,
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Wave</span>
+                <span style={{ font: '500 11.5px var(--font-mono)', color: 'var(--muted)' }}>
+                  {datasetMode === 'new'
+                    ? 'type a token, press enter'
+                    : selectedDataset
+                      ? `from ${selectedDataset.name}`
+                      : 'pick a dataset first'}
+                </span>
               </div>
-            )}
+              <div
+                data-testid="new-group-wave"
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
+              >
+                {pickerWaves.map((wave) => (
+                  <button
+                    key={wave}
+                    type="button"
+                    data-testid={`wave-chip-${wave}`}
+                    aria-pressed={newGroupWave === wave}
+                    onClick={() => setNewGroupWave(wave)}
+                    style={chipStyle(newGroupWave === wave)}
+                  >
+                    {wave}
+                  </button>
+                ))}
+                {datasetMode === 'new' && (
+                  <input
+                    type="text"
+                    data-testid="new-dataset-wave-input"
+                    aria-label="Add a wave token"
+                    value={waveDraft}
+                    onChange={(e) => setWaveDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ',') {
+                        e.preventDefault();
+                        commitWaveDraft();
+                      }
+                    }}
+                    onBlur={commitWaveDraft}
+                    placeholder="add wave ⏎"
+                    style={{
+                      width: 116,
+                      padding: '4px 9px',
+                      border: '1px dashed var(--faint)',
+                      borderRadius: 999,
+                      background: 'var(--surface)',
+                      font: '500 12px var(--font-mono)',
+                      color: 'var(--ink)',
+                    }}
+                  />
+                )}
+              </div>
+            </div>
             {datasetMode === 'existing' && selectedDataset && datasetWaves.length === 0 && (
               <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 16 }}>
                 This dataset has no waves yet. Create a new dataset (or add waves via the API)
@@ -1421,54 +1930,93 @@ function CreatePanel({
         )}
 
         <div style={{ marginBottom: 16 }}>
-          <label
-            htmlFor="assistance-method"
-            style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 7 }}
-          >
-            Assistance method
-          </label>
-          <select
-            id="assistance-method"
-            data-testid="assistance-method-select"
-            value={chosenMethod}
-            onChange={(e) => onChange({ ...value, assistance_method: e.target.value })}
-            style={{
-              width: '100%',
-              padding: '11px 13px',
-              border: '1px solid var(--faint)',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--surface)',
-              font: '400 15px var(--font-body)',
-              color: 'var(--ink)',
-            }}
-          >
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 7 }}>Assistance method</div>
+          {/* Option cards rather than a <select>: each arm carries its own
+              description, and the "is this arm taken in the chosen group"
+              availability now sits on the option it describes instead of in a
+              separate sentence below. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {ASSISTANCE_METHODS.map((method) => {
-              const already = methodsInGroup.has(method.value);
+              const picked = chosenMethod === method.value;
+              const inUse = methodsInGroup.has(method.value);
               return (
-                <option key={method.value} value={method.value}>
-                  {already ? `${method.label} — already in group` : method.label}
-                </option>
+                <button
+                  key={method.value}
+                  type="button"
+                  data-testid={`assistance-method-${method.value}`}
+                  aria-pressed={picked}
+                  onClick={() => onChange({ ...value, assistance_method: method.value })}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    width: '100%',
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: 'var(--radius-sm)',
+                    border: `1px solid ${picked ? 'var(--accent)' : 'var(--faint)'}`,
+                    background: picked ? 'var(--accent-soft)' : 'var(--surface)',
+                    boxShadow: picked ? '0 0 0 3px rgba(61,107,92,0.12)' : 'none',
+                    cursor: 'pointer',
+                  }}
+                >
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', fontSize: 14, fontWeight: 600, color: 'var(--ink)' }}>
+                      {method.label}
+                    </span>
+                    <span
+                      style={{ display: 'block', marginTop: 2, fontSize: 12, color: 'var(--muted)' }}
+                    >
+                      {method.description}
+                    </span>
+                  </span>
+                  {selectedGroup && (
+                    <span
+                      style={{
+                        borderRadius: 999,
+                        padding: '2px 8px',
+                        font: '600 10.5px var(--font-mono)',
+                        letterSpacing: '0.06em',
+                        textTransform: 'uppercase',
+                        whiteSpace: 'nowrap',
+                        flexShrink: 0,
+                        border: `1px solid ${inUse ? 'var(--warn-soft)' : 'var(--faint)'}`,
+                        background: inUse ? 'var(--warn-soft)' : 'var(--surface-2)',
+                        color: inUse ? 'var(--warn)' : 'var(--muted)',
+                      }}
+                    >
+                      {inUse ? 'in use' : 'open'}
+                    </span>
+                  )}
+                </button>
               );
             })}
-          </select>
-          {selectedGroup && (
-            <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>
-              In this group:{' '}
-              {ASSISTANCE_METHODS.filter((m) => !methodsInGroup.has(m.value))
-                .map((m) => m.label)
-                .join(', ') || 'every method is already used'}
-              {ASSISTANCE_METHODS.some((m) => !methodsInGroup.has(m.value))
-                ? ' still missing.'
-                : '.'}
-            </div>
-          )}
+          </div>
           {methodAlreadyInGroup && (
             <div
               data-testid="duplicate-method-warning"
-              style={{ fontSize: 12.5, color: AMBER, marginTop: 7 }}
+              style={{
+                display: 'flex',
+                gap: 10,
+                marginTop: 10,
+                background: 'var(--warn-soft)',
+                border: '1px solid var(--warn)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '10px 12px',
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                color: 'var(--warn)',
+              }}
             >
-              This group already has a {methodLabel(chosenMethod)} experiment. Duplicates are
-              allowed (param variants, re-collections) but usually you want a missing method.
+              <span aria-hidden style={{ fontWeight: 700 }}>
+                !
+              </span>
+              <span>
+                {selectedGroup?.name} already has an experiment using{' '}
+                {methodLabel(chosenMethod)}. One per method is the convention, but you can still
+                create this.
+              </span>
             </div>
           )}
         </div>
@@ -1538,14 +2086,6 @@ function SectionHeader({ label }: { label: string }) {
       }}
     >
       {label}
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div style={{ padding: '52px 20px', textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
-      {text}
     </div>
   );
 }

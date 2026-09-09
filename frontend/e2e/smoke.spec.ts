@@ -1486,10 +1486,19 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   await expect(page.getByTestId('group-card-1')).toBeVisible();
   await expect(page.getByTestId('group-spend-1')).toHaveText('$6.50');
   await expect(page.getByTestId('group-card-toggle-1')).toContainText('MedQA Fall');
-  await expect(page.getByTestId('group-wave-1-fall25')).toBeVisible();
-  await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-none')).toBeVisible();
+  await expect(page.getByTestId('group-wave-1')).toBeVisible();
+  // A control row carries no method tag at all — absence is the signal.
+  await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-none')).toHaveCount(0);
   await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-top_n')).toBeVisible();
+  // Arm coverage is stated once per group instead of once per row.
+  const assistance = page.getByTestId('group-assistance-1');
+  await expect(assistance).toContainText('Unassisted');
+  await expect(assistance).toContainText('Top-N');
   await expect(page.getByTestId('group-card-ungrouped')).toBeVisible();
+  await expect(page.getByTestId('group-card-ungrouped')).not.toHaveAttribute(
+    'data-testid',
+    'group-assistance-ungrouped',
+  );
   await expect(page.getByText('Scratch draft')).toBeVisible();
 
   await page.getByTestId('wave-filter-fall25').click();
@@ -1502,19 +1511,29 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   await page.getByTestId('grouped-toggle').click();
   await expect(page.getByTestId('group-card-1')).toHaveCount(0);
   await expect(page.getByText('MedQA none')).toBeVisible();
-  await expect(page.getByTestId('experiment-wave-fall25').first()).toBeVisible();
+  // Flat rows state their own group · dataset · wave in place of a wave pill.
+  await expect(page.getByText('MedQA Fall · medqa · fall25').first()).toBeVisible();
+  await expect(page.getByText('Ungrouped · scratch work')).toBeVisible();
 
   await page.getByTestId('grouped-toggle').click();
-  await page.getByTestId('group-picker').selectOption('1');
-  await page.getByTestId('assistance-method-select').selectOption('none');
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-option-1').click();
+  await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall');
+
+  await page.getByTestId('assistance-method-none').click();
   await expect(page.getByTestId('duplicate-method-warning')).toBeVisible();
-  await page.getByTestId('assistance-method-select').selectOption('human_as_a_tool');
+  await page.getByTestId('assistance-method-human_as_a_tool').click();
   await expect(page.getByTestId('duplicate-method-warning')).toHaveCount(0);
 
-  await page.getByTestId('group-picker').selectOption('new');
-  await page.getByTestId('new-group-name-input').fill('MedQA Spring');
-  await page.getByTestId('new-group-dataset').selectOption('1');
-  await page.getByTestId('new-group-wave').selectOption('sp26');
+  // Typing in the picker and pressing "Create" carries the text into the
+  // builder rather than discarding it.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('MedQA Spring');
+  await page.getByTestId('group-picker-create').click();
+  await expect(page.getByTestId('new-group-panel')).toBeVisible();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('MedQA Spring');
+  await page.getByTestId('dataset-chip-1').click();
+  await page.getByTestId('wave-chip-sp26').click();
   await page.getByTestId('experiment-name-input').fill('MedQA spring none');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
 
@@ -1522,18 +1541,27 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
 });
 
-test('new dataset with multiple waves shows a wave picker', async ({ page }) => {
+test('new dataset collects wave tokens one at a time', async ({ page }) => {
   const state = createMockState();
   await installApiMocks(page, state);
   await page.goto('/admin');
 
-  await page.getByTestId('group-picker').selectOption('new');
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-create').click();
   await page.getByTestId('new-group-name-input').fill('MedQA Spring');
-  await page.getByTestId('new-group-dataset').selectOption('new');
+  await page.getByTestId('dataset-chip-new').click();
   await page.getByTestId('new-dataset-name-input').fill('medqa');
-  await page.getByTestId('new-dataset-waves-input').fill('fall25, sp26');
+  // The wave row is present before any token exists — it no longer appears and
+  // vanishes with the dataset choice.
   await expect(page.getByTestId('new-group-wave')).toBeVisible();
-  await page.getByTestId('new-group-wave').selectOption('sp26');
+  const waveInput = page.getByTestId('new-dataset-wave-input');
+  await waveInput.fill('fall25');
+  await waveInput.press('Enter');
+  await waveInput.fill('SP26');
+  await waveInput.press('Enter');
+  // Tokens are lowercased and become chips.
+  await expect(page.getByTestId('wave-chip-fall25')).toBeVisible();
+  await page.getByTestId('wave-chip-sp26').click();
   await page.getByTestId('experiment-name-input').fill('MedQA spring none');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
 
@@ -1553,10 +1581,11 @@ test('failed experiment create reuses the group already made', async ({ page }) 
   await installApiMocks(page, state);
   await page.goto('/admin');
 
-  await page.getByTestId('group-picker').selectOption('new');
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-create').click();
   await page.getByTestId('new-group-name-input').fill('MedQA Spring');
-  await page.getByTestId('new-group-dataset').selectOption('1');
-  await page.getByTestId('new-group-wave').selectOption('sp26');
+  await page.getByTestId('dataset-chip-1').click();
+  await page.getByTestId('wave-chip-sp26').click();
   await page.getByTestId('experiment-name-input').fill('TRIGGER-FAIL');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
 
