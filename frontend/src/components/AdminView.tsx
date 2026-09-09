@@ -1129,14 +1129,32 @@ function ExperimentRow({
                     e.stopPropagation();
                     onTagClick(tag);
                   }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--accent)';
+                    e.currentTarget.style.background = 'var(--accent-soft)';
+                    e.currentTarget.style.color = 'var(--accent-soft-ink)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--faint)';
+                    e.currentTarget.style.background = 'var(--surface)';
+                    e.currentTarget.style.color = 'var(--muted)';
+                  }}
                   style={{
                     border: '1px solid var(--faint)',
                     borderRadius: 999,
                     padding: '3px 10px',
                     font: '500 12px var(--font-body)',
-                    color: 'var(--accent-soft-ink)',
-                    background: 'var(--accent-soft)',
+                    // Outline, not an --accent-soft fill: everywhere else in
+                    // this view that fill means active / selected / present,
+                    // and the method tag next to these rows owns it
+                    // unconditionally. A filled tag chip read as the same kind
+                    // of fact as the assistance arm. --surface keeps the chip
+                    // legible over the row's --surface-2 hover; the fill
+                    // arrives on hover, when the filter is about to fire.
+                    color: 'var(--muted)',
+                    background: 'var(--surface)',
                     cursor: 'pointer',
+                    transition: 'background 0.15s, border-color 0.15s, color 0.15s',
                   }}
                 >
                   {tag}
