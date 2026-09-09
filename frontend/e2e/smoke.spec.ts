@@ -1541,6 +1541,62 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
 });
 
+test('group picker keyboard: type-ahead commits the match, not "No group"', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    { id: 1, name: 'medqa', waves: ['fall25', 'sp26'], created_at: '2026-03-09T00:00:00Z' },
+  ];
+  state.nextDatasetId = 2;
+  state.groups = [
+    {
+      id: 1,
+      name: 'MedQA Fall 25',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'fall25',
+      experiment_count: 7,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+    {
+      id: 2,
+      name: 'GPQA Spring 26',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'sp26',
+      experiment_count: 1,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+  state.nextGroupId = 3;
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  // Typing to a single match and pressing Enter picks that match. The highlight
+  // used to stay pinned to the "No group" row, so this silently ungrouped.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('MedQA Fall');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall 25');
+
+  // Reopening with a selection highlights it, so a bare Enter is a no-op rather
+  // than a clear.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall 25');
+
+  // A typed name that matches nothing opens the builder seeded with it.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('MedQA Winter 26');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('new-group-panel')).toBeVisible();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('MedQA Winter 26');
+
+  // Counts come from the server field, not from the (page-capped) list.
+  await page.getByTestId('group-picker').click();
+  await expect(page.getByTestId('group-option-1')).toContainText('medqa · 7');
+});
+
 test('new dataset collects wave tokens one at a time', async ({ page }) => {
   const state = createMockState();
   await installApiMocks(page, state);

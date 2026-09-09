@@ -1230,7 +1230,6 @@ function ErrorBanner({ text }: { text: string }) {
  */
 function GroupCombobox({
   groups,
-  experiments,
   groupMode,
   selectedGroupId,
   newGroupName,
@@ -1238,7 +1237,6 @@ function GroupCombobox({
   onStartNew,
 }: {
   groups: ExperimentGroup[];
-  experiments: Experiment[];
   groupMode: 'none' | 'existing' | 'new';
   selectedGroupId: number | null;
   newGroupName: string;
@@ -1251,14 +1249,6 @@ function GroupCombobox({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
 
-  const counts = useMemo(() => {
-    const byGroup = new Map<number, number>();
-    for (const exp of experiments) {
-      if (exp.group_id != null) byGroup.set(exp.group_id, (byGroup.get(exp.group_id) ?? 0) + 1);
-    }
-    return byGroup;
-  }, [experiments]);
-
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return groups;
@@ -1268,7 +1258,19 @@ function GroupCombobox({
   // Index 0 is always "No group"; the filtered groups follow it.
   const optionCount = matches.length + 1;
 
-  useEffect(() => setActiveIndex(0), [query]);
+  // Index 0 is the synthetic "No group" row, so a highlight parked there turns
+  // the natural type-and-Enter flow into a silent "ungroup". Follow intent
+  // instead: the first real match while filtering, and whatever is already
+  // selected when the list opens with nothing typed.
+  useEffect(() => {
+    if (!open) return;
+    if (query.trim()) {
+      setActiveIndex(matches.length > 0 ? 1 : 0);
+      return;
+    }
+    const selectedIndex = groups.findIndex((g) => g.id === selectedGroupId);
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex + 1 : 0);
+  }, [open, query, matches, groups, selectedGroupId]);
 
   // Click-outside closes. The listener only exists while the panel is open.
   useEffect(() => {
@@ -1418,7 +1420,10 @@ function GroupCombobox({
               setActiveIndex((i) => (i - 1 + optionCount) % optionCount);
             } else if (e.key === 'Enter') {
               e.preventDefault();
-              commit(activeIndex);
+              // Typing a name that matches nothing is a create, not a reason to
+              // fall back to "No group".
+              if (query.trim() && matches.length === 0) startNew();
+              else commit(activeIndex);
             } else if (e.key === 'Escape') {
               e.preventDefault();
               close(true);
@@ -1445,7 +1450,9 @@ function GroupCombobox({
           {[null, ...matches].map((group, index) => {
             const isActive = index === activeIndex;
             const isSelected = group == null ? selectedGroupId == null : group.id === selectedGroupId;
-            const count = group ? counts.get(group.id) ?? 0 : 0;
+            // Server-computed (a real COUNT), so it stays right past the
+            // admin list's page size — the client array is capped at 100.
+            const count = group?.experiment_count ?? 0;
             return (
               <div
                 key={group ? group.id : 'none'}
@@ -1727,7 +1734,6 @@ function CreatePanel({
           </div>
           <GroupCombobox
             groups={groups}
-            experiments={experiments}
             groupMode={groupMode}
             selectedGroupId={value.group_id ?? null}
             newGroupName={newGroupName}
