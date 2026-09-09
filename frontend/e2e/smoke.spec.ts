@@ -1561,6 +1561,11 @@ test('new dataset collects wave tokens one at a time', async ({ page }) => {
   await waveInput.press('Enter');
   // Tokens are lowercased and become chips.
   await expect(page.getByTestId('wave-chip-fall25')).toBeVisible();
+  // A typo'd token can be removed without cancelling the whole builder.
+  await waveInput.fill('sp26x');
+  await waveInput.press('Enter');
+  await page.getByTestId('wave-chip-remove-sp26x').click();
+  await expect(page.getByTestId('wave-chip-sp26x')).toHaveCount(0);
   await page.getByTestId('wave-chip-sp26').click();
   await page.getByTestId('experiment-name-input').fill('MedQA spring none');
   await page.getByRole('button', { name: 'Create Experiment' }).click();

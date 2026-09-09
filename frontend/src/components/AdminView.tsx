@@ -1583,6 +1583,14 @@ function CreatePanel({
     if (!newGroupWave) setNewGroupWave(tokens[0]);
   };
 
+  // Typed tokens are removable so a typo doesn't force cancelling the whole
+  // builder. Waves that come from an existing dataset are not ours to edit.
+  const removeWave = (wave: string) => {
+    const next = newDatasetWaves.filter((token) => token !== wave);
+    setNewDatasetWaves(next);
+    if (newGroupWave === wave) setNewGroupWave(next[0] ?? '');
+  };
+
   const methodsInGroup = useMemo(() => {
     const groupId = selectedGroup?.id;
     if (groupId == null) return new Set<string>();
@@ -1880,18 +1888,70 @@ function CreatePanel({
                 data-testid="new-group-wave"
                 style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
               >
-                {pickerWaves.map((wave) => (
-                  <button
-                    key={wave}
-                    type="button"
-                    data-testid={`wave-chip-${wave}`}
-                    aria-pressed={newGroupWave === wave}
-                    onClick={() => setNewGroupWave(wave)}
-                    style={chipStyle(newGroupWave === wave)}
-                  >
-                    {wave}
-                  </button>
-                ))}
+                {pickerWaves.map((wave) => {
+                  const active = newGroupWave === wave;
+                  if (datasetMode !== 'new') {
+                    return (
+                      <button
+                        key={wave}
+                        type="button"
+                        data-testid={`wave-chip-${wave}`}
+                        aria-pressed={active}
+                        onClick={() => setNewGroupWave(wave)}
+                        style={chipStyle(active)}
+                      >
+                        {wave}
+                      </button>
+                    );
+                  }
+                  return (
+                    <span
+                      key={wave}
+                      style={{
+                        ...chipStyle(active),
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 4,
+                        padding: '5px 5px 5px 11px',
+                        cursor: 'default',
+                      }}
+                    >
+                      <button
+                        type="button"
+                        data-testid={`wave-chip-${wave}`}
+                        aria-pressed={active}
+                        onClick={() => setNewGroupWave(wave)}
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          padding: 0,
+                          font: 'inherit',
+                          color: 'inherit',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {wave}
+                      </button>
+                      <button
+                        type="button"
+                        data-testid={`wave-chip-remove-${wave}`}
+                        aria-label={`Remove wave ${wave}`}
+                        onClick={() => removeWave(wave)}
+                        style={{
+                          border: 'none',
+                          background: 'transparent',
+                          color: 'inherit',
+                          cursor: 'pointer',
+                          fontSize: 11,
+                          lineHeight: 1,
+                          padding: '2px 4px',
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  );
+                })}
                 {datasetMode === 'new' && (
                   <input
                     type="text"
