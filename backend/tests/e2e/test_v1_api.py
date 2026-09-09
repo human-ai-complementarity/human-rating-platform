@@ -253,6 +253,11 @@ _INTERNAL_FIELDS = {
     "system_prompt",
     "human_prompt_prefix",
     "human_prompt_suffix",
+    "group_id",
+    "group_name",
+    "group_dataset_id",
+    "group_dataset_name",
+    "wave",
 }
 
 

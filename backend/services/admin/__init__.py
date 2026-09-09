@@ -8,6 +8,13 @@ from .datasets import (
     list_datasets,
     update_dataset,
 )
+from .groups import (
+    create_group,
+    delete_group,
+    get_group,
+    list_groups,
+    update_group,
+)
 from .experiments import (
     archive_experiment,
     create_experiment,
@@ -41,16 +48,20 @@ __all__ = [
     "calculate_recommendation",
     "create_dataset",
     "create_experiment",
+    "create_group",
     "delete_dataset",
     "delete_experiment",
+    "delete_group",
     "duplicate_experiment",
     "finish_experiment",
     "get_dataset",
     "get_experiment",
+    "get_group",
     "get_experiment_analytics",
     "get_experiment_stats",
     "list_datasets",
     "list_experiments",
+    "list_groups",
     "list_experiment_rounds",
     "list_uploads",
     "publish_experiment_round",
@@ -64,6 +75,7 @@ __all__ = [
     "unarchive_experiment",
     "update_dataset",
     "update_experiment",
+    "update_group",
     "update_experiment_round",
     "upload_questions",
 ]

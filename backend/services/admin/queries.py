@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Question, Rating, Rater
 from services.queries import (  # noqa: F401 — re-exported for backwards compat
+    fetch_dataset_or_404,
     fetch_experiment_or_404,
     parent_question_ids_subquery,
 )
