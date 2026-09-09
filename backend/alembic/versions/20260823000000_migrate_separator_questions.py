@@ -1,7 +1,7 @@
 """Rewrite --- QUESTION --- rows into parent_question_id shape.
 
 Revision ID: 20260823000000
-Revises: 20260819000000
+Revises: 20260901000000
 Create Date: 2026-08-23 00:00:00.000000
 
 Frozen snapshot of the delimiter rewrite. Do not import application services
@@ -20,7 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 revision: str = "20260823000000"
-down_revision: Union[str, Sequence[str], None] = "20260819000000"
+down_revision: Union[str, Sequence[str], None] = "20260901000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
