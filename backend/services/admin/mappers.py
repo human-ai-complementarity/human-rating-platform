@@ -6,6 +6,7 @@ from typing import Any
 
 from models import Experiment, Question, Rating, Rater, Upload
 from schemas import ExperimentResponse
+from .groups import GroupSnapshot
 
 QUESTION_PREVIEW_LENGTH = 100
 
@@ -31,6 +32,7 @@ def build_experiment_response(
     dataset_filenames: list[str] | None = None,
     attention_reason: str | None = None,
     spend_minor_units: int = 0,
+    group: GroupSnapshot | None = None,
 ) -> ExperimentResponse:
     return ExperimentResponse(
         id=experiment.id,
@@ -56,6 +58,11 @@ def build_experiment_response(
         needs_attention=attention_reason is not None,
         attention_reason=attention_reason,
         spend_minor_units=spend_minor_units,
+        group_id=group.group_id if group else None,
+        group_name=group.group_name if group else None,
+        group_dataset_id=group.dataset_id if group else None,
+        group_dataset_name=group.dataset_name if group else None,
+        wave=group.wave if group else None,
     )
 
 
