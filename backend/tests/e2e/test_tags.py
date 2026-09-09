@@ -181,6 +181,44 @@ def test_too_many_tags_is_rejected(client: TestClient):
     assert response.status_code == 422
 
 
+def test_tag_cap_counts_the_normalized_set_not_the_raw_list(client: TestClient):
+    """21 raw entries that collapse to 3 are under the cap, so they are accepted.
+
+    The limit describes what ends up attached; dedupe is case-insensitive and
+    whitespace is collapsed, so counting the request array would reject a
+    payload whose stored set is well within bounds.
+    """
+    raw = ["needs-review", "NEEDS-REVIEW", "  needs-review  ", "pilot", "PILOT"] * 4
+    raw.append("alpha")
+    assert len(raw) > 20
+
+    response = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("experiment"),
+            "num_ratings_per_question": 2,
+            "tags": raw,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["tags"] == ["alpha", "needs-review", "pilot"]
+
+
+def test_tag_cap_still_rejects_past_the_limit_after_normalizing(client: TestClient):
+    """21 distinct names stay 21 after normalization, so they are still rejected."""
+    raw = [f"tag-{i}" for i in range(21)]
+    response = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("experiment"),
+            "num_ratings_per_question": 2,
+            # Casing noise that dedupes away must not buy extra room.
+            "tags": raw + [name.upper() for name in raw],
+        },
+    )
+    assert response.status_code == 422
+
+
 def _async_session_maker():
     engine = create_async_engine(get_settings().async_database_url)
     return engine, async_sessionmaker(
