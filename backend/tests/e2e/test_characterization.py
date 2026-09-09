@@ -878,6 +878,106 @@ def test_next_question_returns_eligible_question(client: TestClient):
     assert payload["question_id"] in {"q1", "q2"}
 
 
+# ── Deep-linking one question (admin analytics -> rater preview) ─────────────
+# GET /raters/questions/{id} serves a named question instead of whatever
+# selection would pick. Preview sessions only: a real rater naming a question
+# would consume a rating slot outside the per-experiment assignment lock.
+
+
+def _question_text_by_db_id(sync_engine, experiment_id: int) -> dict[int, str]:
+    """Map primary key to question_text for an experiment's questions.
+
+    Keyed on text, not the dataset-provided question_id, because that field is
+    being dropped from the rater-facing payload; question_text is uniquely
+    identifying in these fixtures either way.
+    """
+    with sync_engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, question_text FROM questions WHERE experiment_id = :experiment_id"),
+            {"experiment_id": experiment_id},
+        ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid: str) -> dict:
+    response = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment_id,
+            "PROLIFIC_PID": prolific_pid,
+            "STUDY_ID": "preview",
+            "SESSION_ID": "preview",
+            "preview": "true",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_preview_session_opens_the_requested_question(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_preview_session(client, experiment["id"], "PID_PIN")
+    questions = _question_text_by_db_id(sync_engine, experiment["id"])
+    assert len(questions) == 2, "fixture should offer a choice, else 'requested' proves nothing"
+
+    for db_id, question_text in questions.items():
+        response = client.get(
+            f"/api/raters/questions/{db_id}",
+            headers=_rater_headers(session_payload),
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["id"] == db_id
+        assert payload["question_text"] == question_text
+
+
+def test_open_specific_question_rejected_for_real_raters(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_NOT_PREVIEW")
+    db_id = next(iter(_question_text_by_db_id(sync_engine, experiment["id"])))
+
+    response = client.get(
+        f"/api/raters/questions/{db_id}",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert response.status_code == 403
+
+
+def test_open_specific_question_rejects_other_experiments_question(
+    client: TestClient,
+    sync_engine,
+):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    other = _create_experiment(client)
+    _upload_questions(client, other["id"])
+    session_payload = _start_preview_session(client, experiment["id"], "PID_CROSS")
+    foreign_id = next(iter(_question_text_by_db_id(sync_engine, other["id"])))
+
+    response = client.get(
+        f"/api/raters/questions/{foreign_id}",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert response.status_code == 400
+
+
+def test_open_specific_question_404s_for_unknown_id(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_preview_session(client, experiment["id"], "PID_MISSING")
+
+    response = client.get(
+        "/api/raters/questions/99999999",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert response.status_code == 404
+
+
 def test_submit_rating_success_then_duplicate_rejected(client: TestClient):
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
@@ -1045,6 +1145,9 @@ def test_analytics_endpoint_returns_expected_payload_shape(client: TestClient):
     assert isinstance(payload["questions"], list) and len(payload["questions"]) == 1
     assert isinstance(payload["raters"], list) and len(payload["raters"]) == 1
     assert payload["questions"][0]["answer_distribution"] == {"Yes": 1}
+    # Primary key rides along beside the dataset-provided question_id so the
+    # admin table can deep-link into the rater preview.
+    assert payload["questions"][0]["question_db_id"] == question["id"]
 
 
 def test_migration_runner_current_and_history_commands_succeed():
@@ -1209,11 +1312,20 @@ def _mock_get_study(
     study_id: str = PROLIFIC_STUDY_ID,
     study_status: str = "ACTIVE",
     total_cost: int | None = None,
+    fees_percentage: float | None = None,
+    vat_percentage: float | None = None,
+    fees_per_submission: float | None = None,
     status: int = 200,
 ) -> respx.Route:
     body = {"id": study_id, "status": study_status} if status == 200 else {"error": "fail"}
     if status == 200 and total_cost is not None:
         body["total_cost"] = total_cost
+    if status == 200 and fees_percentage is not None:
+        body["fees_percentage"] = fees_percentage
+        body["vat_percentage"] = vat_percentage if vat_percentage is not None else 0.0
+        body["fees_per_submission"] = (
+            fees_per_submission if fees_per_submission is not None else 0.0
+        )
     return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/").mock(
         return_value=Response(status, json=body)
     )
@@ -1267,15 +1379,57 @@ def _mock_update_study(
     )
 
 
+def _mock_submissions(
+    *,
+    study_id: str = PROLIFIC_STUDY_ID,
+    statuses: list[str] | None = None,
+    count: int | None = None,
+    status: int = 200,
+    results_key: bool = True,
+) -> respx.Route:
+    """Mock a study's submission list, one entry per status in `statuses`.
+
+    `results_key=False` sends a 200 with no submission list, the malformed-body
+    case that must not be mistaken for a study with zero submissions.
+    """
+    results = [{"id": f"SUB_{i}", "status": st} for i, st in enumerate(statuses or [])]
+    if status != 200:
+        body: dict = {"error": "fail"}
+    elif not results_key:
+        body = {"results": None, "meta": {"count": 0}}
+    else:
+        body = {"results": results, "meta": {"count": count if count is not None else len(results)}}
+    return respx.get(f"{PROLIFIC_BASE}/studies/{study_id}/submissions/").mock(
+        return_value=Response(status, json=body)
+    )
+
+
+def _mock_current_user(
+    *,
+    fees_percentage: float | None = 0.3333333333333333,
+    vat_percentage: float = 0.0,
+    fees_per_submission: float = 0.0,
+    status: int = 200,
+) -> respx.Route:
+    body: dict = {"id": "USER_ABC"}
+    if status == 200 and fees_percentage is not None:
+        body["fees_percentage"] = fees_percentage
+        body["vat_percentage"] = vat_percentage
+        body["fees_per_submission"] = fees_per_submission
+    return respx.get(f"{PROLIFIC_BASE}/users/me/").mock(return_value=Response(status, json=body))
+
+
 @pytest.fixture(autouse=True)
 def _reset_prolific_currency_cache():
     # Module-level cache in services.admin.prolific persists across tests in
     # the same process; reset it so each test sees a clean lookup state.
-    from services.admin.prolific import _reset_currency_cache
+    from services.admin.prolific import _reset_currency_cache, _reset_pricing_cache
 
     _reset_currency_cache()
+    _reset_pricing_cache()
     yield
     _reset_currency_cache()
+    _reset_pricing_cache()
 
 
 def _patch_commit_to_fail_for_round(
@@ -1997,10 +2151,90 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
     # Listing rounds triggers the Prolific status sync, which also stores the
     # study's total_cost on the round; the experiment list then sums it as spend.
     _mock_get_study(study_status="ACTIVE", total_cost=1860)
-    client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    # The per-round figure is exposed too, so the round card can show Prolific's
+    # own cost instead of a reward-only subtotal.
+    assert [r["total_cost"] for r in rounds] == [1860]
 
     item = next(i for i in client.get("/api/admin/experiments").json() if i["id"] == experiment_id)
     assert item["spend_minor_units"] == 1860
+
+
+@respx.mock
+def test_prolific_round_sync_captures_submission_counts(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
+    )
+    assert (
+        client.post(
+            f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish"
+        ).status_code
+        == 200
+    )
+
+    _mock_get_study(study_status="ACTIVE")
+    # Returned and timed-out submissions release their place, so they count
+    # toward neither bucket and their places read as open again.
+    _mock_submissions(
+        statuses=[
+            "APPROVED",
+            "APPROVED",
+            "AWAITING REVIEW",
+            "ACTIVE",
+            "RETURNED",
+            "TIMED-OUT",
+        ]
+    )
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert rounds[0]["submissions_completed"] == 3
+    assert rounds[0]["submissions_in_progress"] == 1
+
+
+@respx.mock
+def test_prolific_round_sync_keeps_counts_when_submissions_fetch_fails(
+    client: TestClient,
+    enable_prolific,
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    experiment_id = experiment["id"]
+
+    respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
+    )
+    client.post(f"/api/admin/experiments/{experiment_id}/prolific/rounds/{pilot['id']}/publish")
+
+    _mock_get_study(study_status="ACTIVE")
+    _mock_submissions(statuses=["APPROVED", "ACTIVE"])
+    client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds")
+
+    # A failing submissions call must not blank the counts or break the status
+    # refresh: the round keeps its last-known numbers and the new status lands.
+    _mock_get_study(study_status="AWAITING_REVIEW")
+    _mock_submissions(status=500)
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert rounds[0]["prolific_study_status"] == "AWAITING_REVIEW"
+    assert rounds[0]["submissions_completed"] == 1
+    assert rounds[0]["submissions_in_progress"] == 1
+
+    # A 200 carrying no submission list is unusable, not a study with zero
+    # submissions, so it must not overwrite the counts either.
+    _mock_submissions(results_key=False)
+
+    rounds = client.get(f"/api/admin/experiments/{experiment_id}/prolific/rounds").json()
+
+    assert rounds[0]["submissions_completed"] == 1
+    assert rounds[0]["submissions_in_progress"] == 1
 
 
 @respx.mock
@@ -2248,6 +2482,111 @@ def test_platform_status_returns_workspace_currency(
     body = resp.json()
     assert body["currency_code"] == "USD"
     assert body["currency_symbol"] == "$"
+
+
+@respx.mock
+def test_platform_status_pricing_comes_from_an_existing_study(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A study's `total_cost` is rewards + fee + VAT, so the round form needs the
+    # fee/VAT rates to estimate it before a study exists. Prolific only carries
+    # them on a study, and the most recent round's study is the reference.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0)
+    _mock_get_study(
+        study_id=f"STUDY_{exp['id']}_0",
+        fees_percentage=0.333333,
+        vat_percentage=0.2,
+        fees_per_submission=0.0,
+    )
+
+    body = client.get("/api/admin/platform-status").json()
+
+    assert body["pricing"] == {
+        "fees_percentage": 0.333333,
+        "vat_percentage": 0.2,
+        "fees_per_submission": 0.0,
+    }
+
+
+@respx.mock
+def test_platform_status_pricing_falls_back_to_the_researcher(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # No rounds yet, so there is no study to read rates off; the researcher's
+    # own rates are the fallback.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=0.25, vat_percentage=0.2, fees_per_submission=1.0)
+
+    body = client.get("/api/admin/platform-status").json()
+
+    assert body["pricing"] == {
+        "fees_percentage": 0.25,
+        "vat_percentage": 0.2,
+        "fees_per_submission": 1.0,
+    }
+
+
+@respx.mock
+def test_platform_status_pricing_null_when_prolific_has_no_rates(
+    client: TestClient,
+    enable_prolific,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # Rates missing everywhere leaves pricing null rather than a zero-fee
+    # estimate, so the UI shows the reward subtotal instead of a wrong total.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=None)
+
+    body = client.get("/api/admin/platform-status").json()
+
+    assert body["pricing"] is None
+
+
+def test_platform_status_pricing_null_when_prolific_disabled(client: TestClient):
+    settings = get_settings()
+    original = settings.prolific.api_token
+    settings.prolific.api_token = ""
+    try:
+        body = client.get("/api/admin/platform-status").json()
+        assert body["pricing"] is None
+    finally:
+        settings.prolific.api_token = original
+
+
+@respx.mock
+def test_platform_status_pricing_upgrades_from_researcher_to_study_rates(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # A pre-pilot lookup can only read the researcher's own rates, which carry
+    # the wrong VAT for a workspace billed in another jurisdiction. Caching that
+    # would pin it for the life of the process, so the first study to exist has
+    # to win.
+    monkeypatch.setattr(get_settings().prolific, "project_id", "")
+    _mock_current_user(fees_percentage=0.333333, vat_percentage=0.0)
+
+    before = client.get("/api/admin/platform-status").json()
+    assert before["pricing"]["vat_percentage"] == 0.0
+
+    exp = _create_experiment(client)
+    _insert_round(sync_engine, experiment_id=exp["id"], round_number=0)
+    _mock_get_study(
+        study_id=f"STUDY_{exp['id']}_0",
+        fees_percentage=0.333333,
+        vat_percentage=0.2,
+    )
+
+    after = client.get("/api/admin/platform-status").json()
+    assert after["pricing"]["vat_percentage"] == 0.2
 
 
 def test_platform_status_currency_null_when_project_id_unset(
@@ -3512,6 +3851,59 @@ def test_duplicate_finished_experiment_yields_draft(client: TestClient, sync_eng
 def test_duplicate_missing_experiment_returns_404(client: TestClient):
     response = client.post("/api/admin/experiments/999999/duplicate")
     assert response.status_code == 404
+
+
+def test_duplicate_batches_long_context_rows_across_multiple_inserts(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    """Copying long-context rows splits into several INSERTs, parent refs intact.
+
+    The upload path batches, but duplicate flushed every clone in one statement,
+    which OOM-killed the production database on a 760-row longbenchv2 copy. The
+    payload cap is lowered here so a small fixture crosses batch boundaries,
+    including between a parent and its children.
+    """
+    monkeypatch.setattr(get_settings().uploads, "max_insert_payload_bytes", 2048)
+
+    document = "D" * 3000  # on its own exceeds the cap, so it batches alone
+    rows = [
+        "question_id,question_text,gt_answer,options,question_type,parent_question_id",
+        f'parent1,"{document}",,,,',
+    ]
+    rows += [f"sub{i},Question {i} about the document?,Yes,Yes|No,MC,parent1" for i in range(10)]
+
+    source = _create_experiment(client)
+    upload = client.post(
+        f"/api/admin/experiments/{source['id']}/upload",
+        files={"file": ("long_context.csv", "\n".join(rows), "text/csv")},
+    )
+    assert upload.status_code == 200, upload.text
+
+    with caplog.at_level(logging.INFO, logger="services.admin.experiments"):
+        response = client.post(f"/api/admin/experiments/{source['id']}/duplicate")
+
+    assert response.status_code == 200, response.text
+    copy = response.json()
+    assert copy["question_count"] == 10  # parent rows aren't ratable
+
+    # Guards against passing vacuously: the copy must actually have crossed a
+    # batch boundary, otherwise it proves nothing about batching.
+    batch_counts = [
+        record.attributes["insert_batches"]
+        for record in caplog.records
+        if getattr(record, "attributes", {}).get("insert_batches") is not None
+    ]
+    assert batch_counts and batch_counts[0] > 1, batch_counts
+
+    # Parent refs must survive being remapped across batch boundaries.
+    session_payload = _start_session(client, copy["id"], prolific_pid="PID_DUP_LONG")
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    assert question["parent_question_text"] == document
 
 
 def _list_entry(client: TestClient, experiment_id: int) -> dict:

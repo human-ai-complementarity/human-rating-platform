@@ -14,6 +14,9 @@ from schemas import (
     DatasetCreate,
     DatasetResponse,
     DatasetUpdate,
+    ExperimentGroupCreate,
+    ExperimentGroupResponse,
+    ExperimentGroupUpdate,
     ExperimentRoundCreate,
     ExperimentRoundResponse,
     ExperimentRoundUpdate,
@@ -22,6 +25,7 @@ from schemas import (
     ExperimentUpdate,
     PilotStudyCreate,
     PlatformStatus,
+    ProlificPricingResponse,
     RecommendationResponse,
 )
 from models import ApiKey
@@ -83,14 +87,27 @@ async def admin_logout(manager=Depends(get_admin_manager)):
     return resp
 
 
-@router.get("/platform-status", response_model=PlatformStatus)
-async def get_platform_status():
+# Admin-only: the response carries the workspace's Prolific fee and VAT rates,
+# which no unauthenticated caller has a reason to read. Both callers are admin
+# pages that already hold a session by the time they fetch this.
+@secure_router.get("/platform-status", response_model=PlatformStatus)
+async def get_platform_status(db: AsyncSession = Depends(get_session)):
     settings = get_settings()
     code, symbol = await get_cached_workspace_currency(settings.prolific)
+    pricing = await admin_service.get_prolific_pricing(db)
     return PlatformStatus(
         prolific_enabled=settings.prolific.enabled,
         currency_code=code,
         currency_symbol=symbol,
+        pricing=(
+            ProlificPricingResponse(
+                fees_percentage=pricing.fees_percentage,
+                vat_percentage=pricing.vat_percentage,
+                fees_per_submission=pricing.fees_per_submission,
+            )
+            if pricing is not None
+            else None
+        ),
     )
 
 
@@ -110,6 +127,9 @@ async def list_experiments(
     include_archived: bool = Query(False),
     status: ExperimentStatus | None = Query(None),
     search: str | None = Query(None, max_length=255),
+    group_id: int | None = Query(None),
+    dataset_id: int | None = Query(None),
+    wave: str | None = Query(None, max_length=64),
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.list_experiments(
@@ -119,6 +139,9 @@ async def list_experiments(
         include_archived=include_archived,
         status=status,
         search=search,
+        group_id=group_id,
+        dataset_id=dataset_id,
+        wave=wave,
         db=db,
     )
 
@@ -420,6 +443,62 @@ async def delete_dataset(
     db: AsyncSession = Depends(get_session),
 ):
     await admin_service.delete_dataset(dataset_id, db)
+    return {"ok": True}
+
+
+# ── Experiment groups (dataset × wave collection-run container) ─────────────
+
+
+@secure_router.get("/experiment-groups", response_model=list[ExperimentGroupResponse])
+async def list_experiment_groups(
+    dataset_id: int | None = Query(None),
+    wave: str | None = Query(None, max_length=64),
+    db: AsyncSession = Depends(get_session),
+):
+    """List experiment groups, optionally filtered by dataset or wave."""
+    return await admin_service.list_groups(db, dataset_id=dataset_id, wave=wave)
+
+
+@secure_router.post("/experiment-groups", response_model=ExperimentGroupResponse)
+async def create_experiment_group(
+    payload: ExperimentGroupCreate,
+    db: AsyncSession = Depends(get_session),
+):
+    """Create a group for a dataset × wave.
+
+    `wave` is optional when the dataset's wave set has exactly one token
+    (auto-filled). Otherwise it must be one of the dataset's waves.
+    `(dataset_id, wave)` is unique; names are unique case-insensitively
+    within a dataset.
+    """
+    return await admin_service.create_group(payload, db)
+
+
+@secure_router.get("/experiment-groups/{group_id}", response_model=ExperimentGroupResponse)
+async def get_experiment_group(
+    group_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await admin_service.get_group(group_id, db)
+
+
+@secure_router.patch("/experiment-groups/{group_id}", response_model=ExperimentGroupResponse)
+async def update_experiment_group(
+    group_id: int,
+    payload: ExperimentGroupUpdate,
+    db: AsyncSession = Depends(get_session),
+):
+    """Partially update a group. `dataset_id` and `wave` are rejected once
+    any experiment in the group has left DRAFT; `name` stays editable."""
+    return await admin_service.update_group(group_id, payload, db)
+
+
+@secure_router.delete("/experiment-groups/{group_id}")
+async def delete_experiment_group(
+    group_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    await admin_service.delete_group(group_id, db)
     return {"ok": True}
 
 

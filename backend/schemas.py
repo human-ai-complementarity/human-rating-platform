@@ -117,14 +117,36 @@ class ExperimentRoundResponse(BaseModel):
     excluded_experiment_ids: list[int] = Field(default_factory=list)
     created_at: datetime
     prolific_study_url: str
+    # Prolific's own `total_cost` for this round's study (rewards + fee + VAT),
+    # in minor units. Null until the round has been synced from Prolific.
+    total_cost: Optional[int] = None
+    # Raters who submitted the study, and raters holding a place and still
+    # working. Null until the round has been synced from Prolific. Places still
+    # open = places_requested minus both.
+    submissions_completed: Optional[int] = None
+    submissions_in_progress: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProlificPricingResponse(BaseModel):
+    """Prolific's fee rates, as fractions (0.2 = 20%).
+
+    Lets the round form estimate what Prolific will charge (rewards + fee + VAT
+    on the fee) before a study exists to read `total_cost` from. Null when the
+    integration is disabled or the rates could not be fetched.
+    """
+
+    fees_percentage: float
+    vat_percentage: float
+    fees_per_submission: float
 
 
 class PlatformStatus(BaseModel):
     prolific_enabled: bool
     currency_code: str | None = None
     currency_symbol: str | None = None
+    pricing: ProlificPricingResponse | None = None
 
 
 # Experiment schemas
@@ -139,6 +161,8 @@ class ExperimentCreate(BaseModel):
     prolific: Optional[ProlificStudyConfig] = None
     assistance_method: str = "none"
     assistance_params: Optional[dict] = None
+    # Optional — ungrouped experiments are valid (scratch / pilot).
+    group_id: Optional[int] = None
 
 
 class ExperimentResponse(BaseModel):
@@ -177,6 +201,15 @@ class ExperimentResponse(BaseModel):
     # 0 when no round has been synced yet. Populated by both the list and
     # single-experiment reads via the shared enrichment helper.
     spend_minor_units: int = 0
+    # Inherited from the experiment group when one is attached; all None
+    # when the experiment is ungrouped.
+    group_id: Optional[int] = None
+    group_name: Optional[str] = None
+    # Prefixed to keep the group's dataset entity distinct from
+    # `dataset_filenames` above, which lists the uploaded question files.
+    group_dataset_id: Optional[int] = None
+    group_dataset_name: Optional[str] = None
+    wave: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -196,6 +229,9 @@ class ExperimentUpdate(BaseModel):
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
+    # Omitted = leave unchanged; explicit null ungroups. Locked once the
+    # experiment leaves DRAFT (group is spend-attribution, not just a label).
+    group_id: Optional[int] = None
 
 
 # Question schemas
@@ -333,7 +369,7 @@ class V1ExperimentResponse(BaseModel):
 # --- Datasets (identity anchor for experiment grouping) --------------------
 # Wave tokens are short enum-like identifiers ("fall25", "sp26"). They are
 # normalized to lowercase in the service layer so a group's attribution wave
-# (validated against this set in a follow-up) can never miss on casing.
+# (validated against this set) can never miss on casing.
 WaveToken = Annotated[str, Field(min_length=1, max_length=64)]
 MAX_WAVES_PER_DATASET = 20
 
@@ -358,6 +394,35 @@ class DatasetResponse(BaseModel):
     id: int
     name: str
     waves: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExperimentGroupCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=255)
+    dataset_id: int
+    # Omit to auto-fill when the dataset's wave set is a singleton.
+    wave: Optional[WaveToken] = None
+
+
+class ExperimentGroupUpdate(BaseModel):
+    # None = leave unchanged. `dataset_id` / `wave` are rejected once any
+    # experiment in the group has left DRAFT.
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    dataset_id: Optional[int] = None
+    wave: Optional[WaveToken] = None
+
+
+class ExperimentGroupResponse(BaseModel):
+    id: int
+    name: str
+    dataset_id: int
+    dataset_name: str
+    wave: str
+    experiment_count: int = 0
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

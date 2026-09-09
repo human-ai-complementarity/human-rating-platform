@@ -30,6 +30,16 @@ def test_no_session_cookie_returns_403_on_admin_routes(monkeypatch: pytest.Monke
         assert response.json()["detail"] == "Admin session required"
 
 
+def test_no_session_cookie_returns_403_on_platform_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    # platform-status serves the workspace's Prolific fee and VAT rates, so it
+    # sits behind the admin session like the rest of the admin surface.
+    with _build_app_with_admin_env(monkeypatch, admin_auth_enabled=True) as client:
+        response = client.get("/api/admin/platform-status")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Admin session required"
+
+
 def test_missing_or_invalid_bearer_on_login_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
     with _build_app_with_admin_env(monkeypatch, admin_auth_enabled=True) as client:
         # No Authorization header

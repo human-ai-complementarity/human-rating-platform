@@ -34,6 +34,9 @@ type ExperimentRoundRecord = {
   device_compatibility: string[];
   created_at: string;
   prolific_study_url: string;
+  total_cost: number | null;
+  submissions_completed: number | null;
+  submissions_in_progress: number | null;
 };
 
 type RecommendationRecord = {
@@ -97,6 +100,7 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  pinnedQuestionRequests: number[];
   submittedRatings: Record<string, unknown>[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
@@ -134,6 +138,7 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    pinnedQuestionRequests: [],
     submittedRatings: [],
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
@@ -166,6 +171,9 @@ function buildRound(state: MockState, round: Partial<ExperimentRoundRecord>): Ex
     device_compatibility: ['desktop'],
     created_at: '2026-03-09T00:00:00Z',
     prolific_study_url: 'https://app.prolific.com/researcher/workspaces/studies/mock-study',
+    total_cost: null,
+    submissions_completed: null,
+    submissions_in_progress: null,
     ...round,
   };
 }
@@ -214,6 +222,9 @@ async function installApiMocks(
         prolific_enabled: prolificEnabled,
         currency_code: currencyCode,
         currency_symbol: currencySymbol,
+        // Prolific's real rates for a GBP academic workspace: a third on top of
+        // rewards, plus VAT on that fee.
+        pricing: { fees_percentage: 0.333333, vat_percentage: 0.2, fees_per_submission: 0 },
       });
       return;
     }
@@ -457,6 +468,20 @@ async function installApiMocks(
           question_type: 'MC',
         }
       );
+      return;
+    }
+
+    const pinnedQuestionMatch = pathname.match(/^\/api\/raters\/questions\/(\d+)$/);
+    if (pinnedQuestionMatch && method === 'GET') {
+      const questionId = Number(pinnedQuestionMatch[1]);
+      state.pinnedQuestionRequests.push(questionId);
+      await fulfillJson(route, 200, {
+        id: questionId,
+        question_id: `dataset-q-${questionId}`,
+        question_text: `Pinned question ${questionId}`,
+        options: 'Yes|No',
+        question_type: 'MC',
+      });
       return;
     }
 
@@ -1133,6 +1158,62 @@ test('spend card formats a zero-decimal currency (ISK) without decimals', async 
   await expect(page.getByText('kr900.00')).toHaveCount(0);
 });
 
+test('round and next-round costs include Prolific\'s fee and VAT', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'Cost Experiment', question_count: 2 }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [
+    buildRound(state, {
+      round_number: 0,
+      // Unpublished: Prolific costs drafts too, so the round card has a real
+      // total to show while the round is still editable.
+      prolific_study_status: 'UNPUBLISHED',
+      places_requested: 63,
+      reward: 1500,
+      // Prolific's figure for 63 x £15.00: rewards + a third in fees + VAT on
+      // the fee. The reward subtotal alone would read £945.00.
+      total_cost: 132301,
+      submissions_completed: 12,
+      submissions_in_progress: 3,
+    }),
+  ];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 42,
+    remaining_rating_actions: 600,
+    total_hours_remaining: 7,
+    recommended_places: 30,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state, {
+    prolificEnabled: true,
+    currencyCode: 'GBP',
+    currencySymbol: '£',
+  });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await expect(page.getByTestId('round-cost-0')).toContainText('£1323.01');
+  // 63 places, 12 submitted, 3 working: the rest are open. Returned and
+  // timed-out submissions are excluded upstream, so they read as open here.
+  await expect(page.getByTestId('round-progress-0')).toHaveText(
+    '12 completed · 3 in progress · 48 left'
+  );
+
+  // Next round: 30 places at the pilot's £15.00, fee and VAT on top. Rewards
+  // alone would read £450.00.
+  await expect(page.getByTestId('recommendation-cost')).toHaveText('~£630.00');
+
+  // The same figure has to be estimable before launch, so editing the round
+  // breaks out rewards, fee and VAT rather than showing rewards alone.
+  await page.getByTestId('edit-round-0').click();
+  await expect(page.getByText(/Est\. Prolific total: £1323\.00 for 63 raters/)).toBeVisible();
+  await expect(page.getByText(/£945\.00 rewards \+ £315\.00 fee \+ £63\.00 VAT/)).toBeVisible();
+});
+
 // Locale and timezone are pinned so the rendered timestamp is comparable.
 test.describe('analytics raters tab', () => {
   test.use({ timezoneId: 'UTC', locale: 'en-GB' });
@@ -1198,6 +1279,60 @@ test.describe('analytics raters tab', () => {
     const raterRow = page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' });
     await expect(raterRow).toContainText('24/07/2026, 14:26:30');
     await expect(page.getByText('Invalid Date')).toHaveCount(0);
+  });
+
+  test('question ids link into the rater preview pinned to that question', async ({ page }) => {
+    const state = createMockState();
+    state.experiments = [
+      buildExperiment(state, {
+        id: 1,
+        name: 'Analytics Smoke Test',
+        internal_name: 'Analytics Internal Name',
+        question_count: 2,
+        rating_count: 3,
+      }),
+    ];
+    state.nextExperimentId = 2;
+    state.analyticsByExperimentId[1] = {
+      experiment_name: 'Analytics Smoke Test',
+      overview: {
+        total_ratings: 3,
+        total_questions: 2,
+        total_raters: 1,
+        avg_response_time_seconds: 69.94,
+        avg_confidence: 3.08,
+      },
+      questions: [
+        {
+          question_id: 'dataset-q-742',
+          question_db_id: 742,
+          question_text: 'Is this workflow ready for release?',
+          num_ratings: 3,
+          avg_response_time_seconds: 69.94,
+          avg_confidence: 3.08,
+          answer_distribution: { Yes: 2, No: 1 },
+        },
+      ],
+      raters: [],
+    };
+
+    await installApiMocks(page, state);
+    await page.goto('/admin/experiments/1/analytics/questions');
+
+    const link = page.getByTestId('question-preview-link-742');
+    await expect(link).toHaveText('dataset-q-742');
+    const href = await link.getAttribute('href');
+    expect(href).toContain('/rate?');
+    expect(href).toContain('experiment_id=1');
+    expect(href).toContain('question_id=742');
+    expect(href).toContain('preview=true');
+
+    // Following it opens the rater view on that exact question, not whatever
+    // next-question would have served.
+    await page.goto(href as string);
+    await expect(page.getByText('Pinned question 742')).toBeVisible();
+    expect(state.pinnedQuestionRequests).toEqual([742]);
+    expect(state.nextQuestionSessionTokens).toEqual([]);
   });
 
   test('deeplinks straight to a tab', async ({ page }) => {

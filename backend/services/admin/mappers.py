@@ -6,6 +6,7 @@ from typing import Any
 
 from models import Experiment, Question, Rating, Rater, Upload
 from schemas import ExperimentResponse
+from .groups import GroupSnapshot
 
 QUESTION_PREVIEW_LENGTH = 100
 
@@ -31,6 +32,7 @@ def build_experiment_response(
     dataset_filenames: list[str] | None = None,
     attention_reason: str | None = None,
     spend_minor_units: int = 0,
+    group: GroupSnapshot | None = None,
 ) -> ExperimentResponse:
     return ExperimentResponse(
         id=experiment.id,
@@ -56,6 +58,11 @@ def build_experiment_response(
         needs_attention=attention_reason is not None,
         attention_reason=attention_reason,
         spend_minor_units=spend_minor_units,
+        group_id=group.group_id if group else None,
+        group_name=group.group_name if group else None,
+        group_dataset_id=group.dataset_id if group else None,
+        group_dataset_name=group.dataset_name if group else None,
+        wave=group.wave if group else None,
     )
 
 
@@ -91,6 +98,11 @@ def build_empty_analytics_payload(
 def build_question_stats_bucket(question: Question) -> dict[str, Any]:
     return {
         "question_id": question.question_id,
+        # Buckets are keyed on the dataset-provided question_id, which isn't
+        # unique per experiment; this is the first row seen under that key, same
+        # as question_text. Carried so the UI can deep-link into the rater view,
+        # which addresses questions by primary key.
+        "question_db_id": question.id,
         # Analytics is preview-oriented, so we intentionally cap the text length.
         "question_text": (
             question.question_text[:QUESTION_PREVIEW_LENGTH] + "..."
@@ -128,6 +140,7 @@ def build_question_analytics_item(stats: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "question_id": stats["question_id"],
+        "question_db_id": stats["question_db_id"],
         "question_text": stats["question_text"],
         "num_ratings": stats["num_ratings"],
         "avg_response_time_seconds": round(sum(response_times) / len(response_times), 2),
