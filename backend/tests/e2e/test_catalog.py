@@ -280,3 +280,72 @@ def test_catalog_group_unique_race_reuses_row_and_keeps_the_experiment():
             await engine.dispose()
 
     asyncio.run(_run())
+
+
+def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestClient):
+    """Both generated names taken by human-renamed groups must not 500 the sync.
+
+    `_get_or_create_group` falls back from "{dataset} {wave}" to
+    "{dataset} ({wave})" without checking the second name is free, and the
+    IntegrityError recovery only re-queries by (dataset_id, wave) — so a
+    collision on the name index used to be mis-diagnosed and re-raised.
+    """
+    _sync(client)
+    dataset_id = next(
+        row["id"] for row in client.get("/api/admin/datasets").json() if row["name"] == "bbeh_mini"
+    )
+    # Admin widens the wave set, then renames two groups onto the names the
+    # backfill would generate for sp26.
+    client.patch(
+        f"/api/admin/datasets/{dataset_id}",
+        json={"waves": ["fall25", "sp26", "sum26"]},
+    )
+    for wave, name in (("fall25", "bbeh_mini sp26"), ("sum26", "bbeh_mini (sp26)")):
+        created = client.post(
+            "/api/admin/experiment-groups",
+            json={"name": f"tmp {wave}", "dataset_id": dataset_id, "wave": wave},
+        )
+        assert created.status_code == 200, created.text
+        renamed = client.patch(
+            f"/api/admin/experiment-groups/{created.json()['id']}", json={"name": name}
+        )
+        assert renamed.status_code == 200, renamed.text
+
+    experiment = _create_experiment(client, "bbeh sp26 run")
+    _upload(client, experiment["id"], "bbeh_mini_n40.csv")
+
+    result = client.post("/api/admin/catalog/sync")
+    assert result.status_code == 200, result.text
+    body = result.json()
+
+    # Reported as a skip, and the experiment is left ungrouped for a human.
+    assert any(
+        item["experiment_id"] == experiment["id"] and item["reason"] == "group_name_conflict"
+        for item in body["experiments_skipped"]
+    ), body["experiments_skipped"]
+    assert all(item["experiment_id"] != experiment["id"] for item in body["experiments_assigned"])
+    row = next(
+        item
+        for item in client.get("/api/admin/experiments").json()
+        if item["id"] == experiment["id"]
+    )
+    assert row["group_id"] is None
+
+    # Still idempotent, and other experiments in the same pass are unaffected.
+    again = client.post("/api/admin/catalog/sync")
+    assert again.status_code == 200, again.text
+    assert any(
+        item["experiment_id"] == experiment["id"] and item["reason"] == "group_name_conflict"
+        for item in again.json()["experiments_skipped"]
+    )
+
+    # Freeing one of the two names lets a later sync place it.
+    groups = client.get("/api/admin/experiment-groups").json()
+    clash = next(group for group in groups if group["name"] == "bbeh_mini (sp26)")
+    client.patch(f"/api/admin/experiment-groups/{clash['id']}", json={"name": "bbeh_mini summer"})
+
+    final = client.post("/api/admin/catalog/sync")
+    assert final.status_code == 200, final.text
+    assert any(
+        item["experiment_id"] == experiment["id"] for item in final.json()["experiments_assigned"]
+    )

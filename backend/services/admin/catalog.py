@@ -253,7 +253,17 @@ async def _assign_experiments(
             )
             continue
 
-        group, created = await _get_or_create_group(db, dataset, wave)
+        placed = await _get_or_create_group(db, dataset, wave)
+        if placed is None:
+            skipped.append(
+                CatalogSkip(
+                    experiment_id=experiment.id,
+                    experiment_name=experiment.name,
+                    reason="group_name_conflict",
+                )
+            )
+            continue
+        group, created = placed
         if created:
             groups_created.append(group.name)
         experiment.group_id = group.id
@@ -272,7 +282,14 @@ async def _assign_experiments(
 
 async def _get_or_create_group(
     db: AsyncSession, dataset: _DatasetRow, wave: str
-) -> tuple[ExperimentGroup, bool]:
+) -> tuple[ExperimentGroup, bool] | None:
+    """Find or create this dataset x wave group. None when it cannot be named.
+
+    Group names are admin-editable, so both names we would generate can already
+    be taken by human-renamed groups on other waves. That is a name-index
+    violation, not the dataset x wave race, and the caller skips the experiment
+    rather than failing a sync documented as idempotent.
+    """
     existing = (
         await db.execute(
             select(ExperimentGroup).where(
@@ -290,26 +307,48 @@ async def _get_or_create_group(
     assert dataset_row is not None
     wave = resolve_attribution_wave(dataset_row, wave)
 
-    name = f"{dataset.name} {wave}"
-    taken = (
-        await db.execute(
-            select(ExperimentGroup.id).where(
-                ExperimentGroup.dataset_id == dataset.id,
-                func.lower(ExperimentGroup.name) == name.lower(),
-            )
-        )
-    ).scalar_one_or_none()
-    if taken is not None:
-        name = f"{dataset.name} ({wave})"
+    name = await _free_group_name(db, dataset, wave)
+    if name is None:
+        return None
 
     group = ExperimentGroup(name=name, dataset_id=dataset.id, wave=wave)
     return await _insert_or_get_group(db, group)
 
 
+async def _free_group_name(db: AsyncSession, dataset: _DatasetRow, wave: str) -> str | None:
+    """First candidate name not already used by a group on this dataset.
+
+    Both candidates are checked in one query. Checking only the first left the
+    fallback free to collide with `uq_experiment_groups_dataset_name_lower`.
+    """
+    candidates = [f"{dataset.name} {wave}", f"{dataset.name} ({wave})"]
+    taken = {
+        name.lower()
+        for name in (
+            await db.execute(
+                select(ExperimentGroup.name).where(
+                    ExperimentGroup.dataset_id == dataset.id,
+                    func.lower(ExperimentGroup.name).in_([c.lower() for c in candidates]),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+    return next((c for c in candidates if c.lower() not in taken), None)
+
+
 async def _insert_or_get_group(
     db: AsyncSession, group: ExperimentGroup
-) -> tuple[ExperimentGroup, bool]:
-    """Insert the group, or return the row that won a concurrent dataset×wave insert."""
+) -> tuple[ExperimentGroup, bool] | None:
+    """Insert the group, or recover from whichever unique constraint fired.
+
+    Two can fire: (dataset_id, wave) when a concurrent sync created the same
+    group — re-read and share it — and (dataset_id, lower(name)) when someone
+    took the name between our check and the insert, which is not ours to
+    resolve, so the caller skips. Anything else is unexpected and re-raised
+    rather than swallowed.
+    """
     try:
         async with db.begin_nested():
             db.add(group)
@@ -324,6 +363,16 @@ async def _insert_or_get_group(
                 )
             )
         ).scalar_one_or_none()
-        if existing is None:
-            raise
-        return existing, False
+        if existing is not None:
+            return existing, False
+        name_taken = (
+            await db.execute(
+                select(ExperimentGroup.id).where(
+                    ExperimentGroup.dataset_id == group.dataset_id,
+                    func.lower(ExperimentGroup.name) == group.name.lower(),
+                )
+            )
+        ).scalar_one_or_none()
+        if name_taken is not None:
+            return None
+        raise
