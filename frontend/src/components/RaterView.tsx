@@ -135,6 +135,20 @@ function RaterView() {
   const studyId = searchParams.get('STUDY_ID');
   const sessionId = searchParams.get('SESSION_ID');
   const isPreview = searchParams.get('preview') === 'true';
+  // Deep-link from the admin analytics question table: open this exact
+  // question instead of whatever selection would serve next. Preview only —
+  // the backend rejects it for real raters, and honoring it there would hand
+  // out rating slots outside the assignment lock.
+  const pinnedQuestionId = useMemo(() => {
+    if (!isPreview) return null;
+    const raw = searchParams.get('question_id');
+    if (!raw) return null;
+    const parsed = Number(raw);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  }, [isPreview, searchParams]);
+  // The pin applies to the first question served only; once the admin rates
+  // it, the session continues through normal selection.
+  const pinnedConsumedRef = useRef(false);
   const prolificSessionParams = useMemo(
     () => getProlificSessionParams({ experimentId, prolificId, studyId, sessionId }),
     [experimentId, prolificId, studyId, sessionId]
@@ -177,7 +191,16 @@ function RaterView() {
     try {
       setAssistanceSessionId(null);
       setAssistanceStep(null);
-      const q = await api.getNextQuestion(token);
+      // Marked consumed before the await, not after: a failed pinned fetch
+      // surfaces its error once rather than re-firing on every reload.
+      const pinToLoad = pinnedConsumedRef.current ? null : pinnedQuestionId;
+      if (pinToLoad !== null) {
+        pinnedConsumedRef.current = true;
+      }
+      const q =
+        pinToLoad !== null
+          ? await api.getQuestion(token, pinToLoad)
+          : await api.getNextQuestion(token);
       if (q === null || (typeof q === 'object' && Object.keys(q).length === 0)) {
         setAllDone(true);
         setQuestion(null);
@@ -199,7 +222,7 @@ function RaterView() {
         setError(err instanceof Error ? err.message : 'Unknown error');
       }
     }
-  }, []);
+  }, [pinnedQuestionId]);
 
   const loadNextQuestion = useCallback(async (token: string) => {
     setLoading(true);
