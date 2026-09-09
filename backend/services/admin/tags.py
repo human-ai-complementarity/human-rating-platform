@@ -8,12 +8,13 @@ usage and the list can filter by them.
 
 from __future__ import annotations
 
+from fastapi import HTTPException
 from sqlalchemy import and_, delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, ExperimentTag, Tag
-from schemas import TagResponse
+from schemas import MAX_TAGS_PER_EXPERIMENT, TagResponse
 
 
 def normalize_tag_names(names: list[str]) -> list[str]:
@@ -95,7 +96,17 @@ async def set_experiment_tags(
 
     Returns the attached tag names, alphabetical (response order).
     """
-    tags = await get_or_create_tags(names, db)
+    # Count the normalized set, not the raw list: the cap describes what ends up
+    # attached, and dedupe is case-insensitive. Checked before get_or_create_tags
+    # so an oversized payload never reaches an INSERT.
+    normalized = normalize_tag_names(names)
+    if len(normalized) > MAX_TAGS_PER_EXPERIMENT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_TAGS_PER_EXPERIMENT} tags per experiment.",
+        )
+
+    tags = await get_or_create_tags(normalized, db)
 
     await db.execute(delete(ExperimentTag).where(ExperimentTag.experiment_id == experiment_id))
     for tag in tags:
