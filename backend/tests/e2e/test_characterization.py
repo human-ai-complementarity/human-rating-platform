@@ -878,6 +878,106 @@ def test_next_question_returns_eligible_question(client: TestClient):
     assert payload["question_id"] in {"q1", "q2"}
 
 
+# ── Deep-linking one question (admin analytics -> rater preview) ─────────────
+# GET /raters/questions/{id} serves a named question instead of whatever
+# selection would pick. Preview sessions only: a real rater naming a question
+# would consume a rating slot outside the per-experiment assignment lock.
+
+
+def _question_text_by_db_id(sync_engine, experiment_id: int) -> dict[int, str]:
+    """Map primary key to question_text for an experiment's questions.
+
+    Keyed on text, not the dataset-provided question_id, because that field is
+    being dropped from the rater-facing payload; question_text is uniquely
+    identifying in these fixtures either way.
+    """
+    with sync_engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, question_text FROM questions WHERE experiment_id = :experiment_id"),
+            {"experiment_id": experiment_id},
+        ).all()
+    return {row[0]: row[1] for row in rows}
+
+
+def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid: str) -> dict:
+    response = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment_id,
+            "PROLIFIC_PID": prolific_pid,
+            "STUDY_ID": "preview",
+            "SESSION_ID": "preview",
+            "preview": "true",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_preview_session_opens_the_requested_question(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_preview_session(client, experiment["id"], "PID_PIN")
+    questions = _question_text_by_db_id(sync_engine, experiment["id"])
+    assert len(questions) == 2, "fixture should offer a choice, else 'requested' proves nothing"
+
+    for db_id, question_text in questions.items():
+        response = client.get(
+            f"/api/raters/questions/{db_id}",
+            headers=_rater_headers(session_payload),
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["id"] == db_id
+        assert payload["question_text"] == question_text
+
+
+def test_open_specific_question_rejected_for_real_raters(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_NOT_PREVIEW")
+    db_id = next(iter(_question_text_by_db_id(sync_engine, experiment["id"])))
+
+    response = client.get(
+        f"/api/raters/questions/{db_id}",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert response.status_code == 403
+
+
+def test_open_specific_question_rejects_other_experiments_question(
+    client: TestClient,
+    sync_engine,
+):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    other = _create_experiment(client)
+    _upload_questions(client, other["id"])
+    session_payload = _start_preview_session(client, experiment["id"], "PID_CROSS")
+    foreign_id = next(iter(_question_text_by_db_id(sync_engine, other["id"])))
+
+    response = client.get(
+        f"/api/raters/questions/{foreign_id}",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert response.status_code == 400
+
+
+def test_open_specific_question_404s_for_unknown_id(client: TestClient):
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_preview_session(client, experiment["id"], "PID_MISSING")
+
+    response = client.get(
+        "/api/raters/questions/99999999",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert response.status_code == 404
+
+
 def test_submit_rating_success_then_duplicate_rejected(client: TestClient):
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
@@ -1045,6 +1145,9 @@ def test_analytics_endpoint_returns_expected_payload_shape(client: TestClient):
     assert isinstance(payload["questions"], list) and len(payload["questions"]) == 1
     assert isinstance(payload["raters"], list) and len(payload["raters"]) == 1
     assert payload["questions"][0]["answer_distribution"] == {"Yes": 1}
+    # Primary key rides along beside the dataset-provided question_id so the
+    # admin table can deep-link into the rater preview.
+    assert payload["questions"][0]["question_db_id"] == question["id"]
 
 
 def test_migration_runner_current_and_history_commands_succeed():
