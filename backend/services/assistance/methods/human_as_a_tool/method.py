@@ -6,9 +6,9 @@ the threshold) to the human. It repeats this for up to max_rounds rounds,
 incorporating human answers each time, before synthesising a final answer.
 
 assistance_params:
-    model:                LLM to use for decomposition (default: settings.llm.default_model)
+    model:                LLM to use for decomposition (default: settings.llm.decomposition_model)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
-    confidence_model:     LLM for confidence scoring (default: gemini-2.5-flash-lite)
+    confidence_model:     LLM for confidence scoring (default: settings.llm.confidence_model)
     clustering_model:     LLM for semantic clustering, sampling method only (default: same as confidence_model)
     num_samples:          Samples per subtask, sampling method only (default: 5)
     max_rounds:           Maximum delegation rounds before forced synthesis (default: 5)
