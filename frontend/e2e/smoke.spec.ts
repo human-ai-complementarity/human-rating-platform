@@ -100,6 +100,7 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  pinnedQuestionRequests: number[];
   submittedRatings: Record<string, unknown>[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
@@ -137,6 +138,7 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    pinnedQuestionRequests: [],
     submittedRatings: [],
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
@@ -466,6 +468,20 @@ async function installApiMocks(
           question_type: 'MC',
         }
       );
+      return;
+    }
+
+    const pinnedQuestionMatch = pathname.match(/^\/api\/raters\/questions\/(\d+)$/);
+    if (pinnedQuestionMatch && method === 'GET') {
+      const questionId = Number(pinnedQuestionMatch[1]);
+      state.pinnedQuestionRequests.push(questionId);
+      await fulfillJson(route, 200, {
+        id: questionId,
+        question_id: `dataset-q-${questionId}`,
+        question_text: `Pinned question ${questionId}`,
+        options: 'Yes|No',
+        question_type: 'MC',
+      });
       return;
     }
 
@@ -1235,6 +1251,60 @@ test.describe('analytics raters tab', () => {
     const raterRow = page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' });
     await expect(raterRow).toContainText('24/07/2026, 14:26:30');
     await expect(page.getByText('Invalid Date')).toHaveCount(0);
+  });
+
+  test('question ids link into the rater preview pinned to that question', async ({ page }) => {
+    const state = createMockState();
+    state.experiments = [
+      buildExperiment(state, {
+        id: 1,
+        name: 'Analytics Smoke Test',
+        internal_name: 'Analytics Internal Name',
+        question_count: 2,
+        rating_count: 3,
+      }),
+    ];
+    state.nextExperimentId = 2;
+    state.analyticsByExperimentId[1] = {
+      experiment_name: 'Analytics Smoke Test',
+      overview: {
+        total_ratings: 3,
+        total_questions: 2,
+        total_raters: 1,
+        avg_response_time_seconds: 69.94,
+        avg_confidence: 3.08,
+      },
+      questions: [
+        {
+          question_id: 'dataset-q-742',
+          question_db_id: 742,
+          question_text: 'Is this workflow ready for release?',
+          num_ratings: 3,
+          avg_response_time_seconds: 69.94,
+          avg_confidence: 3.08,
+          answer_distribution: { Yes: 2, No: 1 },
+        },
+      ],
+      raters: [],
+    };
+
+    await installApiMocks(page, state);
+    await page.goto('/admin/experiments/1/analytics/questions');
+
+    const link = page.getByTestId('question-preview-link-742');
+    await expect(link).toHaveText('dataset-q-742');
+    const href = await link.getAttribute('href');
+    expect(href).toContain('/rate?');
+    expect(href).toContain('experiment_id=1');
+    expect(href).toContain('question_id=742');
+    expect(href).toContain('preview=true');
+
+    // Following it opens the rater view on that exact question, not whatever
+    // next-question would have served.
+    await page.goto(href as string);
+    await expect(page.getByText('Pinned question 742')).toBeVisible();
+    expect(state.pinnedQuestionRequests).toEqual([742]);
+    expect(state.nextQuestionSessionTokens).toEqual([]);
   });
 
   test('deeplinks straight to a tab', async ({ page }) => {
