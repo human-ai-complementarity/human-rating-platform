@@ -17,7 +17,6 @@ def build_question_response(
 ) -> QuestionResponse:
     return QuestionResponse(
         id=question.id,
-        question_id=question.question_id,
         question_text=question.question_text,
         options=question.options,
         question_type=question.question_type,

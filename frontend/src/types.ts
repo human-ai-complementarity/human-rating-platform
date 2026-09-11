@@ -57,7 +57,6 @@ export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate';
 
 export interface Question {
   id: number;
-  question_id: string;
   question_text: string;
   options: string | null;
   question_type: string;
