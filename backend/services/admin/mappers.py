@@ -33,6 +33,7 @@ def build_experiment_response(
     attention_reason: str | None = None,
     spend_minor_units: int = 0,
     group: GroupSnapshot | None = None,
+    tags: list[str] | None = None,
 ) -> ExperimentResponse:
     return ExperimentResponse(
         id=experiment.id,
@@ -63,6 +64,7 @@ def build_experiment_response(
         group_dataset_id=group.dataset_id if group else None,
         group_dataset_name=group.dataset_name if group else None,
         wave=group.wave if group else None,
+        tags=list(tags or []),
     )
 
 

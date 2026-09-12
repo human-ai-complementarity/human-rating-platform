@@ -149,6 +149,20 @@ class PlatformStatus(BaseModel):
     pricing: ProlificPricingResponse | None = None
 
 
+# --- Tags (free-form experiment labels) ------------------------------------
+TagName = Annotated[str, Field(min_length=1, max_length=64)]
+# Cap on the *stored* set, not the request array: names are trimmed and deduped
+# case-insensitively before they are attached, so a payload that repeats a label
+# under different casing is not over the limit. Enforced in set_experiment_tags,
+# after normalization and before any tag rows are touched.
+MAX_TAGS_PER_EXPERIMENT = 20
+
+
+class TagResponse(BaseModel):
+    name: str
+    usage_count: int = 0
+
+
 # Experiment schemas
 class ExperimentCreate(BaseModel):
     name: str
@@ -163,6 +177,7 @@ class ExperimentCreate(BaseModel):
     assistance_params: Optional[dict] = None
     # Optional — ungrouped experiments are valid (scratch / pilot).
     group_id: Optional[int] = None
+    tags: list[TagName] = Field(default_factory=list)
 
 
 class ExperimentResponse(BaseModel):
@@ -210,6 +225,8 @@ class ExperimentResponse(BaseModel):
     group_dataset_id: Optional[int] = None
     group_dataset_name: Optional[str] = None
     wave: Optional[str] = None
+    # Free-form tags, alphabetical. Empty when none are attached.
+    tags: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -232,6 +249,8 @@ class ExperimentUpdate(BaseModel):
     # Omitted = leave unchanged; explicit null ungroups. Locked once the
     # experiment leaves DRAFT (group is spend-attribution, not just a label).
     group_id: Optional[int] = None
+    # None = leave unchanged; [] clears. Organizational, so editable after lock.
+    tags: Optional[list[TagName]] = None
 
 
 # Question schemas
