@@ -176,6 +176,7 @@ export interface AssistanceStep {
       rationale?: string;
     }>;
     has_options?: boolean;
+    parse_status?: 'clean' | 'unparseable' | 'no_candidates';
     subtasks?: Subtask[];
     iteration?: number;
     max_rounds?: number;
@@ -202,6 +203,9 @@ export interface Analytics {
 
 export interface QuestionAnalytics {
   question_id: string;
+  // Primary key, for deep-linking into the rater preview (which addresses
+  // questions by id, not by the dataset-provided question_id string).
+  question_db_id: number;
   question_text: string;
   num_ratings: number;
   avg_response_time_seconds: number;

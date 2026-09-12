@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, UploadAbortedError } from '../api';
+import { buildRaterPreviewUrl } from '../raterPreview';
 import StatusLabel from './StatusLabel';
 import type {
   DatasetMetaField,
@@ -2532,11 +2533,7 @@ function LaunchPanel(props: {
           {/* Preview link is always available regardless of Prolific mode. */}
           <button
             data-testid="preview-participant-button"
-            onClick={() => {
-              const previewId = `preview_${Date.now()}`;
-              const url = `${window.location.origin}/rate?experiment_id=${experiment.id}&PROLIFIC_PID=${previewId}&STUDY_ID=preview&SESSION_ID=preview&preview=true`;
-              window.open(url, '_blank');
-            }}
+            onClick={() => window.open(buildRaterPreviewUrl(experiment.id), '_blank')}
             style={{ ...secondaryButton, alignSelf: 'flex-start' }}
           >
             Preview as participant

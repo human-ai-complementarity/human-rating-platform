@@ -365,6 +365,44 @@ async def get_next_question(
     return build_question_response(selected, parent_question_text=parent_text)
 
 
+async def get_question_by_id(
+    *,
+    rater_id: int,
+    question_id: int,
+    db: AsyncSession,
+) -> QuestionResponse:
+    """Serve one specific question, for admin deep-links out of analytics.
+
+    Preview sessions only. Real raters must go through get_next_question so
+    selection stays under the per-experiment assignment lock — letting them
+    name a question would hand out rating slots without reserving them and
+    let them skip past questions the selector hasn't offered yet. Preview
+    raters never reserve, so nothing to bookkeep here.
+    """
+    rater = await fetch_rater_or_404(rater_id, db)
+
+    validate_rater_marked_active(rater)
+    await validate_rater_session_is_active(rater, db)
+
+    if not rater.is_preview:
+        raise HTTPException(
+            status_code=403, detail="Only preview sessions can open a specific question"
+        )
+
+    question = await fetch_question_or_404(question_id, db)
+    validate_question_belongs_to_rater_experiment(
+        question_experiment_id=question.experiment_id,
+        rater_experiment_id=rater.experiment_id,
+    )
+
+    parent_text = (
+        await fetch_parent_question_text(question.parent_question_id, db)
+        if question.parent_question_id is not None
+        else None
+    )
+    return build_question_response(question, parent_question_text=parent_text)
+
+
 async def submit_rating(
     *,
     payload: RatingSubmit,
