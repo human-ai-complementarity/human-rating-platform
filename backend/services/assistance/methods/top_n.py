@@ -22,6 +22,7 @@ assistance_params:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
@@ -42,9 +43,15 @@ _DEFAULT_TOP_N = 3
 _MAX_TOP_N = 10
 _OPTION_LABEL_PATTERN = re.compile(r"(?:^|[,\r\n])\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+")
 _SCHEMA_REJECT_STATUS_CODES = (400, 404, 422)
-# Models whose provider rejected json_schema this process. Skip the schema on
-# later questions so a rejecting model costs one 400, not one per question.
+# Per-process json_schema verdicts, and the per-model lock that settles them.
+# A model is "rejected" once its provider refused the schema and the
+# unconstrained retry worked, "accepted" once a schema call came back 200.
+# Until one of those holds, exactly one coroutine probes the model and the
+# rest wait on its lock, so a wave start costs one rejection, not one per
+# concurrent rater.
 _SCHEMA_REJECTED_MODELS: set[str] = set()
+_SCHEMA_ACCEPTED_MODELS: set[str] = set()
+_SCHEMA_PROBE_LOCKS: dict[str, asyncio.Lock] = {}
 
 _SYSTEM_PROMPT = """\
 You help human raters answer evaluation questions. Rank the most likely answers
@@ -180,6 +187,44 @@ def _none_step(parse_status: str) -> InteractionStep:
     )
 
 
+def _schema_probe_lock(model: str) -> asyncio.Lock:
+    return _SCHEMA_PROBE_LOCKS.setdefault(model, asyncio.Lock())
+
+
+def _schema_verdict_settled(model: str) -> bool:
+    return model in _SCHEMA_REJECTED_MODELS or model in _SCHEMA_ACCEPTED_MODELS
+
+
+async def _complete_with_schema(
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    settings: LLMSettings,
+    response_format: dict[str, Any],
+) -> str:
+    """Send the schema, falling back to an unconstrained retry if it is refused."""
+    try:
+        raw = await complete(
+            messages,
+            model=model,
+            settings=settings,
+            response_format=response_format,
+            temperature=0,
+        )
+    except openai.APIStatusError as exc:
+        if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
+            raise
+        logger.warning(
+            "Top-N json_schema rejected by the provider; retrying without response_format",
+            extra={"attributes": {"model": model, "status_code": exc.status_code}},
+        )
+        raw = await complete(messages, model=model, settings=settings, temperature=0)
+        _SCHEMA_REJECTED_MODELS.add(model)
+        return raw
+    _SCHEMA_ACCEPTED_MODELS.add(model)
+    return raw
+
+
 async def _complete_with_schema_fallback(
     messages: list[dict[str, str]],
     *,
@@ -197,27 +242,29 @@ async def _complete_with_schema_fallback(
     the memo. Later questions then skip the schema (one extra call per
     process, not per question). The prompt examples are then the only
     constraint.
+
+    A wave starts with many raters calling this at once for the same model, so
+    the first schema attempt is gated by a per-model lock: whoever gets there
+    first probes, everyone else waits for that verdict rather than each paying
+    its own rejection + retry. Once the verdict is in, the lock is out of the
+    path. An accepted model still retries unconstrained if a later request is
+    routed to an endpoint that refuses the schema.
     """
-    if model not in _SCHEMA_REJECTED_MODELS:
-        try:
-            return await complete(
-                messages,
-                model=model,
-                settings=settings,
-                response_format=response_format,
-                temperature=0,
+    while True:
+        if model in _SCHEMA_REJECTED_MODELS:
+            return await complete(messages, model=model, settings=settings, temperature=0)
+        if model in _SCHEMA_ACCEPTED_MODELS:
+            return await _complete_with_schema(
+                messages, model=model, settings=settings, response_format=response_format
             )
-        except openai.APIStatusError as exc:
-            if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
-                raise
-            logger.warning(
-                "Top-N json_schema rejected by the provider; retrying without response_format",
-                extra={"attributes": {"model": model, "status_code": exc.status_code}},
-            )
-            raw = await complete(messages, model=model, settings=settings, temperature=0)
-            _SCHEMA_REJECTED_MODELS.add(model)
-            return raw
-    return await complete(messages, model=model, settings=settings, temperature=0)
+
+        async with _schema_probe_lock(model):
+            # A probe we queued behind may have settled the verdict already; if
+            # it did, fall out of the lock and re-dispatch without holding it.
+            if not _schema_verdict_settled(model):
+                return await _complete_with_schema(
+                    messages, model=model, settings=settings, response_format=response_format
+                )
 
 
 def _parse_top_n_response(raw: str) -> dict:

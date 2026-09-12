@@ -6,6 +6,7 @@ Covers the pure helper functions and the TopNAssistance.start() method
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -17,6 +18,8 @@ import pytest
 from models import Question, StepType
 from services.assistance.methods.top_n import (
     TopNAssistance,
+    _SCHEMA_ACCEPTED_MODELS,
+    _SCHEMA_PROBE_LOCKS,
     _SCHEMA_REJECTED_MODELS,
     _SYSTEM_PROMPT,
     _clamp_top_n,
@@ -36,9 +39,16 @@ if str(BACKEND_DIR) not in sys.path:
 
 @pytest.fixture(autouse=True)
 def _clear_schema_rejected_models():
-    _SCHEMA_REJECTED_MODELS.clear()
+    def _reset():
+        _SCHEMA_REJECTED_MODELS.clear()
+        _SCHEMA_ACCEPTED_MODELS.clear()
+        # Locks bind to the event loop that first awaits them; each test runs
+        # on its own loop, so they must not be carried over.
+        _SCHEMA_PROBE_LOCKS.clear()
+
+    _reset()
     yield
-    _SCHEMA_REJECTED_MODELS.clear()
+    _reset()
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +670,38 @@ async def test_start_skips_schema_after_model_has_been_rejected():
     assert second.type == StepType.DISPLAY
     assert mock_complete.call_count == 3
     assert "response_format" not in mock_complete.call_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
+async def test_concurrent_starts_probe_the_schema_once():
+    # A wave start fires many assistance requests at once. Only the first may
+    # pay the rejection + unconstrained retry; the rest wait for that verdict
+    # rather than each repeating the rejected schema call.
+    method = TopNAssistance()
+    question = _make_question()
+    llm_payload = _llm_response([{"option_index": 1, "confidence": 80, "rationale": "ok"}])
+    release_probe = asyncio.Event()
+
+    async def fake_complete(messages, **kwargs):
+        if "response_format" in kwargs:
+            # Hold the probe open so the other callers queue behind its lock.
+            await release_probe.wait()
+            raise _api_status_error(400)
+        return llm_payload
+
+    mock_complete = AsyncMock(side_effect=fake_complete)
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        tasks = [asyncio.create_task(method.start(question, {})) for _ in range(4)]
+        await asyncio.sleep(0)
+        release_probe.set()
+        steps = await asyncio.gather(*tasks)
+
+    assert all(step.type == StepType.DISPLAY for step in steps)
+    schema_calls = [c for c in mock_complete.call_args_list if "response_format" in c.kwargs]
+    assert len(schema_calls) == 1
+    # One rejected probe, its unconstrained retry, and three plain calls.
+    assert mock_complete.call_count == 5
 
 
 @pytest.mark.asyncio
