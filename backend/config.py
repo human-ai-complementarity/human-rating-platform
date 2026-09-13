@@ -182,8 +182,6 @@ class Settings(BaseSettings):
         default=None,
         description="Secret for signing rater session tokens (fallbacks to app_secret_key if unset).",
     )
-    # Rater-session token TTL in seconds. Defaults to the session duration (60 minutes).
-    rater_session_ttl_seconds: int = Field(default=60 * 60)
     hrp_session_cookie: str = Field(default="hrp_session")
     hrp_session_max_age: int = Field(default=60 * 60 * 24 * 7)  # 7 days
     cookie_secure: bool = Field(default=False)

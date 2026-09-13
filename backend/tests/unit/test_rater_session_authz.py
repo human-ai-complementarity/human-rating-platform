@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ from fastapi import HTTPException
 
 from config import Settings
 from routers.deps import require_rater_session
+from services.session_policy import SessionPolicy
 from services.rater.session_token import issue_rater_session_token
 
 
@@ -21,7 +23,13 @@ def test_require_rater_session_rejects_mismatched_experiment_id(
 
     # Arrange: token signed for rid=1, eid=999
     settings = Settings(app_secret_key="secret-key")
-    token = issue_rater_session_token(settings, rater_id=1, experiment_id=999)
+    token = issue_rater_session_token(
+        settings,
+        rater_id=1,
+        experiment_id=999,
+        session_start=datetime.now(UTC),
+        policy=SessionPolicy(),
+    )
 
     # Mock DB lookup to return a rater bound to a different experiment (eid=123)
     async def _fake_fetch_rater_or_404(rater_id: int, db: object):  # pragma: no cover - simple stub

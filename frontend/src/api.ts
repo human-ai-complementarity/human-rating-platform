@@ -35,6 +35,10 @@ type SubmitRatingResponse = { id: number; success: boolean };
 type SessionStatusResponse = {
   is_active: boolean;
   time_remaining_seconds: number;
+  // Seconds until even the grace window closes. While the session is live this
+  // is time_remaining_seconds plus the grace period; afterwards it counts down
+  // alone, and the question already on screen may still be submitted.
+  grace_seconds_remaining: number;
   questions_completed: number;
 };
 

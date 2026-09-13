@@ -51,6 +51,7 @@ type RaterSessionRecord = {
   rater_id: number;
   session_start: string;
   session_end_time: string;
+  session_grace_seconds?: number;
   experiment_name: string;
   completion_url: string | null;
   rater_session_token: string;
@@ -495,6 +496,7 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         is_active: true,
         time_remaining_seconds: 3600,
+        grace_seconds_remaining: 3600 + 300,
         questions_completed: 0,
       });
       return;
@@ -762,6 +764,63 @@ test('long-context question links document separately and shows only question in
 
   await expect(documentPopup.getByRole('heading', { name: 'Document for Question long-q' })).toBeVisible();
   await expect(documentPopup.getByText('Document line one')).toBeVisible();
+});
+
+test('the question in hand survives the deadline and can still be submitted', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Grace Window Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 303,
+    session_start: '2026-03-09T00:05:00Z',
+    // Two seconds out, so the deadline lands while the page is open.
+    session_end_time: new Date(Date.now() + 2000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Grace Window Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-grace',
+  };
+  state.questionsBySessionToken['token-grace'] = {
+    id: 601,
+    question_id: 'grace-q',
+    question_text: 'Does the grace window keep this answer?',
+    options: 'Yes|No',
+    question_type: 'MC',
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
+
+  // The clock runs out with the question still on screen.
+  await expect(page.getByTestId('grace-banner')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('timer-grace')).toBeVisible();
+
+  // Crucially the question is still there — pre-#102 it was unmounted and the
+  // in-progress answer discarded.
+  await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: /submit/i }).click();
+
+  await expect(page.getByRole('heading', { name: 'Session Complete' })).toBeVisible();
 });
 
 // Seeds a rater session serving exactly one question, for the parent-context

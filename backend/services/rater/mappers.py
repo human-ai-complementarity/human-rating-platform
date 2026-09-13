@@ -47,6 +47,7 @@ def build_rater_start_response(
         rater_id=rater_id,
         session_start=session_start,
         session_end_time=policy.deadline(session_start),
+        session_grace_seconds=policy.grace_minutes * 60,
         experiment_name=experiment_name,
         experiment_description_html=description_html,
         human_prompt_prefix=human_prompt_prefix,

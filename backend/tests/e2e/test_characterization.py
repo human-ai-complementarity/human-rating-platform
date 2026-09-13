@@ -1093,32 +1093,176 @@ def test_next_question_marks_expired_session_inactive(
     assert status_response.json()["is_active"] is False
 
 
-def test_submit_after_deadline_succeeds_while_token_lives(
+def test_new_questions_stop_at_the_deadline(
     client: TestClient,
     backdate_rater_session,
 ):
-    """Characterization: a rating submitted past the wall-clock deadline is
-    ACCEPTED, so long as nothing has flipped `is_active` yet.
+    """Once the clock runs out the rater is served nothing new — but is NOT
+    closed out, because the grace window is for finishing what they hold.
 
-    `submit_rating` checks only `validate_rater_marked_active` — it has no
-    wall-clock gate — and the session token's `exp` is minted as `now + ttl`
-    rather than derived from `session_start`, so backdating the session does
-    not expire the token. That combination is the platform's only path that
-    saves work in progress when the hour runs out. It is accidental, and this
-    test exists so that a cleanup which "makes submit consistent" has to
-    delete it deliberately rather than by accident. See issue #102.
+    The rater here submits first, so they hold no reservation; a rater who
+    still has one gets it re-served instead (see the refresh test below).
     """
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
-    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LATE_SUBMIT")
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GRACE_SERVE")
+
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    client.post(
+        "/api/raters/submit",
+        headers=_rater_headers(session_payload),
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 3,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    backdate_rater_session(session_payload["rater_id"], 61)  # 1 min past a 60 min deadline
+
+    next_question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+    status = client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
+
+    assert next_question.status_code == 403
+    assert next_question.json()["detail"] == "Session expired"
+    assert status.json()["is_active"] is True
+    assert status.json()["time_remaining_seconds"] == 0
+    assert status.json()["grace_seconds_remaining"] > 0
+
+
+def _realistic_headers(session_payload: dict, experiment_id: int, minutes_ago: int) -> dict:
+    """Headers whose token was minted from the rater's real session_start.
+
+    `backdate_rater_session` moves the rater row but not the token the test is
+    already holding, leaving a token issued seconds ago for a session that began
+    an hour back — a combination production never produces. Anything asserting
+    about token expiry has to mint the token the way start_session did.
+    """
+    from config import get_settings
+    from services.rater.session_token import issue_rater_session_token
+    from services.session_policy import SessionPolicy
+
+    token = issue_rater_session_token(
+        get_settings(),
+        rater_id=session_payload["rater_id"],
+        experiment_id=experiment_id,
+        session_start=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+        policy=SessionPolicy(),
+    )
+    return {"X-Rater-Session": token}
+
+
+def test_a_timed_out_session_is_actually_closed_out(
+    client: TestClient,
+    backdate_rater_session,
+    sync_engine,
+):
+    """Expiry is lazy, so the only chance to record a timeout is a request that
+    lands after the hard deadline. That request has to get past the token gate
+    in routers/deps.py first — if the token died at the hard deadline too, the
+    session would stay active forever and no timeout would ever be recorded.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_CLOSEOUT")
+
+    # Past the hard deadline (60 + 5), with a token minted the way production does.
+    backdate_rater_session(session_payload["rater_id"], 70)
+    headers = _realistic_headers(session_payload, experiment["id"], 70)
+
+    response = client.get("/api/raters/session-status", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["is_active"] is False
+
+    with sync_engine.begin() as conn:
+        ended = conn.execute(
+            text("SELECT session_end IS NOT NULL FROM raters WHERE id = :id"),
+            {"id": session_payload["rater_id"]},
+        ).scalar_one()
+    assert ended is True
+
+
+def test_refreshing_inside_the_grace_window_re_serves_the_same_question(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """A refresh during grace must return the question the rater already holds.
+
+    The frontend does not restore the question from sessionStorage — it asks
+    for the next one — so a rater who reloads inside the grace window goes
+    through get_next_question. Refusing them there loses exactly the answer the
+    grace window exists to save. Re-serving a reservation they already hold is
+    not new work, so it survives the deadline.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GRACE_REFRESH")
+
+    served = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+
+    backdate_rater_session(session_payload["rater_id"], 61)
+
+    refreshed = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert refreshed.status_code == 200
+    assert refreshed.json()["id"] == served["id"]
+
+
+def test_refreshing_past_the_grace_window_is_still_refused(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """Re-serving survives the deadline, not the end of the session."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PAST_REFRESH")
+
+    client.get("/api/raters/next-question", headers=_rater_headers(session_payload))
+    backdate_rater_session(session_payload["rater_id"])
+
+    refreshed = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert refreshed.status_code == 403
+
+
+def test_in_flight_question_can_be_submitted_inside_the_grace_window(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The answer being typed when the clock ran out is saved rather than
+    discarded. Before issue #102 this worked only by accident, for raters who
+    happened to have re-entered, and only until some other call noticed the
+    session had expired."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GRACE_SUBMIT")
 
     question = client.get(
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
 
-    # Deadline is now in the past; the token issued moments ago is still valid.
-    backdate_rater_session(session_payload["rater_id"])
+    backdate_rater_session(session_payload["rater_id"], 61)
+
+    # Polling status first must not close the session out from under the submit.
+    client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
 
     response = client.post(
         "/api/raters/submit",
@@ -1135,37 +1279,21 @@ def test_submit_after_deadline_succeeds_while_token_lives(
     assert response.json()["success"] is True
 
 
-def test_submit_after_deadline_rejected_once_another_call_flips_active(
+def test_submit_past_the_grace_window_is_rejected(
     client: TestClient,
     backdate_rater_session,
 ):
-    """Characterization: the same late submit is REJECTED if any other rater
-    call ran first.
-
-    Expiry is lazy — `get_next_question` and `get_session_status` are the only
-    things that write `is_active = False`, and once either has, submit fails
-    its active check. So whether a rater's in-flight answer survives depends on
-    call ordering, which is why the accidental grace above cannot be relied on.
-    """
+    """Grace buys time to finish one question, not to keep working."""
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
-    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LATE_REJECT")
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PAST_GRACE")
 
     question = client.get(
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
 
-    backdate_rater_session(session_payload["rater_id"])
-
-    # Polling status is enough to mark the rater inactive.
-    status_response = client.get(
-        "/api/raters/session-status",
-        headers=_rater_headers(session_payload),
-    )
-    assert status_response.status_code == 200
-    assert status_response.json()["is_active"] is False
-    assert status_response.json()["time_remaining_seconds"] == 0
+    backdate_rater_session(session_payload["rater_id"])  # past the hard deadline
 
     response = client.post(
         "/api/raters/submit",
@@ -1180,6 +1308,29 @@ def test_submit_after_deadline_rejected_once_another_call_flips_active(
 
     assert response.status_code == 403
     assert response.json()["detail"] == "Session expired"
+
+
+def test_resume_does_not_extend_the_session(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """Re-entering via the Prolific link re-mints a token, but against the
+    original session_start — so it cannot hand out time the session has already
+    spent. This was the drift that produced the accidental grace period."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_RESUME")
+
+    backdate_rater_session(session_payload["rater_id"], 61)
+    resumed = _start_session(client, experiment["id"], prolific_pid="PID_RESUME")
+
+    # Still inside grace: re-entry is allowed, but buys no new questions.
+    assert resumed["rater_id"] == session_payload["rater_id"]
+    next_question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(resumed),
+    )
+    assert next_question.status_code == 403
 
 
 def test_expiry_and_completion_are_indistinguishable_server_side(
