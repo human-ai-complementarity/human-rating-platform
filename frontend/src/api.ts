@@ -94,6 +94,7 @@ const routes = {
   rater: {
     start: '/raters/start',
     nextQuestion: '/raters/next-question',
+    question: (questionId: number) => `/raters/questions/${questionId}`,
     submit: '/raters/submit',
     sessionStatus: '/raters/session-status',
     endSession: '/raters/end-session',
@@ -671,6 +672,18 @@ export const api = {
     }
 
     return parseJson<Question | null>(response, url);
+  },
+
+  // Deep-link target for the analytics question table: loads one specific
+  // question instead of whatever the selector would serve next. Preview
+  // sessions only — and that rejection is also a 403, so unlike
+  // getNextQuestion we don't blanket-map 403 to "Session expired". requestJson
+  // surfaces FastAPI's `detail` verbatim, which keeps a real expiry matching
+  // the caller's check while the preview-only rejection reads as itself.
+  async getQuestion(sessionToken: string, questionId: number): Promise<Question> {
+    return requestJson<Question>(routes.rater.question(questionId), {
+      headers: { 'X-Rater-Session': sessionToken },
+    });
   },
 
   async submitRating(sessionToken: string, data: RatingSubmit): Promise<SubmitRatingResponse> {

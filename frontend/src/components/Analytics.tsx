@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
+import { buildRaterPreviewUrl } from '../raterPreview';
 import type { Analytics as AnalyticsType } from '../types';
 import { Banner } from './experiment-detail/ui';
 
@@ -173,6 +174,13 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
       fontFamily: 'monospace',
       fontSize: '13px',
     },
+    questionLink: {
+      fontFamily: 'monospace',
+      fontSize: '13px',
+      color: '#4a90d9',
+      textDecoration: 'underline',
+      cursor: 'pointer',
+    },
     badge: {
       display: 'inline-block',
       padding: '2px 8px',
@@ -340,7 +348,18 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
                 <tbody>
                   {analytics.questions.map((q) => (
                     <tr key={q.question_id}>
-                      <td style={{ ...styles.td, ...styles.tdMono }}>{q.question_id}</td>
+                      <td style={styles.td}>
+                        <a
+                          href={buildRaterPreviewUrl(experimentId, q.question_db_id)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          title="Open this question in the rater preview"
+                          data-testid={`question-preview-link-${q.question_db_id}`}
+                          style={styles.questionLink}
+                        >
+                          {q.question_id}
+                        </a>
+                      </td>
                       <td style={{ ...styles.td, maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {q.question_text}
                       </td>

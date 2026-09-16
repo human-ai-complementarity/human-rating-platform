@@ -98,6 +98,11 @@ def build_empty_analytics_payload(
 def build_question_stats_bucket(question: Question) -> dict[str, Any]:
     return {
         "question_id": question.question_id,
+        # Buckets are keyed on the dataset-provided question_id, which isn't
+        # unique per experiment; this is the first row seen under that key, same
+        # as question_text. Carried so the UI can deep-link into the rater view,
+        # which addresses questions by primary key.
+        "question_db_id": question.id,
         # Analytics is preview-oriented, so we intentionally cap the text length.
         "question_text": (
             question.question_text[:QUESTION_PREVIEW_LENGTH] + "..."
@@ -135,6 +140,7 @@ def build_question_analytics_item(stats: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "question_id": stats["question_id"],
+        "question_db_id": stats["question_db_id"],
         "question_text": stats["question_text"],
         "num_ratings": stats["num_ratings"],
         "avg_response_time_seconds": round(sum(response_times) / len(response_times), 2),

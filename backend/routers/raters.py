@@ -53,6 +53,19 @@ async def get_next_question(
     return await rater.get_next_question(rater_id=session.rater_id, db=db)
 
 
+@router.get("/questions/{question_id}", response_model=QuestionResponse)
+async def get_question(
+    question_id: int,
+    session: RaterSession = Depends(require_rater_session),
+    db: AsyncSession = Depends(get_session),
+):
+    return await rater.get_question_by_id(
+        rater_id=session.rater_id,
+        question_id=question_id,
+        db=db,
+    )
+
+
 @router.post("/submit", response_model=RatingResponse)
 async def submit_rating(
     rating: RatingSubmit,
