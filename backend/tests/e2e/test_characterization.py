@@ -1790,6 +1790,14 @@ def _install_default_participant_group_mock() -> respx.Route:
 
 
 def _mock_publish_study(*, study_id: str = PROLIFIC_STUDY_ID) -> respx.Route:
+    # Publishing now refreshes the study description first, so the time-limit
+    # note cannot go stale between round creation and the listing going live.
+    # Attach a default mock for that PATCH so tests that don't care about the
+    # description don't each have to register one — same reasoning as the
+    # participant-group mock on _mock_create_study.
+    # Registered after any mock the test set up itself, so respx's first-match
+    # ordering leaves an explicit one in charge.
+    _mock_update_study(study_id=study_id)
     return respx.post(f"{PROLIFIC_BASE}/studies/{study_id}/transition/").mock(
         return_value=Response(200, json={"id": study_id, "status": "ACTIVE"})
     )
@@ -2483,11 +2491,161 @@ def test_prolific_round_edit_updates_db_and_calls_prolific(client: TestClient, e
     sent = json.loads(route.calls[0].request.content)
     # Description is converted to Prolific's HTML subset on the wire; the raw
     # markdown is what we store back in the DB and return in the response.
+    assert sent.pop("description").startswith("<p>Updated description</p>")
     assert sent == {
-        "description": "<p>Updated description</p>",
         "reward": 1500,
         "total_available_places": 7,
     }
+
+
+@respx.mock
+def test_study_description_states_the_time_limit_before_raters_accept(
+    client: TestClient, enable_prolific
+):
+    """Issue #102 decision 5: the study listing is the only surface a rater
+    sees *before* accepting, so the time commitment has to be there. The rater
+    intro screen comes after they have already taken the study, which is too
+    late to stop a return.
+    """
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    experiment = create_resp.json()
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "description": "Read the article."},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+
+    assert "<b>Time limit:</b>" in sent["description"]
+    assert "1 hour" in sent["description"]
+    assert "5 more minutes" in sent["description"]
+
+
+@respx.mock
+def test_study_description_note_follows_the_experiments_session_length(
+    client: TestClient, enable_prolific
+):
+    payload = _prolific_experiment_payload()
+    payload["session_duration_minutes"] = 110
+    experiment = client.post("/api/admin/experiments", json=payload).json()
+
+    route = _mock_create_study()
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "description": "Read the article."},
+    )
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+
+    assert "1 hour 50 minutes" in sent["description"]
+
+
+@respx.mock
+def test_publishing_a_main_round_does_not_resend_the_description(
+    client: TestClient, enable_prolific
+):
+    """The refresh only runs while the experiment can still change.
+
+    Once the pilot's publish flips the experiment out of DRAFT the session
+    length is locked, and a round's own description edits already carry the
+    note — so for a main round the resend would be byte-identical. Skipping it
+    keeps a transient Prolific failure from blocking a publish that has nothing
+    to correct.
+    """
+    experiment = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+
+    _mock_create_study(study_id="PILOT_STUDY")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/pilot", json=_pilot_payload())
+    _mock_publish_study(study_id="PILOT_STUDY")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
+    _mock_close_study(study_id="PILOT_STUDY")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
+
+    _mock_create_study(study_id="ROUND_1_STUDY")
+    round_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds", json={"places": 4}
+    )
+    assert round_resp.status_code == 200, round_resp.text
+
+    # A fresh PATCH mock, so anything it catches came from this publish alone.
+    refresh = _mock_update_study(study_id="ROUND_1_STUDY")
+    _mock_publish_study(study_id="ROUND_1_STUDY")
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/"
+        f"{round_resp.json()['id']}/publish"
+    )
+
+    assert publish_resp.status_code == 200, publish_resp.text
+    assert not refresh.called, "a locked experiment cannot have drifted, so nothing to resend"
+
+
+@respx.mock
+def test_publishing_refreshes_a_time_limit_note_that_went_stale(
+    client: TestClient, enable_prolific
+):
+    """Session length stays editable until the first publish, but the note was
+    baked into the Prolific description when the round was created. Publishing
+    is the moment the listing becomes visible and the last moment the two can
+    drift, so the description is regenerated there.
+
+    The harmful direction is shortening: a listing promising 2 hours while the
+    session gives 1 would have raters running out of time believing they had
+    twice as long.
+    """
+    payload = _prolific_experiment_payload()
+    payload["session_duration_minutes"] = 120
+    experiment = client.post("/api/admin/experiments", json=payload).json()
+
+    create_route = _mock_create_study()
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "description": "Read the article."},
+    )
+    created = json.loads(create_route.calls[-1].request.content.decode())
+    assert "2 hours" in created["description"]
+
+    # Still DRAFT, so the length is editable — and nothing has touched Prolific.
+    patch_resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "session_duration_minutes": 60},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+
+    update_route = _mock_update_study()
+    _mock_publish_study()
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish"
+    )
+    assert publish_resp.status_code == 200, publish_resp.text
+
+    assert update_route.called, "publish must resend the description"
+    sent = json.loads(update_route.calls[-1].request.content.decode())
+    assert "1 hour" in sent["description"]
+    assert "2 hours" not in sent["description"]
+    # The researcher's own words survive the regeneration.
+    assert sent["description"].startswith("<p>Read the article.</p>")
+
+
+@respx.mock
+def test_editing_a_round_description_keeps_the_time_limit_note(client: TestClient, enable_prolific):
+    """The note is generated on the way out, so an edit cannot drop it."""
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"description": "Rewritten description"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+
+    assert sent["description"].startswith("<p>Rewritten description</p>")
+    assert "<b>Time limit:</b>" in sent["description"]
+    # The DB keeps the researcher's own words, unpolluted.
+    assert resp.json()["description"] == "Rewritten description"
 
 
 @respx.mock
@@ -2621,6 +2779,7 @@ def test_prolific_round_list_refreshes_transient_status_from_prolific(
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -2643,6 +2802,7 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
     experiment, pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -2674,6 +2834,7 @@ def test_prolific_round_sync_captures_submission_counts(
     experiment, pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -2712,6 +2873,7 @@ def test_prolific_round_sync_keeps_counts_when_submissions_fetch_fails(
     experiment, pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -3381,9 +3543,12 @@ def test_prolific_create_converts_description_markdown_to_html(
     assert pilot_resp.status_code == 200, pilot_resp.text
 
     sent = json.loads(route.calls[-1].request.content.decode())
-    assert (
-        sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
+    # The researcher's markdown converts as before, and the platform's time-limit
+    # note is appended after it rather than replacing or reordering anything.
+    assert sent["description"].startswith(
+        "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
     )
+    assert "<b>Time limit:</b>" in sent["description"]
 
 
 @respx.mock

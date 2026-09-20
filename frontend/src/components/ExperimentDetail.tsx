@@ -2556,6 +2556,7 @@ function LaunchPanel(props: {
                     <RoundCard
                       key={round.id}
                       round={round}
+                      sessionDurationMinutes={experiment.session_duration_minutes}
                       currencyCode={currencyCode}
                       currencySymbol={currencySymbol}
                       pricing={pricing}
@@ -2743,6 +2744,7 @@ function RoundCostLabel({
 
 function RoundCard(props: {
   round: ExperimentRound;
+  sessionDurationMinutes: number;
   currencyCode: string | null;
   currencySymbol: string | null;
   pricing: ProlificPricing | null;
@@ -2765,6 +2767,7 @@ function RoundCard(props: {
 }) {
   const {
     round,
+    sessionDurationMinutes,
     currencyCode,
     currencySymbol,
     pricing,
@@ -2907,6 +2910,15 @@ function RoundCard(props: {
                 }
                 style={inputStyle}
               />
+              {editForm.estimated_completion_time > sessionDurationMinutes && (
+                <div
+                  data-testid={`edit-round-estimate-warning-${round.round_number}`}
+                  style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.5, color: 'var(--danger)' }}
+                >
+                  Longer than the {formatSessionLength(sessionDurationMinutes)} session each rater
+                  gets — the study would advertise work nobody can finish in the time allowed.
+                </div>
+              )}
             </Field>
             <Field label={`Reward${currencyCode ? ` (${currencyCode})` : ''}`}>
               <div
@@ -3244,6 +3256,22 @@ function PilotForm(props: {
             required
             style={inputStyle}
           />
+          {pilotForm.estimated_completion_time > sessionDurationMinutes && (
+            <div
+              data-testid="estimate-exceeds-session-warning"
+              style={{
+                marginTop: 8,
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                color: 'var(--danger)',
+              }}
+            >
+              This is longer than the {formatSessionLength(sessionDurationMinutes)} session each
+              rater gets, so Prolific advertises a task nobody can finish in the time allowed.
+              Either lower the estimate or raise the session length before launching — session
+              length is locked once a main round goes out.
+            </div>
+          )}
         </Field>
         <Field
           id="pilot-reward"
