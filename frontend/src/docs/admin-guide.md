@@ -6,6 +6,10 @@ End-to-end flow: create → upload → optionally configure AI assistance → pi
 
 From the **Experiments** page, fill out the create form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
 
+**Session length** is how long each rater gets before their session ends, in minutes. The default of `60` suits most tasks; raise it when a single question takes a long time to read (long-context datasets in particular), up to a maximum of 120 — a task needing longer than two hours is better split into more, shorter sessions than given a longer clock. Every other clock follows from this one number, so you only set it here.
+
+Two things worth knowing. A rater who is partway through a question when the clock runs out gets **5 extra minutes to finish that one question** — they stop being served new ones at the deadline, but the answer they were writing is saved rather than discarded. And session length is **frozen once a main round launches**: raters already in a session were told when their session ends, and changing it underneath them would make that a lie. Set it before you launch.
+
 ## 2. Upload questions
 
 Upload a CSV or Parquet file in the **Questions** section. You can upload multiple files into the same experiment — rows accumulate. The colab notebook can generate either format from a pandas DataFrame.

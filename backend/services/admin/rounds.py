@@ -51,7 +51,7 @@ from .prolific import (
 from services.participant_groups import ensure_participant_group_and_commit
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
-from services.session_policy import resolve_session_policy
+from session_policy import resolve_session_policy
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
 from .status import validate_new_exclusion_targets

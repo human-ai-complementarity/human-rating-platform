@@ -44,6 +44,15 @@ import {
 
 // Labels shown to admins in the Instructions & prompts panel. Order matches
 // the CSV `#META:` JSON shape that researchers see in the colab guide.
+/** "90 minute" / "2 hour" / "2 hour 30 minute" — reads naturally inside a sentence. */
+function formatSessionLength(minutes: number): string {
+  if (minutes < 60) return `${minutes} minute`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  const hourPart = `${hours} hour`;
+  return rest === 0 ? hourPart : `${hourPart} ${rest} minute`;
+}
+
 const DATASET_META_LABELS: Record<DatasetMetaField, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
@@ -2587,6 +2596,7 @@ function LaunchPanel(props: {
 
               {rounds.length === 0 && (
                 <PilotForm
+                  sessionDurationMinutes={experiment.session_duration_minutes}
                   pilotForm={pilotForm}
                   onPilotChange={onPilotChange}
                   pilotRewardInput={pilotRewardInput}
@@ -3121,6 +3131,7 @@ function PilotForm(props: {
   onSubmit: (e: React.FormEvent) => void;
   otherExperiments: Experiment[];
   datasetDescription: string | null;
+  sessionDurationMinutes: number;
 }) {
   const {
     pilotForm,
@@ -3133,6 +3144,7 @@ function PilotForm(props: {
     onSubmit,
     otherExperiments,
     datasetDescription,
+    sessionDurationMinutes,
   } = props;
   const prefilledFromDataset =
     !!datasetDescription && pilotForm.description === datasetDescription;
@@ -3294,7 +3306,7 @@ function PilotForm(props: {
         <Field
           id="pilot-places"
           label="Number of raters"
-          hint="Each rater does 1 hour. 5 is a good default for timing calibration."
+          hint={`Each rater does one ${formatSessionLength(sessionDurationMinutes)} session. 5 is a good default for timing calibration.`}
         >
           <input
             id="pilot-places"

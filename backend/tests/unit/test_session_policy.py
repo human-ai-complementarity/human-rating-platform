@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from services.session_policy import (
+from session_policy import (
     DEFAULT_SESSION_DURATION_MINUTES,
     MAX_SESSION_DURATION_MINUTES,
     MIN_SESSION_DURATION_MINUTES,

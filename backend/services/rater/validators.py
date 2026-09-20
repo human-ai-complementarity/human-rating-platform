@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Rater
-from services.session_policy import SessionPolicy
+from session_policy import SessionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,7 @@ async def expire_rater_if_past_grace(rater: Rater, db: AsyncSession, policy: Ses
     )
     rater.is_active = False
     rater.session_end = datetime.now(UTC)
+    rater.timed_out = True
     await db.commit()
 
 

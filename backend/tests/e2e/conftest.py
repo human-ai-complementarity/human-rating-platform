@@ -11,7 +11,7 @@ from sqlalchemy.engine.url import make_url
 
 from config import get_settings
 from main import create_app
-from services.session_policy import (
+from session_policy import (
     DEFAULT_GRACE_MINUTES,
     DEFAULT_SESSION_DURATION_MINUTES,
 )

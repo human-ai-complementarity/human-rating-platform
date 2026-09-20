@@ -1147,7 +1147,7 @@ def _realistic_headers(session_payload: dict, experiment_id: int, minutes_ago: i
     """
     from config import get_settings
     from services.rater.session_token import issue_rater_session_token
-    from services.session_policy import SessionPolicy
+    from session_policy import SessionPolicy
 
     token = issue_rater_session_token(
         get_settings(),
@@ -1333,15 +1333,14 @@ def test_resume_does_not_extend_the_session(
     assert next_question.status_code == 403
 
 
-def test_expiry_and_completion_are_indistinguishable_server_side(
+def test_timeout_is_recorded_distinctly_from_completion(
     client: TestClient,
     backdate_rater_session,
     sync_engine,
 ):
-    """Characterization: a timed-out session and a finished one leave identical
-    rows — `is_active = False` plus a `session_end` stamp, with nothing
-    recording which of the two happened. This is why "how often does the hour
-    bite?" is unanswerable today (issue #102, open question 1).
+    """A timed-out session and a finished one used to leave identical rows —
+    `is_active = False` plus a `session_end` stamp — so the rate at which the
+    clock cuts raters off could not be measured (issue #102, open question 1).
     """
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
@@ -1354,24 +1353,249 @@ def test_expiry_and_completion_are_indistinguishable_server_side(
     client.post("/api/raters/end-session", headers=_rater_headers(finished))
 
     with sync_engine.begin() as conn:
-        rows = dict(
-            conn.execute(
-                text("SELECT id, is_active FROM raters WHERE id = ANY(:ids)"),
+        rows = {
+            row[0]: row[1]
+            for row in conn.execute(
+                text("SELECT id, timed_out FROM raters WHERE id = ANY(:ids)"),
                 {"ids": [timed_out["rater_id"], finished["rater_id"]]},
             ).all()
-        )
-        ended = (
-            conn.execute(
-                text("SELECT id FROM raters WHERE session_end IS NOT NULL AND id = ANY(:ids)"),
-                {"ids": [timed_out["rater_id"], finished["rater_id"]]},
-            )
-            .scalars()
-            .all()
-        )
+        }
 
-    assert rows[timed_out["rater_id"]] is False
+    assert rows[timed_out["rater_id"]] is True
     assert rows[finished["rater_id"]] is False
-    assert sorted(ended) == sorted([timed_out["rater_id"], finished["rater_id"]])
+
+
+def test_restarting_a_preview_clears_a_previous_timeout(
+    client: TestClient,
+    backdate_rater_session,
+    sync_engine,
+):
+    """A preview rater that timed out once must not stay timed out forever.
+
+    `expire_rater_if_past_grace` has no preview guard, so an admin who leaves a
+    preview tab open past the deadline gets the flag set. The preview-restart
+    branch resets is_active, session_start and session_end — the flag has to
+    travel with them, or the "Ran Out Of Time" tile counts a run that has since
+    completed cleanly.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+
+    first = _start_preview_session(client, experiment["id"], "PID_PREVIEW_TIMEOUT")
+    backdate_rater_session(first["rater_id"])
+    client.get("/api/raters/session-status", headers=_rater_headers(first))
+
+    with sync_engine.begin() as conn:
+        assert (
+            conn.execute(
+                text("SELECT timed_out FROM raters WHERE id = :id"), {"id": first["rater_id"]}
+            ).scalar_one()
+            is True
+        ), "precondition: the idle preview session was marked timed out"
+
+    # The admin reopens the preview link and runs it through cleanly.
+    second = _start_preview_session(client, experiment["id"], "PID_PREVIEW_TIMEOUT")
+    client.post("/api/raters/end-session", headers=_rater_headers(second))
+
+    analytics = client.get(
+        f"/api/admin/experiments/{experiment['id']}/analytics",
+        params={"include_preview": "true"},
+    ).json()
+
+    assert analytics["overview"]["timed_out_raters"] == 0
+
+
+def test_analytics_counts_raters_who_timed_out_with_nothing_submitted(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The case most worth seeing is also the one ratings-derived analytics
+    cannot show: a rater who turned up, ran out of time, and submitted nothing
+    never appears in the ratings join at all."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_ZERO_RATINGS")
+    backdate_rater_session(session_payload["rater_id"])
+    client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
+
+    analytics = client.get(f"/api/admin/experiments/{experiment['id']}/analytics").json()
+
+    assert analytics["overview"]["total_ratings"] == 0
+    assert analytics["overview"]["timed_out_raters"] == 1
+
+
+def test_create_experiment_accepts_a_session_duration(client: TestClient):
+    response = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("long-task"),
+            "num_ratings_per_question": 2,
+            "session_duration_minutes": 120,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["session_duration_minutes"] == 120
+
+
+def test_create_experiment_defaults_to_one_hour(client: TestClient):
+    """Experiments that say nothing behave exactly as they did before the
+    session length became configurable."""
+    assert _create_experiment(client)["session_duration_minutes"] == 60
+
+
+@pytest.mark.parametrize("duration", [0, 1, 121, 241, 10000, -30])
+def test_create_experiment_rejects_out_of_range_durations(client: TestClient, duration: int):
+    response = client.post(
+        "/api/admin/experiments",
+        json={"name": _unique_name("bad-duration"), "session_duration_minutes": duration},
+    )
+
+    assert response.status_code == 422
+
+
+def test_questions_are_served_past_the_default_hour_on_a_long_experiment(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The point of the whole change: at 120 minutes a rater 90 minutes in is
+    still working, where before every clock cut them off at 60."""
+    experiment = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("two-hour"),
+            "num_ratings_per_question": 2,
+            "session_duration_minutes": 120,
+        },
+    ).json()
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LONG")
+
+    backdate_rater_session(session_payload["rater_id"], 90)
+
+    response = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+    status = client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
+
+    assert response.status_code == 200
+    assert status.json()["is_active"] is True
+    # 120 - 90 = 30 minutes left, not a negative number against a 60 minute clock.
+    assert status.json()["time_remaining_seconds"] > 20 * 60
+
+
+def test_long_experiment_token_outlives_the_default_hour(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The token is derived from the session length, so it cannot be the thing
+    that cuts a long session off at 60 minutes."""
+    experiment = client.post(
+        "/api/admin/experiments",
+        json={"name": _unique_name("token-long"), "session_duration_minutes": 120},
+    ).json()
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_TOKEN_LONG")
+
+    backdate_rater_session(session_payload["rater_id"], 100)
+
+    # A token minted as `now + 3600` would have died 40 minutes ago.
+    assert (
+        client.get("/api/raters/next-question", headers=_rater_headers(session_payload)).status_code
+        == 200
+    )
+
+
+def test_update_session_duration_is_locked_after_launch(client: TestClient, sync_engine):
+    """Raters already in a session hold a session_end_time computed from the
+    old value and will never hear about a change."""
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "session_duration_minutes": 120},
+    )
+
+    assert response.status_code == 400
+    assert "session_duration_minutes" in response.json()["detail"]
+
+
+def test_update_session_duration_allowed_while_draft(client: TestClient):
+    experiment = _create_experiment(client)
+
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "session_duration_minutes": 120},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["session_duration_minutes"] == 120
+
+
+# Columns duplicate_experiment deliberately does not carry over. Anything else
+# must be copied — the duplicate is built with an explicit field-by-field
+# constructor, so a column left out is silently dropped rather than erroring.
+_NOT_COPIED_ON_DUPLICATE = {
+    "id",
+    "name",
+    "internal_name",
+    "created_at",
+    "status",
+    "archived_at",
+    "prolific_completion_url",
+    "prolific_participant_group_id",
+    # Pre-existing: assistance config is re-chosen on the copy.
+    "assistance_method",
+    "assistance_params",
+}
+
+
+def test_duplicate_copies_every_column_it_should(client: TestClient, sync_engine):
+    """Guard against the silent-data-loss trap: add a column to Experiment and
+    forget duplicate_experiment, and the copy quietly gets the default."""
+    from models import Experiment
+
+    experiment = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("dup-source"),
+            "num_ratings_per_question": 4,
+            "session_duration_minutes": 110,
+        },
+    ).json()
+    client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={
+            "assistance_method": "none",
+            "description": "desc",
+            "system_prompt": "sys",
+            "human_prompt_prefix": "pre",
+            "human_prompt_suffix": "suf",
+            "prolific_pool": "pool",
+        },
+    )
+
+    copy_response = client.post(f"/api/admin/experiments/{experiment['id']}/duplicate")
+    assert copy_response.status_code == 200
+    copy_id = copy_response.json()["id"]
+
+    columns = [c.name for c in Experiment.__table__.columns]
+    checked = [c for c in columns if c not in _NOT_COPIED_ON_DUPLICATE]
+    assert "session_duration_minutes" in checked
+
+    with sync_engine.begin() as conn:
+        rows = {
+            row[0]: row
+            for row in conn.execute(
+                text(f"SELECT id, {', '.join(checked)} FROM experiments WHERE id = ANY(:ids)"),
+                {"ids": [experiment["id"], copy_id]},
+            ).all()
+        }
+
+    assert rows[experiment["id"]][1:] == rows[copy_id][1:]
 
 
 def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync_engine):

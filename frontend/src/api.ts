@@ -493,6 +493,9 @@ export const api = {
       human_prompt_prefix?: string;
       human_prompt_suffix?: string;
       prolific_pool?: string;
+      // Minutes per rater. Undefined means "leave unchanged"; locked once the
+      // experiment leaves DRAFT.
+      session_duration_minutes?: number;
     },
   ): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId), {
