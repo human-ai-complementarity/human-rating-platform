@@ -7,7 +7,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Rater
-from .mappers import build_session_end_time
+from services.session_policy import SessionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ def validate_question_belongs_to_rater_experiment(
         raise HTTPException(status_code=400, detail="Question does not belong to this experiment")
 
 
-def validate_existing_rater_can_resume(existing_rater: Rater) -> None:
-    if datetime.now(UTC) > build_session_end_time(existing_rater.session_start):
+def validate_existing_rater_can_resume(existing_rater: Rater, policy: SessionPolicy) -> None:
+    if datetime.now(UTC) > policy.deadline(existing_rater.session_start):
         raise HTTPException(
             status_code=403,
             detail="You have already completed a session for this experiment",
@@ -39,8 +39,10 @@ def validate_existing_rater_can_resume(existing_rater: Rater) -> None:
         )
 
 
-async def validate_rater_session_is_active(rater: Rater, db: AsyncSession) -> None:
-    if datetime.now(UTC) <= build_session_end_time(rater.session_start):
+async def validate_rater_session_is_active(
+    rater: Rater, db: AsyncSession, policy: SessionPolicy
+) -> None:
+    if datetime.now(UTC) <= policy.deadline(rater.session_start):
         return
 
     logger.warning(

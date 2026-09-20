@@ -51,6 +51,7 @@ from .prolific import (
 from services.participant_groups import ensure_participant_group_and_commit
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
+from services.session_policy import resolve_session_policy
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
 from .status import validate_new_exclusion_targets
@@ -97,7 +98,6 @@ def _extract_prolific_message(body: str) -> str | None:
     return None
 
 
-SESSION_DURATION_SECONDS = 3600  # 1 hour per Prolific place
 # COMPLETED is the only status Prolific never moves a study out of, so it is
 # the only one worth skipping on refresh. Expressed as an exclusion rather than
 # an allow-list on purpose: an allow-list silently pins any status missing from
@@ -579,7 +579,8 @@ async def calculate_recommendation(
     remaining_actions = sum(deficits)
 
     is_complete = remaining_actions == 0
-    total_hours = (remaining_actions * avg_time) / SESSION_DURATION_SECONDS
+    session_seconds = resolve_session_policy(experiment).duration_seconds
+    total_hours = (remaining_actions * avg_time) / session_seconds
 
     if is_complete:
         recommended_places = 0
@@ -593,7 +594,7 @@ async def calculate_recommendation(
         max_deficit = max(deficits)
         per_place_capacity = float(questions_needing_ratings)
         if avg_time > 0:
-            per_place_capacity = min(per_place_capacity, SESSION_DURATION_SECONDS / avg_time)
+            per_place_capacity = min(per_place_capacity, session_seconds / avg_time)
         recommended_places = max(
             math.ceil(remaining_actions / per_place_capacity),
             max_deficit,

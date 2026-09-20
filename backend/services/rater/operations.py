@@ -9,7 +9,6 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
-    ASSIGNMENT_TTL_MINUTES,
     AssistanceSession,
     ExperimentRound,
     ProlificStudyStatus,
@@ -29,10 +28,10 @@ from services.admin.prolific import ProlificAPIError, add_participant_to_group, 
 from services.assistance import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
 from services.queries import fetch_remaining_rating_actions
+from services.session_policy import SessionPolicy, resolve_session_policy
 from .mappers import (
     build_question_response,
     build_rater_start_response,
-    build_session_end_time,
 )
 from .session_token import issue_rater_session_token
 from .queries import (
@@ -90,6 +89,7 @@ async def start_session(
     description_for_intro = round_description or experiment.description
 
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
+    policy = resolve_session_policy(experiment)
 
     existing_rater = await fetch_existing_rater_for_experiment(
         prolific_id=prolific_pid,
@@ -136,10 +136,11 @@ async def start_session(
                 human_prompt_suffix=experiment.human_prompt_suffix,
                 completion_url=experiment.prolific_completion_url,
                 rater_session_token=token,
+                policy=policy,
                 assistance_method=experiment.assistance_method,
                 assistance_instructions=assistance_instructions,
             )
-        validate_existing_rater_can_resume(existing_rater)
+        validate_existing_rater_can_resume(existing_rater, policy)
         token = issue_rater_session_token(
             settings=settings, rater_id=existing_rater.id, experiment_id=experiment_id
         )
@@ -152,6 +153,7 @@ async def start_session(
             human_prompt_suffix=experiment.human_prompt_suffix,
             completion_url=experiment.prolific_completion_url,
             rater_session_token=token,
+            policy=policy,
             assistance_method=experiment.assistance_method,
             assistance_instructions=assistance_instructions,
         )
@@ -230,6 +232,7 @@ async def start_session(
         human_prompt_suffix=experiment.human_prompt_suffix,
         completion_url=experiment.prolific_completion_url,
         rater_session_token=token,
+        policy=policy,
         assistance_method=experiment.assistance_method,
         assistance_instructions=assistance_instructions,
     )
@@ -258,6 +261,7 @@ async def _reserve_question(
     *,
     rater_id: int,
     question_id: int,
+    policy: SessionPolicy,
     db: AsyncSession,
 ) -> None:
     """Create or revive this rater's reservation for a question.
@@ -270,7 +274,7 @@ async def _reserve_question(
     # Stamped here, after the advisory lock was acquired: using the caller's
     # pre-lock clock would silently shorten the TTL under lock contention.
     now = datetime.now(UTC)
-    expires_at = now + timedelta(minutes=ASSIGNMENT_TTL_MINUTES)
+    expires_at = now + timedelta(minutes=policy.assignment_ttl_minutes)
     existing = await fetch_assignment_for_question(
         rater_id=rater_id, question_id=question_id, db=db
     )
@@ -298,10 +302,12 @@ async def get_next_question(
     rater = await fetch_rater_or_404(rater_id, db)
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
 
+    policy = resolve_session_policy(experiment)
+
     # Mirror submit_rating: an ended session must not be served (and thereby
     # reserve) new questions — end_session just released its slot.
     validate_rater_marked_active(rater)
-    await validate_rater_session_is_active(rater, db)
+    await validate_rater_session_is_active(rater, db, policy)
 
     now = datetime.now(UTC)
 
@@ -355,7 +361,7 @@ async def get_next_question(
         return None
 
     if not rater.is_preview:
-        await _reserve_question(rater_id=rater_id, question_id=selected.id, db=db)
+        await _reserve_question(rater_id=rater_id, question_id=selected.id, policy=policy, db=db)
 
     parent_text = (
         await fetch_parent_question_text(selected.parent_question_id, db)
@@ -380,9 +386,11 @@ async def get_question_by_id(
     raters never reserve, so nothing to bookkeep here.
     """
     rater = await fetch_rater_or_404(rater_id, db)
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    policy = resolve_session_policy(experiment)
 
     validate_rater_marked_active(rater)
-    await validate_rater_session_is_active(rater, db)
+    await validate_rater_session_is_active(rater, db, policy)
 
     if not rater.is_preview:
         raise HTTPException(
@@ -564,10 +572,10 @@ async def get_session_status(
     db: AsyncSession,
 ) -> SessionStatusResponse:
     rater = await fetch_rater_or_404(rater_id, db)
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    policy = resolve_session_policy(experiment)
 
-    time_remaining = (
-        build_session_end_time(rater.session_start) - datetime.now(UTC)
-    ).total_seconds()
+    time_remaining = (policy.deadline(rater.session_start) - datetime.now(UTC)).total_seconds()
     if time_remaining <= 0:
         rater.is_active = False
         rater.session_end = datetime.now(UTC)

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from models import Question, SESSION_DURATION_MINUTES
+from models import Question
 from schemas import QuestionResponse, RaterStartResponse
 from services.prolific_markdown import to_prolific_html
-
-
-def build_session_end_time(session_start: datetime) -> datetime:
-    return session_start + timedelta(minutes=SESSION_DURATION_MINUTES)
+from services.session_policy import SessionPolicy
 
 
 def build_question_response(
@@ -35,6 +32,7 @@ def build_rater_start_response(
     human_prompt_suffix: str | None,
     completion_url: str | None,
     rater_session_token: str,
+    policy: SessionPolicy,
     assistance_method: str = "none",
     assistance_instructions: str | None = None,
 ) -> RaterStartResponse:
@@ -48,7 +46,7 @@ def build_rater_start_response(
     return RaterStartResponse(
         rater_id=rater_id,
         session_start=session_start,
-        session_end_time=build_session_end_time(session_start),
+        session_end_time=policy.deadline(session_start),
         experiment_name=experiment_name,
         experiment_description_html=description_html,
         human_prompt_prefix=human_prompt_prefix,
