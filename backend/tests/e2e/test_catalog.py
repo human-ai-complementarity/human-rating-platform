@@ -52,7 +52,7 @@ def test_sync_seeds_datasets_and_is_idempotent(client: TestClient):
     datasets = client.get("/api/admin/datasets").json()
     by_name = {row["name"]: row["waves"] for row in datasets}
     assert by_name["QuALITY_dev"] == ["fall25"]
-    assert by_name["bbeh_mini"] == ["fall25", "sp26"]
+    assert by_name["shade_arena"] == ["fall25", "sp26"]
     assert by_name["culturalbench_hard"] == ["sp26"]
 
     second = _sync(client)
@@ -63,15 +63,15 @@ def test_sync_seeds_datasets_and_is_idempotent(client: TestClient):
 
 def test_sync_unions_catalog_waves_onto_existing_dataset(client: TestClient):
     created = client.post(
-        "/api/admin/datasets", json={"name": "bbeh_mini", "waves": ["fall25"]}
+        "/api/admin/datasets", json={"name": "shade_arena", "waves": ["fall25"]}
     ).json()
     assert created["waves"] == ["fall25"]
 
     result = _sync(client)
-    assert "bbeh_mini" in result["datasets_updated"]
+    assert "shade_arena" in result["datasets_updated"]
     fetched = client.get(f"/api/admin/datasets/{created['id']}").json()
     assert fetched["waves"] == ["fall25", "sp26"]
-    assert fetched["name"] == "bbeh_mini"
+    assert fetched["name"] == "shade_arena"
 
 
 def test_sync_assigns_singleton_wave_from_filename(client: TestClient):
@@ -94,19 +94,19 @@ def test_sync_assigns_singleton_wave_from_filename(client: TestClient):
 
 
 def test_sync_assigns_dual_wave_when_name_has_token(client: TestClient):
-    experiment = _create_experiment(client, "bbeh mini sp26 rerun")
-    _upload(client, experiment["id"], "bbeh_mini_n50.csv")
+    experiment = _create_experiment(client, "shade arena sp26 rerun")
+    _upload(client, experiment["id"], "shade_arena_n50.csv")
 
     result = _sync(client)
     assigned = result["experiments_assigned"]
-    assert assigned[0]["dataset_name"] == "bbeh_mini"
+    assert assigned[0]["dataset_name"] == "shade_arena"
     assert assigned[0]["wave"] == "sp26"
-    assert result["groups_created"] == ["bbeh_mini sp26"]
+    assert result["groups_created"] == ["shade_arena sp26"]
 
 
 def test_sync_skips_dual_wave_without_signal(client: TestClient):
-    experiment = _create_experiment(client, "bbeh mini mystery")
-    _upload(client, experiment["id"], "bbeh_mini_n50.csv")
+    experiment = _create_experiment(client, "shade arena mystery")
+    _upload(client, experiment["id"], "shade_arena_n50.csv")
 
     result = _sync(client)
     assert result["experiments_assigned"] == []
@@ -125,14 +125,6 @@ def test_sync_skips_unrelated_upload(client: TestClient):
     result = _sync(client)
     skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
     assert skipped[experiment["id"]] == "no_upload_match"
-
-
-def test_sync_prefers_longest_card_name(client: TestClient):
-    experiment = _create_experiment(client, "abstracted run")
-    _upload(client, experiment["id"], "safeagentbench_abstracted_n10.csv")
-
-    result = _sync(client)
-    assert result["experiments_assigned"][0]["dataset_name"] == "safeagentbench_abstracted"
 
 
 def test_sync_assigns_launched_experiments(client: TestClient, sync_engine):

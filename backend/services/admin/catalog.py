@@ -44,14 +44,11 @@ PIPELINE_DATASETS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("QuALITY_dev", ("fall25",)),
     ("hidden_agenda", ("fall25",)),
     ("web_lies", ("fall25",)),
-    ("bbeh_mini", ("fall25", "sp26")),
+    ("bbeh_mini", ("fall25",)),
     ("FACTS_search_public", ("fall25", "sp26")),
     ("shade_arena", ("fall25", "sp26")),
     ("culturalbench_hard", ("sp26",)),
     ("safeagentbench", ("sp26",)),
-    ("safeagentbench_abstracted", ("sp26",)),
-    ("longsafety", ("sp26",)),
-    ("longbenchv2", ("sp26",)),
     ("bbeh_safety", ("sp26",)),
     ("liars_bench", ("sp26",)),
     ("attunebench_pairwise", ("sp26",)),
@@ -59,6 +56,10 @@ PIPELINE_DATASETS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("steganographic_collusion", ("sum26",)),
     ("find_the_flaws_modified_gpqa_flaw", ("sum26",)),
     ("find_the_flaws_cels_lojban_match", ("sum26",)),
+    ("gpqa_metadata_blind_answer", ("sum26",)),
+    ("longbenchv2", ("sum26",)),
+    ("longsafety", ("sum26",)),
+    ("primevul", ("sum26",)),
 )
 
 # Longer tokens first so "fall26" is not eaten by a future "fall2" and so

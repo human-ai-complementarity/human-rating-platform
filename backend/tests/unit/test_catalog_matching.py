@@ -20,8 +20,21 @@ def test_match_card_name_uses_pipeline_export_prefix():
 
 
 def test_match_card_name_prefers_longest_card():
-    assert match_card_name("safeagentbench_abstracted_n10.parquet") == "safeagentbench_abstracted"
-    assert match_card_name("safeagentbench_n10.parquet") == "safeagentbench"
+    """Longest-wins, exercised against explicit names rather than the roster.
+
+    No card currently in PIPELINE_DATASETS is a prefix of another — the pair
+    that used to demonstrate this (safeagentbench / safeagentbench_abstracted)
+    left the roster when the snapshot was corrected. The guarantee still has to
+    hold for the next such pair, so pin it directly on the function.
+    """
+    names = ["safeagentbench", "safeagentbench_abstracted"]
+    assert match_card_name("safeagentbench_abstracted_n10.parquet", names) == (
+        "safeagentbench_abstracted"
+    )
+    assert match_card_name("safeagentbench_n10.parquet", names) == "safeagentbench"
+
+
+def test_match_card_name_matches_real_cards():
     assert match_card_name("bbeh_safety_n50.csv") == "bbeh_safety"
     assert match_card_name("bbeh_mini_n50.csv") == "bbeh_mini"
 
