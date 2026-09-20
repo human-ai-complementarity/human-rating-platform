@@ -11,7 +11,7 @@ from sqlalchemy.engine.url import make_url
 
 from config import get_settings
 from main import create_app
-from models import SESSION_DURATION_MINUTES
+from services.session_policy import DEFAULT_SESSION_DURATION_MINUTES
 
 _TEST_DB_NAME = "human_rating_platform_test"
 
@@ -67,13 +67,16 @@ def reset_database(sync_engine):
 
 @pytest.fixture
 def backdate_rater_session(sync_engine):
-    def _apply(rater_id: int) -> None:
+    def _apply(rater_id: int, duration_minutes: int = DEFAULT_SESSION_DURATION_MINUTES) -> None:
+        """Move a rater's session_start far enough back that their deadline has
+        passed. Takes the duration explicitly so a test using a non-default
+        session length still backdates past its own deadline rather than the
+        default one."""
         with sync_engine.begin() as conn:
             conn.execute(
                 text("UPDATE raters SET session_start = :session_start WHERE id = :rater_id"),
                 {
-                    "session_start": datetime.now(UTC)
-                    - timedelta(minutes=SESSION_DURATION_MINUTES + 1),
+                    "session_start": datetime.now(UTC) - timedelta(minutes=duration_minutes + 1),
                     "rater_id": rater_id,
                 },
             )
