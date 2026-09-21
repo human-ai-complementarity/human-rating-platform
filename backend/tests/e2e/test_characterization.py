@@ -1093,6 +1093,136 @@ def test_next_question_marks_expired_session_inactive(
     assert status_response.json()["is_active"] is False
 
 
+def test_submit_after_deadline_succeeds_while_token_lives(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """Characterization: a rating submitted past the wall-clock deadline is
+    ACCEPTED, so long as nothing has flipped `is_active` yet.
+
+    `submit_rating` checks only `validate_rater_marked_active` — it has no
+    wall-clock gate — and the session token's `exp` is minted as `now + ttl`
+    rather than derived from `session_start`, so backdating the session does
+    not expire the token. That combination is the platform's only path that
+    saves work in progress when the hour runs out. It is accidental, and this
+    test exists so that a cleanup which "makes submit consistent" has to
+    delete it deliberately rather than by accident. See issue #102.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LATE_SUBMIT")
+
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+
+    # Deadline is now in the past; the token issued moments ago is still valid.
+    backdate_rater_session(session_payload["rater_id"])
+
+    response = client.post(
+        "/api/raters/submit",
+        headers=_rater_headers(session_payload),
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+
+
+def test_submit_after_deadline_rejected_once_another_call_flips_active(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """Characterization: the same late submit is REJECTED if any other rater
+    call ran first.
+
+    Expiry is lazy — `get_next_question` and `get_session_status` are the only
+    things that write `is_active = False`, and once either has, submit fails
+    its active check. So whether a rater's in-flight answer survives depends on
+    call ordering, which is why the accidental grace above cannot be relied on.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LATE_REJECT")
+
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+
+    backdate_rater_session(session_payload["rater_id"])
+
+    # Polling status is enough to mark the rater inactive.
+    status_response = client.get(
+        "/api/raters/session-status",
+        headers=_rater_headers(session_payload),
+    )
+    assert status_response.status_code == 200
+    assert status_response.json()["is_active"] is False
+    assert status_response.json()["time_remaining_seconds"] == 0
+
+    response = client.post(
+        "/api/raters/submit",
+        headers=_rater_headers(session_payload),
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Session expired"
+
+
+def test_expiry_and_completion_are_indistinguishable_server_side(
+    client: TestClient,
+    backdate_rater_session,
+    sync_engine,
+):
+    """Characterization: a timed-out session and a finished one leave identical
+    rows — `is_active = False` plus a `session_end` stamp, with nothing
+    recording which of the two happened. This is why "how often does the hour
+    bite?" is unanswerable today (issue #102, open question 1).
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+
+    timed_out = _start_session(client, experiment["id"], prolific_pid="PID_TIMEOUT")
+    backdate_rater_session(timed_out["rater_id"])
+    client.get("/api/raters/session-status", headers=_rater_headers(timed_out))
+
+    finished = _start_session(client, experiment["id"], prolific_pid="PID_FINISHED")
+    client.post("/api/raters/end-session", headers=_rater_headers(finished))
+
+    with sync_engine.begin() as conn:
+        rows = dict(
+            conn.execute(
+                text("SELECT id, is_active FROM raters WHERE id = ANY(:ids)"),
+                {"ids": [timed_out["rater_id"], finished["rater_id"]]},
+            ).all()
+        )
+        ended = (
+            conn.execute(
+                text("SELECT id FROM raters WHERE session_end IS NOT NULL AND id = ANY(:ids)"),
+                {"ids": [timed_out["rater_id"], finished["rater_id"]]},
+            )
+            .scalars()
+            .all()
+        )
+
+    assert rows[timed_out["rater_id"]] is False
+    assert rows[finished["rater_id"]] is False
+    assert sorted(ended) == sorted([timed_out["rater_id"], finished["rater_id"]])
+
+
 def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync_engine):
     settings = get_settings()
     row_count = settings.testing.export_seed_row_count

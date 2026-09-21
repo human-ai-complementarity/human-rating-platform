@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import time
 from hashlib import sha256
 
 import pytest
@@ -102,3 +103,24 @@ def test_verify_rejects_tampered_payload_and_sig() -> None:
     with pytest.raises(HTTPException) as exc2:
         verify_rater_session_token(settings, tampered_token_bad_sig)
     assert exc2.value.status_code == 401
+
+
+def test_token_expiry_is_minted_from_now_not_session_start() -> None:
+    """Characterization: `exp` is `now + rater_session_ttl_seconds`, computed at
+    issue time and unconnected to the rater's `session_start`.
+
+    That is why re-entering via the Prolific link near the deadline hands back a
+    token outliving the session — `start_session` re-mints on resume while
+    `session_start` stays put. The default TTL (3600) matching
+    the default session length (60) is a coincidence of two independent literals,
+    not a derivation. See issue #102.
+    """
+    settings = Settings(app_secret_key="ttl-secret", rater_session_ttl_seconds=1800)
+    before = int(time.time())
+    token = issue_rater_session_token(settings, rater_id=1, experiment_id=2)
+    after = int(time.time())
+
+    payload = json.loads(_unb64url(token.split(".")[1]))
+
+    assert payload["exp"] - payload["iat"] == 1800
+    assert before <= payload["iat"] <= after
