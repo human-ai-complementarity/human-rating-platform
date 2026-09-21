@@ -71,6 +71,9 @@ export const DATASET_META_FIELDS = [
   'prolific_pool',
 ] as const;
 export type DatasetMetaField = (typeof DATASET_META_FIELDS)[number];
+
+export const UPLOAD_META_KEYS = [...DATASET_META_FIELDS, 'model'] as const;
+export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 export type DatasetMeta = Partial<Record<DatasetMetaField, string>>;
 
 export type StudyLabel =
