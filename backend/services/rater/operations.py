@@ -325,7 +325,7 @@ async def get_next_question(
                 else None
             )
             return build_question_response(
-                question, parent_question_text=parent_text, is_markdown=experiment.is_markdown
+                question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
             )
 
     rated_question_ids = await fetch_rated_question_ids(rater_id, db)
@@ -371,7 +371,7 @@ async def get_next_question(
         else None
     )
     return build_question_response(
-        selected, parent_question_text=parent_text, is_markdown=experiment.is_markdown
+        selected, is_markdown=experiment.is_markdown, parent_question_text=parent_text
     )
 
 
@@ -413,7 +413,7 @@ async def get_question_by_id(
         else None
     )
     return build_question_response(
-        question, parent_question_text=parent_text, is_markdown=experiment.is_markdown
+        question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
     )
 
 
