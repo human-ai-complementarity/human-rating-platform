@@ -1,6 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -211,14 +210,21 @@ function parseOptions(rawOptions: string | null): string[] {
   return rawOptions.split(',').map(option => option.trim()).filter(Boolean);
 }
 
-function buildLongContextDocumentHtml(question: Question, documentText: string): string {
+async function buildLongContextDocumentHtml(
+  question: Question,
+  documentText: string,
+): Promise<string> {
   const title = `Document for Question ${question.question_id}`;
   // The window is a standalone HTML string, so the card's Markdown component is
-  // pre-rendered into it and the stylesheets its classes need are inlined.
-  const appStyles = question.is_markdown ? `<style>${tokensCss}${appCss}</style>` : '';
-  const body = question.is_markdown
-    ? renderToStaticMarkup(<RaterText text={documentText} markdown />)
-    : `<pre>${escapeHtml(documentText)}</pre>`;
+  // pre-rendered into it and the stylesheets its classes need are inlined. The
+  // renderer is loaded on demand so raters who never open a document don't pay for it.
+  let body = `<pre>${escapeHtml(documentText)}</pre>`;
+  let appStyles = '';
+  if (question.is_markdown) {
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    body = renderToStaticMarkup(<RaterText text={documentText} markdown />);
+    appStyles = `<style>${tokensCss}${appCss}</style>`;
+  }
 
   return `<!doctype html>
 <html lang="en">
@@ -304,12 +310,17 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       return;
     }
 
-    const html = buildLongContextDocumentHtml(question, display.documentText);
-    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-    setDocumentUrl(url);
+    let url: string | null = null;
+    let cancelled = false;
+    void buildLongContextDocumentHtml(question, display.documentText).then((html) => {
+      if (cancelled) return;
+      url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      setDocumentUrl(url);
+    });
 
     return () => {
-      URL.revokeObjectURL(url);
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
   }, [display.documentText, question]);
