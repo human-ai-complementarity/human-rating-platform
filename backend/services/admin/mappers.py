@@ -51,6 +51,7 @@ def build_experiment_response(
         system_prompt=experiment.system_prompt,
         human_prompt_prefix=experiment.human_prompt_prefix,
         human_prompt_suffix=experiment.human_prompt_suffix,
+        is_markdown=experiment.is_markdown,
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,
         archived_at=experiment.archived_at,

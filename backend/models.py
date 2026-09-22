@@ -121,6 +121,11 @@ class Experiment(SQLModel, table=True):
     # the system message append handled via `system_prompt`.
     human_prompt_prefix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     human_prompt_suffix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Render question text and context as Markdown on the rater card.
+    is_markdown: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
     prolific_pool: Optional[str] = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),

@@ -468,6 +468,7 @@ function ExperimentDetail({
     human_prompt_suffix: experiment.human_prompt_suffix ?? '',
     prolific_pool: experiment.prolific_pool ?? '',
   });
+  const [isMarkdown, setIsMarkdown] = useState(experiment.is_markdown);
   const [savingMeta, setSavingMeta] = useState(false);
   const metaFormDirtyRef = useRef(false);
 
@@ -480,12 +481,14 @@ function ExperimentDetail({
       human_prompt_suffix: experiment.human_prompt_suffix ?? '',
       prolific_pool: experiment.prolific_pool ?? '',
     });
+    setIsMarkdown(experiment.is_markdown);
   }, [
     experiment.description,
     experiment.system_prompt,
     experiment.human_prompt_prefix,
     experiment.human_prompt_suffix,
     experiment.prolific_pool,
+    experiment.is_markdown,
   ]);
 
   // ── Data-loading effects ───────────────────────────────────────────────
@@ -582,6 +585,7 @@ function ExperimentDetail({
         system_prompt: metaForm.system_prompt,
         human_prompt_prefix: metaForm.human_prompt_prefix,
         human_prompt_suffix: metaForm.human_prompt_suffix,
+        is_markdown: isMarkdown,
         prolific_pool: metaForm.prolific_pool,
       });
       showSuccess('Instructions & prompts saved.', 2000);
@@ -1179,6 +1183,11 @@ function ExperimentDetail({
             onMetaChange={(field, value) => {
               metaFormDirtyRef.current = true;
               setMetaForm({ ...metaForm, [field]: value });
+            }}
+            isMarkdown={isMarkdown}
+            onIsMarkdownChange={(value) => {
+              metaFormDirtyRef.current = true;
+              setIsMarkdown(value);
             }}
             onSave={handleSaveMeta}
             savingMeta={savingMeta}
@@ -1938,6 +1947,8 @@ function MetadataPanel({
   uploads,
   metaForm,
   onMetaChange,
+  isMarkdown,
+  onIsMarkdownChange,
   onSave,
   savingMeta,
   isLocked,
@@ -1949,6 +1960,8 @@ function MetadataPanel({
   uploads: Upload[];
   metaForm: Record<DatasetMetaField, string>;
   onMetaChange: (field: DatasetMetaField, value: string) => void;
+  isMarkdown: boolean;
+  onIsMarkdownChange: (value: boolean) => void;
   onSave: () => void;
   savingMeta: boolean;
   isLocked: boolean;
@@ -2028,6 +2041,52 @@ function MetadataPanel({
     );
   };
 
+  // Placeholder control; a design pass will decide where this lives.
+  // Same markup as ScreenerCheckboxes, plus the panel's locked treatment.
+  const markdownCard = (
+    <section
+      style={{
+        gridColumn: '1 / -1',
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+        padding: '22px 24px',
+      }}
+    >
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          cursor: isLocked ? 'not-allowed' : 'pointer',
+          fontSize: 13.5,
+          opacity: isLocked ? 0.7 : 1,
+        }}
+      >
+        <input
+          id="meta-is_markdown"
+          type="checkbox"
+          data-testid="meta-is_markdown"
+          checked={isMarkdown}
+          disabled={isLocked}
+          onChange={(e) => onIsMarkdownChange(e.target.checked)}
+          style={{
+            width: 16,
+            height: 16,
+            flex: '0 0 auto',
+            margin: '2px 0 0 0',
+            padding: 0,
+            cursor: isLocked ? 'not-allowed' : 'pointer',
+          }}
+        />
+        <span style={{ lineHeight: 1.4 }}>
+          <strong>Render questions as Markdown</strong>
+        </span>
+      </label>
+    </section>
+  );
+
   const saveButton = (
     <button
       type="button"
@@ -2084,6 +2143,7 @@ function MetadataPanel({
                       : undefined,
                 }),
               )}
+              {group.header === 'Per-question framing' && markdownCard}
             </div>
           </div>
         );

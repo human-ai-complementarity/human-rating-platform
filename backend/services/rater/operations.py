@@ -324,7 +324,9 @@ async def get_next_question(
                 if question.parent_question_id is not None
                 else None
             )
-            return build_question_response(question, parent_question_text=parent_text)
+            return build_question_response(
+                question, parent_question_text=parent_text, is_markdown=experiment.is_markdown
+            )
 
     rated_question_ids = await fetch_rated_question_ids(rater_id, db)
     eligible_questions = await fetch_eligible_questions_with_counts(
@@ -368,7 +370,9 @@ async def get_next_question(
         if selected.parent_question_id is not None
         else None
     )
-    return build_question_response(selected, parent_question_text=parent_text)
+    return build_question_response(
+        selected, parent_question_text=parent_text, is_markdown=experiment.is_markdown
+    )
 
 
 async def get_question_by_id(
@@ -408,7 +412,9 @@ async def get_question_by_id(
         if question.parent_question_id is not None
         else None
     )
-    return build_question_response(question, parent_question_text=parent_text)
+    return build_question_response(
+        question, parent_question_text=parent_text, is_markdown=experiment.is_markdown
+    )
 
 
 async def submit_rating(

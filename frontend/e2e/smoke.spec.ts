@@ -88,6 +88,7 @@ type RaterQuestionRecord = {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  is_markdown?: boolean;
 };
 
 type MockState = {
@@ -851,6 +852,56 @@ test('a short parent question stays inline in the context box', async ({ page })
   await expect(page.getByText('Context', { exact: true })).toBeVisible();
   await expect(page.getByText(preamble)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
+});
+
+test('the experiment markdown flag switches the rater card between rendered and raw text', async ({
+  page,
+}) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 506,
+    question_id: 'md-q',
+    question_text: [
+      'What does `f(3)` return?',
+      '',
+      '```python',
+      'def f(n):',
+      '    return n',
+      '```',
+      '',
+      // Twelve wide columns: far wider than the viewport.
+      `| ${Array.from({ length: 12 }, (_, i) => `Column ${i + 1} heading`).join(' | ')} |`,
+      `|${'-------------|'.repeat(12)}`,
+      `| ${Array.from({ length: 12 }, () => 'a fairly long cell value').join(' | ')} |`,
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.locator('pre code')).toContainText('def f(n):');
+  await expect(page.getByText('```python')).toHaveCount(0);
+
+  // The wide table scrolls inside the card instead of widening the page.
+  await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
+  const scroller = page.locator('.rater-table-scroll');
+  expect(await scroller.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+
+  // Same question with the flag off: the fence markers are literal text.
+  question.is_markdown = false;
+  await page.reload();
+  await expect(page.getByText('```python')).toBeVisible();
+  await expect(page.locator('pre code')).toHaveCount(0);
+  await expect(page.getByRole('table')).toHaveCount(0);
 });
 
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {

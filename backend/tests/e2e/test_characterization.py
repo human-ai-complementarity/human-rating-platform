@@ -4492,3 +4492,45 @@ def test_upload_batches_long_context_rows_across_multiple_inserts(
     ).json()
     assert question["question_id"].startswith("sub")
     assert question["parent_question_text"] == document
+
+
+def test_is_markdown_round_trips_to_rater_question_payload(client: TestClient):
+    # Off by default, toggled via update, copied by duplicate, and repeated on
+    # every question the rater fetches so the card can pick a renderer.
+    experiment = _create_experiment(client)
+    assert experiment["is_markdown"] is False
+
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "is_markdown": True},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["is_markdown"] is True
+
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "is_markdown": False},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["is_markdown"] is False
+
+    # Omitting the field leaves it unchanged.
+    client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "is_markdown": True},
+    )
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "description": "unrelated edit"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["is_markdown"] is True
+    assert _fetch_experiment(client, experiment["id"])["is_markdown"] is True
+
+    _upload_questions(client, experiment["id"])
+    copy = client.post(f"/api/admin/experiments/{experiment['id']}/duplicate").json()
+    assert copy["is_markdown"] is True
+
+    session = _start_session(client, experiment["id"], prolific_pid="PID_MD")
+    question = client.get("/api/raters/next-question", headers=_rater_headers(session)).json()
+    assert question["is_markdown"] is True

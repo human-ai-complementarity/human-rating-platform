@@ -15,6 +15,7 @@ export interface Experiment {
   system_prompt: string | null;
   human_prompt_prefix: string | null;
   human_prompt_suffix: string | null;
+  is_markdown: boolean;
   prolific_pool: string | null;
   status: ExperimentStatus;
   // Non-null ISO timestamp when the experiment has been archived (soft-hidden
@@ -62,6 +63,7 @@ export interface Question {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  is_markdown?: boolean;
 }
 
 export interface ExperimentStats {

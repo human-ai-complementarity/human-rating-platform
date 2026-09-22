@@ -63,6 +63,10 @@ The **first** upload that declares a value populates the experiment. Later uploa
 
 Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect.
 
+### Markdown questions
+
+The **Render questions as Markdown** checkbox on the Instructions & prompts step renders each question's text as Markdown (GFM: tables, fenced code, lists); the prefix and suffix stay plain text. The setting applies to every question in the experiment.
+
 ## 3. Pick an assistance method (optional)
 
 In **Rater Assistance Methods**, decide whether the AI should help raters. Leaving everything off is the right baseline for most pilots — turn assistance on only when you specifically want to test its effect on rating quality. See [Assistance methods](#assistance-methods) below.

@@ -368,6 +368,7 @@ async def duplicate_experiment(
         system_prompt=source.system_prompt,
         human_prompt_prefix=source.human_prompt_prefix,
         human_prompt_suffix=source.human_prompt_suffix,
+        is_markdown=source.is_markdown,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
     )
@@ -488,6 +489,8 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
         normalized = proposed.strip() or None
         if normalized != getattr(experiment, field_name):
             changes.append(field_name)
+    if payload.is_markdown is not None and payload.is_markdown != experiment.is_markdown:
+        changes.append("is_markdown")
     if "group_id" in payload.model_fields_set and payload.group_id != experiment.group_id:
         changes.append("group_id")
     return changes
@@ -537,6 +540,8 @@ async def update_experiment(
             continue
         stripped = value.strip()
         setattr(experiment, field_name, stripped or None)
+    if payload.is_markdown is not None:
+        experiment.is_markdown = payload.is_markdown
 
     if "group_id" in payload.model_fields_set:
         if payload.group_id is not None:

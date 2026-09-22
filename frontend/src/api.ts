@@ -488,6 +488,7 @@ export const api = {
       system_prompt?: string;
       human_prompt_prefix?: string;
       human_prompt_suffix?: string;
+      is_markdown?: boolean;
       prolific_pool?: string;
     },
   ): Promise<Experiment> {

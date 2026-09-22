@@ -1,5 +1,8 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
+import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 
@@ -42,6 +45,70 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ href, title, children }) => {
+    // Raters work in a single tab: a same-tab link would discard the typed
+    // answer. In-page anchors (footnotes) must stay in this tab, though.
+    const inPage = href?.startsWith('#') === true;
+    return (
+      <a
+        href={href}
+        title={title}
+        target={inPage ? undefined : '_blank'}
+        rel={inPage ? undefined : 'noopener noreferrer'}
+      >
+        {children}
+      </a>
+    );
+  },
+  table: ({ children }) => (
+    // Scroll rather than widening the page.
+    <div className="rater-table-scroll">
+      <table>{children}</table>
+    </div>
+  ),
+};
+
+// Rater-facing text is pre-wrap plain text unless the experiment's
+// `is_markdown` switch is on. react-markdown's default keeps raw HTML literal.
+function RaterText({
+  text,
+  markdown,
+  style,
+}: {
+  text: string;
+  markdown: boolean;
+  style: CSSProperties;
+}) {
+  const rendered = useRef<HTMLDivElement>(null);
+  // Source whose Markdown produced no text at all (`---`, a lone link
+  // reference definition) is shown raw so the rater never sees an empty card.
+  const [blankSource, setBlankSource] = useState<string | null>(null);
+  useLayoutEffect(() => {
+    if (!markdown || blankSource === text) return;
+    if (text.trim() && !rendered.current?.textContent?.trim()) {
+      setBlankSource(text);
+    }
+  }, [markdown, text, blankSource]);
+
+  if (!markdown || blankSource === text) {
+    return <p style={{ ...style, whiteSpace: 'pre-wrap' }}>{text}</p>;
+  }
+  return (
+    <div ref={rendered} className="rater-markdown markdown" style={style}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={MARKDOWN_COMPONENTS}
+        // A remote image would make the rater's browser fetch it. An image-only
+        // question then hits the empty-output fallback above and shows its source.
+        disallowedElements={['img']}
+      >
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 // Researcher-supplied framing is instructional, not decorative: raters are
@@ -225,6 +292,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question]
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
+  const isMarkdown = question.is_markdown === true;
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
@@ -325,17 +393,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           >
             Context
           </div>
-          <p
-            style={{
-              fontSize: 15,
-              lineHeight: 1.55,
-              color: 'var(--ink)',
-              whiteSpace: 'pre-wrap',
-              margin: 0,
-            }}
-          >
-            {display.inlineContext}
-          </p>
+          <RaterText
+            text={display.inlineContext}
+            markdown={isMarkdown}
+            style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
+          />
         </div>
       )}
 
@@ -366,7 +428,9 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
-      <p
+      <RaterText
+        text={display.questionText}
+        markdown={isMarkdown}
         style={{
           fontFamily: 'var(--font-head)',
           fontSize: 22,
@@ -375,11 +439,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           color: 'var(--ink)',
           marginTop: 0,
           marginBottom: 24,
-          whiteSpace: 'pre-wrap',
         }}
-      >
-        {display.questionText}
-      </p>
+      />
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
         <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />
