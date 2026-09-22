@@ -244,8 +244,6 @@ class QuestionResponse(BaseModel):
     options: Optional[str] = None
     question_type: str
     parent_question_text: Optional[str] = None
-    # Experiment-level switch, repeated per question so the card needs no
-    # second lookup.
     is_markdown: bool = False
 
     model_config = ConfigDict(from_attributes=True)

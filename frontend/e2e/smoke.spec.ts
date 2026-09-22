@@ -869,7 +869,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
     id: 506,
     question_id: 'md-q',
     question_text: [
-      'What does `f(3)` return?',
+      'What does `f(3)` return? Keep <b>this</b> literal.',
       '',
       '```python',
       'def f(n):',
@@ -892,6 +892,8 @@ test('the experiment markdown flag switches the rater card between rendered and 
 
   await expect(page.locator('pre code')).toContainText('def f(n):');
   await expect(page.getByText('```python')).toHaveCount(0);
+  await expect(page.getByText('Keep <b>this</b> literal.')).toBeVisible();
+  await expect(page.locator('b, strong')).toHaveCount(0);
 
   // The wide table scrolls inside the card instead of widening the page.
   await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();

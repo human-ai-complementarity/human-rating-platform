@@ -477,9 +477,7 @@ button:disabled {
   font-weight: 600;
 }
 
-/* Rater card Markdown (experiment `is_markdown`). Inherits the call site's
-   font and size; block elements reset to body/mono sizes so a table or code
-   block inside the 22px serif question stays readable. */
+/* Rater card Markdown (experiment `is_markdown`). */
 .rater-markdown {
   /* A 400-character token or a bare URL wraps instead of widening the page. */
   overflow-wrap: anywhere;

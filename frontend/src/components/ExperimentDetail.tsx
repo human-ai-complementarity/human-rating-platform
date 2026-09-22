@@ -28,7 +28,6 @@ import {
   SectionCard,
   Toast,
   ToggleSwitch,
-  cardSurface,
   inputStyle,
   primaryButton,
   secondaryButton,
@@ -1987,7 +1986,16 @@ function MetadataPanel({
       return declared !== undefined && declared !== current;
     });
     return (
-      <section key={field} style={{ ...cardSurface, padding: '22px 24px' }}>
+      <section
+        key={field}
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius)',
+          boxShadow: 'var(--shadow)',
+          padding: '22px 24px',
+        }}
+      >
         <Field
           id={`meta-${field}`}
           label={DATASET_META_LABELS[field]}
@@ -2040,13 +2048,26 @@ function MetadataPanel({
   };
 
   const markdownCard = (
-    <section style={{ ...cardSurface, padding: '18px 24px' }}>
-      <div
+    <section
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+        padding: '18px 24px',
+        opacity: isLocked ? 0.7 : 1,
+      }}
+    >
+      <label
+        htmlFor="meta-is_markdown"
         style={{
-          display: 'flex',
+          display: 'inline-flex',
           alignItems: 'flex-start',
           gap: 10,
-          opacity: isLocked ? 0.7 : 1,
+          fontSize: 13.5,
+          lineHeight: 1.4,
+          fontWeight: 600,
+          cursor: isLocked ? 'not-allowed' : 'pointer',
         }}
       >
         <input
@@ -2056,36 +2077,21 @@ function MetadataPanel({
           disabled={isLocked}
           aria-describedby="meta-is_markdown-hint"
           onChange={(e) => onIsMarkdownChange(e.target.checked)}
-          style={{
-            flex: '0 0 auto',
-            marginTop: '0.5px',
-            cursor: isLocked ? 'not-allowed' : 'pointer',
-          }}
+          style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
         />
-        <div style={{ minWidth: 0, fontSize: 13.5, lineHeight: 1.4 }}>
-          <label
-            htmlFor="meta-is_markdown"
-            style={{
-              display: 'inline-block',
-              fontWeight: 600,
-              cursor: isLocked ? 'not-allowed' : 'pointer',
-            }}
-          >
-            Render questions as Markdown
-          </label>
-          <p
-            id="meta-is_markdown-hint"
-            style={{
-              fontSize: 12.5,
-              color: 'var(--muted)',
-              lineHeight: 1.55,
-              margin: '2px 0 0',
-            }}
-          >
-            Code blocks, tables, etc. will be rendered as styled elements
-          </p>
-        </div>
-      </div>
+        Render questions as Markdown
+      </label>
+      <p
+        id="meta-is_markdown-hint"
+        style={{
+          fontSize: 12.5,
+          color: 'var(--muted)',
+          lineHeight: 1.55,
+          margin: '2px 0 0 26px',
+        }}
+      >
+        Code blocks, tables, etc. will be rendered as styled elements
+      </p>
     </section>
   );
 

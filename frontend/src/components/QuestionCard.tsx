@@ -51,7 +51,7 @@ function escapeHtml(value: string): string {
 
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ href, title, children }) => {
-    // Raters work in a single tab: a same-tab link would discard the typed answer.
+    // Open external links in a new tab to avoid losing in-progress work.
     const inPage = href?.startsWith('#') === true;
     return (
       <a
@@ -71,7 +71,6 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
 };
 
-// react-markdown's default keeps raw HTML literal.
 function RaterText({
   text,
   markdown,
@@ -216,11 +215,11 @@ async function buildLongContextDocumentHtml(
 ): Promise<string> {
   const title = `Document for Question ${question.question_id}`;
   // The window is a standalone HTML string, so the card's Markdown component is
-  // pre-rendered into it and the stylesheets its classes need are inlined. The
-  // renderer is loaded on demand so raters who never open a document don't pay for it.
+  // pre-rendered into it and the stylesheets its classes need are inlined.
   let body = `<pre>${escapeHtml(documentText)}</pre>`;
   let appStyles = '';
   if (question.is_markdown) {
+    // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
     body = renderToStaticMarkup(<RaterText text={documentText} markdown />);
     appStyles = `<style>${tokensCss}${appCss}</style>`;

@@ -53,7 +53,6 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 - **`description`** supports markdown — same renderer as the Prolific study description: `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists, blank-line paragraphs.
 - The four other fields are plain text. Line breaks are preserved.
-- **Render questions as Markdown** (Instructions & prompts step) renders each question's text and context as Markdown (GFM: tables, fenced code, lists); the prefix and suffix stay plain text.
 - **CSV only:** newlines inside any value must be encoded as `\n` escapes, because the whole JSON object has to fit on one line. `json.dumps(...)` handles this automatically. Parquet stores the metadata as bytes in the schema, so this constraint doesn't apply there.
 
 #### Multiple uploads + conflicts

@@ -10,9 +10,8 @@ from services.session_policy import SessionPolicy
 
 def build_question_response(
     question: Question,
-    parent_question_text: str | None = None,
-    *,
     is_markdown: bool,
+    parent_question_text: str | None = None,
 ) -> QuestionResponse:
     return QuestionResponse(
         id=question.id,
