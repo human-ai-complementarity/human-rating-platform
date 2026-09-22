@@ -478,52 +478,52 @@ button:disabled {
 }
 
 /* Rater card Markdown (experiment `is_markdown`). */
-.rater-markdown {
+.question-markdown {
   /* A 400-character token or a bare URL wraps instead of widening the page. */
   overflow-wrap: anywhere;
 }
 
-.rater-markdown > :first-child {
+.question-markdown > :first-child {
   margin-top: 0;
 }
 
-.rater-markdown > :last-child {
+.question-markdown > :last-child {
   margin-bottom: 0;
 }
 
-.rater-markdown p,
-.rater-markdown ul,
-.rater-markdown ol,
-.rater-markdown blockquote,
-.rater-markdown pre,
-.rater-markdown .rater-table-scroll {
+.question-markdown p,
+.question-markdown ul,
+.question-markdown ol,
+.question-markdown blockquote,
+.question-markdown pre,
+.question-markdown .question-markdown-table-scroll {
   margin: 0 0 0.7em 0;
 }
 
-.rater-markdown h1,
-.rater-markdown h2,
-.rater-markdown h3,
-.rater-markdown h4 {
+.question-markdown h1,
+.question-markdown h2,
+.question-markdown h3,
+.question-markdown h4 {
   font-family: var(--font-head);
   font-size: 1.1em;
   font-weight: 600;
   margin: 0 0 0.5em 0;
 }
 
-.rater-markdown ul,
-.rater-markdown ol {
+.question-markdown ul,
+.question-markdown ol {
   padding-left: 1.4em;
 }
 
-.rater-markdown li {
+.question-markdown li {
   margin-bottom: 0.25em;
 }
 
-.rater-markdown code {
+.question-markdown code {
   font-size: 0.82em;
 }
 
-.rater-markdown pre {
+.question-markdown pre {
   border: 1px solid var(--faint);
   overflow-x: auto;
   font-size: 14px;
@@ -531,40 +531,40 @@ button:disabled {
   letter-spacing: 0;
 }
 
-.rater-markdown .rater-table-scroll {
+.question-markdown .question-markdown-table-scroll {
   overflow-x: auto;
 }
 
-.rater-markdown table {
+.question-markdown table {
   font: 400 15px/1.5 var(--font-body);
   letter-spacing: 0;
   /* Cells keep their natural width; the wrapper above scrolls. */
   overflow-wrap: normal;
 }
 
-.rater-markdown th,
-.rater-markdown td {
+.question-markdown th,
+.question-markdown td {
   border: 1px solid var(--line);
 }
 
-.rater-markdown blockquote {
+.question-markdown blockquote {
   padding: 4px 16px;
   border-left: 3px solid var(--faint);
   color: var(--muted);
 }
 
-.rater-markdown hr {
+.question-markdown hr {
   margin: 1em 0;
 }
 
 /* GFM task-list boxes. */
-.rater-markdown input[type="checkbox"] {
+.question-markdown input[type="checkbox"] {
   margin-right: 0.4em;
   vertical-align: middle;
 }
 
 /* remark-gfm's "Footnotes" heading is for screen readers only. */
-.rater-markdown .sr-only {
+.question-markdown .sr-only {
   position: absolute;
   width: 1px;
   height: 1px;

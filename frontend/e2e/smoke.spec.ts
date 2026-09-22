@@ -902,7 +902,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
     viewport: document.documentElement.clientWidth,
   }));
   expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
-  const scroller = page.locator('.rater-table-scroll');
+  const scroller = page.locator('.question-markdown-table-scroll');
   expect(await scroller.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
 
   // Same question with the flag off: the fence markers are literal text.

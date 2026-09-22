@@ -65,13 +65,13 @@ const MARKDOWN_COMPONENTS: Components = {
     );
   },
   table: ({ children }) => (
-    <div className="rater-table-scroll">
+    <div className="question-markdown-table-scroll">
       <table>{children}</table>
     </div>
   ),
 };
 
-function RaterText({
+function QuestionBody({
   text,
   markdown,
   style,
@@ -84,7 +84,7 @@ function RaterText({
     return <p style={{ ...style, whiteSpace: 'pre-wrap' }}>{text}</p>;
   }
   return (
-    <div className="rater-markdown markdown" style={style}>
+    <div className="question-markdown markdown" style={style}>
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
@@ -221,7 +221,7 @@ async function buildLongContextDocumentHtml(
   if (question.is_markdown) {
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
-    body = renderToStaticMarkup(<RaterText text={documentText} markdown />);
+    body = renderToStaticMarkup(<QuestionBody text={documentText} markdown />);
     appStyles = `<style>${tokensCss}${appCss}</style>`;
   }
 
@@ -252,7 +252,7 @@ async function buildLongContextDocumentHtml(
       letter-spacing: -0.01em;
     }
     main > pre,
-    .rater-markdown {
+    .question-markdown {
       box-sizing: border-box;
       width: 100%;
       margin: 0;
@@ -395,7 +395,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           >
             Context
           </div>
-          <RaterText
+          <QuestionBody
             text={display.inlineContext}
             markdown={question.is_markdown}
             style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
@@ -430,7 +430,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
-      <RaterText
+      <QuestionBody
         text={display.questionText}
         markdown={question.is_markdown}
         style={{
