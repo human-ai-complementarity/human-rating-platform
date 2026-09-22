@@ -28,6 +28,7 @@ import {
   SectionCard,
   Toast,
   ToggleSwitch,
+  cardSurface,
   inputStyle,
   primaryButton,
   secondaryButton,
@@ -79,6 +80,7 @@ const DATASET_META_PLACEHOLDERS: Partial<Record<DatasetMetaField, string>> = {
 const META_FIELD_GROUPS: {
   header: string;
   fields: { field: DatasetMetaField; kind: 'input' | 'textarea'; minHeight?: number }[];
+  card?: 'is_markdown';
 }[] = [
   {
     header: 'Instructions',
@@ -93,6 +95,11 @@ const META_FIELD_GROUPS: {
       { field: 'human_prompt_prefix', kind: 'textarea', minHeight: 90 },
       { field: 'human_prompt_suffix', kind: 'textarea', minHeight: 90 },
     ],
+  },
+  {
+    header: 'Question rendering',
+    fields: [],
+    card: 'is_markdown',
   },
   {
     header: 'Deployment',
@@ -1980,16 +1987,7 @@ function MetadataPanel({
       return declared !== undefined && declared !== current;
     });
     return (
-      <section
-        key={field}
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--faint)',
-          borderRadius: 'var(--radius)',
-          boxShadow: 'var(--shadow)',
-          padding: '22px 24px',
-        }}
-      >
+      <section key={field} style={{ ...cardSurface, padding: '22px 24px' }}>
         <Field
           id={`meta-${field}`}
           label={DATASET_META_LABELS[field]}
@@ -2041,49 +2039,53 @@ function MetadataPanel({
     );
   };
 
-  // Placeholder control; a design pass will decide where this lives.
-  // Same markup as ScreenerCheckboxes, plus the panel's locked treatment.
   const markdownCard = (
-    <section
-      style={{
-        gridColumn: '1 / -1',
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        boxShadow: 'var(--shadow)',
-        padding: '22px 24px',
-      }}
-    >
-      <label
+    <section style={{ ...cardSurface, padding: '18px 24px' }}>
+      <div
         style={{
           display: 'flex',
           alignItems: 'flex-start',
           gap: 10,
-          cursor: isLocked ? 'not-allowed' : 'pointer',
-          fontSize: 13.5,
           opacity: isLocked ? 0.7 : 1,
         }}
       >
         <input
           id="meta-is_markdown"
           type="checkbox"
-          data-testid="meta-is_markdown"
           checked={isMarkdown}
           disabled={isLocked}
+          aria-describedby="meta-is_markdown-hint"
           onChange={(e) => onIsMarkdownChange(e.target.checked)}
           style={{
-            width: 16,
-            height: 16,
             flex: '0 0 auto',
-            margin: '2px 0 0 0',
-            padding: 0,
+            marginTop: '0.5px',
             cursor: isLocked ? 'not-allowed' : 'pointer',
           }}
         />
-        <span style={{ lineHeight: 1.4 }}>
-          <strong>Render questions as Markdown</strong>
-        </span>
-      </label>
+        <div style={{ minWidth: 0, fontSize: 13.5, lineHeight: 1.4 }}>
+          <label
+            htmlFor="meta-is_markdown"
+            style={{
+              display: 'inline-block',
+              fontWeight: 600,
+              cursor: isLocked ? 'not-allowed' : 'pointer',
+            }}
+          >
+            Render questions as Markdown
+          </label>
+          <p
+            id="meta-is_markdown-hint"
+            style={{
+              fontSize: 12.5,
+              color: 'var(--muted)',
+              lineHeight: 1.55,
+              margin: '2px 0 0',
+            }}
+          >
+            Code blocks, tables, etc. will be rendered as styled elements
+          </p>
+        </div>
+      </div>
     </section>
   );
 
@@ -2129,8 +2131,7 @@ function MetadataPanel({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns:
-                  group.fields.length === 1 ? '1fr' : '1fr 1fr',
+                gridTemplateColumns: group.fields.length > 1 ? '1fr 1fr' : '1fr',
                 gap: 18,
               }}
             >
@@ -2143,7 +2144,7 @@ function MetadataPanel({
                       : undefined,
                 }),
               )}
-              {group.header === 'Per-question framing' && markdownCard}
+              {group.card === 'is_markdown' && markdownCard}
             </div>
           </div>
         );

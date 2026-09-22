@@ -53,6 +53,28 @@ select:focus {
   box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }
 
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 3px;
+  box-shadow: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+input[type="checkbox"]:focus {
+  outline: none;
+  box-shadow: none;
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
+}
+
 textarea {
   font-family: var(--font-body);
   line-height: 1.55;
@@ -537,12 +559,9 @@ button:disabled {
   margin: 1em 0;
 }
 
-/* GFM task-list boxes: undo the global full-width `input` rule. */
+/* GFM task-list boxes. */
 .rater-markdown input[type="checkbox"] {
-  width: auto;
-  padding: 0;
-  margin: 0 0.4em 0 0;
-  display: inline;
+  margin-right: 0.4em;
   vertical-align: middle;
 }
 

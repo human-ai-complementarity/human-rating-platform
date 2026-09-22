@@ -62,6 +62,14 @@ export const textareaStyle: React.CSSProperties = {
   fontFamily: 'var(--font-body)',
 };
 
+/** Chrome shared by every card surface; callers add their own padding. */
+export const cardSurface: React.CSSProperties = {
+  background: 'var(--surface)',
+  border: '1px solid var(--faint)',
+  borderRadius: 'var(--radius)',
+  boxShadow: 'var(--shadow)',
+};
+
 /** Colored banner used for info/success/warning/error messages inside panels. */
 export function Banner({
   tone,
@@ -240,15 +248,7 @@ export function SectionCard({
   padded?: boolean;
 }) {
   return (
-    <section
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        boxShadow: 'var(--shadow)',
-        overflow: 'hidden',
-      }}
-    >
+    <section style={{ ...cardSurface, overflow: 'hidden' }}>
       {header && (
         <div
           style={{
