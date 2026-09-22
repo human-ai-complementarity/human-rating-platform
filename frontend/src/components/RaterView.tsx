@@ -125,6 +125,9 @@ function RaterView() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [sessionExpired, setSessionExpired] = useState(false);
+  // The clock ran out but the grace window has not: no new questions, but the
+  // one already on screen can still be finished and submitted.
+  const [deadlinePassed, setDeadlinePassed] = useState(false);
   const [allDone, setAllDone] = useState(false);
   const [assistanceSessionId, setAssistanceSessionId] = useState<number | null>(null);
   const [assistanceStep, setAssistanceStep] = useState<AssistanceStep | null>(null);
@@ -363,6 +366,12 @@ function RaterView() {
         ...(assistanceSessionId !== null ? { assistance_session_id: assistanceSessionId } : {}),
       });
       setQuestionsCompleted(prev => prev + 1);
+      if (deadlinePassed) {
+        // That was the last one the grace window allowed.
+        setQuestion(null);
+        setSessionExpired(true);
+        return;
+      }
       await loadNextQuestion(sessionToken);
     } catch (err) {
       if (err instanceof Error && err.message === 'Session expired') {
@@ -373,9 +382,22 @@ function RaterView() {
     }
   };
 
-const handleSessionExpired = () => {
+  const handleSessionExpired = useCallback(() => {
     setSessionExpired(true);
-  };
+  }, []);
+
+  // Deliberately does not load another question or end the session: the rater
+  // keeps whatever is on screen, and the backend accepts that one submission
+  // for the length of the grace window.
+  const handleDeadlineReached = useCallback(() => {
+    setDeadlinePassed(true);
+  }, []);
+
+  useEffect(() => {
+    if (deadlinePassed && !question) {
+      setSessionExpired(true);
+    }
+  }, [deadlinePassed, question]);
 
   // Auto-skip question when decomposition fails mid-session — question stays unrated and may reappear
   useEffect(() => {
@@ -509,6 +531,17 @@ const handleSessionExpired = () => {
     },
   };
 
+  const graceBannerStyle = {
+    background: 'var(--danger-soft, var(--warn-soft))',
+    border: '1px solid var(--danger)',
+    borderRadius: 'var(--radius-sm)',
+    padding: '11px 16px',
+    marginBottom: 16,
+    fontSize: 13,
+    color: 'var(--danger)',
+    lineHeight: 1.5,
+  };
+
   const previewBannerStyle = {
     background: 'var(--warn-soft)',
     border: '1px solid var(--warn)',
@@ -601,7 +634,19 @@ const handleSessionExpired = () => {
           Preview mode — ratings submitted here are real and will appear in your data.
         </div>
       )}
-      <Timer sessionEndTime={session.session_end_time} onExpire={handleSessionExpired} />
+      <Timer
+        sessionEndTime={session.session_end_time}
+        graceSeconds={session.session_grace_seconds}
+        onDeadline={handleDeadlineReached}
+        onExpire={handleSessionExpired}
+      />
+
+      {deadlinePassed && question && (
+        <div style={graceBannerStyle} data-testid="grace-banner">
+          Your time is up. Submit this last answer and we&rsquo;ll wrap up — anything you have
+          already submitted is saved.
+        </div>
+      )}
 
       <div style={styles.header}>
         <h2 style={styles.experimentName}>{session.experiment_name}</h2>

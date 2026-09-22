@@ -4,12 +4,14 @@ import base64
 import hmac
 import json
 import time
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 import pytest
 from fastapi import HTTPException
 
 from config import Settings
+from services.session_policy import SessionPolicy
 from services.rater.session_token import (
     issue_rater_session_token,
     verify_rater_session_token,
@@ -27,7 +29,13 @@ def _unb64url(data: str) -> bytes:
 
 def test_issue_token_structure_and_signature() -> None:
     settings = Settings(app_secret_key="test-secret-key")
-    token = issue_rater_session_token(settings, rater_id=123, experiment_id=45)
+    token = issue_rater_session_token(
+        settings,
+        rater_id=123,
+        experiment_id=45,
+        session_start=datetime.now(UTC),
+        policy=SessionPolicy(),
+    )
 
     # v1.<payload>.<sig>
     parts = token.split(".")
@@ -52,7 +60,13 @@ def test_issue_token_structure_and_signature() -> None:
 
 def test_verify_roundtrip_and_wrong_key_fails() -> None:
     settings_ok = Settings(app_secret_key="key-ok")
-    token = issue_rater_session_token(settings_ok, rater_id=7, experiment_id=9)
+    token = issue_rater_session_token(
+        settings_ok,
+        rater_id=7,
+        experiment_id=9,
+        session_start=datetime.now(UTC),
+        policy=SessionPolicy(),
+    )
 
     data = verify_rater_session_token(settings_ok, token)
     assert data["rater_id"] == 7
@@ -85,7 +99,13 @@ def test_verify_rejects_invalid_formats(token: str) -> None:
 
 def test_verify_rejects_tampered_payload_and_sig() -> None:
     settings = Settings(app_secret_key="secret")
-    token = issue_rater_session_token(settings, rater_id=1, experiment_id=2)
+    token = issue_rater_session_token(
+        settings,
+        rater_id=1,
+        experiment_id=2,
+        session_start=datetime.now(UTC),
+        policy=SessionPolicy(),
+    )
     ver, payload_b64, sig = token.split(".")
 
     # Tamper payload (flip rid) while keeping original sig → should fail
@@ -105,22 +125,60 @@ def test_verify_rejects_tampered_payload_and_sig() -> None:
     assert exc2.value.status_code == 401
 
 
-def test_token_expiry_is_minted_from_now_not_session_start() -> None:
-    """Characterization: `exp` is `now + rater_session_ttl_seconds`, computed at
-    issue time and unconnected to the rater's `session_start`.
+def test_token_expiry_is_derived_from_session_start_not_issue_time() -> None:
+    """`exp` tracks the rater's own session, so re-minting on re-entry cannot
+    hand out more time than the session has left.
 
-    That is why re-entering via the Prolific link near the deadline hands back a
-    token outliving the session — `start_session` re-mints on resume while
-    `session_start` stays put. The default TTL (3600) matching
-    the default session length (60) is a coincidence of two independent literals,
-    not a derivation. See issue #102.
+    Before issue #102 this was `now + rater_session_ttl_seconds`, which meant a
+    rater who re-entered near the deadline got a fresh full hour against an old
+    `session_start` — the accidental grace period that explicit grace replaces.
     """
-    settings = Settings(app_secret_key="ttl-secret", rater_session_ttl_seconds=1800)
-    before = int(time.time())
-    token = issue_rater_session_token(settings, rater_id=1, experiment_id=2)
-    after = int(time.time())
+    settings = Settings(app_secret_key="ttl-secret")
+    policy = SessionPolicy(duration_minutes=60, grace_minutes=5)
+    session_start = datetime.now(UTC) - timedelta(minutes=50)
 
+    token = issue_rater_session_token(
+        settings,
+        rater_id=1,
+        experiment_id=2,
+        session_start=session_start,
+        policy=policy,
+    )
     payload = json.loads(_unb64url(token.split(".")[1]))
 
-    assert payload["exp"] - payload["iat"] == 1800
-    assert before <= payload["iat"] <= after
+    # Anchored to the session, not to now: 50 minutes have already elapsed, so
+    # what remains is the session's own leftover time, not a fresh full TTL.
+    assert payload["exp"] == int(session_start.timestamp()) + policy.token_ttl_seconds
+    assert payload["exp"] - int(time.time()) < policy.token_ttl_seconds - 40 * 60
+
+
+def test_token_covers_the_grace_window() -> None:
+    """A token dying on the deadline would reject the very submission the grace
+    period exists to accept."""
+    settings = Settings(app_secret_key="ttl-secret")
+    session_start = datetime.now(UTC)
+
+    without_grace = json.loads(
+        _unb64url(
+            issue_rater_session_token(
+                settings,
+                rater_id=1,
+                experiment_id=2,
+                session_start=session_start,
+                policy=SessionPolicy(duration_minutes=60, grace_minutes=0),
+            ).split(".")[1]
+        )
+    )
+    with_grace = json.loads(
+        _unb64url(
+            issue_rater_session_token(
+                settings,
+                rater_id=1,
+                experiment_id=2,
+                session_start=session_start,
+                policy=SessionPolicy(duration_minutes=60, grace_minutes=5),
+            ).split(".")[1]
+        )
+    )
+
+    assert with_grace["exp"] - without_grace["exp"] == 5 * 60

@@ -251,6 +251,9 @@ class RaterStartResponse(BaseModel):
     rater_id: int
     session_start: datetime
     session_end_time: datetime
+    # Extra seconds past session_end_time in which the question already on
+    # screen may still be submitted. New questions stop at session_end_time.
+    session_grace_seconds: int = 0
     experiment_name: str
     # Pre-rendered HTML for the rater intro screen (markdown converted via
     # `to_prolific_html` so the splash matches what Prolific shows externally).
@@ -269,6 +272,9 @@ class RaterStartResponse(BaseModel):
 class SessionStatusResponse(BaseModel):
     is_active: bool
     time_remaining_seconds: int
+    # Seconds until the grace window closes too. Equals time_remaining_seconds
+    # plus the grace period while the session is live, then counts down alone.
+    grace_seconds_remaining: int = 0
     questions_completed: int
 
 

@@ -100,6 +100,9 @@ export interface Session {
   rater_id: number;
   session_start: string;
   session_end_time: string;
+  // Extra seconds past session_end_time in which the question already on
+  // screen may still be submitted. New questions stop at session_end_time.
+  session_grace_seconds: number;
   experiment_name: string;
   // Pre-rendered HTML (via the same Prolific-markdown converter the external
   // study description uses). Render with dangerouslySetInnerHTML on the splash.

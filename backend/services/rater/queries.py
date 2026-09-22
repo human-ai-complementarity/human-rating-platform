@@ -200,6 +200,32 @@ async def fetch_live_assignment_for_rater(
     ).scalar_one_or_none()
 
 
+async def fetch_outstanding_assignment_for_rater(
+    *,
+    rater_id: int,
+    db: AsyncSession,
+) -> QuestionAssignment | None:
+    """The rater's last unanswered reservation, whether or not its TTL lapsed.
+
+    The TTL exists to stop an abandoned slot being held forever, which only
+    matters while other raters could still be served that question. Once this
+    rater is past their deadline nothing new is served to them anyway, so the
+    TTL has nothing left to protect — and `submit_rating` already accepts a
+    rating whose reservation expired. Refusing to hand the question back on a
+    reload would then be the only thing standing between the rater and the
+    submission we would have taken.
+    """
+    return (
+        await db.execute(
+            select(QuestionAssignment)
+            .where(QuestionAssignment.rater_id == rater_id)
+            .where(QuestionAssignment.completed_at.is_(None))
+            .order_by(QuestionAssignment.assigned_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def fetch_assignment_for_question(
     *,
     rater_id: int,

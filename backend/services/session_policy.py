@@ -34,9 +34,20 @@ MIN_SESSION_DURATION_MINUTES = 5
 MAX_SESSION_DURATION_MINUTES = 120
 
 # Minutes past the deadline in which the question already on screen may still
-# be submitted. Zero reproduces the pre-#102 behaviour, where the answer being
-# typed when the clock ran out was discarded.
-DEFAULT_GRACE_MINUTES = 0
+# be submitted. New questions stop being served at the deadline itself, so this
+# buys a rater time to finish what is in front of them and nothing else. Zero
+# reproduces the pre-#102 behaviour, where the answer being typed when the
+# clock ran out was discarded. See issue #102 decision 3.
+DEFAULT_GRACE_MINUTES = 5
+
+# How long the session token outlives the session itself. Expiry is lazy —
+# nothing sweeps — so the only chance the server gets to record that a session
+# timed out is a request arriving after the hard deadline. If the token died at
+# that same instant, routers/deps.py would reject it before any handler ran and
+# the session would stay `is_active` forever. The margin buys enough of a
+# window for that last request to land; requests inside it are still refused,
+# just refused by the wall-clock gate that can write the expiry down.
+TOKEN_EXPIRY_MARGIN_MINUTES = 10
 
 
 @dataclass(frozen=True)
@@ -79,11 +90,12 @@ class SessionPolicy:
     def token_ttl_seconds(self) -> int:
         """How long a freshly issued session token stays valid.
 
-        Covers the grace window as well as the session itself, because a token
-        that dies on the deadline would reject the very submission the grace
-        period exists to accept.
+        Covers the grace window, because a token dying on the deadline would
+        reject the very submission grace exists to accept — plus a margin past
+        the hard deadline so the session's own expiry can still be recorded.
+        See TOKEN_EXPIRY_MARGIN_MINUTES.
         """
-        return (self.duration_minutes + self.grace_minutes) * 60
+        return (self.duration_minutes + self.grace_minutes + TOKEN_EXPIRY_MARGIN_MINUTES) * 60
 
     def deadline(self, session_start: datetime) -> datetime:
         """When the rater stops being served new questions."""
