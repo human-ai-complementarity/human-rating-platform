@@ -1,8 +1,8 @@
 """add_tags
 
-Revision ID: 20260901010000
-Revises: 20260901000000
-Create Date: 2026-09-01 01:00:00.000000
+Revision ID: 20260922000000
+Revises: 20260913010000
+Create Date: 2026-09-22 00:00:00.000000
 
 """
 
@@ -12,8 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260901010000"
-down_revision: Union[str, Sequence[str], None] = "20260901000000"
+revision: str = "20260922000000"
+down_revision: Union[str, Sequence[str], None] = "20260913010000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
