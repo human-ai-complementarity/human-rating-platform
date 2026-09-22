@@ -54,6 +54,7 @@ type RaterSessionRecord = {
   session_end_time: string;
   session_grace_seconds?: number;
   experiment_name: string;
+  experiment_description_html?: string | null;
   completion_url: string | null;
   rater_session_token: string;
 };
@@ -543,6 +544,91 @@ test('a long-context experiment is created with its own session length', async (
   // than the hard-coded hour it used to claim.
   await page.getByTestId('tab-launch').click();
   await expect(page.getByText(/Each rater does one 2 hour session/)).toBeVisible();
+});
+
+test('editing a round warns when the estimate exceeds the session length', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Round Edit Experiment',
+      question_count: 2,
+      session_duration_minutes: 60,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [buildRound(state, { round_number: 0, estimated_completion_time: 30 })];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).first().click();
+  const estimate = page.getByTestId('edit-round-time-0');
+  await expect(estimate).toBeVisible();
+
+  await expect(page.getByTestId('edit-round-estimate-warning-0')).toHaveCount(0);
+  // Past the session length the study would advertise unfinishable work.
+  await estimate.fill('90');
+  await expect(page.getByTestId('edit-round-estimate-warning-0')).toBeVisible();
+});
+
+test('the rater intro states the session length before they commit', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Expectations Experiment',
+      question_count: 1,
+      session_duration_minutes: 110,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  const start = new Date();
+  state.sessionsByExperimentId[1] = {
+    rater_id: 401,
+    session_start: start.toISOString(),
+    session_end_time: new Date(start.getTime() + 110 * 60000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Expectations Experiment',
+    experiment_description_html: '<p>Read each passage carefully.</p>',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-expectations',
+  };
+  state.questionsBySessionToken['token-expectations'] = {
+    id: 701,
+    question_id: 'exp-q',
+    question_text: 'Does the intro set expectations?',
+    options: 'Yes|No',
+    question_type: 'MC',
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const expectations = page.getByTestId('session-expectations');
+  await expect(expectations).toBeVisible();
+  await expect(expectations).toContainText('You have 1 hour 50 minutes.');
+  await expect(expectations).toContainText('5 more minutes');
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {

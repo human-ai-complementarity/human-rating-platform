@@ -75,6 +75,10 @@ In **Rater Assistance Methods**, decide whether the AI should help raters. Leavi
 
 Always pilot before scaling. In the **Prolific Workflow** section, create a small unpublished study (5 raters is a good default), then **Publish** it. Use the pilot to calibrate your time estimate and reward — guess high on the first round; the platform gives a tighter recommendation afterwards.
 
+**You don't need to write about the time limit yourself.** The platform appends it to the study description on Prolific — how long the session is, that the clock starts when they do, and that they can finish early. Raters see that before accepting, which is the only moment early enough to stop a return. Write about the task; the platform covers the clock.
+
+Keep the **estimated completion time** at or under the session length. It is the number Prolific advertises, so an estimate longer than the session promises work that cannot be finished in the time given — raters either return the study on sight or run out of time partway through. Both the pilot form and the round editor warn you when the two disagree.
+
 ### Excluding prior participants
 
 > ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form. Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.

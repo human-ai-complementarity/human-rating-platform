@@ -675,6 +675,8 @@ Auth and session flow:
 - Multiple browser tabs are not specially synchronized; the backend prevents duplicate ratings for the same question, but running in two tabs may be confusing and is not recommended.
 - The timer does not auto‑submit. When the clock runs out the rater stops being served new questions, but the one already on screen stays put and can still be submitted for the length of the grace window (5 minutes by default) — the work was done, so it is kept. Past the grace window every rater endpoint returns 403.
 
+The study description sent to Prolific is the researcher's markdown plus a generated time‑limit note (`with_session_note` in `services/admin/rounds.py`). It is appended on the way out, so editing a round's description cannot drop it, and the raw markdown stays in our DB unpolluted. The rater intro screen states the same thing in its own block and does **not** render the note twice — it reads the description straight from the DB rather than from the Prolific payload.
+
 Operational note: all of a session's clocks — deadline, grace window, token TTL and the per‑question reservation — are derived from one duration in `backend/session_policy.py`, so they cannot drift apart.
 
 ---

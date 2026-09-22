@@ -6,6 +6,7 @@ import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
 import type { Session, Question, AssistanceStep } from '../types';
+import { minutesBetween } from '../time';
 
 const STORAGE_KEY = 'hrp_rater_session';
 
@@ -621,6 +622,8 @@ function RaterView() {
           experimentName={session.experiment_name}
           descriptionHtml={session.experiment_description_html}
           assistanceInstructions={session.assistance_instructions}
+          sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
+          graceMinutes={Math.round(session.session_grace_seconds / 60)}
           onContinue={handleIntroContinue}
         />
       </div>

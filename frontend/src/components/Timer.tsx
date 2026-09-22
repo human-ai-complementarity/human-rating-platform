@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 
+import { withUtcSuffix } from '../time';
+
 interface TimerProps {
   sessionEndTime: string;
   /** Extra seconds past sessionEndTime in which the open question may still be
@@ -17,8 +19,7 @@ function Timer({ sessionEndTime, graceSeconds = 0, onDeadline, onExpire }: Timer
   const [isWarning, setIsWarning] = useState(false);
 
   useEffect(() => {
-    const utcTimeString = sessionEndTime.endsWith('Z') ? sessionEndTime : sessionEndTime + 'Z';
-    const endTime = new Date(utcTimeString).getTime();
+    const endTime = new Date(withUtcSuffix(sessionEndTime)).getTime();
     const hardEndTime = endTime + graceSeconds * 1000;
 
     // Fire each transition once. Without this the callbacks run on every tick
