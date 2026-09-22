@@ -229,7 +229,6 @@ class ExperimentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
-    # None means "leave unchanged".
     is_markdown: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # Omitted = leave unchanged; explicit null ungroups. Locked once the

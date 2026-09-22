@@ -53,6 +53,7 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 - **`description`** supports markdown — same renderer as the Prolific study description: `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists, blank-line paragraphs.
 - The four other fields are plain text. Line breaks are preserved.
+- **Render questions as Markdown** (Instructions & prompts step) renders each question's text and context as Markdown (GFM: tables, fenced code, lists); the prefix and suffix stay plain text.
 - **CSV only:** newlines inside any value must be encoded as `\n` escapes, because the whole JSON object has to fit on one line. `json.dumps(...)` handles this automatically. Parquet stores the metadata as bytes in the schema, so this constraint doesn't apply there.
 
 #### Multiple uploads + conflicts
@@ -62,10 +63,6 @@ The **first** upload that declares a value populates the experiment. Later uploa
 ### Always preview
 
 Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect.
-
-### Markdown questions
-
-The **Render questions as Markdown** checkbox on the Instructions & prompts step renders each question's text as Markdown (GFM: tables, fenced code, lists); the prefix and suffix stay plain text. The setting applies to every question in the experiment.
 
 ## 3. Pick an assistance method (optional)
 

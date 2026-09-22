@@ -12,6 +12,7 @@ type ExperimentRecord = {
   rating_count: number;
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
+  is_markdown: boolean;
 };
 
 type UploadRecord = {
@@ -88,7 +89,7 @@ type RaterQuestionRecord = {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
-  is_markdown?: boolean;
+  is_markdown: boolean;
 };
 
 type MockState = {
@@ -124,6 +125,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     rating_count: 0,
     status: 'DRAFT',
     archived_at: null,
+    is_markdown: false,
     ...partial,
   };
 }
@@ -467,6 +469,7 @@ async function installApiMocks(
           question_text: 'Is this workflow ready for release?',
           options: 'Yes|No',
           question_type: 'MC',
+          is_markdown: false,
         }
       );
       return;
@@ -482,6 +485,7 @@ async function installApiMocks(
         question_text: `Pinned question ${questionId}`,
         options: 'Yes|No',
         question_type: 'MC',
+        is_markdown: false,
       });
       return;
     }
@@ -746,6 +750,7 @@ test('long-context question links document separately and shows only question in
     question_text: 'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
+    is_markdown: false,
   };
 
   await installApiMocks(page, state);
@@ -813,6 +818,7 @@ test('a long parent question moves the document behind the link, not into the ca
     question_text: 'Which answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
+    is_markdown: false,
     parent_question_text: document,
   });
 
@@ -843,6 +849,7 @@ test('a short parent question stays inline in the context box', async ({ page })
     question_text: 'Does the review express satisfaction?',
     options: 'Yes|No',
     question_type: 'MC',
+    is_markdown: false,
     parent_question_text: preamble,
   });
 
@@ -890,7 +897,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
   await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();
   const widths = await page.evaluate(() => ({
     scroll: document.documentElement.scrollWidth,
-    viewport: window.innerWidth,
+    viewport: document.documentElement.clientWidth,
   }));
   expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
   const scroller = page.locator('.rater-table-scroll');
@@ -904,6 +911,35 @@ test('the experiment markdown flag switches the rater card between rendered and 
   await expect(page.getByRole('table')).toHaveCount(0);
 });
 
+test('the markdown flag also applies to the long-context document window', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 507,
+    question_id: 'md-doc-q',
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('link', { name: 'Open document in new tab' }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+
+  await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+});
+
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {
   const state = createMockState();
 
@@ -915,6 +951,7 @@ test('an MC question with no options submits the typed free-text answer', async 
     question_text: 'Summarize what the document recommends.',
     options: '',
     question_type: 'MC',
+    is_markdown: false,
   });
 
   await installApiMocks(page, state);
@@ -985,6 +1022,7 @@ test('rater ignores a stored session from another experiment and starts a fresh 
     question_text: 'Old experiment question',
     options: 'Yes,No',
     question_type: 'MC',
+    is_markdown: false,
   };
   state.questionsBySessionToken['token-exp-2'] = {
     id: 502,
@@ -992,6 +1030,7 @@ test('rater ignores a stored session from another experiment and starts a fresh 
     question_text: 'Fresh experiment question',
     options: 'Yes,No',
     question_type: 'MC',
+    is_markdown: false,
   };
 
   await page.addInitScript(() => {

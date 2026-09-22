@@ -1,10 +1,13 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
+import tokensCss from '../styles/tokens.css?raw';
+import appCss from '../index.css?raw';
 
 const LONG_CONTEXT_SEPARATOR_PATTERN = /\r?\n\r?\n--- QUESTION ---\r?\n/g;
 // Parent context longer than this is a document, not a preamble, so it goes
@@ -49,8 +52,7 @@ function escapeHtml(value: string): string {
 
 const MARKDOWN_COMPONENTS: Components = {
   a: ({ href, title, children }) => {
-    // Raters work in a single tab: a same-tab link would discard the typed
-    // answer. In-page anchors (footnotes) must stay in this tab, though.
+    // Raters work in a single tab: a same-tab link would discard the typed answer.
     const inPage = href?.startsWith('#') === true;
     return (
       <a
@@ -64,15 +66,13 @@ const MARKDOWN_COMPONENTS: Components = {
     );
   },
   table: ({ children }) => (
-    // Scroll rather than widening the page.
     <div className="rater-table-scroll">
       <table>{children}</table>
     </div>
   ),
 };
 
-// Rater-facing text is pre-wrap plain text unless the experiment's
-// `is_markdown` switch is on. react-markdown's default keeps raw HTML literal.
+// react-markdown's default keeps raw HTML literal.
 function RaterText({
   text,
   markdown,
@@ -80,31 +80,14 @@ function RaterText({
 }: {
   text: string;
   markdown: boolean;
-  style: CSSProperties;
+  style?: CSSProperties;
 }) {
-  const rendered = useRef<HTMLDivElement>(null);
-  // Source whose Markdown produced no text at all (`---`, a lone link
-  // reference definition) is shown raw so the rater never sees an empty card.
-  const [blankSource, setBlankSource] = useState<string | null>(null);
-  useLayoutEffect(() => {
-    if (!markdown || blankSource === text) return;
-    if (text.trim() && !rendered.current?.textContent?.trim()) {
-      setBlankSource(text);
-    }
-  }, [markdown, text, blankSource]);
-
-  if (!markdown || blankSource === text) {
+  if (!markdown) {
     return <p style={{ ...style, whiteSpace: 'pre-wrap' }}>{text}</p>;
   }
   return (
-    <div ref={rendered} className="rater-markdown markdown" style={style}>
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={MARKDOWN_COMPONENTS}
-        // A remote image would make the rater's browser fetch it. An image-only
-        // question then hits the empty-output fallback above and shows its source.
-        disallowedElements={['img']}
-      >
+    <div className="rater-markdown markdown" style={style}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
@@ -230,12 +213,19 @@ function parseOptions(rawOptions: string | null): string[] {
 
 function buildLongContextDocumentHtml(question: Question, documentText: string): string {
   const title = `Document for Question ${question.question_id}`;
+  // The window is a standalone HTML string, so the card's Markdown component is
+  // pre-rendered into it and the stylesheets its classes need are inlined.
+  const appStyles = question.is_markdown ? `<style>${tokensCss}${appCss}</style>` : '';
+  const body = question.is_markdown
+    ? renderToStaticMarkup(<RaterText text={documentText} markdown />)
+    : `<pre>${escapeHtml(documentText)}</pre>`;
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>
+  ${appStyles}
   <style>
     body {
       margin: 0;
@@ -256,7 +246,8 @@ function buildLongContextDocumentHtml(question: Question, documentText: string):
       font-weight: 600;
       letter-spacing: -0.01em;
     }
-    pre {
+    main > pre,
+    .rater-markdown {
       box-sizing: border-box;
       width: 100%;
       margin: 0;
@@ -264,6 +255,8 @@ function buildLongContextDocumentHtml(question: Question, documentText: string):
       border: 1px solid #e6e1d5;
       border-radius: 9px;
       background: #ffffff;
+    }
+    main > pre {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       font: 14px/1.6 "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -274,7 +267,7 @@ function buildLongContextDocumentHtml(question: Question, documentText: string):
 <body>
   <main>
     <h1>${escapeHtml(title)}</h1>
-    <pre>${escapeHtml(documentText)}</pre>
+    ${body}
   </main>
 </body>
 </html>`;
@@ -292,7 +285,6 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question]
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
-  const isMarkdown = question.is_markdown === true;
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
@@ -395,7 +387,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           </div>
           <RaterText
             text={display.inlineContext}
-            markdown={isMarkdown}
+            markdown={question.is_markdown}
             style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
           />
         </div>
@@ -430,7 +422,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
 
       <RaterText
         text={display.questionText}
-        markdown={isMarkdown}
+        markdown={question.is_markdown}
         style={{
           fontFamily: 'var(--font-head)',
           fontSize: 22,

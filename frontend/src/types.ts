@@ -63,7 +63,7 @@ export interface Question {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
-  is_markdown?: boolean;
+  is_markdown: boolean;
 }
 
 export interface ExperimentStats {

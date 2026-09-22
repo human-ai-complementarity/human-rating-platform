@@ -4495,8 +4495,6 @@ def test_upload_batches_long_context_rows_across_multiple_inserts(
 
 
 def test_is_markdown_round_trips_to_rater_question_payload(client: TestClient):
-    # Off by default, toggled via update, copied by duplicate, and repeated on
-    # every question the rater fetches so the card can pick a renderer.
     experiment = _create_experiment(client)
     assert experiment["is_markdown"] is False
 
@@ -4534,3 +4532,26 @@ def test_is_markdown_round_trips_to_rater_question_payload(client: TestClient):
     session = _start_session(client, experiment["id"], prolific_pid="PID_MD")
     question = client.get("/api/raters/next-question", headers=_rater_headers(session)).json()
     assert question["is_markdown"] is True
+
+
+def test_update_experiment_locks_is_markdown_after_launch(client: TestClient, sync_engine):
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": experiment["assistance_method"], "is_markdown": True},
+    )
+    assert resp.status_code == 400
+    assert "is_markdown" in resp.json()["detail"]
+
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={
+            "assistance_method": experiment["assistance_method"],
+            "is_markdown": experiment["is_markdown"],
+            "internal_name": "renamed",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["internal_name"] == "renamed"

@@ -317,7 +317,7 @@ button:disabled {
 
 /* Rules shared by every react-markdown surface (admin guide, rater card).
    Each surface adds its own scale, heading, wrapping and border rules under
-   its own class below; keep this block to what is identical between them. */
+   its own class below. */
 .markdown code {
   background: var(--surface-2);
   padding: 1px 6px;
