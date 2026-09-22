@@ -11,7 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from config import Settings
-from services.session_policy import SessionPolicy
+from session_policy import SessionPolicy
 from services.rater.session_token import (
     issue_rater_session_token,
     verify_rater_session_token,

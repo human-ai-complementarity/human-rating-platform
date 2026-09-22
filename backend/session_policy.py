@@ -112,9 +112,11 @@ DEFAULT_SESSION_POLICY = SessionPolicy()
 def resolve_session_policy(experiment: "Experiment") -> SessionPolicy:
     """The policy governing sessions for one experiment.
 
-    The experiment is the seam: today every experiment gets the same defaults,
-    and issue #102 decision 1 settles where a per-experiment override is
-    stored. Taking it now means the call sites do not move when the value
-    becomes per-experiment.
+    Reads `session_duration_minutes` off the experiment, falling back to the
+    default when it is missing — which covers the handful of call sites that
+    pass a lightweight stand-in rather than a full row.
     """
-    return DEFAULT_SESSION_POLICY
+    duration = getattr(experiment, "session_duration_minutes", None)
+    if not duration:
+        return DEFAULT_SESSION_POLICY
+    return SessionPolicy(duration_minutes=int(duration))

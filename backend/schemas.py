@@ -4,6 +4,11 @@ from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from models import ExperimentStatus, ProlificStudyStatus, StepType
+from session_policy import (
+    DEFAULT_SESSION_DURATION_MINUTES,
+    MAX_SESSION_DURATION_MINUTES,
+    MIN_SESSION_DURATION_MINUTES,
+)
 
 
 # Allowed values for Prolific's `study_labels` field. The Prolific API also
@@ -157,6 +162,13 @@ class ExperimentCreate(BaseModel):
     # through to Postgres and surfacing as a 500.
     internal_name: Optional[str] = Field(default=None, max_length=255)
     num_ratings_per_question: int = 3
+    # Minutes each rater gets. Bounded so a typo cannot create a session nobody
+    # can finish a question in, or one that runs for days.
+    session_duration_minutes: int = Field(
+        default=DEFAULT_SESSION_DURATION_MINUTES,
+        ge=MIN_SESSION_DURATION_MINUTES,
+        le=MAX_SESSION_DURATION_MINUTES,
+    )
     prolific_completion_url: Optional[str] = None
     prolific: Optional[ProlificStudyConfig] = None
     assistance_method: str = "none"
@@ -171,6 +183,7 @@ class ExperimentResponse(BaseModel):
     internal_name: Optional[str] = None
     created_at: datetime
     num_ratings_per_question: int
+    session_duration_minutes: int = DEFAULT_SESSION_DURATION_MINUTES
     prolific_completion_url: Optional[str] = None
     question_count: int = 0
     rating_count: int = 0
@@ -229,6 +242,14 @@ class ExperimentUpdate(BaseModel):
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
+    # None means "leave unchanged". Locked once the experiment leaves DRAFT:
+    # raters already in a session hold a session_end_time computed from the old
+    # value, and their browsers will not hear about a change.
+    session_duration_minutes: Optional[int] = Field(
+        default=None,
+        ge=MIN_SESSION_DURATION_MINUTES,
+        le=MAX_SESSION_DURATION_MINUTES,
+    )
     # Omitted = leave unchanged; explicit null ungroups. Locked once the
     # experiment leaves DRAFT (group is spend-attribution, not just a label).
     group_id: Optional[int] = None

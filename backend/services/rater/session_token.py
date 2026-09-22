@@ -11,7 +11,7 @@ from hashlib import sha256
 from fastapi import HTTPException
 
 from config import Settings
-from services.session_policy import SessionPolicy
+from session_policy import SessionPolicy
 
 logger = logging.getLogger(__name__)
 

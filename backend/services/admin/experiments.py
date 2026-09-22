@@ -56,6 +56,7 @@ async def create_experiment(
         name=payload.name,
         internal_name=(payload.internal_name.strip() or None) if payload.internal_name else None,
         num_ratings_per_question=payload.num_ratings_per_question,
+        session_duration_minutes=payload.session_duration_minutes,
         prolific_completion_url=payload.prolific_completion_url,
         assistance_method=payload.assistance_method,
         assistance_params=json.dumps(payload.assistance_params)
@@ -304,6 +305,12 @@ _LOCKED_META_FIELDS = (
     "prolific_pool",
 )
 
+# Locked alongside the meta fields, but kept separate because it is an int:
+# the meta loop strips strings. Session length is locked once the experiment
+# leaves DRAFT because raters already mid-session hold a session_end_time
+# computed from the old value, and their browsers never hear about a change.
+_LOCKED_SCALAR_FIELDS = ("session_duration_minutes",)
+
 # Matches the String(255) columns on Experiment.name / internal_name.
 _NAME_MAX_LENGTH = 255
 
@@ -364,6 +371,7 @@ async def duplicate_experiment(
         name=name,
         internal_name=internal_name,
         num_ratings_per_question=source.num_ratings_per_question,
+        session_duration_minutes=source.session_duration_minutes,
         description=source.description,
         system_prompt=source.system_prompt,
         human_prompt_prefix=source.human_prompt_prefix,
@@ -488,6 +496,12 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
         normalized = proposed.strip() or None
         if normalized != getattr(experiment, field_name):
             changes.append(field_name)
+    for field_name in _LOCKED_SCALAR_FIELDS:
+        proposed = getattr(payload, field_name)
+        if proposed is None:
+            continue
+        if proposed != getattr(experiment, field_name):
+            changes.append(field_name)
     if "group_id" in payload.model_fields_set and payload.group_id != experiment.group_id:
         changes.append("group_id")
     return changes
@@ -537,6 +551,10 @@ async def update_experiment(
             continue
         stripped = value.strip()
         setattr(experiment, field_name, stripped or None)
+    for field_name in _LOCKED_SCALAR_FIELDS:
+        value = getattr(payload, field_name)
+        if value is not None:
+            setattr(experiment, field_name, value)
 
     if "group_id" in payload.model_fields_set:
         if payload.group_id is not None:

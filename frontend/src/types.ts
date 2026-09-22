@@ -6,6 +6,9 @@ export interface Experiment {
   internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
+  // Minutes each rater gets. Every other session clock is derived from it.
+  // Frozen once the experiment leaves DRAFT.
+  session_duration_minutes: number;
   prolific_completion_url: string | null;
   question_count: number;
   rating_count: number;
@@ -170,6 +173,10 @@ export interface Analytics {
     total_ratings: number;
     total_questions: number;
     total_raters: number;
+    // Raters whose session was closed out by the clock rather than by them
+    // finishing. Counted off rater rows, so it includes raters who submitted
+    // nothing and therefore appear nowhere else in this payload.
+    timed_out_raters: number;
     avg_response_time_seconds: number;
     min_response_time_seconds?: number;
     max_response_time_seconds?: number;
@@ -195,6 +202,7 @@ export interface RaterAnalytics {
   prolific_id: string;
   study_id: string | null;
   session_start: string | null;
+  timed_out: boolean;
   num_ratings: number;
   total_response_time_seconds: number;
   avg_response_time_seconds: number;
@@ -233,6 +241,7 @@ export interface ExperimentCreate {
   name: string;
   internal_name?: string | null;
   num_ratings_per_question: number;
+  session_duration_minutes: number;
   prolific_completion_url: string;
   prolific?: ProlificStudyConfig;
   assistance_method?: string;

@@ -28,7 +28,7 @@ from services.admin.prolific import ProlificAPIError, add_participant_to_group, 
 from services.assistance import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
 from services.queries import fetch_remaining_rating_actions
-from services.session_policy import SessionPolicy, resolve_session_policy
+from session_policy import SessionPolicy, resolve_session_policy
 from .mappers import (
     build_question_response,
     build_rater_start_response,
@@ -116,6 +116,10 @@ async def start_session(
             existing_rater.is_active = True
             existing_rater.session_start = datetime.now(UTC)
             existing_rater.session_end = None
+            # Travels with the rest of the session state: an admin who left a
+            # preview idle past the deadline once would otherwise keep counting
+            # towards "ran out of time" through every clean run afterwards.
+            existing_rater.timed_out = False
             await db.commit()
             await db.refresh(existing_rater)
             logger.info(

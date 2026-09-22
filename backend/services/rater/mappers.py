@@ -5,7 +5,7 @@ from datetime import datetime
 from models import Question
 from schemas import QuestionResponse, RaterStartResponse
 from services.prolific_markdown import to_prolific_html
-from services.session_policy import SessionPolicy
+from session_policy import SessionPolicy
 
 
 def build_question_response(

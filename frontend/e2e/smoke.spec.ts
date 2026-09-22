@@ -7,6 +7,7 @@ type ExperimentRecord = {
   internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
+  session_duration_minutes: number;
   prolific_completion_url: string | null;
   question_count: number;
   rating_count: number;
@@ -63,6 +64,7 @@ type RaterAnalyticsRecord = {
   session_start: string | null;
   session_end: string | null;
   is_active: boolean;
+  timed_out: boolean;
   num_ratings: number;
   total_response_time_seconds: number;
   avg_response_time_seconds: number;
@@ -75,6 +77,7 @@ type AnalyticsRecord = {
     total_ratings: number;
     total_questions: number;
     total_raters: number;
+    timed_out_raters: number;
     avg_response_time_seconds: number;
     avg_confidence: number;
   };
@@ -119,6 +122,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     internal_name: null,
     created_at: '2026-03-09T00:00:00Z',
     num_ratings_per_question: 3,
+    session_duration_minutes: 60,
     prolific_completion_url: null,
     question_count: 0,
     rating_count: 0,
@@ -247,10 +251,15 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/experiments' && method === 'POST') {
-      const payload = request.postDataJSON() as { name: string; num_ratings_per_question: number };
+      const payload = request.postDataJSON() as {
+        name: string;
+        num_ratings_per_question: number;
+        session_duration_minutes: number;
+      };
       const experiment = buildExperiment(state, {
         name: payload.name,
         num_ratings_per_question: payload.num_ratings_per_question,
+        session_duration_minutes: payload.session_duration_minutes,
       });
       state.experiments = [experiment];
       state.uploads[experiment.id] = [];
@@ -331,6 +340,7 @@ async function installApiMocks(
           total_ratings: 0,
           total_questions: 2,
           total_raters: 0,
+          timed_out_raters: 0,
           avg_response_time_seconds: 0,
           avg_confidence: 0,
         },
@@ -513,6 +523,26 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => {
   page.on('dialog', (dialog) => dialog.accept());
+});
+
+test('a long-context experiment is created with its own session length', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  await page.goto('/admin');
+
+  await page.getByTestId('experiment-name-input').fill('Two Hour Reading Task');
+  await page.getByTestId('ratings-per-question-input').fill('3');
+  await page.getByTestId('session-duration-input').fill('120');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Two Hour Reading Task' })).toBeVisible();
+  expect(state.experiments[0].session_duration_minutes).toBe(120);
+
+  // The pilot form's rater-count hint quotes the real session length rather
+  // than the hard-coded hour it used to claim.
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByText(/Each rater does one 2 hour session/)).toBeVisible();
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {
@@ -1316,6 +1346,7 @@ test.describe('analytics raters tab', () => {
           session_start: '2026-07-24T14:26:30.179021Z',
           session_end: null,
           is_active: true,
+          timed_out: false,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,
@@ -1423,6 +1454,7 @@ test.describe('analytics raters tab', () => {
           session_start: '2026-07-24T14:26:30.179021Z',
           session_end: null,
           is_active: true,
+          timed_out: false,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,
