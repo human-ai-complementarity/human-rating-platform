@@ -54,3 +54,22 @@ async def fetch_total_ratings_for_experiment(
         )
     ).scalar_one()
     return int(total_ratings or 0)
+
+
+async def fetch_timed_out_rater_count(
+    experiment_id: int,
+    db: AsyncSession,
+    *,
+    include_preview: bool = False,
+) -> int:
+    """How many of this experiment's raters were closed out by the clock.
+
+    Counted off the rater rows rather than off ratings, because a rater who
+    ran out of time before submitting anything has no ratings to be counted
+    through — and that is the case worth surfacing.
+    """
+    stmt = select(func.count()).select_from(Rater).where(Rater.experiment_id == experiment_id)
+    stmt = stmt.where(Rater.timed_out.is_(True))
+    if not include_preview:
+        stmt = stmt.where(Rater.is_preview.is_(False))
+    return int((await db.execute(stmt)).scalar_one())

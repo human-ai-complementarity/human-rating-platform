@@ -44,6 +44,15 @@ import {
 
 // Labels shown to admins in the Instructions & prompts panel. Order matches
 // the CSV `#META:` JSON shape that researchers see in the colab guide.
+/** "90 minute" / "2 hour" / "2 hour 30 minute" — reads naturally inside a sentence. */
+function formatSessionLength(minutes: number): string {
+  if (minutes < 60) return `${minutes} minute`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  const hourPart = `${hours} hour`;
+  return rest === 0 ? hourPart : `${hourPart} ${rest} minute`;
+}
+
 const DATASET_META_LABELS: Record<DatasetMetaField, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
@@ -2547,6 +2556,7 @@ function LaunchPanel(props: {
                     <RoundCard
                       key={round.id}
                       round={round}
+                      sessionDurationMinutes={experiment.session_duration_minutes}
                       currencyCode={currencyCode}
                       currencySymbol={currencySymbol}
                       pricing={pricing}
@@ -2587,6 +2597,7 @@ function LaunchPanel(props: {
 
               {rounds.length === 0 && (
                 <PilotForm
+                  sessionDurationMinutes={experiment.session_duration_minutes}
                   pilotForm={pilotForm}
                   onPilotChange={onPilotChange}
                   pilotRewardInput={pilotRewardInput}
@@ -2733,6 +2744,7 @@ function RoundCostLabel({
 
 function RoundCard(props: {
   round: ExperimentRound;
+  sessionDurationMinutes: number;
   currencyCode: string | null;
   currencySymbol: string | null;
   pricing: ProlificPricing | null;
@@ -2755,6 +2767,7 @@ function RoundCard(props: {
 }) {
   const {
     round,
+    sessionDurationMinutes,
     currencyCode,
     currencySymbol,
     pricing,
@@ -2897,6 +2910,15 @@ function RoundCard(props: {
                 }
                 style={inputStyle}
               />
+              {editForm.estimated_completion_time > sessionDurationMinutes && (
+                <div
+                  data-testid={`edit-round-estimate-warning-${round.round_number}`}
+                  style={{ marginTop: 8, fontSize: 12.5, lineHeight: 1.5, color: 'var(--danger)' }}
+                >
+                  Longer than the {formatSessionLength(sessionDurationMinutes)} session each rater
+                  gets — the study would advertise work nobody can finish in the time allowed.
+                </div>
+              )}
             </Field>
             <Field label={`Reward${currencyCode ? ` (${currencyCode})` : ''}`}>
               <div
@@ -3121,6 +3143,7 @@ function PilotForm(props: {
   onSubmit: (e: React.FormEvent) => void;
   otherExperiments: Experiment[];
   datasetDescription: string | null;
+  sessionDurationMinutes: number;
 }) {
   const {
     pilotForm,
@@ -3133,6 +3156,7 @@ function PilotForm(props: {
     onSubmit,
     otherExperiments,
     datasetDescription,
+    sessionDurationMinutes,
   } = props;
   const prefilledFromDataset =
     !!datasetDescription && pilotForm.description === datasetDescription;
@@ -3232,6 +3256,22 @@ function PilotForm(props: {
             required
             style={inputStyle}
           />
+          {pilotForm.estimated_completion_time > sessionDurationMinutes && (
+            <div
+              data-testid="estimate-exceeds-session-warning"
+              style={{
+                marginTop: 8,
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                color: 'var(--danger)',
+              }}
+            >
+              This is longer than the {formatSessionLength(sessionDurationMinutes)} session each
+              rater gets, so Prolific advertises a task nobody can finish in the time allowed.
+              Either lower the estimate or raise the session length before launching — session
+              length is locked once a main round goes out.
+            </div>
+          )}
         </Field>
         <Field
           id="pilot-reward"
@@ -3294,7 +3334,7 @@ function PilotForm(props: {
         <Field
           id="pilot-places"
           label="Number of raters"
-          hint="Each rater does 1 hour. 5 is a good default for timing calibration."
+          hint={`Each rater does one ${formatSessionLength(sessionDurationMinutes)} session. 5 is a good default for timing calibration.`}
         >
           <input
             id="pilot-places"

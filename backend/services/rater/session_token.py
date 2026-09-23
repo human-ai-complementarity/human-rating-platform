@@ -5,11 +5,13 @@ import hmac
 import json
 import logging
 import time
+from datetime import datetime
 from hashlib import sha256
 
 from fastapi import HTTPException
 
 from config import Settings
+from session_policy import SessionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +40,25 @@ def _sign(secret: str, payload: str) -> str:
 VERSION = "v1"
 
 
-def issue_rater_session_token(settings: Settings, *, rater_id: int, experiment_id: int) -> str:
+def issue_rater_session_token(
+    settings: Settings,
+    *,
+    rater_id: int,
+    experiment_id: int,
+    session_start: datetime,
+    policy: SessionPolicy,
+) -> str:
+    """Mint a token that dies exactly when the rater's session does.
+
+    Derived from `session_start` rather than from `now`, because these are not
+    the same instant: `start_session` re-mints on re-entry, and a TTL counted
+    from the moment of minting handed a rater who re-entered near the deadline
+    a token outliving their own session. The window that opened was the
+    platform's only path for saving an in-flight answer, which is now an
+    explicit grace period instead (issue #102).
+    """
     now = int(time.time())
-    exp = now + int(settings.rater_session_ttl_seconds)
+    exp = int(session_start.timestamp()) + policy.token_ttl_seconds
     payload = _b64url_json({"rid": rater_id, "eid": experiment_id, "iat": now, "exp": exp})
     sig = _sign(settings.effective_rater_session_secret, payload)
     return f"{VERSION}.{payload}.{sig}"

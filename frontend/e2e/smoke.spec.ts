@@ -7,6 +7,7 @@ type ExperimentRecord = {
   internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
+  session_duration_minutes: number;
   prolific_completion_url: string | null;
   question_count: number;
   rating_count: number;
@@ -51,7 +52,9 @@ type RaterSessionRecord = {
   rater_id: number;
   session_start: string;
   session_end_time: string;
+  session_grace_seconds?: number;
   experiment_name: string;
+  experiment_description_html?: string | null;
   completion_url: string | null;
   rater_session_token: string;
 };
@@ -62,6 +65,7 @@ type RaterAnalyticsRecord = {
   session_start: string | null;
   session_end: string | null;
   is_active: boolean;
+  timed_out: boolean;
   num_ratings: number;
   total_response_time_seconds: number;
   avg_response_time_seconds: number;
@@ -74,6 +78,7 @@ type AnalyticsRecord = {
     total_ratings: number;
     total_questions: number;
     total_raters: number;
+    timed_out_raters: number;
     avg_response_time_seconds: number;
     avg_confidence: number;
   };
@@ -117,6 +122,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     internal_name: null,
     created_at: '2026-03-09T00:00:00Z',
     num_ratings_per_question: 3,
+    session_duration_minutes: 60,
     prolific_completion_url: null,
     question_count: 0,
     rating_count: 0,
@@ -245,10 +251,15 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/experiments' && method === 'POST') {
-      const payload = request.postDataJSON() as { name: string; num_ratings_per_question: number };
+      const payload = request.postDataJSON() as {
+        name: string;
+        num_ratings_per_question: number;
+        session_duration_minutes: number;
+      };
       const experiment = buildExperiment(state, {
         name: payload.name,
         num_ratings_per_question: payload.num_ratings_per_question,
+        session_duration_minutes: payload.session_duration_minutes,
       });
       state.experiments = [experiment];
       state.uploads[experiment.id] = [];
@@ -329,6 +340,7 @@ async function installApiMocks(
           total_ratings: 0,
           total_questions: 2,
           total_raters: 0,
+          timed_out_raters: 0,
           avg_response_time_seconds: 0,
           avg_confidence: 0,
         },
@@ -493,6 +505,7 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         is_active: true,
         time_remaining_seconds: 3600,
+        grace_seconds_remaining: 3600 + 300,
         questions_completed: 0,
       });
       return;
@@ -509,6 +522,111 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => {
   page.on('dialog', (dialog) => dialog.accept());
+});
+
+test('a long-context experiment is created with its own session length', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  await page.goto('/admin');
+
+  await page.getByTestId('experiment-name-input').fill('Two Hour Reading Task');
+  await page.getByTestId('ratings-per-question-input').fill('3');
+  await page.getByTestId('session-duration-input').fill('120');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Two Hour Reading Task' })).toBeVisible();
+  expect(state.experiments[0].session_duration_minutes).toBe(120);
+
+  // The pilot form's rater-count hint quotes the real session length rather
+  // than the hard-coded hour it used to claim.
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByText(/Each rater does one 2 hour session/)).toBeVisible();
+});
+
+test('editing a round warns when the estimate exceeds the session length', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Round Edit Experiment',
+      question_count: 2,
+      session_duration_minutes: 60,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [buildRound(state, { round_number: 0, estimated_completion_time: 30 })];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).first().click();
+  const estimate = page.getByTestId('edit-round-time-0');
+  await expect(estimate).toBeVisible();
+
+  await expect(page.getByTestId('edit-round-estimate-warning-0')).toHaveCount(0);
+  // Past the session length the study would advertise unfinishable work.
+  await estimate.fill('90');
+  await expect(page.getByTestId('edit-round-estimate-warning-0')).toBeVisible();
+});
+
+test('the rater intro states the session length before they commit', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Expectations Experiment',
+      question_count: 1,
+      session_duration_minutes: 110,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  const start = new Date();
+  state.sessionsByExperimentId[1] = {
+    rater_id: 401,
+    session_start: start.toISOString(),
+    session_end_time: new Date(start.getTime() + 110 * 60000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Expectations Experiment',
+    experiment_description_html: '<p>Read each passage carefully.</p>',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-expectations',
+  };
+  state.questionsBySessionToken['token-expectations'] = {
+    id: 701,
+    question_id: 'exp-q',
+    question_text: 'Does the intro set expectations?',
+    options: 'Yes|No',
+    question_type: 'MC',
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const expectations = page.getByTestId('session-expectations');
+  await expect(expectations).toBeVisible();
+  await expect(expectations).toContainText('You have 1 hour 50 minutes.');
+  await expect(expectations).toContainText('5 more minutes');
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {
@@ -761,6 +879,63 @@ test('long-context question links document separately and shows only question in
   // The external question id must not leak into the popup a rater can read.
   await expect(documentPopup).toHaveTitle('Document');
   await expect(documentPopup.getByText('Document line one')).toBeVisible();
+});
+
+test('the question in hand survives the deadline and can still be submitted', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Grace Window Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 303,
+    session_start: '2026-03-09T00:05:00Z',
+    // Two seconds out, so the deadline lands while the page is open.
+    session_end_time: new Date(Date.now() + 2000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Grace Window Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-grace',
+  };
+  state.questionsBySessionToken['token-grace'] = {
+    id: 601,
+    question_id: 'grace-q',
+    question_text: 'Does the grace window keep this answer?',
+    options: 'Yes|No',
+    question_type: 'MC',
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
+
+  // The clock runs out with the question still on screen.
+  await expect(page.getByTestId('grace-banner')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('timer-grace')).toBeVisible();
+
+  // Crucially the question is still there — pre-#102 it was unmounted and the
+  // in-progress answer discarded.
+  await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: /submit/i }).click();
+
+  await expect(page.getByRole('heading', { name: 'Session Complete' })).toBeVisible();
 });
 
 // Seeds a rater session serving exactly one question, for the parent-context
@@ -1251,6 +1426,7 @@ test.describe('analytics raters tab', () => {
           session_start: '2026-07-24T14:26:30.179021Z',
           session_end: null,
           is_active: true,
+          timed_out: false,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,
@@ -1358,6 +1534,7 @@ test.describe('analytics raters tab', () => {
           session_start: '2026-07-24T14:26:30.179021Z',
           session_end: null,
           is_active: true,
+          timed_out: false,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,

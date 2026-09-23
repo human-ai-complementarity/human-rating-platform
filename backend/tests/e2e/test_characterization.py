@@ -1093,32 +1093,176 @@ def test_next_question_marks_expired_session_inactive(
     assert status_response.json()["is_active"] is False
 
 
-def test_submit_after_deadline_succeeds_while_token_lives(
+def test_new_questions_stop_at_the_deadline(
     client: TestClient,
     backdate_rater_session,
 ):
-    """Characterization: a rating submitted past the wall-clock deadline is
-    ACCEPTED, so long as nothing has flipped `is_active` yet.
+    """Once the clock runs out the rater is served nothing new — but is NOT
+    closed out, because the grace window is for finishing what they hold.
 
-    `submit_rating` checks only `validate_rater_marked_active` — it has no
-    wall-clock gate — and the session token's `exp` is minted as `now + ttl`
-    rather than derived from `session_start`, so backdating the session does
-    not expire the token. That combination is the platform's only path that
-    saves work in progress when the hour runs out. It is accidental, and this
-    test exists so that a cleanup which "makes submit consistent" has to
-    delete it deliberately rather than by accident. See issue #102.
+    The rater here submits first, so they hold no reservation; a rater who
+    still has one gets it re-served instead (see the refresh test below).
     """
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
-    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LATE_SUBMIT")
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GRACE_SERVE")
+
+    question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+    client.post(
+        "/api/raters/submit",
+        headers=_rater_headers(session_payload),
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 3,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+
+    backdate_rater_session(session_payload["rater_id"], 61)  # 1 min past a 60 min deadline
+
+    next_question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+    status = client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
+
+    assert next_question.status_code == 403
+    assert next_question.json()["detail"] == "Session expired"
+    assert status.json()["is_active"] is True
+    assert status.json()["time_remaining_seconds"] == 0
+    assert status.json()["grace_seconds_remaining"] > 0
+
+
+def _realistic_headers(session_payload: dict, experiment_id: int, minutes_ago: int) -> dict:
+    """Headers whose token was minted from the rater's real session_start.
+
+    `backdate_rater_session` moves the rater row but not the token the test is
+    already holding, leaving a token issued seconds ago for a session that began
+    an hour back — a combination production never produces. Anything asserting
+    about token expiry has to mint the token the way start_session did.
+    """
+    from config import get_settings
+    from services.rater.session_token import issue_rater_session_token
+    from session_policy import SessionPolicy
+
+    token = issue_rater_session_token(
+        get_settings(),
+        rater_id=session_payload["rater_id"],
+        experiment_id=experiment_id,
+        session_start=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+        policy=SessionPolicy(),
+    )
+    return {"X-Rater-Session": token}
+
+
+def test_a_timed_out_session_is_actually_closed_out(
+    client: TestClient,
+    backdate_rater_session,
+    sync_engine,
+):
+    """Expiry is lazy, so the only chance to record a timeout is a request that
+    lands after the hard deadline. That request has to get past the token gate
+    in routers/deps.py first — if the token died at the hard deadline too, the
+    session would stay active forever and no timeout would ever be recorded.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_CLOSEOUT")
+
+    # Past the hard deadline (60 + 5), with a token minted the way production does.
+    backdate_rater_session(session_payload["rater_id"], 70)
+    headers = _realistic_headers(session_payload, experiment["id"], 70)
+
+    response = client.get("/api/raters/session-status", headers=headers)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["is_active"] is False
+
+    with sync_engine.begin() as conn:
+        ended = conn.execute(
+            text("SELECT session_end IS NOT NULL FROM raters WHERE id = :id"),
+            {"id": session_payload["rater_id"]},
+        ).scalar_one()
+    assert ended is True
+
+
+def test_refreshing_inside_the_grace_window_re_serves_the_same_question(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """A refresh during grace must return the question the rater already holds.
+
+    The frontend does not restore the question from sessionStorage — it asks
+    for the next one — so a rater who reloads inside the grace window goes
+    through get_next_question. Refusing them there loses exactly the answer the
+    grace window exists to save. Re-serving a reservation they already hold is
+    not new work, so it survives the deadline.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GRACE_REFRESH")
+
+    served = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    ).json()
+
+    backdate_rater_session(session_payload["rater_id"], 61)
+
+    refreshed = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert refreshed.status_code == 200
+    assert refreshed.json()["id"] == served["id"]
+
+
+def test_refreshing_past_the_grace_window_is_still_refused(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """Re-serving survives the deadline, not the end of the session."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PAST_REFRESH")
+
+    client.get("/api/raters/next-question", headers=_rater_headers(session_payload))
+    backdate_rater_session(session_payload["rater_id"])
+
+    refreshed = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+
+    assert refreshed.status_code == 403
+
+
+def test_in_flight_question_can_be_submitted_inside_the_grace_window(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The answer being typed when the clock ran out is saved rather than
+    discarded. Before issue #102 this worked only by accident, for raters who
+    happened to have re-entered, and only until some other call noticed the
+    session had expired."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GRACE_SUBMIT")
 
     question = client.get(
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
 
-    # Deadline is now in the past; the token issued moments ago is still valid.
-    backdate_rater_session(session_payload["rater_id"])
+    backdate_rater_session(session_payload["rater_id"], 61)
+
+    # Polling status first must not close the session out from under the submit.
+    client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
 
     response = client.post(
         "/api/raters/submit",
@@ -1135,37 +1279,21 @@ def test_submit_after_deadline_succeeds_while_token_lives(
     assert response.json()["success"] is True
 
 
-def test_submit_after_deadline_rejected_once_another_call_flips_active(
+def test_submit_past_the_grace_window_is_rejected(
     client: TestClient,
     backdate_rater_session,
 ):
-    """Characterization: the same late submit is REJECTED if any other rater
-    call ran first.
-
-    Expiry is lazy — `get_next_question` and `get_session_status` are the only
-    things that write `is_active = False`, and once either has, submit fails
-    its active check. So whether a rater's in-flight answer survives depends on
-    call ordering, which is why the accidental grace above cannot be relied on.
-    """
+    """Grace buys time to finish one question, not to keep working."""
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
-    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LATE_REJECT")
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PAST_GRACE")
 
     question = client.get(
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
 
-    backdate_rater_session(session_payload["rater_id"])
-
-    # Polling status is enough to mark the rater inactive.
-    status_response = client.get(
-        "/api/raters/session-status",
-        headers=_rater_headers(session_payload),
-    )
-    assert status_response.status_code == 200
-    assert status_response.json()["is_active"] is False
-    assert status_response.json()["time_remaining_seconds"] == 0
+    backdate_rater_session(session_payload["rater_id"])  # past the hard deadline
 
     response = client.post(
         "/api/raters/submit",
@@ -1182,15 +1310,37 @@ def test_submit_after_deadline_rejected_once_another_call_flips_active(
     assert response.json()["detail"] == "Session expired"
 
 
-def test_expiry_and_completion_are_indistinguishable_server_side(
+def test_resume_does_not_extend_the_session(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """Re-entering via the Prolific link re-mints a token, but against the
+    original session_start — so it cannot hand out time the session has already
+    spent. This was the drift that produced the accidental grace period."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_RESUME")
+
+    backdate_rater_session(session_payload["rater_id"], 61)
+    resumed = _start_session(client, experiment["id"], prolific_pid="PID_RESUME")
+
+    # Still inside grace: re-entry is allowed, but buys no new questions.
+    assert resumed["rater_id"] == session_payload["rater_id"]
+    next_question = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(resumed),
+    )
+    assert next_question.status_code == 403
+
+
+def test_timeout_is_recorded_distinctly_from_completion(
     client: TestClient,
     backdate_rater_session,
     sync_engine,
 ):
-    """Characterization: a timed-out session and a finished one leave identical
-    rows — `is_active = False` plus a `session_end` stamp, with nothing
-    recording which of the two happened. This is why "how often does the hour
-    bite?" is unanswerable today (issue #102, open question 1).
+    """A timed-out session and a finished one used to leave identical rows —
+    `is_active = False` plus a `session_end` stamp — so the rate at which the
+    clock cuts raters off could not be measured (issue #102, open question 1).
     """
     experiment = _create_experiment(client)
     _upload_questions(client, experiment["id"])
@@ -1203,24 +1353,249 @@ def test_expiry_and_completion_are_indistinguishable_server_side(
     client.post("/api/raters/end-session", headers=_rater_headers(finished))
 
     with sync_engine.begin() as conn:
-        rows = dict(
-            conn.execute(
-                text("SELECT id, is_active FROM raters WHERE id = ANY(:ids)"),
+        rows = {
+            row[0]: row[1]
+            for row in conn.execute(
+                text("SELECT id, timed_out FROM raters WHERE id = ANY(:ids)"),
                 {"ids": [timed_out["rater_id"], finished["rater_id"]]},
             ).all()
-        )
-        ended = (
-            conn.execute(
-                text("SELECT id FROM raters WHERE session_end IS NOT NULL AND id = ANY(:ids)"),
-                {"ids": [timed_out["rater_id"], finished["rater_id"]]},
-            )
-            .scalars()
-            .all()
-        )
+        }
 
-    assert rows[timed_out["rater_id"]] is False
+    assert rows[timed_out["rater_id"]] is True
     assert rows[finished["rater_id"]] is False
-    assert sorted(ended) == sorted([timed_out["rater_id"], finished["rater_id"]])
+
+
+def test_restarting_a_preview_clears_a_previous_timeout(
+    client: TestClient,
+    backdate_rater_session,
+    sync_engine,
+):
+    """A preview rater that timed out once must not stay timed out forever.
+
+    `expire_rater_if_past_grace` has no preview guard, so an admin who leaves a
+    preview tab open past the deadline gets the flag set. The preview-restart
+    branch resets is_active, session_start and session_end — the flag has to
+    travel with them, or the "Ran Out Of Time" tile counts a run that has since
+    completed cleanly.
+    """
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+
+    first = _start_preview_session(client, experiment["id"], "PID_PREVIEW_TIMEOUT")
+    backdate_rater_session(first["rater_id"])
+    client.get("/api/raters/session-status", headers=_rater_headers(first))
+
+    with sync_engine.begin() as conn:
+        assert (
+            conn.execute(
+                text("SELECT timed_out FROM raters WHERE id = :id"), {"id": first["rater_id"]}
+            ).scalar_one()
+            is True
+        ), "precondition: the idle preview session was marked timed out"
+
+    # The admin reopens the preview link and runs it through cleanly.
+    second = _start_preview_session(client, experiment["id"], "PID_PREVIEW_TIMEOUT")
+    client.post("/api/raters/end-session", headers=_rater_headers(second))
+
+    analytics = client.get(
+        f"/api/admin/experiments/{experiment['id']}/analytics",
+        params={"include_preview": "true"},
+    ).json()
+
+    assert analytics["overview"]["timed_out_raters"] == 0
+
+
+def test_analytics_counts_raters_who_timed_out_with_nothing_submitted(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The case most worth seeing is also the one ratings-derived analytics
+    cannot show: a rater who turned up, ran out of time, and submitted nothing
+    never appears in the ratings join at all."""
+    experiment = _create_experiment(client)
+    _upload_questions(client, experiment["id"])
+
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_ZERO_RATINGS")
+    backdate_rater_session(session_payload["rater_id"])
+    client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
+
+    analytics = client.get(f"/api/admin/experiments/{experiment['id']}/analytics").json()
+
+    assert analytics["overview"]["total_ratings"] == 0
+    assert analytics["overview"]["timed_out_raters"] == 1
+
+
+def test_create_experiment_accepts_a_session_duration(client: TestClient):
+    response = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("long-task"),
+            "num_ratings_per_question": 2,
+            "session_duration_minutes": 120,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["session_duration_minutes"] == 120
+
+
+def test_create_experiment_defaults_to_one_hour(client: TestClient):
+    """Experiments that say nothing behave exactly as they did before the
+    session length became configurable."""
+    assert _create_experiment(client)["session_duration_minutes"] == 60
+
+
+@pytest.mark.parametrize("duration", [0, 1, 121, 241, 10000, -30])
+def test_create_experiment_rejects_out_of_range_durations(client: TestClient, duration: int):
+    response = client.post(
+        "/api/admin/experiments",
+        json={"name": _unique_name("bad-duration"), "session_duration_minutes": duration},
+    )
+
+    assert response.status_code == 422
+
+
+def test_questions_are_served_past_the_default_hour_on_a_long_experiment(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The point of the whole change: at 120 minutes a rater 90 minutes in is
+    still working, where before every clock cut them off at 60."""
+    experiment = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("two-hour"),
+            "num_ratings_per_question": 2,
+            "session_duration_minutes": 120,
+        },
+    ).json()
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_LONG")
+
+    backdate_rater_session(session_payload["rater_id"], 90)
+
+    response = client.get(
+        "/api/raters/next-question",
+        headers=_rater_headers(session_payload),
+    )
+    status = client.get("/api/raters/session-status", headers=_rater_headers(session_payload))
+
+    assert response.status_code == 200
+    assert status.json()["is_active"] is True
+    # 120 - 90 = 30 minutes left, not a negative number against a 60 minute clock.
+    assert status.json()["time_remaining_seconds"] > 20 * 60
+
+
+def test_long_experiment_token_outlives_the_default_hour(
+    client: TestClient,
+    backdate_rater_session,
+):
+    """The token is derived from the session length, so it cannot be the thing
+    that cuts a long session off at 60 minutes."""
+    experiment = client.post(
+        "/api/admin/experiments",
+        json={"name": _unique_name("token-long"), "session_duration_minutes": 120},
+    ).json()
+    _upload_questions(client, experiment["id"])
+    session_payload = _start_session(client, experiment["id"], prolific_pid="PID_TOKEN_LONG")
+
+    backdate_rater_session(session_payload["rater_id"], 100)
+
+    # A token minted as `now + 3600` would have died 40 minutes ago.
+    assert (
+        client.get("/api/raters/next-question", headers=_rater_headers(session_payload)).status_code
+        == 200
+    )
+
+
+def test_update_session_duration_is_locked_after_launch(client: TestClient, sync_engine):
+    """Raters already in a session hold a session_end_time computed from the
+    old value and will never hear about a change."""
+    experiment = _create_experiment(client)
+    _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
+
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "session_duration_minutes": 120},
+    )
+
+    assert response.status_code == 400
+    assert "session_duration_minutes" in response.json()["detail"]
+
+
+def test_update_session_duration_allowed_while_draft(client: TestClient):
+    experiment = _create_experiment(client)
+
+    response = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "session_duration_minutes": 120},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["session_duration_minutes"] == 120
+
+
+# Columns duplicate_experiment deliberately does not carry over. Anything else
+# must be copied — the duplicate is built with an explicit field-by-field
+# constructor, so a column left out is silently dropped rather than erroring.
+_NOT_COPIED_ON_DUPLICATE = {
+    "id",
+    "name",
+    "internal_name",
+    "created_at",
+    "status",
+    "archived_at",
+    "prolific_completion_url",
+    "prolific_participant_group_id",
+    # Pre-existing: assistance config is re-chosen on the copy.
+    "assistance_method",
+    "assistance_params",
+}
+
+
+def test_duplicate_copies_every_column_it_should(client: TestClient, sync_engine):
+    """Guard against the silent-data-loss trap: add a column to Experiment and
+    forget duplicate_experiment, and the copy quietly gets the default."""
+    from models import Experiment
+
+    experiment = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("dup-source"),
+            "num_ratings_per_question": 4,
+            "session_duration_minutes": 110,
+        },
+    ).json()
+    client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={
+            "assistance_method": "none",
+            "description": "desc",
+            "system_prompt": "sys",
+            "human_prompt_prefix": "pre",
+            "human_prompt_suffix": "suf",
+            "prolific_pool": "pool",
+        },
+    )
+
+    copy_response = client.post(f"/api/admin/experiments/{experiment['id']}/duplicate")
+    assert copy_response.status_code == 200
+    copy_id = copy_response.json()["id"]
+
+    columns = [c.name for c in Experiment.__table__.columns]
+    checked = [c for c in columns if c not in _NOT_COPIED_ON_DUPLICATE]
+    assert "session_duration_minutes" in checked
+
+    with sync_engine.begin() as conn:
+        rows = {
+            row[0]: row
+            for row in conn.execute(
+                text(f"SELECT id, {', '.join(checked)} FROM experiments WHERE id = ANY(:ids)"),
+                {"ids": [experiment["id"], copy_id]},
+            ).all()
+        }
+
+    assert rows[experiment["id"]][1:] == rows[copy_id][1:]
 
 
 def test_export_ratings_streams_large_dataset_in_chunks(client: TestClient, sync_engine):
@@ -1415,6 +1790,14 @@ def _install_default_participant_group_mock() -> respx.Route:
 
 
 def _mock_publish_study(*, study_id: str = PROLIFIC_STUDY_ID) -> respx.Route:
+    # Publishing now refreshes the study description first, so the time-limit
+    # note cannot go stale between round creation and the listing going live.
+    # Attach a default mock for that PATCH so tests that don't care about the
+    # description don't each have to register one — same reasoning as the
+    # participant-group mock on _mock_create_study.
+    # Registered after any mock the test set up itself, so respx's first-match
+    # ordering leaves an explicit one in charge.
+    _mock_update_study(study_id=study_id)
     return respx.post(f"{PROLIFIC_BASE}/studies/{study_id}/transition/").mock(
         return_value=Response(200, json={"id": study_id, "status": "ACTIVE"})
     )
@@ -2108,11 +2491,161 @@ def test_prolific_round_edit_updates_db_and_calls_prolific(client: TestClient, e
     sent = json.loads(route.calls[0].request.content)
     # Description is converted to Prolific's HTML subset on the wire; the raw
     # markdown is what we store back in the DB and return in the response.
+    assert sent.pop("description").startswith("<p>Updated description</p>")
     assert sent == {
-        "description": "<p>Updated description</p>",
         "reward": 1500,
         "total_available_places": 7,
     }
+
+
+@respx.mock
+def test_study_description_states_the_time_limit_before_raters_accept(
+    client: TestClient, enable_prolific
+):
+    """Issue #102 decision 5: the study listing is the only surface a rater
+    sees *before* accepting, so the time commitment has to be there. The rater
+    intro screen comes after they have already taken the study, which is too
+    late to stop a return.
+    """
+    create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
+    experiment = create_resp.json()
+    route = _mock_create_study()
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "description": "Read the article."},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+
+    assert "<b>Time limit:</b>" in sent["description"]
+    assert "1 hour" in sent["description"]
+    assert "5 more minutes" in sent["description"]
+
+
+@respx.mock
+def test_study_description_note_follows_the_experiments_session_length(
+    client: TestClient, enable_prolific
+):
+    payload = _prolific_experiment_payload()
+    payload["session_duration_minutes"] = 110
+    experiment = client.post("/api/admin/experiments", json=payload).json()
+
+    route = _mock_create_study()
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "description": "Read the article."},
+    )
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+
+    assert "1 hour 50 minutes" in sent["description"]
+
+
+@respx.mock
+def test_publishing_a_main_round_does_not_resend_the_description(
+    client: TestClient, enable_prolific
+):
+    """The refresh only runs while the experiment can still change.
+
+    Once the pilot's publish flips the experiment out of DRAFT the session
+    length is locked, and a round's own description edits already carry the
+    note — so for a main round the resend would be byte-identical. Skipping it
+    keeps a transient Prolific failure from blocking a publish that has nothing
+    to correct.
+    """
+    experiment = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+
+    _mock_create_study(study_id="PILOT_STUDY")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/pilot", json=_pilot_payload())
+    _mock_publish_study(study_id="PILOT_STUDY")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish")
+    _mock_close_study(study_id="PILOT_STUDY")
+    client.post(f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/close")
+
+    _mock_create_study(study_id="ROUND_1_STUDY")
+    round_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds", json={"places": 4}
+    )
+    assert round_resp.status_code == 200, round_resp.text
+
+    # A fresh PATCH mock, so anything it catches came from this publish alone.
+    refresh = _mock_update_study(study_id="ROUND_1_STUDY")
+    _mock_publish_study(study_id="ROUND_1_STUDY")
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/"
+        f"{round_resp.json()['id']}/publish"
+    )
+
+    assert publish_resp.status_code == 200, publish_resp.text
+    assert not refresh.called, "a locked experiment cannot have drifted, so nothing to resend"
+
+
+@respx.mock
+def test_publishing_refreshes_a_time_limit_note_that_went_stale(
+    client: TestClient, enable_prolific
+):
+    """Session length stays editable until the first publish, but the note was
+    baked into the Prolific description when the round was created. Publishing
+    is the moment the listing becomes visible and the last moment the two can
+    drift, so the description is regenerated there.
+
+    The harmful direction is shortening: a listing promising 2 hours while the
+    session gives 1 would have raters running out of time believing they had
+    twice as long.
+    """
+    payload = _prolific_experiment_payload()
+    payload["session_duration_minutes"] = 120
+    experiment = client.post("/api/admin/experiments", json=payload).json()
+
+    create_route = _mock_create_study()
+    client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
+        json={**_pilot_payload(), "description": "Read the article."},
+    )
+    created = json.loads(create_route.calls[-1].request.content.decode())
+    assert "2 hours" in created["description"]
+
+    # Still DRAFT, so the length is editable — and nothing has touched Prolific.
+    patch_resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}",
+        json={"assistance_method": "none", "session_duration_minutes": 60},
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+
+    update_route = _mock_update_study()
+    _mock_publish_study()
+    publish_resp = client.post(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1/publish"
+    )
+    assert publish_resp.status_code == 200, publish_resp.text
+
+    assert update_route.called, "publish must resend the description"
+    sent = json.loads(update_route.calls[-1].request.content.decode())
+    assert "1 hour" in sent["description"]
+    assert "2 hours" not in sent["description"]
+    # The researcher's own words survive the regeneration.
+    assert sent["description"].startswith("<p>Read the article.</p>")
+
+
+@respx.mock
+def test_editing_a_round_description_keeps_the_time_limit_note(client: TestClient, enable_prolific):
+    """The note is generated on the way out, so an edit cannot drop it."""
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"description": "Rewritten description"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    sent = json.loads(route.calls[-1].request.content.decode())
+
+    assert sent["description"].startswith("<p>Rewritten description</p>")
+    assert "<b>Time limit:</b>" in sent["description"]
+    # The DB keeps the researcher's own words, unpolluted.
+    assert resp.json()["description"] == "Rewritten description"
 
 
 @respx.mock
@@ -2246,6 +2779,7 @@ def test_prolific_round_list_refreshes_transient_status_from_prolific(
     experiment, _pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -2268,6 +2802,7 @@ def test_prolific_round_sync_captures_total_cost_into_list_spend(
     experiment, pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -2299,6 +2834,7 @@ def test_prolific_round_sync_captures_submission_counts(
     experiment, pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -2337,6 +2873,7 @@ def test_prolific_round_sync_keeps_counts_when_submissions_fetch_fails(
     experiment, pilot = _create_prolific_experiment(client)
     experiment_id = experiment["id"]
 
+    _mock_update_study()  # publish refreshes the description first
     respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
         return_value=Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "PUBLISHING"})
     )
@@ -3017,9 +3554,12 @@ def test_prolific_create_converts_description_markdown_to_html(
     assert pilot_resp.status_code == 200, pilot_resp.text
 
     sent = json.loads(route.calls[-1].request.content.decode())
-    assert (
-        sent["description"] == "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
+    # The researcher's markdown converts as before, and the platform's time-limit
+    # note is appended after it rather than replacing or reordering anything.
+    assert sent["description"].startswith(
+        "<p>Read the article.</p><ul><li>Be fair</li><li>Be quick</li></ul>"
     )
+    assert "<b>Time limit:</b>" in sent["description"]
 
 
 @respx.mock

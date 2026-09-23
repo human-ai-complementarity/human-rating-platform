@@ -28,7 +28,7 @@ from services.admin.prolific import ProlificAPIError, add_participant_to_group, 
 from services.assistance import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
 from services.queries import fetch_remaining_rating_actions
-from services.session_policy import SessionPolicy, resolve_session_policy
+from session_policy import SessionPolicy, resolve_session_policy
 from .mappers import (
     build_question_response,
     build_rater_start_response,
@@ -42,6 +42,7 @@ from .queries import (
     fetch_experiment_or_404,
     fetch_in_progress_parent_ids,
     fetch_live_assignment_for_rater,
+    fetch_outstanding_assignment_for_rater,
     fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rated_question_ids,
@@ -51,11 +52,13 @@ from .queries import (
 )
 from .selectors import build_question_selection_groups, build_selected_question
 from .validators import (
+    expire_rater_if_past_grace,
     validate_existing_rater_can_resume,
     validate_question_belongs_to_rater_experiment,
     validate_rating_confidence,
+    validate_rater_can_be_served,
+    validate_rater_session_not_over,
     validate_rater_marked_active,
-    validate_rater_session_is_active,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,10 @@ async def start_session(
             existing_rater.is_active = True
             existing_rater.session_start = datetime.now(UTC)
             existing_rater.session_end = None
+            # Travels with the rest of the session state: an admin who left a
+            # preview idle past the deadline once would otherwise keep counting
+            # towards "ran out of time" through every clean run afterwards.
+            existing_rater.timed_out = False
             await db.commit()
             await db.refresh(existing_rater)
             logger.info(
@@ -125,7 +132,11 @@ async def start_session(
                 },
             )
             token = issue_rater_session_token(
-                settings=settings, rater_id=existing_rater.id, experiment_id=experiment_id
+                settings,
+                rater_id=existing_rater.id,
+                experiment_id=experiment_id,
+                session_start=existing_rater.session_start,
+                policy=policy,
             )
             return build_rater_start_response(
                 rater_id=existing_rater.id,
@@ -142,7 +153,11 @@ async def start_session(
             )
         validate_existing_rater_can_resume(existing_rater, policy)
         token = issue_rater_session_token(
-            settings=settings, rater_id=existing_rater.id, experiment_id=experiment_id
+            settings,
+            rater_id=existing_rater.id,
+            experiment_id=experiment_id,
+            session_start=existing_rater.session_start,
+            policy=policy,
         )
         return build_rater_start_response(
             rater_id=existing_rater.id,
@@ -220,7 +235,11 @@ async def start_session(
             )
 
     token = issue_rater_session_token(
-        settings=settings, rater_id=rater.id, experiment_id=experiment_id
+        settings,
+        rater_id=rater.id,
+        experiment_id=experiment_id,
+        session_start=rater.session_start,
+        policy=policy,
     )
 
     return build_rater_start_response(
@@ -307,7 +326,8 @@ async def get_next_question(
     # Mirror submit_rating: an ended session must not be served (and thereby
     # reserve) new questions — end_session just released its slot.
     validate_rater_marked_active(rater)
-    await validate_rater_session_is_active(rater, db, policy)
+    # Nothing at all once the session is properly over — not even a re-serve.
+    await validate_rater_session_not_over(rater, db, policy)
 
     now = datetime.now(UTC)
 
@@ -316,7 +336,20 @@ async def get_next_question(
 
         # Re-serve an outstanding reservation rather than picking fresh, so a
         # refresh can't re-roll the question or leak an extra reserved slot.
+        #
+        # Deliberately ahead of the deadline gate below: a reservation the
+        # rater already holds is not new work. The frontend re-fetches rather
+        # than restoring from sessionStorage, so a reload inside the grace
+        # window comes through here — refusing it would lose precisely the
+        # answer the grace window exists to save.
         live_assignment = await fetch_live_assignment_for_rater(rater_id=rater_id, now=now, db=db)
+        if live_assignment is None and now > policy.deadline(rater.session_start):
+            # Past the deadline the reservation's own TTL is beside the point:
+            # it is half the session long, so by the time a rater reaches the
+            # grace window the reservation they are holding has usually lapsed.
+            # Honouring it here would mean the reload lifeline only works for
+            # raters served a question in the last few minutes.
+            live_assignment = await fetch_outstanding_assignment_for_rater(rater_id=rater_id, db=db)
         if live_assignment is not None:
             question = await fetch_question_or_404(live_assignment.question_id, db)
             parent_text = (
@@ -325,6 +358,9 @@ async def get_next_question(
                 else None
             )
             return build_question_response(question, parent_question_text=parent_text)
+
+    # Past the deadline the rater keeps what they hold, but is served nothing new.
+    await validate_rater_can_be_served(rater, db, policy)
 
     rated_question_ids = await fetch_rated_question_ids(rater_id, db)
     eligible_questions = await fetch_eligible_questions_with_counts(
@@ -390,7 +426,7 @@ async def get_question_by_id(
     policy = resolve_session_policy(experiment)
 
     validate_rater_marked_active(rater)
-    await validate_rater_session_is_active(rater, db, policy)
+    await validate_rater_can_be_served(rater, db, policy)
 
     if not rater.is_preview:
         raise HTTPException(
@@ -418,7 +454,13 @@ async def submit_rating(
     db: AsyncSession,
 ) -> RatingResponse:
     rater = await fetch_rater_or_404(rater_id, db)
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    policy = resolve_session_policy(experiment)
+
     validate_rater_marked_active(rater)
+    # Gated on the hard deadline, not the deadline: the question on screen when
+    # the clock ran out is still worth saving, and the rater already did the work.
+    await validate_rater_session_not_over(rater, db, policy)
 
     question = await fetch_question_or_404(payload.question_id, db)
     validate_question_belongs_to_rater_experiment(
@@ -575,18 +617,20 @@ async def get_session_status(
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
     policy = resolve_session_policy(experiment)
 
-    time_remaining = (policy.deadline(rater.session_start) - datetime.now(UTC)).total_seconds()
-    if time_remaining <= 0:
-        rater.is_active = False
-        rater.session_end = datetime.now(UTC)
-        await db.commit()
-        time_remaining = 0
+    now = datetime.now(UTC)
+    time_remaining = (policy.deadline(rater.session_start) - now).total_seconds()
+    grace_remaining = (policy.hard_deadline(rater.session_start) - now).total_seconds()
+
+    # Only the hard deadline ends the session; between the two the rater is
+    # still finishing the question they were served.
+    await expire_rater_if_past_grace(rater, db, policy)
 
     completed = await fetch_rater_completed_count(rater_id, db)
 
     return SessionStatusResponse(
         is_active=rater.is_active,
         time_remaining_seconds=max(0, int(time_remaining)),
+        grace_seconds_remaining=max(0, int(grace_remaining)),
         questions_completed=completed,
     )
 

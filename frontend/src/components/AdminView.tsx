@@ -84,6 +84,7 @@ function AdminView() {
     name: '',
     internal_name: '',
     num_ratings_per_question: 3,
+    session_duration_minutes: 60,
     prolific_completion_url: '',
   });
 
@@ -184,6 +185,7 @@ function AdminView() {
         name: '',
         internal_name: '',
         num_ratings_per_question: 3,
+        session_duration_minutes: 60,
         prolific_completion_url: '',
       });
       navigate(`/admin/experiments/${created.id}`);
@@ -769,6 +771,18 @@ function CreatePanel({
           min={1}
           required
         />
+        <Field
+          id="session-duration"
+          testId="session-duration-input"
+          type="number"
+          label="Session length (minutes)"
+          hint="How long each rater gets before their session ends. Raise it for long-context tasks; they get 5 extra minutes to finish the question they are on. Cannot be changed once a main round launches."
+          value={String(value.session_duration_minutes)}
+          onChange={(v) => onChange({ ...value, session_duration_minutes: parseInt(v, 10) || 0 })}
+          min={5}
+          max={120}
+          required
+        />
         <div
           style={{
             background: 'var(--accent-soft)',
@@ -841,6 +855,7 @@ function Field({
   required,
   type = 'text',
   min,
+  max,
 }: {
   id: string;
   testId?: string;
@@ -852,6 +867,7 @@ function Field({
   required?: boolean;
   type?: 'text' | 'number';
   min?: number;
+  max?: number;
 }) {
   return (
     <div style={{ marginBottom: 16 }}>
@@ -867,6 +883,7 @@ function Field({
         placeholder={placeholder}
         required={required}
         min={min}
+        max={max}
         style={{
           width: '100%',
           padding: '11px 13px',

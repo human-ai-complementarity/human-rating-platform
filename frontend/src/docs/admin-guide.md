@@ -6,6 +6,10 @@ End-to-end flow: create → upload → optionally configure AI assistance → pi
 
 From the **Experiments** page, fill out the create form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
 
+**Session length** is how long each rater gets before their session ends, in minutes. The default of `60` suits most tasks; raise it when a single question takes a long time to read (long-context datasets in particular), up to a maximum of 120 — a task needing longer than two hours is better split into more, shorter sessions than given a longer clock. Every other clock follows from this one number, so you only set it here.
+
+Two things worth knowing. A rater who is partway through a question when the clock runs out gets **5 extra minutes to finish that one question** — they stop being served new ones at the deadline, but the answer they were writing is saved rather than discarded. And session length is **frozen once a main round launches**: raters already in a session were told when their session ends, and changing it underneath them would make that a lie. Set it before you launch.
+
 ## 2. Upload questions
 
 Upload a CSV or Parquet file in the **Questions** section. You can upload multiple files into the same experiment — rows accumulate. The colab notebook can generate either format from a pandas DataFrame.
@@ -70,6 +74,10 @@ In **Rater Assistance Methods**, decide whether the AI should help raters. Leavi
 ## 4. Pilot on Prolific
 
 Always pilot before scaling. In the **Prolific Workflow** section, create a small unpublished study (5 raters is a good default), then **Publish** it. Use the pilot to calibrate your time estimate and reward — guess high on the first round; the platform gives a tighter recommendation afterwards.
+
+**You don't need to write about the time limit yourself.** The platform appends it to the study description on Prolific — how long the session is, that the clock starts when they do, and that they can finish early. Raters see that before accepting, which is the only moment early enough to stop a return. Write about the task; the platform covers the clock.
+
+Keep the **estimated completion time** at or under the session length. It is the number Prolific advertises, so an estimate longer than the session promises work that cannot be finished in the time given — raters either return the study on sight or run out of time partway through. Both the pilot form and the round editor warn you when the two disagree.
 
 ### Excluding prior participants
 

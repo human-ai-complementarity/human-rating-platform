@@ -51,10 +51,10 @@ from .prolific import (
 from services.participant_groups import ensure_participant_group_and_commit
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
-from services.session_policy import resolve_session_policy
+from session_policy import SessionPolicy, resolve_session_policy
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
-from .status import validate_new_exclusion_targets
+from .status import is_locked, validate_new_exclusion_targets
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,56 @@ def _extract_prolific_message(body: str) -> str | None:
 # That set means "finished collecting" and gates round creation and experiment
 # status; AWAITING_REVIEW belongs there and still needs polling.
 ROUND_SYNC_SKIP_STATUSES = frozenset({ProlificStudyStatus.COMPLETED})
+
+
+def format_session_length(minutes: int) -> str:
+    """ "45 minutes" / "1 hour" / "2 hours 30 minutes" / "1 hour 1 minute".
+
+    Reads predicatively — "you will have ..." — so both halves are pluralised.
+    """
+    if minutes < 60:
+        return _plural(minutes, "minute")
+    hours, rest = divmod(minutes, 60)
+    hour_part = _plural(hours, "hour")
+    return hour_part if rest == 0 else f"{hour_part} {_plural(rest, 'minute')}"
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def build_session_note(policy: SessionPolicy) -> str:
+    """The time commitment, as markdown, for the study description.
+
+    Prolific's listing shows the estimated completion time, but not that the
+    session is a live clock with a hard stop. That is what a rater needs
+    before accepting — and not knowing it is what makes them return the study
+    once they find out (issue #102 decision 5).
+    """
+    note = (
+        f"**Time limit:** you will have {format_session_length(policy.duration_minutes)} "
+        "from the moment you start. Rate as many questions as you can in that time — "
+        "you can finish early, and everything you submit is kept."
+    )
+    if policy.grace_minutes:
+        minutes = policy.grace_minutes
+        unit = "minute" if minutes == 1 else "minutes"
+        note += (
+            f" When the time is up you get {minutes} more {unit} to send the question you are on."
+        )
+    return note
+
+
+def with_session_note(description: str, policy: SessionPolicy) -> str:
+    """Append the time commitment to a researcher-authored description.
+
+    Only applied on the way to Prolific. The raw markdown stays in our DB so
+    editors see what they typed, and the rater intro screen states the same
+    thing in its own block rather than rendering it twice.
+    """
+    body = (description or "").rstrip()
+    note = build_session_note(policy)
+    return f"{body}\n\n{note}" if body else note
 
 
 def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
@@ -518,7 +568,9 @@ async def _create_prolific_study_for_round(
         settings=settings.prolific,
         name=_build_round_study_name(experiment.name, round_number),
         internal_name=_build_round_internal_name(experiment.internal_name, round_number),
-        description=to_prolific_html(description),
+        description=to_prolific_html(
+            with_session_note(description, resolve_session_policy(experiment))
+        ),
         external_study_url=external_study_url,
         estimated_completion_time=estimated_completion_time,
         reward=reward,
@@ -836,6 +888,52 @@ async def run_experiment_round(
     return _build_round_response(round_)
 
 
+async def _refresh_study_description(
+    *,
+    settings,
+    experiment: Experiment,
+    round_: ExperimentRound,
+    experiment_id: int,
+    round_id: int,
+) -> None:
+    """Resend the description so its time-limit note matches the live policy.
+
+    Fatal on failure, deliberately: publishing a listing that promises raters a
+    different amount of time than they will get is worse than not publishing.
+    The admin can retry once Prolific is reachable.
+    """
+    try:
+        await update_study(
+            settings=settings.prolific,
+            study_id=round_.prolific_study_id,
+            fields={
+                "description": to_prolific_html(
+                    with_session_note(round_.description, resolve_session_policy(experiment))
+                )
+            },
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to refresh study description before publishing",
+            exc_info=True,
+            extra={
+                "attributes": {
+                    "experiment_id": experiment_id,
+                    "round_id": round_id,
+                    "study_id": round_.prolific_study_id,
+                }
+            },
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=_prolific_error_detail(
+                "Failed to refresh the study description before publishing.", exc
+            )
+            if isinstance(exc, ProlificAPIError)
+            else "Failed to refresh the study description before publishing. Please try again.",
+        ) from exc
+
+
 async def publish_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -851,6 +949,27 @@ async def publish_experiment_round(
         raise HTTPException(
             status_code=400,
             detail="Only unpublished rounds can be published",
+        )
+
+    # The time-limit note was generated when the round was created, and the
+    # session length stays editable until the first publish flips the
+    # experiment out of DRAFT. So between those two moments the description
+    # sitting on Prolific can describe a session length that no longer applies.
+    # Regenerate it here: publishing is the moment the listing becomes visible,
+    # and after it the experiment is locked, so this is the last point drift is
+    # possible.
+    #
+    # Only while the experiment is still unlocked. Once it is not, the length
+    # cannot have changed and a round's own description edits already went out
+    # with the note applied, so the resend would be byte-identical — and every
+    # extra Prolific call is another way for a publish to fail.
+    if not is_locked(experiment):
+        await _refresh_study_description(
+            settings=settings,
+            experiment=experiment,
+            round_=round_,
+            experiment_id=experiment_id,
+            round_id=round_id,
         )
 
     try:
@@ -1003,7 +1122,9 @@ async def update_experiment_round(
     if payload.description is not None:
         # Convert markdown to Prolific's HTML subset on the wire, but keep
         # the raw markdown in our DB so editors see what they typed.
-        prolific_fields["description"] = to_prolific_html(payload.description)
+        prolific_fields["description"] = to_prolific_html(
+            with_session_note(payload.description, resolve_session_policy(experiment))
+        )
     if payload.study_label is not None:
         prolific_fields["study_labels"] = [payload.study_label]
     # `filters` on Prolific is a full replacement, so we always rebuild the
