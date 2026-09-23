@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, Question, Upload
+from services.question_separator import separator_upload_offenders
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -38,6 +39,7 @@ DATASET_META_FIELDS = (
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
+_SEPARATOR_REJECT_PREVIEW = 5
 
 
 def _configure_csv_field_limit() -> None:
@@ -236,6 +238,33 @@ def _read_parquet(
     return rows, meta
 
 
+def _reject_separator_question_text(rows: list[dict[str, Any]]) -> None:
+    """Fail the upload if any row still concatenates document + question.
+
+    The parent-row shape is the supported long-context model (issue #85).
+    Accepting the old delimiter would reintroduce the duplicated 500KB+ rows
+    that OOM-killed the database, and would be invisible once the frontend
+    stops splitting on it.
+    """
+    offenders = separator_upload_offenders(rows)
+    if not offenders:
+        return
+    preview = ", ".join(offenders[:_SEPARATOR_REJECT_PREVIEW])
+    extra = (
+        f" (and {len(offenders) - _SEPARATOR_REJECT_PREVIEW} more)"
+        if len(offenders) > _SEPARATOR_REJECT_PREVIEW
+        else ""
+    )
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Question(s) {preview}{extra} embed a document using the "
+            "`--- QUESTION ---` separator. Store the document as its own row "
+            "and set parent_question_id to that row's question_id."
+        ),
+    )
+
+
 def _build_questions_with_parent_refs(
     experiment_id: int,
     rows: list[dict[str, Any]],
@@ -279,16 +308,21 @@ async def _resolve_parent_refs(
 
     # Build {question_id_string -> db id} for this experiment, covering both rows
     # just inserted and any pre-existing ones from earlier uploads.
+    #
+    # ORDER BY id is load-bearing: last-write-wins must be the highest id
+    # (last row in the newest file — inserts walk file order). The separator
+    # guard exempts only that last occurrence; an unordered SELECT could bind
+    # the child to an earlier duplicate and leave a concatenated twin standing
+    # as a rateable question.
     existing = (
         await db.execute(
-            select(Question.question_id, Question.id).where(Question.experiment_id == experiment_id)
+            select(Question.question_id, Question.id)
+            .where(Question.experiment_id == experiment_id)
+            .order_by(Question.id)
         )
     ).all()
     question_id_to_db_id: dict[str, int] = {}
     for qid_string, db_id in existing:
-        # Last write wins on duplicate question_id strings — questions already
-        # allow duplicates within an experiment, and the CSV-string parent ref
-        # is inherently ambiguous in that case. We pick whichever the DB returns.
         question_id_to_db_id[qid_string] = db_id
 
     for question, parent_ref in zip(new_questions, parent_refs):
@@ -335,6 +369,8 @@ async def upload_questions(
         rows, meta = _read_csv(file)
     else:
         rows, meta = _read_parquet(file)
+
+    _reject_separator_question_text(rows)
 
     meta_applied: list[str] = []
     meta_conflicts: list[str] = []
