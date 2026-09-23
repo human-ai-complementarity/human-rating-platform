@@ -8,6 +8,7 @@ url = "postgresql://postgres:postgres@localhost:5432/human_rating_platform"
 
 [exports]
 stream_batch_size = 1000
+stream_chunk_max_bytes = 4194304
 
 [testing]
 export_seed_row_count = 1500
