@@ -88,7 +88,6 @@ type AnalyticsRecord = {
 
 type RaterQuestionRecord = {
   id: number;
-  question_id: string;
   question_text: string;
   options: string | null;
   question_type: string;
@@ -474,7 +473,6 @@ async function installApiMocks(
         200,
         state.questionsBySessionToken[sessionToken] || {
           id: 500,
-          question_id: 'q-1',
           question_text: 'Is this workflow ready for release?',
           options: 'Yes|No',
           question_type: 'MC',
@@ -934,7 +932,6 @@ test('a long parent question moves the document behind the link, not into the ca
 
   seedRaterWithQuestion(state, {
     id: 504,
-    question_id: 'parent-long-q',
     question_text: 'Which answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
@@ -955,6 +952,10 @@ test('a long parent question moves the document behind the link, not into the ca
   await documentLink.click();
   const popup = await popupPromise;
   await popup.waitForLoadState('domcontentloaded');
+  // The tab title and heading stay generic so the external question id never
+  // reaches a rater.
+  await expect(popup).toHaveTitle('Document');
+  await expect(popup.getByRole('heading', { name: 'Document', exact: true })).toBeVisible();
   await expect(popup.getByText('LONGBENCH DOCUMENT BODY')).toBeVisible();
 });
 
@@ -964,7 +965,6 @@ test('a short parent question stays inline in the context box', async ({ page })
 
   seedRaterWithQuestion(state, {
     id: 505,
-    question_id: 'parent-short-q',
     question_text: 'Does the review express satisfaction?',
     options: 'Yes|No',
     question_type: 'MC',
@@ -985,7 +985,6 @@ test('a --- QUESTION --- delimiter in question text is not treated as a document
   const state = createMockState();
   seedRaterWithQuestion(state, {
     id: 503,
-    question_id: 'legacy-separator-q',
     question_text:
       'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
     options: 'A|B',
@@ -1007,7 +1006,6 @@ test('an MC question with no options submits the typed free-text answer', async 
   // options. The card falls back to a textarea, so submit must read that.
   seedRaterWithQuestion(state, {
     id: 506,
-    question_id: 'mc-without-options',
     question_text: 'Summarize what the document recommends.',
     options: '',
     question_type: 'MC',
@@ -1077,14 +1075,12 @@ test('rater ignores a stored session from another experiment and starts a fresh 
   };
   state.questionsBySessionToken['token-exp-1'] = {
     id: 501,
-    question_id: 'old-q',
     question_text: 'Old experiment question',
     options: 'Yes,No',
     question_type: 'MC',
   };
   state.questionsBySessionToken['token-exp-2'] = {
     id: 502,
-    question_id: 'fresh-q',
     question_text: 'Fresh experiment question',
     options: 'Yes,No',
     question_type: 'MC',

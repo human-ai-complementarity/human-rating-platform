@@ -886,7 +886,7 @@ def test_next_question_returns_eligible_question(client: TestClient):
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["question_id"] in {"q1", "q2"}
+    assert payload["question_text"] in {"Is this useful?", "Explain why"}
 
 
 # ── Deep-linking one question (admin analytics -> rater preview) ─────────────
@@ -3346,6 +3346,12 @@ def test_platform_status_currency_cached_across_calls(
 # ── parent_question_id (sub-questions) ────────────────────────────────────────
 
 PARENT_TEXT = "Customer review: arrived late but exceeded expectations."
+# The rater payload carries no external question id, so served rows are
+# identified by their text.
+CHILD_TEXTS = {
+    "Does the review express satisfaction?",
+    "Does the review describe a delivery problem?",
+}
 
 
 def _upload_parent_and_children(client: TestClient, experiment_id: int) -> None:
@@ -3373,7 +3379,7 @@ def test_upload_with_parent_question_id_attaches_context_to_children(client: Tes
     ).json()
 
     # Both eligible questions are children; either should carry the parent text.
-    assert question["question_id"] in {"sub_satisfied", "sub_problem"}
+    assert question["question_text"] in CHILD_TEXTS
     assert question["parent_question_text"] == PARENT_TEXT
 
 
@@ -3538,7 +3544,7 @@ def test_upload_accepts_parent_document_that_contains_the_delimiter(client: Test
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
-    assert question["question_id"] == "child1"
+    # question_id isn't served to raters; question_text identifies the child.
     assert question["question_text"] == "What follows from the document?"
     assert question["parent_question_text"] == (
         "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
@@ -3772,12 +3778,14 @@ def test_migrate_separator_questions_rewrites_legacy_rows(
 
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_SEP_MIG")
     headers = _rater_headers(session_payload)
+    # Keyed on question_text: the rater payload doesn't carry question_id, and
+    # every row in this fixture has a distinct text.
     seen: dict[str, dict] = {}
     for _ in range(6):
         resp = client.get("/api/raters/next-question", headers=headers)
         assert resp.status_code == 200
         question = resp.json()
-        seen[question["question_id"]] = question
+        seen[question["question_text"]] = question
         submit = client.post(
             "/api/raters/submit",
             headers=headers,
@@ -3790,24 +3798,16 @@ def test_migrate_separator_questions_rewrites_legacy_rows(
         )
         assert submit.status_code == 200
 
-    assert seen["a1"]["question_text"] == "Question A1?"
-    assert seen["a1"]["parent_question_text"] == shared_doc
-    assert seen["a2"]["question_text"] == "Question A2?"
-    assert seen["a2"]["parent_question_text"] == shared_doc
-    assert seen["b1"]["question_text"] == "Question B1?"
-    assert seen["b1"]["parent_question_text"] == unique_doc
-    assert seen["near_miss"]["question_text"] == "Document\n--- QUESTION ---\nNot a split?"
-    assert seen["near_miss"]["parent_question_text"] is None
-    assert "real_parent" not in seen
-    assert seen["real_child"]["question_text"] == "Already a child?"
-    assert seen["real_child"]["parent_question_text"] == (
-        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
-    )
-    assert seen["dual_child"]["question_text"] == (
-        f"{shared_doc}\n\n--- QUESTION ---\nShould not split?"
-    )
-    assert seen["dual_child"]["parent_question_text"] == (
-        "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    real_parent_text = "Keep me intact\n\n--- QUESTION ---\nthis is still the document"
+    assert seen["Question A1?"]["parent_question_text"] == shared_doc
+    assert seen["Question A2?"]["parent_question_text"] == shared_doc
+    assert seen["Question B1?"]["parent_question_text"] == unique_doc
+    assert seen["Document\n--- QUESTION ---\nNot a split?"]["parent_question_text"] is None
+    assert real_parent_text not in seen
+    assert seen["Already a child?"]["parent_question_text"] == real_parent_text
+    assert (
+        seen[f"{shared_doc}\n\n--- QUESTION ---\nShould not split?"]["parent_question_text"]
+        == real_parent_text
     )
 
 
@@ -3818,12 +3818,12 @@ def test_next_question_never_returns_parent_rows(client: TestClient):
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_NO_PARENT")
     headers = _rater_headers(session_payload)
 
-    seen_question_ids: set[str] = set()
+    seen_questions: set[str] = set()
     for _ in range(2):
         resp = client.get("/api/raters/next-question", headers=headers)
         assert resp.status_code == 200
         question = resp.json()
-        seen_question_ids.add(question["question_id"])
+        seen_questions.add(question["question_text"])
         client.post(
             "/api/raters/submit",
             headers=headers,
@@ -3835,8 +3835,8 @@ def test_next_question_never_returns_parent_rows(client: TestClient):
             },
         )
 
-    assert seen_question_ids == {"sub_satisfied", "sub_problem"}
-    assert "parent1" not in seen_question_ids
+    assert seen_questions == CHILD_TEXTS
+    assert PARENT_TEXT not in seen_questions
 
 
 def test_next_question_groups_siblings_together(client: TestClient):
@@ -3861,11 +3861,16 @@ def test_next_question_groups_siblings_together(client: TestClient):
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_GROUPING")
     headers = _rater_headers(session_payload)
 
-    sibling_of = {"a1": "a2", "a2": "a1", "b1": "b2", "b2": "b1"}
+    sibling_of = {
+        "Child A1?": "Child A2?",
+        "Child A2?": "Child A1?",
+        "Child B1?": "Child B2?",
+        "Child B2?": "Child B1?",
+    }
     served_order: list[str] = []
     for _ in range(4):
         question = client.get("/api/raters/next-question", headers=headers).json()
-        served_order.append(question["question_id"])
+        served_order.append(question["question_text"])
         submit = client.post(
             "/api/raters/submit",
             headers=headers,
@@ -3881,7 +3886,7 @@ def test_next_question_groups_siblings_together(client: TestClient):
     # First two picks (whichever group came first) must be siblings; same for last two.
     assert served_order[1] == sibling_of[served_order[0]], served_order
     assert served_order[3] == sibling_of[served_order[2]], served_order
-    assert set(served_order) == {"a1", "a2", "b1", "b2"}
+    assert set(served_order) == set(sibling_of)
 
 
 def test_stats_total_questions_excludes_parent_rows(client: TestClient):
@@ -4912,7 +4917,7 @@ def test_duplicate_preserves_parent_question_links(client: TestClient):
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
-    assert question["question_id"] in {"sub_satisfied", "sub_problem"}
+    assert question["question_text"] in CHILD_TEXTS
     assert question["parent_question_text"] == PARENT_TEXT
 
 
@@ -5437,5 +5442,5 @@ def test_upload_batches_long_context_rows_across_multiple_inserts(
         "/api/raters/next-question",
         headers=_rater_headers(session_payload),
     ).json()
-    assert question["question_id"].startswith("sub")
+    assert question["question_text"].endswith("about the document?")
     assert question["parent_question_text"] == document
