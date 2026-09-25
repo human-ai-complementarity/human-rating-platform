@@ -78,6 +78,15 @@ class ExportSettings(_StrictModel):
         default=1000,
         ge=1,
     )
+    # Byte ceiling for one documents.csv chunk in the API process. Independent
+    # of uploads.max_insert_payload_bytes: that cap is for Postgres INSERT
+    # statements, this one is for how much CSV we buffer before flushing to
+    # the client. A page of 500KB parent documents in one StringIO is how the
+    # old inline-text export would have OOM-killed the API.
+    stream_chunk_max_bytes: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1024,
+    )
 
 
 class UploadSettings(_StrictModel):
@@ -182,8 +191,6 @@ class Settings(BaseSettings):
         default=None,
         description="Secret for signing rater session tokens (fallbacks to app_secret_key if unset).",
     )
-    # Rater-session token TTL in seconds. Defaults to the session duration (60 minutes).
-    rater_session_ttl_seconds: int = Field(default=60 * 60)
     hrp_session_cookie: str = Field(default="hrp_session")
     hrp_session_max_age: int = Field(default=60 * 60 * 24 * 7)  # 7 days
     cookie_secure: bool = Field(default=False)

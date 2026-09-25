@@ -6,6 +6,10 @@ End-to-end flow: create → upload → optionally configure AI assistance → pi
 
 From the **Experiments** page, fill out the create form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
 
+**Session length** is how long each rater gets before their session ends, in minutes. The default of `60` suits most tasks; raise it when a single question takes a long time to read (long-context datasets in particular), up to a maximum of 120 — a task needing longer than two hours is better split into more, shorter sessions than given a longer clock. Every other clock follows from this one number, so you only set it here.
+
+Two things worth knowing. A rater who is partway through a question when the clock runs out gets **5 extra minutes to finish that one question** — they stop being served new ones at the deadline, but the answer they were writing is saved rather than discarded. And session length is **frozen once a main round launches**: raters already in a session were told when their session ends, and changing it underneath them would make that a lie. Set it before you launch.
+
 ## 2. Upload questions
 
 Upload a CSV or Parquet file in the **Questions** section. You can upload multiple files into the same experiment — rows accumulate. The colab notebook can generate either format from a pandas DataFrame.
@@ -18,7 +22,7 @@ Upload a CSV or Parquet file in the **Questions** section. You can upload multip
 | `options` | No | Pipe-separated choices for multiple-choice (e.g. `Yes\|No\|Maybe`). Required if `question_type=MC` and you want preset options. |
 | `question_type` | No | `MC` (multiple-choice) or `FT` (free-text). Defaults to `MC`. |
 | `metadata` | No | Per-row JSON blob you can attach for your own use. Surfaced in exports. |
-| `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown above as context but the parent itself isn't rated. |
+| `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. The delimiter check looks at the current file only, so a document that contains that marker as content must be referenced by a child in the same upload. |
 
 ### Dataset-level metadata (optional)
 
@@ -71,6 +75,10 @@ In **Rater Assistance Methods**, decide whether the AI should help raters. Leavi
 
 Always pilot before scaling. In the **Prolific Workflow** section, create a small unpublished study (5 raters is a good default), then **Publish** it. Use the pilot to calibrate your time estimate and reward — guess high on the first round; the platform gives a tighter recommendation afterwards.
 
+**You don't need to write about the time limit yourself.** The platform appends it to the study description on Prolific — how long the session is, that the clock starts when they do, and that they can finish early. Raters see that before accepting, which is the only moment early enough to stop a return. Write about the task; the platform covers the clock.
+
+Keep the **estimated completion time** at or under the session length. It is the number Prolific advertises, so an estimate longer than the session promises work that cannot be finished in the time given — raters either return the study on sight or run out of time partway through. Both the pilot form and the round editor warn you when the two disagree.
+
 ### Excluding prior participants
 
 > ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form. Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.
@@ -87,7 +95,7 @@ Once the pilot closes, a **Recommendation for next round** panel appears with a 
 
 ## 6. View results
 
-The **Overview** section shows live progress. From there you can open analytics or export the raw ratings as CSV. The *include preview data* toggle controls whether your own test ratings count.
+The **Overview** section shows live progress. From there you can open analytics or export CSVs: **ratings** (one row per rating, with `parent_question_id` when the question has a parent) and **documents** (one row per parent, so a shared long document is not repeated on every rating). Join them on `parent_row_id` = `row_id` — the numeric database ids — not on the string `question_id`, which is allowed to repeat within an experiment. The *include preview data* toggle controls whether your own test ratings count.
 
 ## 7. Fetch data programmatically (optional)
 

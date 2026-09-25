@@ -40,6 +40,7 @@ def build_experiment_response(
         internal_name=experiment.internal_name,
         created_at=experiment.created_at,
         num_ratings_per_question=experiment.num_ratings_per_question,
+        session_duration_minutes=experiment.session_duration_minutes,
         prolific_completion_url=experiment.prolific_completion_url,
         question_count=question_count,
         rating_count=rating_count,
@@ -81,6 +82,7 @@ def build_empty_analytics_payload(
     *,
     experiment_name: str,
     total_questions: int,
+    timed_out_raters: int = 0,
 ) -> dict[str, Any]:
     return {
         "experiment_name": experiment_name,
@@ -88,6 +90,9 @@ def build_empty_analytics_payload(
             "total_ratings": 0,
             "total_questions": total_questions,
             "total_raters": 0,
+            # Non-zero here is the loudest signal the platform can give: raters
+            # turned up, the clock ran out, and nothing was collected.
+            "timed_out_raters": timed_out_raters,
             "avg_response_time_seconds": 0,
             "avg_confidence": 0,
         },
@@ -124,6 +129,7 @@ def build_rater_stats_bucket(rater: Rater) -> dict[str, Any]:
         "session_start": isoformat_utc(rater.session_start),
         "session_end": isoformat_utc(rater.session_end),
         "is_active": rater.is_active,
+        "timed_out": rater.timed_out,
         "num_ratings": 0,
         "response_times": [],
         "confidences": [],
@@ -163,6 +169,7 @@ def build_rater_analytics_item(stats: dict[str, Any]) -> dict[str, Any]:
         "session_start": stats["session_start"],
         "session_end": stats["session_end"],
         "is_active": stats["is_active"],
+        "timed_out": stats["timed_out"],
         "num_ratings": stats["num_ratings"],
         "total_response_time_seconds": round(total_time, 2),
         "avg_response_time_seconds": round(
@@ -178,6 +185,7 @@ def build_analytics_payload(
     experiment_name: str,
     total_questions: int,
     ratings: list[tuple[Rating, Question, Rater]],
+    timed_out_raters: int = 0,
 ) -> dict[str, Any]:
     response_times: list[float] = []
     confidences: list[int] = []
@@ -215,6 +223,10 @@ def build_analytics_payload(
             "total_ratings": len(ratings),
             "total_questions": total_questions,
             "total_raters": len(rater_stats),
+            # Counted from the rater rows, not from these ratings: a rater who
+            # timed out having submitted nothing never appears in `ratings` at
+            # all, and they are the case most worth seeing.
+            "timed_out_raters": timed_out_raters,
             "avg_response_time_seconds": round(sum(response_times) / len(response_times), 2),
             "min_response_time_seconds": round(min(response_times), 2),
             "max_response_time_seconds": round(max(response_times), 2),

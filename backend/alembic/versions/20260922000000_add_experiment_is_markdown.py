@@ -1,7 +1,7 @@
 """add experiment is_markdown column
 
 Revision ID: 20260922000000
-Revises: 20260901000000
+Revises: 20260823000000
 Create Date: 2026-09-22 00:00:00.000000
 
 """
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260922000000"
-down_revision: Union[str, Sequence[str], None] = "20260901000000"
+down_revision: Union[str, Sequence[str], None] = "20260823000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

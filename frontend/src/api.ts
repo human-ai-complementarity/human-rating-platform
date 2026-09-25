@@ -11,8 +11,10 @@ import type {
   AssistanceStep,
   ExperimentRound,
   ExperimentRoundUpdate,
+  Dataset,
   Experiment,
   ExperimentCreate,
+  ExperimentGroup,
   ExperimentStats,
   ExperimentStatus,
   PilotStudyCreate,
@@ -35,6 +37,10 @@ type SubmitRatingResponse = { id: number; success: boolean };
 type SessionStatusResponse = {
   is_active: boolean;
   time_remaining_seconds: number;
+  // Seconds until even the grace window closes. While the session is live this
+  // is time_remaining_seconds plus the grace period; afterwards it counts down
+  // alone, and the question already on screen may still be submitted.
+  grace_seconds_remaining: number;
   questions_completed: number;
 };
 
@@ -74,9 +80,12 @@ const routes = {
     stats: (id: number) => `/admin/experiments/${id}/stats`,
     analytics: (id: number) => `/admin/experiments/${id}/analytics`,
     export: (id: number) => `/admin/experiments/${id}/export`,
+    exportDocuments: (id: number) => `/admin/experiments/${id}/export/documents`,
     authLogin: '/admin/auth/login',
     authLogout: '/admin/auth/logout',
     platformStatus: '/admin/platform-status',
+    datasets: '/admin/datasets',
+    experimentGroups: '/admin/experiment-groups',
     apiKeys: '/admin/api-keys',
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
@@ -430,6 +439,37 @@ export const api = {
 
   // Single-experiment fetch. Resolves by id regardless of archived state, so
   // the detail page can open an archived experiment (the list hides those).
+  async listDatasets(): Promise<Dataset[]> {
+    return requestJson<Dataset[]>(routes.admin.datasets);
+  },
+
+  async createDataset(data: { name: string; waves?: string[] }): Promise<Dataset> {
+    return requestJson<Dataset>(routes.admin.datasets, {
+      method: 'POST',
+      json: data,
+    });
+  },
+
+  async listExperimentGroups(query: { dataset_id?: number; wave?: string } = {}): Promise<ExperimentGroup[]> {
+    return requestJson<ExperimentGroup[]>(routes.admin.experimentGroups, {
+      query: {
+        ...(query.dataset_id != null ? { dataset_id: query.dataset_id } : {}),
+        ...(query.wave ? { wave: query.wave } : {}),
+      },
+    });
+  },
+
+  async createExperimentGroup(data: {
+    name: string;
+    dataset_id: number;
+    wave?: string | null;
+  }): Promise<ExperimentGroup> {
+    return requestJson<ExperimentGroup>(routes.admin.experimentGroups, {
+      method: 'POST',
+      json: data,
+    });
+  },
+
   async getExperiment(experimentId: number): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId));
   },
@@ -490,6 +530,9 @@ export const api = {
       human_prompt_suffix?: string;
       is_markdown?: boolean;
       prolific_pool?: string;
+      // Minutes per rater. Undefined means "leave unchanged"; locked once the
+      // experiment leaves DRAFT.
+      session_duration_minutes?: number;
     },
   ): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId), {
@@ -632,6 +675,10 @@ export const api = {
     return buildUrl(routes.admin.export(experimentId), {
       ...(includePreview ? { include_preview: 'true' } : {}),
     });
+  },
+
+  getDocumentsExportUrl(experimentId: number): string {
+    return buildUrl(routes.admin.exportDocuments(experimentId));
   },
 
   // ── Rater ────────────────────────────────────────────────────────────────

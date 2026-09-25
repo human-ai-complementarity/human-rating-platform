@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from services.session_policy import (
+from session_policy import (
     DEFAULT_SESSION_DURATION_MINUTES,
     MAX_SESSION_DURATION_MINUTES,
     MIN_SESSION_DURATION_MINUTES,
@@ -15,19 +15,19 @@ from services.session_policy import (
 
 def test_defaults_reproduce_the_pre_configurable_clocks() -> None:
     """The numbers this replaced were 60 minutes, 3600 seconds and a 30-minute
-    reservation window. Nothing may drift off those at the default."""
+    reservation window. Those must not drift; the grace window is the one
+    deliberate addition."""
     policy = SessionPolicy()
 
     assert policy.duration_minutes == 60
     assert policy.duration_seconds == 3600
     assert policy.assignment_ttl_minutes == 30
-    assert policy.grace_minutes == 0
-    assert policy.token_ttl_seconds == 3600
+    assert policy.grace_minutes == 5
 
 
 def test_deadline_and_hard_deadline_coincide_without_grace() -> None:
     start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-    policy = SessionPolicy()
+    policy = SessionPolicy(grace_minutes=0)
 
     assert policy.deadline(start) == datetime(2026, 1, 1, 13, 0, tzinfo=UTC)
     assert policy.hard_deadline(start) == policy.deadline(start)
@@ -40,7 +40,7 @@ def test_grace_extends_the_hard_deadline_and_the_token() -> None:
     assert policy.deadline(start) == datetime(2026, 1, 1, 13, 0, tzinfo=UTC)
     assert policy.hard_deadline(start) == datetime(2026, 1, 1, 13, 5, tzinfo=UTC)
     # A token dying on the deadline would reject the submission grace exists for.
-    assert policy.token_ttl_seconds == 65 * 60
+    assert policy.token_ttl_seconds > 65 * 60
 
 
 @pytest.mark.parametrize(
@@ -82,3 +82,16 @@ def test_a_policy_outside_the_bounds_cannot_be_constructed(duration: int) -> Non
 def test_negative_grace_is_rejected() -> None:
     with pytest.raises(ValueError):
         SessionPolicy(grace_minutes=-1)
+
+
+def test_token_outlives_the_session_so_expiry_can_be_recorded() -> None:
+    """Expiry is lazy: the only chance to mark a session timed out is a request
+    landing after the hard deadline. A token that died at that same instant
+    would be rejected in routers/deps.py before any handler ran, and the rater
+    would stay `is_active` forever."""
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    policy = SessionPolicy(duration_minutes=60, grace_minutes=5)
+
+    token_expiry = start + timedelta(seconds=policy.token_ttl_seconds)
+
+    assert token_expiry > policy.hard_deadline(start)

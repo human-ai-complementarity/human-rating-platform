@@ -7,12 +7,39 @@ type ExperimentRecord = {
   internal_name: string | null;
   created_at: string;
   num_ratings_per_question: number;
+  session_duration_minutes: number;
   prolific_completion_url: string | null;
   question_count: number;
   rating_count: number;
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
   is_markdown: boolean;
+  assistance_method: string;
+  needs_attention: boolean;
+  attention_reason: string | null;
+  spend_minor_units: number;
+  group_id: number | null;
+  group_name: string | null;
+  group_dataset_id: number | null;
+  group_dataset_name: string | null;
+  wave: string | null;
+};
+
+type DatasetRecord = {
+  id: number;
+  name: string;
+  waves: string[];
+  created_at: string;
+};
+
+type GroupRecord = {
+  id: number;
+  name: string;
+  dataset_id: number;
+  dataset_name: string;
+  wave: string;
+  experiment_count: number;
+  created_at: string;
 };
 
 type UploadRecord = {
@@ -52,7 +79,9 @@ type RaterSessionRecord = {
   rater_id: number;
   session_start: string;
   session_end_time: string;
+  session_grace_seconds?: number;
   experiment_name: string;
+  experiment_description_html?: string | null;
   completion_url: string | null;
   rater_session_token: string;
 };
@@ -63,6 +92,7 @@ type RaterAnalyticsRecord = {
   session_start: string | null;
   session_end: string | null;
   is_active: boolean;
+  timed_out: boolean;
   num_ratings: number;
   total_response_time_seconds: number;
   avg_response_time_seconds: number;
@@ -75,6 +105,7 @@ type AnalyticsRecord = {
     total_ratings: number;
     total_questions: number;
     total_raters: number;
+    timed_out_raters: number;
     avg_response_time_seconds: number;
     avg_confidence: number;
   };
@@ -84,7 +115,6 @@ type AnalyticsRecord = {
 
 type RaterQuestionRecord = {
   id: number;
-  question_id: string;
   question_text: string;
   options: string | null;
   question_type: string;
@@ -94,6 +124,8 @@ type RaterQuestionRecord = {
 
 type MockState = {
   experiments: ExperimentRecord[];
+  datasets: DatasetRecord[];
+  groups: GroupRecord[];
   uploads: Record<number, UploadRecord[]>;
   rounds: Record<number, ExperimentRoundRecord[]>;
   recommendations: Record<number, RecommendationRecord>;
@@ -109,6 +141,8 @@ type MockState = {
   statsByExperimentId: Record<number, Record<string, unknown>>;
   questionsBySessionToken: Record<string, RaterQuestionRecord>;
   nextExperimentId: number;
+  nextDatasetId: number;
+  nextGroupId: number;
   nextUploadId: number;
   nextRoundId: number;
 };
@@ -120,12 +154,22 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     internal_name: null,
     created_at: '2026-03-09T00:00:00Z',
     num_ratings_per_question: 3,
+    session_duration_minutes: 60,
     prolific_completion_url: null,
     question_count: 0,
     rating_count: 0,
     status: 'DRAFT',
     archived_at: null,
     is_markdown: false,
+    assistance_method: 'none',
+    needs_attention: false,
+    attention_reason: null,
+    spend_minor_units: 0,
+    group_id: null,
+    group_name: null,
+    group_dataset_id: null,
+    group_dataset_name: null,
+    wave: null,
     ...partial,
   };
 }
@@ -133,6 +177,8 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
 function createMockState(): MockState {
   return {
     experiments: [],
+    datasets: [],
+    groups: [],
     uploads: {},
     rounds: {},
     recommendations: {},
@@ -148,6 +194,8 @@ function createMockState(): MockState {
     statsByExperimentId: {},
     questionsBySessionToken: {},
     nextExperimentId: 1,
+    nextDatasetId: 1,
+    nextGroupId: 1,
     nextUploadId: 1,
     nextRoundId: 1,
   };
@@ -232,6 +280,63 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname === '/api/admin/datasets' && method === 'GET') {
+      await fulfillJson(route, 200, state.datasets);
+      return;
+    }
+
+    if (pathname === '/api/admin/datasets' && method === 'POST') {
+      const payload = request.postDataJSON() as { name: string; waves?: string[] };
+      const dataset: DatasetRecord = {
+        id: state.nextDatasetId++,
+        name: payload.name,
+        waves: (payload.waves ?? []).map((wave) => wave.trim().toLowerCase()).filter(Boolean),
+        created_at: '2026-03-09T00:00:00Z',
+      };
+      state.datasets = [...state.datasets, dataset];
+      await fulfillJson(route, 200, dataset);
+      return;
+    }
+
+    if (pathname === '/api/admin/experiment-groups' && method === 'GET') {
+      await fulfillJson(route, 200, state.groups);
+      return;
+    }
+
+    if (pathname === '/api/admin/experiment-groups' && method === 'POST') {
+      const payload = request.postDataJSON() as {
+        name: string;
+        dataset_id: number;
+        wave?: string;
+      };
+      const dataset = state.datasets.find((item) => item.id === payload.dataset_id);
+      if (!dataset) {
+        await fulfillJson(route, 404, { detail: 'Dataset not found' });
+        return;
+      }
+      const wave = payload.wave?.trim().toLowerCase() || (dataset.waves.length === 1 ? dataset.waves[0] : '');
+      if (!wave || (dataset.waves.length > 0 && !dataset.waves.includes(wave))) {
+        await fulfillJson(route, 400, { detail: 'Wave is not in the dataset set' });
+        return;
+      }
+      if (state.groups.some((item) => item.dataset_id === dataset.id && item.wave === wave)) {
+        await fulfillJson(route, 409, { detail: 'A group for this dataset in wave already exists.' });
+        return;
+      }
+      const group: GroupRecord = {
+        id: state.nextGroupId++,
+        name: payload.name,
+        dataset_id: dataset.id,
+        dataset_name: dataset.name,
+        wave,
+        experiment_count: 0,
+        created_at: '2026-03-09T00:00:00Z',
+      };
+      state.groups = [...state.groups, group];
+      await fulfillJson(route, 200, group);
+      return;
+    }
+
     if (pathname === '/api/admin/experiments' && method === 'GET') {
       // Mirror the backend's archived filtering so the detail page's per-id
       // fetch (not the list) is what resolves an archived experiment:
@@ -249,10 +354,30 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/experiments' && method === 'POST') {
-      const payload = request.postDataJSON() as { name: string; num_ratings_per_question: number };
+      const payload = request.postDataJSON() as {
+        name: string;
+        num_ratings_per_question: number;
+        session_duration_minutes: number;
+        assistance_method?: string;
+        group_id?: number | null;
+      };
+      if (payload.name === 'TRIGGER-FAIL') {
+        await fulfillJson(route, 400, { detail: 'Could not create experiment' });
+        return;
+      }
+      const group = payload.group_id
+        ? state.groups.find((item) => item.id === payload.group_id)
+        : undefined;
       const experiment = buildExperiment(state, {
         name: payload.name,
         num_ratings_per_question: payload.num_ratings_per_question,
+        session_duration_minutes: payload.session_duration_minutes,
+        assistance_method: payload.assistance_method ?? 'none',
+        group_id: group?.id ?? null,
+        group_name: group?.name ?? null,
+        group_dataset_id: group?.dataset_id ?? null,
+        group_dataset_name: group?.dataset_name ?? null,
+        wave: group?.wave ?? null,
       });
       state.experiments = [experiment];
       state.uploads[experiment.id] = [];
@@ -333,6 +458,7 @@ async function installApiMocks(
           total_ratings: 0,
           total_questions: 2,
           total_raters: 0,
+          timed_out_raters: 0,
           avg_response_time_seconds: 0,
           avg_confidence: 0,
         },
@@ -465,7 +591,6 @@ async function installApiMocks(
         200,
         state.questionsBySessionToken[sessionToken] || {
           id: 500,
-          question_id: 'q-1',
           question_text: 'Is this workflow ready for release?',
           options: 'Yes|No',
           question_type: 'MC',
@@ -500,6 +625,7 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         is_active: true,
         time_remaining_seconds: 3600,
+        grace_seconds_remaining: 3600 + 300,
         questions_completed: 0,
       });
       return;
@@ -516,6 +642,112 @@ async function installApiMocks(
 
 test.beforeEach(async ({ page }) => {
   page.on('dialog', (dialog) => dialog.accept());
+});
+
+test('a long-context experiment is created with its own session length', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  await page.goto('/admin');
+
+  await page.getByTestId('experiment-name-input').fill('Two Hour Reading Task');
+  await page.getByTestId('ratings-per-question-input').fill('3');
+  await page.getByTestId('session-duration-input').fill('120');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Two Hour Reading Task' })).toBeVisible();
+  expect(state.experiments[0].session_duration_minutes).toBe(120);
+
+  // The pilot form's rater-count hint quotes the real session length rather
+  // than the hard-coded hour it used to claim.
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByText(/Each rater does one 2 hour session/)).toBeVisible();
+});
+
+test('editing a round warns when the estimate exceeds the session length', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Round Edit Experiment',
+      question_count: 2,
+      session_duration_minutes: 60,
+      status: 'LAUNCH',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [buildRound(state, { round_number: 0, estimated_completion_time: 30 })];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).first().click();
+  const estimate = page.getByTestId('edit-round-time-0');
+  await expect(estimate).toBeVisible();
+
+  await expect(page.getByTestId('edit-round-estimate-warning-0')).toHaveCount(0);
+  // Past the session length the study would advertise unfinishable work.
+  await estimate.fill('90');
+  await expect(page.getByTestId('edit-round-estimate-warning-0')).toBeVisible();
+});
+
+test('the rater intro states the session length before they commit', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Expectations Experiment',
+      question_count: 1,
+      session_duration_minutes: 110,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  const start = new Date();
+  state.sessionsByExperimentId[1] = {
+    rater_id: 401,
+    session_start: start.toISOString(),
+    session_end_time: new Date(start.getTime() + 110 * 60000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Expectations Experiment',
+    experiment_description_html: '<p>Read each passage carefully.</p>',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-expectations',
+  };
+  state.questionsBySessionToken['token-expectations'] = {
+    id: 701,
+    question_id: 'exp-q',
+    question_text: 'Does the intro set expectations?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const expectations = page.getByTestId('session-expectations');
+  await expect(expectations).toBeVisible();
+  await expect(expectations).toContainText('You have 1 hour 50 minutes.');
+  await expect(expectations).toContainText('5 more minutes');
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {
@@ -657,6 +889,10 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
 
   const exportLink = page.getByTestId('export-link');
   await expect(exportLink).toHaveAttribute('href', /\/api\/admin\/experiments\/1\/export$/);
+  await expect(page.getByTestId('export-documents-link')).toHaveAttribute(
+    'href',
+    /\/api\/admin\/experiments\/1\/export\/documents$/
+  );
   // include-preview toggle lives on the Overview panel.
   await page.getByTestId('tab-overview').click();
   await page.getByTestId('include-preview-toggle').click();
@@ -716,12 +952,12 @@ test('preview participant link opens /rate with preview mode and starts one prev
   await expect(state.previewStartRequests[0]).toContain('preview=true');
 });
 
-test('long-context question links document separately and shows only question in rater card', async ({ page, context }) => {
+test('the question in hand survives the deadline and can still be submitted', async ({ page }) => {
   const state = createMockState();
   state.experiments = [
     buildExperiment(state, {
       id: 1,
-      name: 'Long Context Experiment',
+      name: 'Grace Window Experiment',
       question_count: 1,
       prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
     }),
@@ -737,37 +973,41 @@ test('long-context question links document separately and shows only question in
     is_complete: false,
   };
   state.sessionsByExperimentId[1] = {
-    rater_id: 301,
+    rater_id: 303,
     session_start: '2026-03-09T00:05:00Z',
-    session_end_time: '2099-03-09T01:05:00Z',
-    experiment_name: 'Long Context Experiment',
+    // Two seconds out, so the deadline lands while the page is open.
+    session_end_time: new Date(Date.now() + 2000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Grace Window Experiment',
     completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
-    rater_session_token: 'token-long-context',
+    rater_session_token: 'token-grace',
   };
-  state.questionsBySessionToken['token-long-context'] = {
-    id: 503,
-    question_id: 'long-q',
-    question_text: 'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
-    options: 'A|B',
+  state.questionsBySessionToken['token-grace'] = {
+    id: 601,
+    question_id: 'grace-q',
+    question_text: 'Does the grace window keep this answer?',
+    options: 'Yes|No',
     question_type: 'MC',
     is_markdown: false,
   };
 
   await installApiMocks(page, state);
-  await page.goto('/rate?experiment_id=1&PROLIFIC_PID=pid-1&STUDY_ID=study-1&SESSION_ID=session-1');
+  await page.goto(RATER_URL);
 
-  const documentLink = page.getByRole('link', { name: 'Open document in new tab' });
-  await expect(documentLink).toBeVisible();
-  await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
-  await expect(page.getByText('Document line one')).toHaveCount(0);
+  await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
 
-  const documentPopupPromise = context.waitForEvent('page');
-  await documentLink.click();
-  const documentPopup = await documentPopupPromise;
-  await documentPopup.waitForLoadState('domcontentloaded');
+  // The clock runs out with the question still on screen.
+  await expect(page.getByTestId('grace-banner')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByTestId('timer-grace')).toBeVisible();
 
-  await expect(documentPopup.getByRole('heading', { name: 'Document for Question long-q' })).toBeVisible();
-  await expect(documentPopup.getByText('Document line one')).toBeVisible();
+  // Crucially the question is still there — pre-#102 it was unmounted and the
+  // in-progress answer discarded.
+  await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: /submit/i }).click();
+
+  await expect(page.getByRole('heading', { name: 'Session Complete' })).toBeVisible();
 });
 
 // Seeds a rater session serving exactly one question, for the parent-context
@@ -814,7 +1054,6 @@ test('a long parent question moves the document behind the link, not into the ca
 
   seedRaterWithQuestion(state, {
     id: 504,
-    question_id: 'parent-long-q',
     question_text: 'Which answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
@@ -836,6 +1075,10 @@ test('a long parent question moves the document behind the link, not into the ca
   await documentLink.click();
   const popup = await popupPromise;
   await popup.waitForLoadState('domcontentloaded');
+  // The tab title and heading stay generic so the external question id never
+  // reaches a rater.
+  await expect(popup).toHaveTitle('Document');
+  await expect(popup.getByRole('heading', { name: 'Document', exact: true })).toBeVisible();
   await expect(popup.getByText('LONGBENCH DOCUMENT BODY')).toBeVisible();
 });
 
@@ -845,7 +1088,6 @@ test('a short parent question stays inline in the context box', async ({ page })
 
   seedRaterWithQuestion(state, {
     id: 505,
-    question_id: 'parent-short-q',
     question_text: 'Does the review express satisfaction?',
     options: 'Yes|No',
     question_type: 'MC',
@@ -861,13 +1103,33 @@ test('a short parent question stays inline in the context box', async ({ page })
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
 });
 
+test('a --- QUESTION --- delimiter in question text is not treated as a document', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 503,
+    question_text:
+      'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
+  await expect(page.getByText('Document line one')).toBeVisible();
+  await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
+});
+
 test('the experiment markdown flag switches the rater card between rendered and raw text', async ({
   page,
 }) => {
   const state = createMockState();
   const question: RaterQuestionRecord = {
     id: 506,
-    question_id: 'md-q',
     question_text: [
       'What does `f(3)` return? Keep <b>this</b> literal.',
       '',
@@ -923,7 +1185,6 @@ test('the markdown flag also applies to the long-context document window', async
 
   seedRaterWithQuestion(state, {
     id: 507,
-    question_id: 'md-doc-q',
     question_text: 'Which answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
@@ -949,7 +1210,6 @@ test('an MC question with no options submits the typed free-text answer', async 
   // options. The card falls back to a textarea, so submit must read that.
   seedRaterWithQuestion(state, {
     id: 506,
-    question_id: 'mc-without-options',
     question_text: 'Summarize what the document recommends.',
     options: '',
     question_type: 'MC',
@@ -1020,7 +1280,6 @@ test('rater ignores a stored session from another experiment and starts a fresh 
   };
   state.questionsBySessionToken['token-exp-1'] = {
     id: 501,
-    question_id: 'old-q',
     question_text: 'Old experiment question',
     options: 'Yes,No',
     question_type: 'MC',
@@ -1028,7 +1287,6 @@ test('rater ignores a stored session from another experiment and starts a fresh 
   };
   state.questionsBySessionToken['token-exp-2'] = {
     id: 502,
-    question_id: 'fresh-q',
     question_text: 'Fresh experiment question',
     options: 'Yes,No',
     question_type: 'MC',
@@ -1349,6 +1607,7 @@ test.describe('analytics raters tab', () => {
           session_start: '2026-07-24T14:26:30.179021Z',
           session_end: null,
           is_active: true,
+          timed_out: false,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,
@@ -1456,6 +1715,7 @@ test.describe('analytics raters tab', () => {
           session_start: '2026-07-24T14:26:30.179021Z',
           session_end: null,
           is_active: true,
+          timed_out: false,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,
@@ -1475,4 +1735,231 @@ test.describe('analytics raters tab', () => {
     await expect(page).toHaveURL('/admin/experiments/1/analytics');
     await expect(page.getByText('Total Ratings')).toBeVisible();
   });
+});
+
+test('grouped list cards, wave chips, and create-panel group picker', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    { id: 1, name: 'medqa', waves: ['fall25', 'sp26'], created_at: '2026-03-09T00:00:00Z' },
+  ];
+  state.nextDatasetId = 2;
+  state.groups = [
+    {
+      id: 1,
+      name: 'MedQA Fall',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'fall25',
+      experiment_count: 2,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+  state.nextGroupId = 2;
+  state.experiments = [
+    buildExperiment(state, {
+      name: 'MedQA none',
+      assistance_method: 'none',
+      group_id: 1,
+      group_name: 'MedQA Fall',
+      group_dataset_id: 1,
+      group_dataset_name: 'medqa',
+      wave: 'fall25',
+      spend_minor_units: 400,
+    }),
+    buildExperiment(state, {
+      name: 'MedQA top-n',
+      assistance_method: 'top_n',
+      group_id: 1,
+      group_name: 'MedQA Fall',
+      group_dataset_id: 1,
+      group_dataset_name: 'medqa',
+      wave: 'fall25',
+      spend_minor_units: 250,
+      needs_attention: true,
+      attention_reason: 'A round draft is waiting to be published on Prolific.',
+    }),
+    buildExperiment(state, {
+      name: 'Scratch draft',
+      spend_minor_units: 0,
+    }),
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await expect(page.getByTestId('group-card-1')).toBeVisible();
+  await expect(page.getByTestId('group-spend-1')).toHaveText('$6.50');
+  await expect(page.getByTestId('group-card-toggle-1')).toContainText('MedQA Fall');
+  await expect(page.getByTestId('group-wave-1')).toBeVisible();
+  // A control row carries no method tag at all — absence is the signal.
+  await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-none')).toHaveCount(0);
+  await expect(page.getByTestId('group-card-1').getByTestId('experiment-method-top_n')).toBeVisible();
+  // Arm coverage is stated once per group instead of once per row.
+  const assistance = page.getByTestId('group-assistance-1');
+  await expect(assistance).toContainText('Unassisted');
+  await expect(assistance).toContainText('Top-N');
+  await expect(page.getByTestId('group-card-ungrouped')).toBeVisible();
+  await expect(page.getByTestId('group-card-ungrouped')).not.toHaveAttribute(
+    'data-testid',
+    'group-assistance-ungrouped',
+  );
+  await expect(page.getByText('Scratch draft')).toBeVisible();
+
+  await page.getByTestId('wave-filter-fall25').click();
+  await expect(page.getByText('Scratch draft')).toHaveCount(0);
+  await expect(page.getByText('MedQA none')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(page.getByText('Scratch draft')).toBeVisible();
+
+  await page.getByTestId('grouped-toggle').click();
+  await expect(page.getByTestId('group-card-1')).toHaveCount(0);
+  await expect(page.getByText('MedQA none')).toBeVisible();
+  // Flat rows state their own group · dataset · wave in place of a wave pill.
+  await expect(page.getByText('MedQA Fall · medqa · fall25').first()).toBeVisible();
+  await expect(page.getByText('Ungrouped · scratch work')).toBeVisible();
+
+  await page.getByTestId('grouped-toggle').click();
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-option-1').click();
+  await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall');
+
+  await page.getByTestId('assistance-method-none').click();
+  await expect(page.getByTestId('duplicate-method-warning')).toBeVisible();
+  await page.getByTestId('assistance-method-human_as_a_tool').click();
+  await expect(page.getByTestId('duplicate-method-warning')).toHaveCount(0);
+
+  // Typing in the picker and pressing "Create" carries the text into the
+  // builder rather than discarding it.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('MedQA Spring');
+  await page.getByTestId('group-picker-create').click();
+  await expect(page.getByTestId('new-group-panel')).toBeVisible();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('MedQA Spring');
+  await page.getByTestId('dataset-chip-1').click();
+  await page.getByTestId('wave-chip-sp26').click();
+  await page.getByTestId('experiment-name-input').fill('MedQA spring none');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
+  expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
+});
+
+test('group picker keyboard: type-ahead commits the match, not "No group"', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    { id: 1, name: 'medqa', waves: ['fall25', 'sp26'], created_at: '2026-03-09T00:00:00Z' },
+  ];
+  state.nextDatasetId = 2;
+  state.groups = [
+    {
+      id: 1,
+      name: 'MedQA Fall 25',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'fall25',
+      experiment_count: 7,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+    {
+      id: 2,
+      name: 'GPQA Spring 26',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'sp26',
+      experiment_count: 1,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+  state.nextGroupId = 3;
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  // Typing to a single match and pressing Enter picks that match. The highlight
+  // used to stay pinned to the "No group" row, so this silently ungrouped.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('MedQA Fall');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall 25');
+
+  // Reopening with a selection highlights it, so a bare Enter is a no-op rather
+  // than a clear.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall 25');
+
+  // A typed name that matches nothing opens the builder seeded with it.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('MedQA Winter 26');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('new-group-panel')).toBeVisible();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('MedQA Winter 26');
+
+  // Counts come from the server field, not from the (page-capped) list.
+  await page.getByTestId('group-picker').click();
+  await expect(page.getByTestId('group-option-1')).toContainText('medqa · 7');
+});
+
+test('new dataset collects wave tokens one at a time', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-create').click();
+  await page.getByTestId('new-group-name-input').fill('MedQA Spring');
+  await page.getByTestId('dataset-chip-new').click();
+  await page.getByTestId('new-dataset-name-input').fill('medqa');
+  // The wave row is present before any token exists — it no longer appears and
+  // vanishes with the dataset choice.
+  await expect(page.getByTestId('new-group-wave')).toBeVisible();
+  const waveInput = page.getByTestId('new-dataset-wave-input');
+  await waveInput.fill('fall25');
+  await waveInput.press('Enter');
+  await waveInput.fill('SP26');
+  await waveInput.press('Enter');
+  // Tokens are lowercased and become chips.
+  await expect(page.getByTestId('wave-chip-fall25')).toBeVisible();
+  // A typo'd token can be removed without cancelling the whole builder.
+  await waveInput.fill('sp26x');
+  await waveInput.press('Enter');
+  await page.getByTestId('wave-chip-remove-sp26x').click();
+  await expect(page.getByTestId('wave-chip-sp26x')).toHaveCount(0);
+  await page.getByTestId('wave-chip-sp26').click();
+  await page.getByTestId('experiment-name-input').fill('MedQA spring none');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
+  expect(state.datasets.some((dataset) => dataset.name === 'medqa' && dataset.waves.includes('sp26'))).toBe(
+    true,
+  );
+  expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
+});
+
+test('failed experiment create reuses the group already made', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    { id: 1, name: 'medqa', waves: ['fall25', 'sp26'], created_at: '2026-03-09T00:00:00Z' },
+  ];
+  state.nextDatasetId = 2;
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-create').click();
+  await page.getByTestId('new-group-name-input').fill('MedQA Spring');
+  await page.getByTestId('dataset-chip-1').click();
+  await page.getByTestId('wave-chip-sp26').click();
+  await page.getByTestId('experiment-name-input').fill('TRIGGER-FAIL');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByText('Could not create experiment')).toBeVisible();
+  expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
+
+  await page.getByTestId('experiment-name-input').fill('MedQA spring none');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
+  expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
 });

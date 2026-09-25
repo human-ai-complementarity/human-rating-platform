@@ -25,6 +25,8 @@ from sqlalchemy import (
 )
 from sqlmodel import Field, SQLModel
 
+from session_policy import DEFAULT_SESSION_DURATION_MINUTES
+
 
 class ProlificStudyStatus(str, Enum):
     """Prolific study lifecycle states."""
@@ -101,6 +103,14 @@ class Experiment(SQLModel, table=True):
     num_ratings_per_question: int = Field(
         default=3,
         sa_column=Column(Integer, nullable=False, server_default=text("3")),
+    )
+    # How long each rater gets, in minutes. Every other clock in a session —
+    # the grace window, the token TTL, the per-question reservation — is
+    # derived from this one number in session_policy.py. Defaults to
+    # the 60 minutes that used to be hard-coded.
+    session_duration_minutes: int = Field(
+        default=DEFAULT_SESSION_DURATION_MINUTES,
+        sa_column=Column(Integer, nullable=False, server_default=text("60")),
     )
     prolific_completion_url: Optional[str] = Field(
         default=None,
@@ -240,6 +250,13 @@ class Rater(SQLModel, table=True):
         sa_column=Column(Boolean, nullable=False, server_default=text("true")),
     )
     is_preview: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    # True when the session was closed out by the clock rather than by the
+    # rater finishing. Without it a timeout and a clean finish leave identical
+    # rows, and "how often does the hour bite?" is unanswerable (issue #102).
+    timed_out: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )

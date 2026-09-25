@@ -7,7 +7,23 @@ interface RaterIntroProps {
   // emits a whitelisted set of Prolific-allowed tags with all input escaped.
   descriptionHtml: string | null;
   assistanceInstructions: string | null;
+  /** Minutes the rater gets, derived from the session the server issued. */
+  sessionMinutes: number;
+  /** Minutes past the deadline in which the open question can still be sent. */
+  graceMinutes: number;
   onContinue: () => void;
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/** "45 minutes" / "1 hour" / "2 hours 30 minutes" / "1 hour 1 minute".
+ *  Reads predicatively — "You have ..." — so both halves are pluralised. */
+function formatDuration(minutes: number): string {
+  if (minutes < 60) return plural(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  const hourPart = plural(hours, 'hour');
+  return rest === 0 ? hourPart : `${hourPart} ${plural(rest, 'minute')}`;
 }
 
 /**
@@ -23,6 +39,8 @@ function RaterIntro({
   experimentName,
   descriptionHtml,
   assistanceInstructions,
+  sessionMinutes,
+  graceMinutes,
   onContinue,
 }: RaterIntroProps) {
   return (
@@ -59,6 +77,34 @@ function RaterIntro({
       >
         {experimentName}
       </h1>
+
+      {/* Set expectations before the rater commits. A return costs us a place
+          and delays the round, so someone who would rather not spend this long
+          is better off knowing now than discovering it twenty minutes in. */}
+      <div
+        data-testid="session-expectations"
+        style={{
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius-sm)',
+          padding: '14px 16px',
+          marginBottom: 24,
+          fontSize: 14,
+          lineHeight: 1.6,
+          color: 'var(--ink)',
+        }}
+      >
+        <strong>You have {formatDuration(sessionMinutes)}.</strong> Rate as many questions as
+        you can in that time, and finish early if you want to.{' '}
+        {graceMinutes > 0 ? (
+          <>
+            When the time is up you get {graceMinutes} more{' '}
+            {graceMinutes === 1 ? 'minute' : 'minutes'} to send the question you are on, and
+            everything you have already submitted is kept.
+          </>
+        ) : (
+          <>Everything you submit is kept.</>
+        )}
+      </div>
 
       {descriptionHtml && (
         <div

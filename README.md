@@ -267,7 +267,8 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `APP__CORS_ORIGINS` — JSON array, e.g. `["http://localhost:5173","http://localhost:8000"]`
 - `APP__LOG_LEVEL` — log verbosity: `DEBUG`, `INFO`, `WARNING`, or `ERROR` (default: `INFO`). Logs are emitted as structured JSON with OpenTelemetry-compatible field names (`timestamp`, `severity`, `body`, `attributes`).
 - `DATABASE__URL` — Postgres connection string
-- `EXPORTS__STREAM_BATCH_SIZE` — CSV export chunking (memory/throughput tradeoff)
+- `EXPORTS__STREAM_BATCH_SIZE` — CSV export row-chunking for the ratings file (memory/throughput tradeoff)
+- `EXPORTS__STREAM_CHUNK_MAX_BYTES` — byte ceiling for one documents.csv chunk in the API process (independent of upload INSERT batching)
 - `TESTING__EXPORT_SEED_ROW_COUNT` — export-path e2e test dataset volume
 - `SEEDING__*` — local seed generation (`enabled`, `experiment_name`, `question_count`, etc.)
 - `PROLIFIC__API_TOKEN` — Prolific API token (optional; enables automated study management)
@@ -281,7 +282,6 @@ Top‑level convenience envs (not nested):
 - `APP_SECRET_KEY` — HMAC signer for the HTTP‑only admin session cookie
 - `API_KEYS` — static bearer keys for the programmatic `/api/v1` read API (comma‑separated or JSON array). Optional: primary keys are minted from the dashboard **API Keys** tab and stored hashed; this env list is accepted in addition, as a fallback for local dev or a pre‑DB deployment. See [Programmatic API](#programmatic-api-apiv1) below.
 - `RATER_SESSION_SECRET_KEY` — dedicated HMAC signer for rater session tokens (falls back to `APP_SECRET_KEY` if unset)
-- `RATER_SESSION_TTL_SECONDS` — TTL in seconds for rater session tokens (defaults to 3600 = 60 minutes; same as session duration)
 - `HRP_SESSION_COOKIE`, `HRP_SESSION_MAX_AGE`, `COOKIE_SECURE` — cookie name/ttl/secure flag
  - `ADMIN_AUTH_ENABLED` — set to `false` to bypass admin auth in dev/tests
 
@@ -672,11 +672,13 @@ Auth and session flow:
 - Prolific params remain in the URL. They are not considered secrets and are visible on the initial redirect from Prolific.
 - The frontend persists the rater session in `sessionStorage` to survive accidental refreshes. On reload, the app restores the session from storage, validates it via `/raters/session-status`, and continues without requiring Prolific params again.
 - Storage is cleared when the session completes or expires. If a stored token is expired, the app shows a “Session expired” message.
-- Re‑entering via the Prolific link while the session is still active resumes the same rater server‑side and issues a fresh token. If the session has ended or expired, `/raters/start` returns 403.
+- Re‑entering via the Prolific link while the session is still active resumes the same rater server‑side and issues a fresh token. The new token expires when the *original* session does, so re‑entry cannot buy extra time. If the session has ended, `/raters/start` returns 403.
 - Multiple browser tabs are not specially synchronized; the backend prevents duplicate ratings for the same question, but running in two tabs may be confusing and is not recommended.
-- The timer does not auto‑submit partial answers on expiry. Submissions after expiry receive 403 from the API.
+- The timer does not auto‑submit. When the clock runs out the rater stops being served new questions, but the one already on screen stays put and can still be submitted for the length of the grace window (5 minutes by default) — the work was done, so it is kept. Past the grace window every rater endpoint returns 403.
 
-Operational note: Default TTL matches the session duration (3600s = 60 minutes).
+The study description sent to Prolific is the researcher's markdown plus a generated time‑limit note (`with_session_note` in `services/admin/rounds.py`). It is appended on the way out, so editing a round's description cannot drop it, and the raw markdown stays in our DB unpolluted. The rater intro screen states the same thing in its own block and does **not** render the note twice — it reads the description straight from the DB rather than from the Prolific payload.
+
+Operational note: all of a session's clocks — deadline, grace window, token TTL and the per‑question reservation — are derived from one duration in `backend/session_policy.py`, so they cannot drift apart.
 
 ---
 

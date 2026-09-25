@@ -304,6 +304,19 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
                 <div style={styles.statLabel}>Total Raters</div>
               </div>
               <div style={styles.statItem}>
+                <div
+                  style={{
+                    ...styles.statValue,
+                    color:
+                      analytics.overview.timed_out_raters > 0 ? 'var(--danger)' : undefined,
+                  }}
+                  data-testid="timed-out-raters"
+                >
+                  {analytics.overview.timed_out_raters}
+                </div>
+                <div style={styles.statLabel}>Ran Out Of Time</div>
+              </div>
+              <div style={styles.statItem}>
                 <div style={styles.statValue}>{formatNumber(analytics.overview.avg_confidence)}</div>
                 <div style={styles.statLabel}>Avg Confidence</div>
               </div>
