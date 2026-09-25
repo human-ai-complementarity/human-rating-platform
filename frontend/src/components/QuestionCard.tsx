@@ -1,7 +1,12 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
+import ReactMarkdown from 'react-markdown';
+import type { Components } from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Question } from '../types';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
+import tokensCss from '../styles/tokens.css?raw';
+import appCss from '../index.css?raw';
 
 // Parent context longer than this is a document, not a preamble, so it goes
 // behind the "open in new tab" link instead of inline in the card. The two
@@ -41,6 +46,49 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ href, title, children }) => {
+    // Open external links in a new tab to avoid losing in-progress work.
+    const inPage = href?.startsWith('#') === true;
+    return (
+      <a
+        href={href}
+        title={title}
+        target={inPage ? undefined : '_blank'}
+        rel={inPage ? undefined : 'noopener noreferrer'}
+      >
+        {children}
+      </a>
+    );
+  },
+  table: ({ children }) => (
+    <div className="question-markdown-table-scroll">
+      <table>{children}</table>
+    </div>
+  ),
+};
+
+function QuestionBody({
+  text,
+  markdown,
+  style,
+}: {
+  text: string;
+  markdown: boolean;
+  style?: CSSProperties;
+}) {
+  if (!markdown) {
+    return <p style={{ ...style, whiteSpace: 'pre-wrap' }}>{text}</p>;
+  }
+  return (
+    <div className="question-markdown markdown" style={style}>
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+        {text}
+      </ReactMarkdown>
+    </div>
+  );
 }
 
 // Researcher-supplied framing is instructional, not decorative: raters are
@@ -131,14 +179,28 @@ function parseOptions(rawOptions: string | null): string[] {
 
 // The title is deliberately generic: it shows up in the popup's tab, and the
 // external question id would tell a rater which dataset the item came from.
-function buildLongContextDocumentHtml(documentText: string): string {
+async function buildLongContextDocumentHtml(
+  documentText: string,
+  isMarkdown: boolean,
+): Promise<string> {
   const title = 'Document';
+  // The window is a standalone HTML string, so the card's Markdown component is
+  // pre-rendered into it and the stylesheets its classes need are inlined.
+  let body = `<pre>${escapeHtml(documentText)}</pre>`;
+  let appStyles = '';
+  if (isMarkdown) {
+    // Lazy import so 'react-dom/server' isn't included in every bundle
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    body = renderToStaticMarkup(<QuestionBody text={documentText} markdown />);
+    appStyles = `<style>${tokensCss}${appCss}</style>`;
+  }
 
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <title>${escapeHtml(title)}</title>
+  ${appStyles}
   <style>
     body {
       margin: 0;
@@ -159,7 +221,8 @@ function buildLongContextDocumentHtml(documentText: string): string {
       font-weight: 600;
       letter-spacing: -0.01em;
     }
-    pre {
+    main > pre,
+    .question-markdown {
       box-sizing: border-box;
       width: 100%;
       margin: 0;
@@ -167,6 +230,8 @@ function buildLongContextDocumentHtml(documentText: string): string {
       border: 1px solid #e6e1d5;
       border-radius: 9px;
       background: #ffffff;
+    }
+    main > pre {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       font: 14px/1.6 "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -177,7 +242,7 @@ function buildLongContextDocumentHtml(documentText: string): string {
 <body>
   <main>
     <h1>${escapeHtml(title)}</h1>
-    <pre>${escapeHtml(documentText)}</pre>
+    ${body}
   </main>
 </body>
 </html>`;
@@ -214,15 +279,20 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       return;
     }
 
-    const html = buildLongContextDocumentHtml(display.documentText);
-    const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-    setDocumentUrl(url);
+    let url: string | null = null;
+    let cancelled = false;
+    void buildLongContextDocumentHtml(display.documentText, question.is_markdown).then((html) => {
+      if (cancelled) return;
+      url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      setDocumentUrl(url);
+    });
 
     return () => {
-      URL.revokeObjectURL(url);
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
-  }, [display.documentText]);
+  }, [display.documentText, question.is_markdown]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -295,17 +365,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           >
             Context
           </div>
-          <p
-            style={{
-              fontSize: 15,
-              lineHeight: 1.55,
-              color: 'var(--ink)',
-              whiteSpace: 'pre-wrap',
-              margin: 0,
-            }}
-          >
-            {display.inlineContext}
-          </p>
+          <QuestionBody
+            text={display.inlineContext}
+            markdown={question.is_markdown}
+            style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
+          />
         </div>
       )}
 
@@ -336,7 +400,9 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
-      <p
+      <QuestionBody
+        text={display.questionText}
+        markdown={question.is_markdown}
         style={{
           fontFamily: 'var(--font-head)',
           fontSize: 22,
@@ -345,11 +411,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           color: 'var(--ink)',
           marginTop: 0,
           marginBottom: 24,
-          whiteSpace: 'pre-wrap',
         }}
-      >
-        {display.questionText}
-      </p>
+      />
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
         <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />

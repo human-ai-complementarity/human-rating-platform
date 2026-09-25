@@ -10,6 +10,7 @@ from session_policy import SessionPolicy
 
 def build_question_response(
     question: Question,
+    is_markdown: bool,
     parent_question_text: str | None = None,
 ) -> QuestionResponse:
     return QuestionResponse(
@@ -18,6 +19,7 @@ def build_question_response(
         options=question.options,
         question_type=question.question_type,
         parent_question_text=parent_question_text,
+        is_markdown=is_markdown,
     )
 
 

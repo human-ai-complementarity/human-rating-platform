@@ -305,11 +305,11 @@ _LOCKED_META_FIELDS = (
     "prolific_pool",
 )
 
-# Locked alongside the meta fields, but kept separate because it is an int:
+# Locked alongside the meta fields, but kept separate because they are not strings:
 # the meta loop strips strings. Session length is locked once the experiment
 # leaves DRAFT because raters already mid-session hold a session_end_time
 # computed from the old value, and their browsers never hear about a change.
-_LOCKED_SCALAR_FIELDS = ("session_duration_minutes",)
+_LOCKED_SCALAR_FIELDS = ("session_duration_minutes", "is_markdown")
 
 # Matches the String(255) columns on Experiment.name / internal_name.
 _NAME_MAX_LENGTH = 255
@@ -376,6 +376,7 @@ async def duplicate_experiment(
         system_prompt=source.system_prompt,
         human_prompt_prefix=source.human_prompt_prefix,
         human_prompt_suffix=source.human_prompt_suffix,
+        is_markdown=source.is_markdown,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
     )

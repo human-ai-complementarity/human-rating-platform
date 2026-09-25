@@ -13,6 +13,7 @@ type ExperimentRecord = {
   rating_count: number;
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
+  is_markdown: boolean;
   assistance_method: string;
   needs_attention: boolean;
   attention_reason: string | null;
@@ -118,6 +119,7 @@ type RaterQuestionRecord = {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  is_markdown: boolean;
 };
 
 type MockState = {
@@ -158,6 +160,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     rating_count: 0,
     status: 'DRAFT',
     archived_at: null,
+    is_markdown: false,
     assistance_method: 'none',
     needs_attention: false,
     attention_reason: null,
@@ -591,6 +594,7 @@ async function installApiMocks(
           question_text: 'Is this workflow ready for release?',
           options: 'Yes|No',
           question_type: 'MC',
+          is_markdown: false,
         }
       );
       return;
@@ -606,6 +610,7 @@ async function installApiMocks(
         question_text: `Pinned question ${questionId}`,
         options: 'Yes|No',
         question_type: 'MC',
+        is_markdown: false,
       });
       return;
     }
@@ -733,6 +738,7 @@ test('the rater intro states the session length before they commit', async ({ pa
     question_text: 'Does the intro set expectations?',
     options: 'Yes|No',
     question_type: 'MC',
+    is_markdown: false,
   };
 
   await installApiMocks(page, state);
@@ -982,6 +988,7 @@ test('the question in hand survives the deadline and can still be submitted', as
     question_text: 'Does the grace window keep this answer?',
     options: 'Yes|No',
     question_type: 'MC',
+    is_markdown: false,
   };
 
   await installApiMocks(page, state);
@@ -1050,6 +1057,7 @@ test('a long parent question moves the document behind the link, not into the ca
     question_text: 'Which answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
+    is_markdown: false,
     parent_question_text: document,
   });
 
@@ -1083,6 +1091,7 @@ test('a short parent question stays inline in the context box', async ({ page })
     question_text: 'Does the review express satisfaction?',
     options: 'Yes|No',
     question_type: 'MC',
+    is_markdown: false,
     parent_question_text: preamble,
   });
 
@@ -1104,6 +1113,7 @@ test('a --- QUESTION --- delimiter in question text is not treated as a document
       'Document line one\nDocument line two\n\n--- QUESTION ---\nWhich answer follows from the document?',
     options: 'A|B',
     question_type: 'MC',
+    is_markdown: false,
   });
 
   await installApiMocks(page, state);
@@ -1112,6 +1122,85 @@ test('a --- QUESTION --- delimiter in question text is not treated as a document
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
   await expect(page.getByText('Document line one')).toBeVisible();
   await expect(page.getByText('Which answer follows from the document?')).toBeVisible();
+});
+
+test('the experiment markdown flag switches the rater card between rendered and raw text', async ({
+  page,
+}) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 506,
+    question_text: [
+      'What does `f(3)` return? Keep <b>this</b> literal.',
+      '',
+      '```python',
+      'def f(n):',
+      '    return n',
+      '```',
+      '',
+      // Twelve wide columns: far wider than the viewport.
+      `| ${Array.from({ length: 12 }, (_, i) => `Column ${i + 1} heading`).join(' | ')} |`,
+      `|${'-------------|'.repeat(12)}`,
+      `| ${Array.from({ length: 12 }, () => 'a fairly long cell value').join(' | ')} |`,
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  await expect(page.locator('pre code')).toContainText('def f(n):');
+  await expect(page.getByText('```python')).toHaveCount(0);
+  await expect(page.getByText('Keep <b>this</b> literal.')).toBeVisible();
+  await expect(page.locator('b, strong')).toHaveCount(0);
+
+  // The wide table scrolls inside the card instead of widening the page.
+  await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
+  const scroller = page.locator('.question-markdown-table-scroll');
+  expect(await scroller.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+
+  // Same question with the flag off: the fence markers are literal text.
+  question.is_markdown = false;
+  await page.reload();
+  await expect(page.getByText('```python')).toBeVisible();
+  await expect(page.locator('pre code')).toHaveCount(0);
+  await expect(page.getByRole('table')).toHaveCount(0);
+});
+
+test('the markdown flag also applies to the long-context document window', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 507,
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('link', { name: 'Open document in new tab' }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+
+  await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
 });
 
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {
@@ -1124,6 +1213,7 @@ test('an MC question with no options submits the typed free-text answer', async 
     question_text: 'Summarize what the document recommends.',
     options: '',
     question_type: 'MC',
+    is_markdown: false,
   });
 
   await installApiMocks(page, state);
@@ -1193,12 +1283,14 @@ test('rater ignores a stored session from another experiment and starts a fresh 
     question_text: 'Old experiment question',
     options: 'Yes,No',
     question_type: 'MC',
+    is_markdown: false,
   };
   state.questionsBySessionToken['token-exp-2'] = {
     id: 502,
     question_text: 'Fresh experiment question',
     options: 'Yes,No',
     question_type: 'MC',
+    is_markdown: false,
   };
 
   await page.addInitScript(() => {
