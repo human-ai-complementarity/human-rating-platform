@@ -1989,6 +1989,39 @@ test('failed experiment create reuses the group already made', async ({ page }) 
   expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
 });
 
+test('tag input enforces the length and count limits while typing', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  const input = page.getByTestId('experiment-tags-input');
+
+  // Length: typing stops at 64 characters rather than failing on submit.
+  await input.pressSequentially('x'.repeat(70));
+  await expect(input).toHaveValue('x'.repeat(64));
+  await input.fill('');
+
+  // Count: after 20 tags the input stops accepting more.
+  for (let i = 0; i < 20; i += 1) {
+    await input.fill(`tag-${i}`);
+    await input.press('Enter');
+  }
+  await expect(page.getByTestId('selected-tag-tag-19')).toBeVisible();
+  await expect(input).toHaveAttribute('readonly', '');
+  await expect(input).toHaveAttribute('placeholder', /Limit of 20 tags reached/);
+  await input.pressSequentially('tag-20');
+  await input.press('Enter');
+  await expect(page.getByTestId('selected-tag-tag-20')).toHaveCount(0);
+
+  // Backspace still frees a slot, and the input accepts again.
+  await input.press('Backspace');
+  await expect(page.getByTestId('selected-tag-tag-19')).toHaveCount(0);
+  await expect(input).not.toHaveAttribute('readonly', '');
+  await input.fill('tag-20');
+  await input.press('Enter');
+  await expect(page.getByTestId('selected-tag-tag-20')).toBeVisible();
+});
+
 test('tag suggestions rank by usage, row chips filter, and create adds a new tag', async ({
   page,
 }) => {

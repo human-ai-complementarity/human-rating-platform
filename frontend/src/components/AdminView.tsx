@@ -2254,6 +2254,12 @@ function CreatePanel({
   );
 }
 
+// Mirror the backend limits so they bite while typing, not as a 422 on submit.
+// Kept in sync with TagName (max_length) and MAX_TAGS_PER_EXPERIMENT in
+// backend/schemas.py.
+const MAX_TAG_LENGTH = 64;
+const MAX_TAGS_PER_EXPERIMENT = 20;
+
 function TagInput({
   value,
   onChange,
@@ -2272,8 +2278,10 @@ function TagInput({
     ? available.filter((s) => s.name.toLowerCase().includes(q))
     : available.slice(0, 3);
   const draftMatchesExisting = suggestions.some((s) => s.name.toLowerCase() === q);
+  const full = value.length >= MAX_TAGS_PER_EXPERIMENT;
 
   const add = (name: string) => {
+    if (full) return;
     const cleaned = name.trim().replace(/\s+/g, ' ');
     if (!cleaned || selectedLower.has(cleaned.toLowerCase())) {
       setDraft('');
@@ -2340,6 +2348,10 @@ function TagInput({
         data-testid="experiment-tags-input"
         type="text"
         value={draft}
+        maxLength={MAX_TAG_LENGTH}
+        // readOnly rather than disabled: key events still fire, so Backspace
+        // keeps removing the last tag to make room.
+        readOnly={full}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -2349,7 +2361,11 @@ function TagInput({
             remove(value[value.length - 1]);
           }
         }}
-        placeholder="e.g., needs-review, pilot-batch-2"
+        placeholder={
+          full
+            ? `Limit of ${MAX_TAGS_PER_EXPERIMENT} tags reached — remove one to add another`
+            : 'e.g., needs-review, pilot-batch-2'
+        }
         style={{
           width: '100%',
           padding: '11px 13px',
@@ -2361,7 +2377,7 @@ function TagInput({
         }}
       />
 
-      {(shown.length > 0 || (q !== '' && !draftMatchesExisting)) && (
+      {!full && (shown.length > 0 || (q !== '' && !draftMatchesExisting)) && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
           {shown.map((s) => (
             <button
@@ -2409,7 +2425,7 @@ function TagInput({
 
       <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 7 }}>
         Free-form labels (project, client, one-offs). Method, wave, and status are derived — don&apos;t
-        store those as tags.
+        store those as tags. Up to {MAX_TAGS_PER_EXPERIMENT} tags, {MAX_TAG_LENGTH} characters each.
       </div>
     </div>
   );
