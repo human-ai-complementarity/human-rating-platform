@@ -357,7 +357,9 @@ async def get_next_question(
                 if question.parent_question_id is not None
                 else None
             )
-            return build_question_response(question, parent_question_text=parent_text)
+            return build_question_response(
+                question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+            )
 
     # Past the deadline the rater keeps what they hold, but is served nothing new.
     await validate_rater_can_be_served(rater, db, policy)
@@ -404,7 +406,9 @@ async def get_next_question(
         if selected.parent_question_id is not None
         else None
     )
-    return build_question_response(selected, parent_question_text=parent_text)
+    return build_question_response(
+        selected, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+    )
 
 
 async def get_question_by_id(
@@ -444,7 +448,9 @@ async def get_question_by_id(
         if question.parent_question_id is not None
         else None
     )
-    return build_question_response(question, parent_question_text=parent_text)
+    return build_question_response(
+        question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+    )
 
 
 async def submit_rating(

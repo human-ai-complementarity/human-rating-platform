@@ -88,6 +88,7 @@ const DATASET_META_PLACEHOLDERS: Partial<Record<DatasetMetaField, string>> = {
 const META_FIELD_GROUPS: {
   header: string;
   fields: { field: DatasetMetaField; kind: 'input' | 'textarea'; minHeight?: number }[];
+  card?: 'is_markdown';
 }[] = [
   {
     header: 'Instructions',
@@ -102,6 +103,11 @@ const META_FIELD_GROUPS: {
       { field: 'human_prompt_prefix', kind: 'textarea', minHeight: 90 },
       { field: 'human_prompt_suffix', kind: 'textarea', minHeight: 90 },
     ],
+  },
+  {
+    header: 'Question rendering',
+    fields: [],
+    card: 'is_markdown',
   },
   {
     header: 'Deployment',
@@ -477,6 +483,7 @@ function ExperimentDetail({
     human_prompt_suffix: experiment.human_prompt_suffix ?? '',
     prolific_pool: experiment.prolific_pool ?? '',
   });
+  const [isMarkdown, setIsMarkdown] = useState(experiment.is_markdown);
   const [savingMeta, setSavingMeta] = useState(false);
   const metaFormDirtyRef = useRef(false);
 
@@ -489,12 +496,14 @@ function ExperimentDetail({
       human_prompt_suffix: experiment.human_prompt_suffix ?? '',
       prolific_pool: experiment.prolific_pool ?? '',
     });
+    setIsMarkdown(experiment.is_markdown);
   }, [
     experiment.description,
     experiment.system_prompt,
     experiment.human_prompt_prefix,
     experiment.human_prompt_suffix,
     experiment.prolific_pool,
+    experiment.is_markdown,
   ]);
 
   // ── Data-loading effects ───────────────────────────────────────────────
@@ -591,6 +600,7 @@ function ExperimentDetail({
         system_prompt: metaForm.system_prompt,
         human_prompt_prefix: metaForm.human_prompt_prefix,
         human_prompt_suffix: metaForm.human_prompt_suffix,
+        is_markdown: isMarkdown,
         prolific_pool: metaForm.prolific_pool,
       });
       showSuccess('Instructions & prompts saved.', 2000);
@@ -1196,6 +1206,11 @@ function ExperimentDetail({
             onMetaChange={(field, value) => {
               metaFormDirtyRef.current = true;
               setMetaForm({ ...metaForm, [field]: value });
+            }}
+            isMarkdown={isMarkdown}
+            onIsMarkdownChange={(value) => {
+              metaFormDirtyRef.current = true;
+              setIsMarkdown(value);
             }}
             onSave={handleSaveMeta}
             savingMeta={savingMeta}
@@ -1955,6 +1970,8 @@ function MetadataPanel({
   uploads,
   metaForm,
   onMetaChange,
+  isMarkdown,
+  onIsMarkdownChange,
   onSave,
   savingMeta,
   isLocked,
@@ -1966,6 +1983,8 @@ function MetadataPanel({
   uploads: Upload[];
   metaForm: Record<DatasetMetaField, string>;
   onMetaChange: (field: DatasetMetaField, value: string) => void;
+  isMarkdown: boolean;
+  onIsMarkdownChange: (value: boolean) => void;
   onSave: () => void;
   savingMeta: boolean;
   isLocked: boolean;
@@ -2045,6 +2064,54 @@ function MetadataPanel({
     );
   };
 
+  const markdownCard = (
+    <section
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+        padding: '18px 24px',
+        opacity: isLocked ? 0.7 : 1,
+      }}
+    >
+      <label
+        htmlFor="meta-is_markdown"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'flex-start',
+          gap: 10,
+          fontSize: 13.5,
+          lineHeight: 1.4,
+          fontWeight: 600,
+          cursor: isLocked ? 'not-allowed' : 'pointer',
+        }}
+      >
+        <input
+          id="meta-is_markdown"
+          type="checkbox"
+          checked={isMarkdown}
+          disabled={isLocked}
+          aria-describedby="meta-is_markdown-hint"
+          onChange={(e) => onIsMarkdownChange(e.target.checked)}
+          style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
+        />
+        Render questions as Markdown
+      </label>
+      <p
+        id="meta-is_markdown-hint"
+        style={{
+          fontSize: 12.5,
+          color: 'var(--muted)',
+          lineHeight: 1.55,
+          margin: '2px 0 0 26px',
+        }}
+      >
+        Code blocks, tables, etc. will be rendered as styled elements
+      </p>
+    </section>
+  );
+
   const saveButton = (
     <button
       type="button"
@@ -2087,8 +2154,7 @@ function MetadataPanel({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns:
-                  group.fields.length === 1 ? '1fr' : '1fr 1fr',
+                gridTemplateColumns: group.fields.length > 1 ? '1fr 1fr' : '1fr',
                 gap: 18,
               }}
             >
@@ -2101,6 +2167,7 @@ function MetadataPanel({
                       : undefined,
                 }),
               )}
+              {group.card === 'is_markdown' && markdownCard}
             </div>
           </div>
         );

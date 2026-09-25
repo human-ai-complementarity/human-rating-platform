@@ -14,7 +14,7 @@ function AdminDocs() {
           padding: '36px 44px',
         }}
       >
-        <div className="admin-docs">
+        <div className="admin-docs markdown">
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{adminGuide}</ReactMarkdown>
         </div>
       </div>

@@ -193,6 +193,7 @@ class ExperimentResponse(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
+    is_markdown: bool = False
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
     # Non-null when the experiment has been archived (soft-hidden from the
@@ -241,6 +242,7 @@ class ExperimentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
+    is_markdown: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # None means "leave unchanged". Locked once the experiment leaves DRAFT:
     # raters already in a session hold a session_end_time computed from the old
@@ -264,6 +266,7 @@ class QuestionResponse(BaseModel):
     options: Optional[str] = None
     question_type: str
     parent_question_text: Optional[str] = None
+    is_markdown: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
