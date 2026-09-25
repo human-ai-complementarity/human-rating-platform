@@ -23,6 +23,7 @@ type ExperimentRecord = {
   group_dataset_id: number | null;
   group_dataset_name: string | null;
   wave: string | null;
+  tags: string[];
 };
 
 type DatasetRecord = {
@@ -170,8 +171,25 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     group_dataset_id: null,
     group_dataset_name: null,
     wave: null,
+    tags: [],
     ...partial,
   };
+}
+
+function listTagRecords(state: MockState): { name: string; usage_count: number }[] {
+  const usage = new Map<string, { name: string; usage_count: number }>();
+  for (const experiment of state.experiments) {
+    if (experiment.archived_at !== null) continue;
+    for (const tag of experiment.tags) {
+      const key = tag.toLowerCase();
+      const existing = usage.get(key);
+      if (existing) existing.usage_count += 1;
+      else usage.set(key, { name: tag, usage_count: 1 });
+    }
+  }
+  return [...usage.values()].sort(
+    (a, b) => b.usage_count - a.usage_count || a.name.localeCompare(b.name),
+  );
 }
 
 function createMockState(): MockState {
@@ -298,6 +316,11 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname === '/api/admin/tags' && method === 'GET') {
+      await fulfillJson(route, 200, listTagRecords(state));
+      return;
+    }
+
     if (pathname === '/api/admin/experiment-groups' && method === 'GET') {
       await fulfillJson(route, 200, state.groups);
       return;
@@ -360,6 +383,7 @@ async function installApiMocks(
         session_duration_minutes: number;
         assistance_method?: string;
         group_id?: number | null;
+        tags?: string[];
       };
       if (payload.name === 'TRIGGER-FAIL') {
         await fulfillJson(route, 400, { detail: 'Could not create experiment' });
@@ -378,6 +402,7 @@ async function installApiMocks(
         group_dataset_id: group?.dataset_id ?? null,
         group_dataset_name: group?.dataset_name ?? null,
         wave: group?.wave ?? null,
+        tags: payload.tags ?? [],
       });
       state.experiments = [experiment];
       state.uploads[experiment.id] = [];
@@ -1962,4 +1987,78 @@ test('failed experiment create reuses the group already made', async ({ page }) 
 
   await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
   expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
+});
+
+test('tag input enforces the length and count limits while typing', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  const input = page.getByTestId('experiment-tags-input');
+
+  // Length: typing stops at 64 characters rather than failing on submit.
+  await input.pressSequentially('x'.repeat(70));
+  await expect(input).toHaveValue('x'.repeat(64));
+  await input.fill('');
+
+  // Count: after 20 tags the input stops accepting more.
+  for (let i = 0; i < 20; i += 1) {
+    await input.fill(`tag-${i}`);
+    await input.press('Enter');
+  }
+  await expect(page.getByTestId('selected-tag-tag-19')).toBeVisible();
+  await expect(input).toHaveAttribute('readonly', '');
+  await expect(input).toHaveAttribute('placeholder', /Limit of 20 tags reached/);
+  await input.pressSequentially('tag-20');
+  await input.press('Enter');
+  await expect(page.getByTestId('selected-tag-tag-20')).toHaveCount(0);
+
+  // Backspace still frees a slot, and the input accepts again.
+  await input.press('Backspace');
+  await expect(page.getByTestId('selected-tag-tag-19')).toHaveCount(0);
+  await expect(input).not.toHaveAttribute('readonly', '');
+  await input.fill('tag-20');
+  await input.press('Enter');
+  await expect(page.getByTestId('selected-tag-tag-20')).toBeVisible();
+});
+
+test('tag suggestions rank by usage, row chips filter, and create adds a new tag', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { name: 'Needs review A', tags: ['needs-review', 'pilot-batch-2'] }),
+    buildExperiment(state, { name: 'Needs review B', tags: ['needs-review'] }),
+    buildExperiment(state, { name: 'Needs review C', tags: ['needs-review', 'alpha'] }),
+    buildExperiment(state, { name: 'Scratch draft' }),
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await expect(page.getByTestId('tag-suggestion-needs-review')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-alpha')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-pilot-batch-2')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-needs-review')).toContainText('3');
+
+  await page.getByTestId('experiment-tag-needs-review').first().click();
+  await expect(page.getByTestId('tag-filter-chip')).toContainText('needs-review');
+  await expect(page.getByText('Scratch draft')).toHaveCount(0);
+  await expect(page.getByText('Needs review A')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Clear filters' }).click();
+  await expect(page.getByText('Scratch draft')).toBeVisible();
+
+  await page.getByTestId('tag-suggestion-needs-review').click();
+  await expect(page.getByTestId('selected-tag-needs-review')).toBeVisible();
+
+  await page.getByTestId('experiment-tags-input').fill('client-x');
+  await page.getByTestId('tag-create-new').click();
+  await expect(page.getByTestId('selected-tag-client-x')).toBeVisible();
+
+  await page.getByTestId('experiment-name-input').fill('Tagged draft');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Tagged draft' })).toBeVisible();
+  expect(state.experiments[0].tags).toEqual(['needs-review', 'client-x']);
 });

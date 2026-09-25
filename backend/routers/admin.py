@@ -24,6 +24,7 @@ from schemas import (
     ExperimentResponse,
     ExperimentUpdate,
     PilotStudyCreate,
+    TagResponse,
     PlatformStatus,
     ProlificPricingResponse,
     RecommendationResponse,
@@ -130,6 +131,7 @@ async def list_experiments(
     group_id: int | None = Query(None),
     dataset_id: int | None = Query(None),
     wave: str | None = Query(None, max_length=64),
+    tag: str | None = Query(None, max_length=64),
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.list_experiments(
@@ -142,6 +144,7 @@ async def list_experiments(
         group_id=group_id,
         dataset_id=dataset_id,
         wave=wave,
+        tag=tag,
         db=db,
     )
 
@@ -152,6 +155,13 @@ async def get_experiment(
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.get_experiment(experiment_id=experiment_id, db=db)
+
+
+@secure_router.get("/tags", response_model=list[TagResponse])
+async def list_tags(db: AsyncSession = Depends(get_session)):
+    """Global tag vocabulary with usage counts (active experiments only),
+    most-used first. Powers the creation flow's ranked suggestions."""
+    return await admin_service.list_tags(db)
 
 
 @secure_router.post("/experiments/{experiment_id}/upload")
