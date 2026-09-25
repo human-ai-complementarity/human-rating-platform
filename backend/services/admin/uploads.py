@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, Question, Upload
+from services.assistance.model_resolution import validate_model_id
 from services.question_separator import separator_upload_offenders
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
@@ -24,11 +25,8 @@ logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 
-# The five fields a dataset can declare as file-level metadata. Keys are matched
-# against this allowlist so unknown keys surface as a clean 400 instead of
-# silently filling columns we don't model. Applies to both the CSV `#META:`
-# header line and the Parquet schema's `dataset_meta` key — the colab notebook
-# produces the same JSON shape for both.
+# The five fields a dataset declares as file-level metadata that map one-to-one
+# onto an Experiment *column* of the same name, and are applied with `setattr`.
 DATASET_META_FIELDS = (
     "description",
     "system_prompt",
@@ -36,6 +34,18 @@ DATASET_META_FIELDS = (
     "human_prompt_suffix",
     "prolific_pool",
 )
+
+# The wave's assistance model (#96). Deliberately *not* in the tuple above: it
+# has no Experiment column. It lives one level deeper, inside the JSON blob
+# `Experiment.assistance_params`, so it needs its own routing — see
+# `_apply_model_meta`.
+MODEL_META_FIELD = "model"
+
+# Everything an upload may declare. Keys are matched against this allowlist so
+# unknown keys surface as a clean 400 instead of silently filling columns we
+# don't model. Applies to both the CSV `#META:` header line and the Parquet
+# schema's `dataset_meta` key — the export writes the same JSON shape for both.
+DATASET_META_KEYS = (*DATASET_META_FIELDS, MODEL_META_FIELD)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
@@ -76,18 +86,28 @@ def _validate_meta_dict(parsed: Any) -> dict[str, str]:
             status_code=400,
             detail="dataset metadata must be a JSON object",
         )
-    unknown = sorted(set(parsed) - set(DATASET_META_FIELDS))
+    unknown = sorted(set(parsed) - set(DATASET_META_KEYS))
     if unknown:
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Unknown dataset metadata keys: {', '.join(unknown)}. "
-                f"Allowed keys: {', '.join(DATASET_META_FIELDS)}."
+                f"Allowed keys: {', '.join(DATASET_META_KEYS)}."
             ),
         )
     # Coerce all values to strings — JSON may have given us ints/bools for
     # `prolific_pool` etc. Drop empty strings so they don't overwrite existing values.
-    return {k: str(v) for k, v in parsed.items() if v is not None and str(v) != ""}
+    values = {k: str(v) for k, v in parsed.items() if v is not None and str(v) != ""}
+    # Reject a model the transport cannot parse here, at the door, rather than
+    # storing it and discovering it at rater time: `_parse_model` raises and
+    # both assistance methods swallow that into a NONE step, so a bad prefix
+    # would mean a study that looks completed and gave nobody any assistance.
+    if MODEL_META_FIELD in values:
+        validate_model_id(
+            values[MODEL_META_FIELD],
+            field=f"dataset metadata {MODEL_META_FIELD!r}",
+        )
+    return values
 
 
 def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, str] | None:
@@ -155,7 +175,51 @@ def _apply_meta_to_experiment(
             applied.append(field_name)
         elif current_value != new_value:
             conflicts.append(field_name)
+    _apply_model_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
+
+
+def _apply_model_meta(
+    experiment: Experiment,
+    meta: dict[str, str],
+    applied: list[str],
+    conflicts: list[str],
+) -> None:
+    """Pin the exported model into `assistance_params["model"]` (#96).
+
+    Same never-overwrite rule as the column-backed fields, one level deeper.
+    The model has no Experiment column: it rides in the `assistance_params`
+    JSON blob so it inherits the config lock, the per-`AssistanceSession`
+    snapshot and `resolve_model`'s precedence for free.
+
+    Never-overwrite matters more here than elsewhere. An admin who typed a
+    model in deliberately is usually running a *deviation* — a different arm,
+    a cheaper model for a smoke test — and silently snapping it back to the
+    wave's would invalidate the comparison without saying so. Reporting the
+    disagreement lets them see it and choose.
+
+    Stamped regardless of `assistance_method`: the method is still editable
+    while DRAFT, so an arm switched on after the upload should find the wave's
+    model already pinned rather than fall back to the platform default.
+    """
+    if MODEL_META_FIELD not in meta:
+        return
+    new_value = meta[MODEL_META_FIELD]
+    params = json.loads(experiment.assistance_params) if experiment.assistance_params else {}
+    # Presence, not truthiness. An explicit `{"model": null}` is a deliberate
+    # clearing — the PATCH path treats it that way — and `or ""` would collapse
+    # it into "never set" and silently re-pin the wave's model, which is the
+    # opposite of the never-overwrite guarantee this function exists to give.
+    if MODEL_META_FIELD in params:
+        if params[MODEL_META_FIELD] != new_value:
+            conflicts.append(MODEL_META_FIELD)
+        return
+    # Merged into the existing blob, never assigned over it: `n` and
+    # `confidence_method` live here too, and replacing would leave an
+    # experiment that still looks configured but runs on defaults.
+    params[MODEL_META_FIELD] = new_value
+    experiment.assistance_params = json.dumps(params)
+    applied.append(MODEL_META_FIELD)
 
 
 def _serialize_cell(value: Any) -> str:

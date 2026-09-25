@@ -13,6 +13,7 @@ import type {
   RecommendationResponse,
   Screener,
   Upload,
+  UploadMetaKey,
 } from '../types';
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import {
@@ -42,8 +43,6 @@ import {
   rewardMinorToInput,
 } from './experiment-detail/reward';
 
-// Labels shown to admins in the Instructions & prompts panel. Order matches
-// the CSV `#META:` JSON shape that researchers see in the colab guide.
 /** "90 minute" / "2 hour" / "2 hour 30 minute" — reads naturally inside a sentence. */
 function formatSessionLength(minutes: number): string {
   if (minutes < 60) return `${minutes} minute`;
@@ -53,12 +52,17 @@ function formatSessionLength(minutes: number): string {
   return rest === 0 ? hourPart : `${hourPart} ${rest} minute`;
 }
 
-const DATASET_META_LABELS: Record<DatasetMetaField, string> = {
+// Labels for every key an upload can declare. The first five are the editable
+// fields in the Instructions & prompts panel, in the order the CSV `#META:`
+// JSON uses; `model` has no editable field — it is reported in upload results
+// only, because the upload pins it into assistance_params.
+const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
   human_prompt_prefix: 'Question prefix (shown above)',
   human_prompt_suffix: 'Question suffix (shown below)',
   prolific_pool: 'Prolific participant pool',
+  model: 'Assistance model',
 };
 
 const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
