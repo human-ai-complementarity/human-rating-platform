@@ -389,6 +389,28 @@ async function installApiMocks(
         await fulfillJson(route, 400, { detail: 'Could not create experiment' });
         return;
       }
+      if (payload.name === 'TRIGGER-422') {
+        // FastAPI's real request-validation body for this schema, captured
+        // verbatim — including the `input` echoes the UI must not render.
+        await fulfillJson(route, 422, {
+          detail: [
+            {
+              type: 'int_parsing',
+              loc: ['body', 'num_ratings_per_question'],
+              msg: 'Input should be a valid integer, unable to parse string as an integer',
+              input: 'three',
+            },
+            {
+              type: 'string_too_long',
+              loc: ['body', 'tags', 0],
+              msg: 'String should have at most 64 characters',
+              input: 'x'.repeat(65),
+              ctx: { max_length: 64 },
+            },
+          ],
+        });
+        return;
+      }
       const group = payload.group_id
         ? state.groups.find((item) => item.id === payload.group_id)
         : undefined;
@@ -1987,6 +2009,27 @@ test('failed experiment create reuses the group already made', async ({ page }) 
 
   await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
   expect(state.groups.filter((group) => group.name === 'MedQA Spring')).toHaveLength(1);
+});
+
+test('a validation error shows each field and message, not the raw JSON body', async ({
+  page,
+}) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await page.getByTestId('experiment-name-input').fill('TRIGGER-422');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+
+  const alert = page.getByRole('alert').filter({ hasText: 'tags[0]' });
+  await expect(alert).toHaveText(
+    'num_ratings_per_question: Input should be a valid integer, unable to parse string as an integer; ' +
+      'tags[0]: String should have at most 64 characters',
+  );
+  // No fallback wrapper, no JSON, and none of the rejected values echoed back.
+  await expect(alert).not.toContainText('Request failed');
+  await expect(alert).not.toContainText('{');
+  await expect(alert).not.toContainText('three');
 });
 
 test('tag input enforces the length and count limits while typing', async ({ page }) => {
