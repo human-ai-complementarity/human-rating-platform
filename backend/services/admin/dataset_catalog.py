@@ -1,4 +1,8 @@
-"""One-time catalog seed + experiment-group backfill.
+"""Dataset catalog: seed dataset rows from the pipeline roster and backfill groups.
+
+Run through `backend/scripts/sync_dataset_catalog.py` — a dry run by default,
+`--apply` to write. It is an operator one-off rather than an API route, so it
+does not linger as an endpoint anyone with admin access can re-trigger.
 
 Datasets are named after inference-pipeline cards (the cross-repo join key).
 This module vendors the *scheduled* cards — those with a non-empty
@@ -6,20 +10,24 @@ This module vendors the *scheduled* cards — those with a non-empty
 deferred follow-up; update `PIPELINE_DATASETS` when the pipeline roster
 changes.
 
-`sync_catalog` is idempotent: it creates missing dataset rows (and unions
-catalog waves onto existing same-name rows), then assigns *ungrouped*
+`sync_dataset_catalog` is idempotent: it creates missing dataset rows (and
+unions catalog waves onto existing same-name rows), then assigns *ungrouped*
 experiments whose upload filenames match a card. Wave is the dataset
 singleton when there is one, otherwise a wave token found in the
 experiment name / internal name / filenames. Dual-wave cards with no
 signal are left ungrouped. Assignment writes `group_id` directly so
 already-launched collections can be attached (the admin PATCH lock does
-not apply here).
+not apply here) — which also means a wrong match on a launched experiment
+cannot be undone through the API. Hence the strict filename rule in
+`match_card_name`, and reading the dry run before applying.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import PurePosixPath
 
 from sqlalchemy import func, select
@@ -27,12 +35,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Dataset, Experiment, ExperimentGroup, Upload
-from schemas import (
-    CatalogAssignment,
-    CatalogEntry,
-    CatalogSkip,
-    CatalogSyncResponse,
-)
 from .groups import resolve_attribution_wave
 from .waves import normalize_waves
 
@@ -62,31 +64,67 @@ PIPELINE_DATASETS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("primevul", ("sum26",)),
 )
 
-# Longer tokens first so "fall26" is not eaten by a future "fall2" and so
-# "fall25" / "fall26" stay distinct.
-_WAVE_TOKENS = ("fall26", "sum26", "fall25", "sp26")
+# Wave tokens recognised in experiment names and upload filenames. Order is
+# irrelevant: infer_wave collects every token present and requires exactly one.
+_WAVE_TOKENS = ("fall25", "sp26", "sum26", "fall26")
 
 
-def catalog_entries() -> list[CatalogEntry]:
-    return [CatalogEntry(name=name, waves=list(waves)) for name, waves in PIPELINE_DATASETS]
+@dataclass
+class DatasetCatalogAssignment:
+    experiment_id: int
+    experiment_name: str
+    dataset_name: str
+    wave: str
+    group_id: int
+    group_name: str
+
+
+@dataclass
+class DatasetCatalogSkip:
+    experiment_id: int
+    experiment_name: str
+    reason: str
+
+
+@dataclass
+class DatasetCatalogSyncReport:
+    applied: bool
+    datasets_created: list[str] = field(default_factory=list)
+    datasets_updated: list[str] = field(default_factory=list)
+    groups_created: list[str] = field(default_factory=list)
+    experiments_assigned: list[DatasetCatalogAssignment] = field(default_factory=list)
+    experiments_skipped: list[DatasetCatalogSkip] = field(default_factory=list)
+
+
+_WAVE_INFIX = "|".join(re.escape(token) for token in _WAVE_TOKENS)
+
+
+@lru_cache(maxsize=None)
+def _export_pattern(card: str) -> re.Pattern[str]:
+    card = re.escape(card.lower())
+    return re.compile(
+        # the bare card name, optionally with an extension
+        rf"{card}(?:\..+)?"
+        # {card}_n{count} or {card}_{wave}_n{count}, then anything after the count
+        rf"|{card}(?:_(?:{_WAVE_INFIX}))?_n\d+(?:[._].*)?"
+    )
 
 
 def match_card_name(filename: str, card_names: list[str] | None = None) -> str | None:
-    """Return the catalog card a pipeline export filename belongs to.
+    """Return the card a pipeline export filename belongs to, or None.
 
-    Pipeline exports look like `{card}_n{count}.csv/.parquet`. Longest card
-    name wins so `safeagentbench_abstracted_n10` does not attach to
-    `safeagentbench`.
+    Pipeline exports look like `{card}_n{count}`, optionally
+    `{card}_{wave}_n{count}`, with any extension or suffix after the count.
+    Only that shape matches. A looser `{card}_*` prefix rule attached
+    `safeagentbench_abstracted_n10` to `safeagentbench` once the abstracted
+    card left the roster, and would do the same to `primevul_cwe_*`. A file
+    that does not fit is reported as `no_upload_match` instead, which is
+    recoverable where a wrong assignment on a launched experiment is not.
+    Longest card name wins if two still match.
     """
     names = card_names if card_names is not None else [name for name, _ in PIPELINE_DATASETS]
     stem = PurePosixPath(filename.replace("\\", "/")).name.lower()
-    matches = [
-        name
-        for name in names
-        if stem == name.lower()
-        or stem.startswith(f"{name.lower()}_")
-        or stem.startswith(f"{name.lower()}.")
-    ]
+    matches = [name for name in names if _export_pattern(name).fullmatch(stem)]
     if not matches:
         return None
     return max(matches, key=lambda name: len(name))
@@ -116,11 +154,23 @@ class _DatasetRow:
     waves: list[str]
 
 
-async def sync_catalog(db: AsyncSession) -> CatalogSyncResponse:
+async def sync_dataset_catalog(db: AsyncSession, *, apply: bool) -> DatasetCatalogSyncReport:
+    """Seed datasets and backfill groups, committing only when `apply` is true.
+
+    The pass is one transaction that commits once at the end (inner writes use
+    savepoints), so a dry run is the identical pass rolled back: its report is
+    exactly what `apply` would write. `apply` has no default so every caller
+    states which one it means. In a dry-run report, ids of newly created groups
+    belong to rolled-back rows; identify those groups by name.
+    """
     created, updated, by_lower = await _seed_datasets(db)
     groups_created, assigned, skipped = await _assign_experiments(db, by_lower)
-    await db.commit()
-    return CatalogSyncResponse(
+    if apply:
+        await db.commit()
+    else:
+        await db.rollback()
+    return DatasetCatalogSyncReport(
+        applied=apply,
         datasets_created=created,
         datasets_updated=updated,
         groups_created=groups_created,
@@ -193,7 +243,7 @@ async def _insert_or_get_dataset(
 
 async def _assign_experiments(
     db: AsyncSession, by_lower: dict[str, _DatasetRow]
-) -> tuple[list[str], list[CatalogAssignment], list[CatalogSkip]]:
+) -> tuple[list[str], list[DatasetCatalogAssignment], list[DatasetCatalogSkip]]:
     experiments = (
         (await db.execute(select(Experiment).where(Experiment.group_id.is_(None)))).scalars().all()
     )
@@ -209,8 +259,8 @@ async def _assign_experiments(
             filenames_by_experiment[upload.experiment_id].append(upload.filename)
 
     groups_created: list[str] = []
-    assigned: list[CatalogAssignment] = []
-    skipped: list[CatalogSkip] = []
+    assigned: list[DatasetCatalogAssignment] = []
+    skipped: list[DatasetCatalogSkip] = []
     card_names = [name for name, _ in PIPELINE_DATASETS]
 
     for experiment in experiments:
@@ -220,7 +270,7 @@ async def _assign_experiments(
         if len(cards) == 0:
             if filenames:
                 skipped.append(
-                    CatalogSkip(
+                    DatasetCatalogSkip(
                         experiment_id=experiment.id,
                         experiment_name=experiment.name,
                         reason="no_upload_match",
@@ -229,7 +279,7 @@ async def _assign_experiments(
             continue
         if len(cards) > 1:
             skipped.append(
-                CatalogSkip(
+                DatasetCatalogSkip(
                     experiment_id=experiment.id,
                     experiment_name=experiment.name,
                     reason="ambiguous_dataset",
@@ -246,7 +296,7 @@ async def _assign_experiments(
         )
         if wave is None:
             skipped.append(
-                CatalogSkip(
+                DatasetCatalogSkip(
                     experiment_id=experiment.id,
                     experiment_name=experiment.name,
                     reason="ambiguous_wave",
@@ -257,7 +307,7 @@ async def _assign_experiments(
         placed = await _get_or_create_group(db, dataset, wave)
         if placed is None:
             skipped.append(
-                CatalogSkip(
+                DatasetCatalogSkip(
                     experiment_id=experiment.id,
                     experiment_name=experiment.name,
                     reason="group_name_conflict",
@@ -269,12 +319,13 @@ async def _assign_experiments(
             groups_created.append(group.name)
         experiment.group_id = group.id
         assigned.append(
-            CatalogAssignment(
+            DatasetCatalogAssignment(
                 experiment_id=experiment.id,
                 experiment_name=experiment.name,
                 dataset_name=dataset.name,
                 wave=wave,
                 group_id=group.id,
+                group_name=group.name,
             )
         )
 

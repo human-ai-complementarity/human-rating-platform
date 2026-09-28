@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from services.admin.catalog import PIPELINE_DATASETS, infer_wave, match_card_name
+from services.admin.dataset_catalog import PIPELINE_DATASETS, infer_wave, match_card_name
 
 
 def test_catalog_has_scheduled_cards_only():
@@ -37,6 +37,28 @@ def test_match_card_name_prefers_longest_card():
 def test_match_card_name_matches_real_cards():
     assert match_card_name("bbeh_safety_n50.csv") == "bbeh_safety"
     assert match_card_name("bbeh_mini_n50.csv") == "bbeh_mini"
+
+
+def test_match_card_name_accepts_the_export_shapes():
+    # optional wave infix between card and count
+    assert match_card_name("shade_arena_fall25_n20.parquet") == "shade_arena"
+    # anything after the count
+    assert match_card_name("gpqa_diamond_n20_seed1.csv") == "gpqa_diamond"
+    assert match_card_name("gpqa_diamond_n20.tar.gz") == "gpqa_diamond"
+
+
+def test_match_card_name_only_accepts_the_export_shape():
+    """A name that merely starts with a card is not that card's export.
+
+    The earlier `{card}_*` prefix rule attached these to the shorter card once
+    the longer one left the roster.
+    """
+    assert match_card_name("safeagentbench_abstracted_n10.parquet") is None
+    assert match_card_name("primevul_cwe_n300.parquet") is None
+    assert match_card_name("primevul_audit_n300.parquet") is None
+    assert match_card_name("gpqa_diamond_v2.csv") is None
+    # a wave-looking infix that isn't a known token is not an infix
+    assert match_card_name("shade_arena_winter30_n20.parquet") is None
 
 
 def test_match_card_name_rejects_unrelated_files():

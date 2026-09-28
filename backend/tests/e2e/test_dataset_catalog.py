@@ -1,9 +1,14 @@
-"""Catalog seed + experiment-group backfill."""
+"""Dataset catalog seed + experiment-group backfill."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
+from dataclasses import asdict
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
@@ -11,7 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from config import get_settings
 from models import Dataset, Experiment, ExperimentGroup
-from services.admin.catalog import PIPELINE_DATASETS, _insert_or_get_dataset, _insert_or_get_group
+from services.admin.dataset_catalog import (
+    PIPELINE_DATASETS,
+    _insert_or_get_dataset,
+    _insert_or_get_group,
+    sync_dataset_catalog,
+)
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 def _create_experiment(client: TestClient, name: str) -> dict:
@@ -32,19 +44,22 @@ def _upload(client: TestClient, experiment_id: int, filename: str) -> None:
     assert response.status_code == 200, response.text
 
 
-def _sync(client: TestClient) -> dict:
-    response = client.post("/api/admin/catalog/sync")
-    assert response.status_code == 200, response.text
-    return response.json()
+def _sync(*, apply: bool = True) -> dict:
+    """Run the sync in its own session, as the script does, and return the report."""
 
+    async def run():
+        engine, session_maker = _async_session_maker()
+        try:
+            async with session_maker() as db:
+                return await sync_dataset_catalog(db, apply=apply)
+        finally:
+            await engine.dispose()
 
-def test_get_catalog_returns_scheduled_cards(client: TestClient):
-    rows = client.get("/api/admin/catalog").json()
-    assert [(row["name"], tuple(row["waves"])) for row in rows] == list(PIPELINE_DATASETS)
+    return asdict(asyncio.run(run()))
 
 
 def test_sync_seeds_datasets_and_is_idempotent(client: TestClient):
-    first = _sync(client)
+    first = _sync()
     assert sorted(first["datasets_created"]) == sorted(name for name, _ in PIPELINE_DATASETS)
     assert first["datasets_updated"] == []
     assert first["experiments_assigned"] == []
@@ -55,7 +70,7 @@ def test_sync_seeds_datasets_and_is_idempotent(client: TestClient):
     assert by_name["shade_arena"] == ["fall25", "sp26"]
     assert by_name["culturalbench_hard"] == ["sp26"]
 
-    second = _sync(client)
+    second = _sync()
     assert second["datasets_created"] == []
     assert second["datasets_updated"] == []
     assert len(client.get("/api/admin/datasets").json()) == len(PIPELINE_DATASETS)
@@ -67,7 +82,7 @@ def test_sync_unions_catalog_waves_onto_existing_dataset(client: TestClient):
     ).json()
     assert created["waves"] == ["fall25"]
 
-    result = _sync(client)
+    result = _sync()
     assert "shade_arena" in result["datasets_updated"]
     fetched = client.get(f"/api/admin/datasets/{created['id']}").json()
     assert fetched["waves"] == ["fall25", "sp26"]
@@ -78,7 +93,7 @@ def test_sync_assigns_singleton_wave_from_filename(client: TestClient):
     experiment = _create_experiment(client, "CulturalBench run")
     _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
 
-    result = _sync(client)
+    result = _sync()
     assigned = result["experiments_assigned"]
     assert len(assigned) == 1
     assert assigned[0]["experiment_id"] == experiment["id"]
@@ -97,7 +112,7 @@ def test_sync_assigns_dual_wave_when_name_has_token(client: TestClient):
     experiment = _create_experiment(client, "shade arena sp26 rerun")
     _upload(client, experiment["id"], "shade_arena_n50.csv")
 
-    result = _sync(client)
+    result = _sync()
     assigned = result["experiments_assigned"]
     assert assigned[0]["dataset_name"] == "shade_arena"
     assert assigned[0]["wave"] == "sp26"
@@ -108,7 +123,7 @@ def test_sync_skips_dual_wave_without_signal(client: TestClient):
     experiment = _create_experiment(client, "shade arena mystery")
     _upload(client, experiment["id"], "shade_arena_n50.csv")
 
-    result = _sync(client)
+    result = _sync()
     assert result["experiments_assigned"] == []
     skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
     assert skipped[experiment["id"]] == "ambiguous_wave"
@@ -122,7 +137,7 @@ def test_sync_skips_unrelated_upload(client: TestClient):
     experiment = _create_experiment(client, "scratch draft")
     _upload(client, experiment["id"], "questions.csv")
 
-    result = _sync(client)
+    result = _sync()
     skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
     assert skipped[experiment["id"]] == "no_upload_match"
 
@@ -136,7 +151,7 @@ def test_sync_assigns_launched_experiments(client: TestClient, sync_engine):
             {"id": experiment["id"]},
         )
 
-    result = _sync(client)
+    result = _sync()
     assert result["experiments_assigned"][0]["experiment_id"] == experiment["id"]
 
     listed = client.get("/api/admin/experiments").json()
@@ -146,7 +161,7 @@ def test_sync_assigns_launched_experiments(client: TestClient, sync_engine):
 
 
 def test_sync_leaves_already_grouped_experiments_alone(client: TestClient):
-    seed = _sync(client)
+    seed = _sync()
     dataset_id = next(
         row["id"]
         for row in client.get("/api/admin/datasets").json()
@@ -162,7 +177,7 @@ def test_sync_leaves_already_grouped_experiments_alone(client: TestClient):
     ).json()
     _upload(client, experiment["id"], "gpqa_diamond_n20.csv")
 
-    result = _sync(client)
+    result = _sync()
     assert seed["datasets_created"]
     assert all(item["experiment_id"] != experiment["id"] for item in result["experiments_assigned"])
 
@@ -275,14 +290,14 @@ def test_catalog_group_unique_race_reuses_row_and_keeps_the_experiment():
 
 
 def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestClient):
-    """Both generated names taken by human-renamed groups must not 500 the sync.
+    """Both generated names taken by human-renamed groups must not crash the sync.
 
     `_get_or_create_group` falls back from "{dataset} {wave}" to
     "{dataset} ({wave})" without checking the second name is free, and the
     IntegrityError recovery only re-queries by (dataset_id, wave) — so a
     collision on the name index used to be mis-diagnosed and re-raised.
     """
-    _sync(client)
+    _sync()
     dataset_id = next(
         row["id"] for row in client.get("/api/admin/datasets").json() if row["name"] == "bbeh_mini"
     )
@@ -306,9 +321,7 @@ def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestCli
     experiment = _create_experiment(client, "bbeh sp26 run")
     _upload(client, experiment["id"], "bbeh_mini_n40.csv")
 
-    result = client.post("/api/admin/catalog/sync")
-    assert result.status_code == 200, result.text
-    body = result.json()
+    body = _sync()
 
     # Reported as a skip, and the experiment is left ungrouped for a human.
     assert any(
@@ -324,11 +337,10 @@ def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestCli
     assert row["group_id"] is None
 
     # Still idempotent, and other experiments in the same pass are unaffected.
-    again = client.post("/api/admin/catalog/sync")
-    assert again.status_code == 200, again.text
+    again = _sync()
     assert any(
         item["experiment_id"] == experiment["id"] and item["reason"] == "group_name_conflict"
-        for item in again.json()["experiments_skipped"]
+        for item in again["experiments_skipped"]
     )
 
     # Freeing one of the two names lets a later sync place it.
@@ -336,8 +348,116 @@ def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestCli
     clash = next(group for group in groups if group["name"] == "bbeh_mini (sp26)")
     client.patch(f"/api/admin/experiment-groups/{clash['id']}", json={"name": "bbeh_mini summer"})
 
-    final = client.post("/api/admin/catalog/sync")
-    assert final.status_code == 200, final.text
-    assert any(
-        item["experiment_id"] == experiment["id"] for item in final.json()["experiments_assigned"]
+    final = _sync()
+    assert any(item["experiment_id"] == experiment["id"] for item in final["experiments_assigned"])
+
+
+def _experiment_row(client: TestClient, experiment_id: int) -> dict:
+    return next(
+        item for item in client.get("/api/admin/experiments").json() if item["id"] == experiment_id
     )
+
+
+def test_dry_run_writes_nothing_and_reports_exactly_what_apply_writes(client: TestClient):
+    experiment = _create_experiment(client, "gpqa run")
+    _upload(client, experiment["id"], "gpqa_diamond_n20.csv")
+    datasets_before = client.get("/api/admin/datasets").json()
+    groups_before = client.get("/api/admin/experiment-groups").json()
+
+    dry = _sync(apply=False)
+    assert dry["applied"] is False
+    assert any(item["experiment_id"] == experiment["id"] for item in dry["experiments_assigned"])
+    assert client.get("/api/admin/datasets").json() == datasets_before
+    assert client.get("/api/admin/experiment-groups").json() == groups_before
+    assert _experiment_row(client, experiment["id"])["group_id"] is None
+
+    applied = _sync()
+    assert applied["applied"] is True
+
+    def comparable(report: dict) -> tuple:
+        # Ids of groups created in a dry run belong to rolled-back rows, so
+        # compare by name.
+        return (
+            sorted(report["datasets_created"]),
+            sorted(report["datasets_updated"]),
+            sorted(report["groups_created"]),
+            sorted(
+                (item["experiment_id"], item["dataset_name"], item["wave"], item["group_name"])
+                for item in report["experiments_assigned"]
+            ),
+            sorted(
+                (item["experiment_id"], item["reason"]) for item in report["experiments_skipped"]
+            ),
+        )
+
+    assert comparable(dry) == comparable(applied)
+    assert _experiment_row(client, experiment["id"])["group_name"] == "gpqa_diamond fall25"
+
+
+def test_exports_from_cards_outside_the_roster_do_not_attach_to_a_shorter_card(
+    client: TestClient,
+):
+    """A file whose name merely starts with a scheduled card is not that card's.
+
+    safeagentbench_abstracted left the roster; under a `{card}_*` prefix rule
+    its exports attached to safeagentbench, and primevul_cwe / primevul_audit
+    to primevul. Assignment bypasses the post-launch group lock, so that would
+    be unrecoverable through the API. They are now skipped and reported.
+    """
+    ids = {}
+    for filename in (
+        "safeagentbench_abstracted_n10.csv",
+        "primevul_cwe_n300.csv",
+        "primevul_audit_n300.csv",
+        "safeagentbench_n10.csv",
+        "primevul_n300.csv",
+    ):
+        experiment = _create_experiment(client, filename)
+        _upload(client, experiment["id"], filename)
+        ids[filename] = experiment["id"]
+
+    result = _sync()
+    assigned = {
+        item["experiment_id"]: item["dataset_name"] for item in result["experiments_assigned"]
+    }
+    skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
+
+    for filename in (
+        "safeagentbench_abstracted_n10.csv",
+        "primevul_cwe_n300.csv",
+        "primevul_audit_n300.csv",
+    ):
+        assert ids[filename] not in assigned, filename
+        assert skipped[ids[filename]] == "no_upload_match", filename
+    assert assigned[ids["safeagentbench_n10.csv"]] == "safeagentbench"
+    assert assigned[ids["primevul_n300.csv"]] == "primevul"
+
+
+def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestClient):
+    experiment = _create_experiment(client, "culturalbench run")
+    _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
+    datasets_before = client.get("/api/admin/datasets").json()
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "scripts/sync_dataset_catalog.py", *args],
+            cwd=BACKEND_DIR,
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+        )
+
+    expected_line = f'#{experiment["id"]} "culturalbench run" -> culturalbench_hard sp26'
+
+    dry = run()
+    assert dry.returncode == 0, dry.stderr
+    assert "DRY RUN" in dry.stdout
+    assert expected_line in dry.stdout
+    assert client.get("/api/admin/datasets").json() == datasets_before
+    assert _experiment_row(client, experiment["id"])["group_id"] is None
+
+    applied = run("--apply")
+    assert applied.returncode == 0, applied.stderr
+    assert "APPLIED" in applied.stdout
+    assert expected_line in applied.stdout
+    assert _experiment_row(client, experiment["id"])["group_name"] == "culturalbench_hard sp26"
