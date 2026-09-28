@@ -1,7 +1,8 @@
 """Experiment-group CRUD.
 
-A group is the collection-run container: one dataset × one attribution wave.
-Experiments in a group inherit both. `dataset_id` and `wave` lock once any
+A group is the collection-run container: one dataset × one attribution wave,
+the wave the collection run was conducted for. Experiments in a group inherit
+both. `dataset_id` and `wave` lock once any
 member experiment leaves DRAFT; the name stays editable.
 """
 

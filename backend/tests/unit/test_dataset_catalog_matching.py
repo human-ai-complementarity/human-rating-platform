@@ -1,32 +1,63 @@
 from __future__ import annotations
 
-from services.admin.dataset_catalog import PIPELINE_DATASETS, infer_wave, match_card_name
+from datetime import UTC, datetime
+
+from models import Experiment
+from services.admin.dataset_catalog import (
+    COLLECTIONS,
+    PIPELINE_DATASETS,
+    Collection,
+    _check_collection,
+    match_card_name,
+    wave_tokens,
+)
+
+ROSTER = [name for name, _ in PIPELINE_DATASETS]
+
+# `IDS` from the pipeline's scripts/sp26_pull_platform_ratings.sh at the
+# snapshot commit, copied verbatim: "the id list below IS the wave".
+SP26_PULL_IDS = (
+    "65 84 124 67 117 127 68 80 128 71 85 126 72 120 131 75 122 125 83 121 130 82 123 129 "
+    "135 136 236 133 134"
+)
 
 
-def test_catalog_has_scheduled_cards_only():
-    names = [name for name, _ in PIPELINE_DATASETS]
-    assert len(names) == len(set(name.lower() for name in names))
-    assert "trace_sample" not in names
-    assert "gpqa_diamond" in names
-    assert "culturalbench_hard" in names
-    assert "find_the_flaws_cels_lojban_match" in names
+def test_roster_has_scheduled_cards_only():
+    assert len(ROSTER) == len({name.lower() for name in ROSTER})
+    assert "trace_sample" not in ROSTER
+    # Excluded from sum26 by inference-pipeline #187; no other wave schedules it.
+    assert "steganographic_collusion" not in ROSTER
+    # Collected in sp26 but no longer scheduled: a collection, not a roster card.
+    assert "safeagentbench_abstracted" not in ROSTER
+    assert {"gpqa_diamond", "culturalbench_hard", "find_the_flaws_cels_lojban_match"} <= set(ROSTER)
+
+
+def test_sp26_collections_are_exactly_the_pipeline_pull():
+    sp26 = {eid for eid, collection in COLLECTIONS.items() if collection.wave == "sp26"}
+    assert sp26 == {int(eid) for eid in SP26_PULL_IDS.split()}
+
+
+def test_every_collection_names_a_known_card_arm_and_wave():
+    collected_only = {"safeagentbench_abstracted"}
+    for eid, collection in COLLECTIONS.items():
+        assert collection.card in set(ROSTER) | collected_only, eid
+        assert collection.arm in {"none", "top_n", "human_as_a_tool"}, eid
+        assert collection.wave in {"sp26", "sum26"}, eid
+    assert {eid for eid, c in COLLECTIONS.items() if c.wave == "sum26"} == {76, 78}
 
 
 def test_match_card_name_uses_pipeline_export_prefix():
-    assert match_card_name("culturalbench_hard_n300.parquet") == "culturalbench_hard"
-    assert match_card_name("culturalbench_hard.csv") == "culturalbench_hard"
-    assert match_card_name("CULTURALBENCH_HARD_n1.CSV") == "culturalbench_hard"
-    assert match_card_name("exports/culturalbench_hard_n300.parquet") == "culturalbench_hard"
+    assert match_card_name("culturalbench_hard_n300.parquet", ROSTER) == "culturalbench_hard"
+    assert match_card_name("culturalbench_hard.csv", ROSTER) == "culturalbench_hard"
+    assert match_card_name("CULTURALBENCH_HARD_n1.CSV", ROSTER) == "culturalbench_hard"
+    assert (
+        match_card_name("exports/culturalbench_hard_n300.parquet", ROSTER) == "culturalbench_hard"
+    )
+    # card names are matched case-insensitively and returned verbatim
+    assert match_card_name("facts_search_public_n300.csv", ROSTER) == "FACTS_search_public"
 
 
 def test_match_card_name_prefers_longest_card():
-    """Longest-wins, exercised against explicit names rather than the roster.
-
-    No card currently in PIPELINE_DATASETS is a prefix of another — the pair
-    that used to demonstrate this (safeagentbench / safeagentbench_abstracted)
-    left the roster when the snapshot was corrected. The guarantee still has to
-    hold for the next such pair, so pin it directly on the function.
-    """
     names = ["safeagentbench", "safeagentbench_abstracted"]
     assert match_card_name("safeagentbench_abstracted_n10.parquet", names) == (
         "safeagentbench_abstracted"
@@ -34,49 +65,86 @@ def test_match_card_name_prefers_longest_card():
     assert match_card_name("safeagentbench_n10.parquet", names) == "safeagentbench"
 
 
-def test_match_card_name_matches_real_cards():
-    assert match_card_name("bbeh_safety_n50.csv") == "bbeh_safety"
-    assert match_card_name("bbeh_mini_n50.csv") == "bbeh_mini"
-
-
 def test_match_card_name_accepts_the_export_shapes():
     # optional wave infix between card and count
-    assert match_card_name("shade_arena_fall25_n20.parquet") == "shade_arena"
+    assert match_card_name("shade_arena_fall25_n20.parquet", ROSTER) == "shade_arena"
     # anything after the count
-    assert match_card_name("gpqa_diamond_n20_seed1.csv") == "gpqa_diamond"
-    assert match_card_name("gpqa_diamond_n20.tar.gz") == "gpqa_diamond"
+    assert match_card_name("liars_bench_n464_fixed.csv", ROSTER) == "liars_bench"
+    assert match_card_name("gpqa_diamond_n20.tar.gz", ROSTER) == "gpqa_diamond"
 
 
 def test_match_card_name_only_accepts_the_export_shape():
     """A name that merely starts with a card is not that card's export.
 
-    The earlier `{card}_*` prefix rule attached these to the shorter card once
-    the longer one left the roster.
+    A `{card}_*` prefix rule attached these to the shorter card.
     """
-    assert match_card_name("safeagentbench_abstracted_n10.parquet") is None
-    assert match_card_name("primevul_cwe_n300.parquet") is None
-    assert match_card_name("primevul_audit_n300.parquet") is None
-    assert match_card_name("gpqa_diamond_v2.csv") is None
+    assert match_card_name("safeagentbench_abstracted_n10.parquet", ROSTER) is None
+    assert match_card_name("primevul_cwe_n300.parquet", ROSTER) is None
+    assert match_card_name("primevul_audit_n300.parquet", ROSTER) is None
+    assert match_card_name("gpqa_diamond_v2.csv", ROSTER) is None
     # a wave-looking infix that isn't a known token is not an infix
-    assert match_card_name("shade_arena_winter30_n20.parquet") is None
+    assert match_card_name("shade_arena_winter30_n20.parquet", ROSTER) is None
 
 
 def test_match_card_name_rejects_unrelated_files():
-    assert match_card_name("questions.csv") is None
-    assert match_card_name("sample_questions.csv") is None
-    assert match_card_name("culturalbench.csv") is None
+    assert match_card_name("questions.csv", ROSTER) is None
+    assert match_card_name("sample_questions.csv", ROSTER) is None
+    assert match_card_name("culturalbench.csv", ROSTER) is None
 
 
-def test_infer_wave_singleton_wins():
-    assert infer_wave(["no wave here"], ["sp26"]) == "sp26"
+def test_wave_tokens_finds_every_token_case_insensitively():
+    assert wave_tokens(["SUM26 - MARS - find_the_flaws"]) == {"sum26"}
+    assert wave_tokens(["shade arena", "shade_arena_fall25_n20.parquet"]) == {"fall25"}
+    assert wave_tokens(["fall25 and sp26"]) == {"fall25", "sp26"}
+    assert wave_tokens(["SPAR - Shade Arena - ISD", "shade_arena_n106.csv"]) == set()
 
 
-def test_infer_wave_reads_token_from_text():
-    assert infer_wave(["bbeh mini sp26 rerun"], ["fall25", "sp26"]) == "sp26"
-    assert infer_wave(["shade_arena_fall25_n20.parquet"], ["fall25", "sp26"]) == "fall25"
+def _experiment(**fields) -> Experiment:
+    fields.setdefault("name", "run")
+    fields.setdefault("assistance_method", "none")
+    return Experiment(num_ratings_per_question=1, **fields)
 
 
-def test_infer_wave_ambiguous_or_missing_is_none():
-    assert infer_wave(["no signal"], ["fall25", "sp26"]) is None
-    assert infer_wave(["fall25 and sp26"], ["fall25", "sp26"]) is None
-    assert infer_wave(["sum26 only"], ["fall25", "sp26"]) is None
+LONGBENCH = Collection("longbenchv2", "none", "sp26")
+
+
+def test_check_collection_accepts_a_matching_experiment():
+    assert _check_collection(_experiment(), ["longbenchv2_n392.csv"], LONGBENCH, ROSTER) is None
+
+
+def test_check_collection_refuses_an_archived_experiment():
+    archived = _experiment(archived_at=datetime.now(UTC))
+    assert _check_collection(archived, ["longbenchv2_n392.csv"], LONGBENCH, ROSTER) == (
+        "archived",
+        "",
+    )
+
+
+def test_check_collection_refuses_uploads_of_another_card():
+    reason, detail = _check_collection(_experiment(), ["longsafety_n569.csv"], LONGBENCH, ROSTER)
+    assert reason == "card_mismatch"
+    assert "longsafety" in detail
+    reason, _ = _check_collection(_experiment(), ["questions.csv"], LONGBENCH, ROSTER)
+    assert reason == "card_mismatch"
+    # an extra upload of a different card is a disagreement too
+    reason, _ = _check_collection(
+        _experiment(), ["longbenchv2_n392.csv", "longsafety_n569.csv"], LONGBENCH, ROSTER
+    )
+    assert reason == "card_mismatch"
+
+
+def test_check_collection_refuses_another_arm():
+    top_n = _experiment(assistance_method="top_n")
+    reason, detail = _check_collection(top_n, ["longbenchv2_n392.csv"], LONGBENCH, ROSTER)
+    assert reason == "arm_mismatch"
+    assert "top_n" in detail
+
+
+def test_check_collection_refuses_names_carrying_another_wave():
+    named = _experiment(internal_name="SUM26 - Long Bench V2")
+    reason, detail = _check_collection(named, ["longbenchv2_n392.csv"], LONGBENCH, ROSTER)
+    assert reason == "wave_conflict"
+    assert "sum26" in detail
+    # the recorded wave's own token is agreement, not conflict
+    agreeing = _experiment(internal_name="SP26 - Long Bench V2")
+    assert _check_collection(agreeing, ["longbenchv2_n392.csv"], LONGBENCH, ROSTER) is None

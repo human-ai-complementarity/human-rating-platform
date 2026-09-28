@@ -1,9 +1,14 @@
-"""Seed dataset rows from the pipeline roster and backfill experiment groups.
+"""One-time backfill: seed datasets and put past collections into their groups.
+
+Only experiments in the vendored collection record (`COLLECTIONS` in
+services/admin/dataset_catalog.py) are ever assigned, each to the wave the
+pipeline recorded for it, after its card, arm and names are cross-checked.
+Everything else is reported and left alone.
 
 Dry run by default: prints exactly what would change, then rolls back. Pass
 --apply to write. Read the dry run first. Assignment bypasses the post-launch
-group lock, so a wrong match on a launched experiment can only be undone in
-the database.
+group lock, so a wrong assignment on a launched experiment can only be undone
+in the database.
 
 Run inside the api/migrate container:
     uv run --no-sync python scripts/sync_dataset_catalog.py            # dry run
@@ -54,7 +59,7 @@ def format_report(report: DatasetCatalogSyncReport) -> str:
     mode = (
         "APPLIED" if report.applied else "DRY RUN (nothing written; re-run with --apply to write)"
     )
-    lines = [f"Dataset catalog sync: {mode}", ""]
+    lines = [f"Dataset catalog sync: {mode}", f"Pipeline snapshot: {report.pipeline_commit}", ""]
 
     def names(title: str, items: list[str]) -> None:
         lines.append(f"{title} ({len(items)}){': ' + ', '.join(items) if items else ''}")
@@ -62,16 +67,24 @@ def format_report(report: DatasetCatalogSyncReport) -> str:
     names("Datasets created", report.datasets_created)
     names("Datasets updated", report.datasets_updated)
     names("Groups created", report.groups_created)
+    names("Collected in a wave the card does not schedule", report.collected_outside_schedule)
 
+    # Internal names first: public names repeat across arms of one dataset.
     lines.append(f"Experiments assigned ({len(report.experiments_assigned)})")
     for item in report.experiments_assigned:
+        label = item.internal_name or item.experiment_name
         lines.append(
-            f'  #{item.experiment_id} "{item.experiment_name}" -> '
-            f'{item.dataset_name} {item.wave} (group "{item.group_name}")'
+            f'  #{item.experiment_id} "{label}" -> {item.dataset_name} {item.wave}, '
+            f'arm {item.arm} (group "{item.group_name}")'
         )
     lines.append(f"Experiments skipped ({len(report.experiments_skipped)})")
     for item in report.experiments_skipped:
-        lines.append(f'  #{item.experiment_id} "{item.experiment_name}": {item.reason}')
+        label = item.internal_name or item.experiment_name
+        detail = f" ({item.detail})" if item.detail else ""
+        lines.append(f'  #{item.experiment_id} "{label}": {item.reason}{detail}')
+    if report.manifest_missing:
+        missing = ", ".join(str(eid) for eid in report.manifest_missing)
+        lines.append(f"Listed but not in this database ({len(report.manifest_missing)}): {missing}")
     return "\n".join(lines)
 
 

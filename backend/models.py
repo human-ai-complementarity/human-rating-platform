@@ -539,10 +539,11 @@ class Dataset(SQLModel, table=True):
     cross-repo join key, so it is stored verbatim (trimmed only, internal
     punctuation/casing preserved).
 
-    `waves` mirrors the card's wave-inclusion *set* (which waves the dataset is
-    part of), not attribution — which wave a given run was for lives on the
-    experiment group. Maintained via the API for now; automated card sync is
-    a deferred follow-up.
+    `waves` is the set of waves the dataset is scheduled for (the card's
+    wave inclusion) *or* was collected in (the waves of its groups). The two
+    diverge: a card can drop a wave after a collection for it has run. Which
+    wave a given run was for lives on the experiment group. Maintained via the
+    API for now; automated card sync is a deferred follow-up.
     """
 
     __tablename__ = "datasets"
@@ -569,8 +570,11 @@ class Dataset(SQLModel, table=True):
 class ExperimentGroup(SQLModel, table=True):
     """Collection-run container: one dataset × one attribution wave.
 
-    `wave` is picked from the parent dataset's membership set (auto-filled
-    when that set is a singleton). `dataset_id` and `wave` lock once any
+    `wave` is the wave the collection run was conducted for — never a later
+    wave that reuses the ratings (that reuse is recorded in the pipeline, not
+    by regrouping). A later wave re-collecting the dataset is a new group. It
+    is picked from the parent dataset's wave set (auto-filled when that set is
+    a singleton). `dataset_id` and `wave` lock once any
     experiment in the group leaves DRAFT — same idea as the experiment
     config lock. Name stays editable (organizational).
     """

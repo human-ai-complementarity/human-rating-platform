@@ -1,4 +1,4 @@
-"""Dataset catalog seed + experiment-group backfill."""
+"""Dataset catalog: one-time backfill of past collections into datasets and groups."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import asdict
 from pathlib import Path
 
@@ -17,7 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from config import get_settings
 from models import Dataset, Experiment, ExperimentGroup
 from services.admin.dataset_catalog import (
+    COLLECTIONS,
     PIPELINE_DATASETS,
+    Collection,
     _insert_or_get_dataset,
     _insert_or_get_group,
     sync_dataset_catalog,
@@ -26,8 +29,8 @@ from services.admin.dataset_catalog import (
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
-def _create_experiment(client: TestClient, name: str) -> dict:
-    response = client.post("/api/admin/experiments", json={"name": name})
+def _create_experiment(client: TestClient, name: str, **fields) -> dict:
+    response = client.post("/api/admin/experiments", json={"name": name, **fields})
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -44,36 +47,67 @@ def _upload(client: TestClient, experiment_id: int, filename: str) -> None:
     assert response.status_code == 200, response.text
 
 
-def _sync(*, apply: bool = True) -> dict:
+def _async_session_maker():
+    engine = create_async_engine(get_settings().async_database_url)
+    return engine, async_sessionmaker(
+        engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+        autoflush=False,
+    )
+
+
+def _sync(*, apply: bool = True, collections: Mapping[int, Collection] | None = None) -> dict:
     """Run the sync in its own session, as the script does, and return the report."""
 
     async def run():
         engine, session_maker = _async_session_maker()
         try:
             async with session_maker() as db:
-                return await sync_dataset_catalog(db, apply=apply)
+                if collections is None:
+                    return await sync_dataset_catalog(db, apply=apply)
+                return await sync_dataset_catalog(db, apply=apply, collections=collections)
         finally:
             await engine.dispose()
 
     return asdict(asyncio.run(run()))
 
 
-def test_sync_seeds_datasets_and_is_idempotent(client: TestClient):
+def _experiment_row(client: TestClient, experiment_id: int) -> dict:
+    return next(
+        item
+        for item in client.get("/api/admin/experiments?include_archived=true").json()
+        if item["id"] == experiment_id
+    )
+
+
+def _skips(report: dict) -> dict[int, str]:
+    return {item["experiment_id"]: item["reason"] for item in report["experiments_skipped"]}
+
+
+def _datasets(client: TestClient) -> dict[str, list[str]]:
+    return {row["name"]: row["waves"] for row in client.get("/api/admin/datasets").json()}
+
+
+def test_sync_seeds_the_roster_and_is_idempotent(client: TestClient):
     first = _sync()
     assert sorted(first["datasets_created"]) == sorted(name for name, _ in PIPELINE_DATASETS)
     assert first["datasets_updated"] == []
     assert first["experiments_assigned"] == []
+    # None of the recorded collections exist in this database.
+    assert first["manifest_missing"] == sorted(COLLECTIONS)
 
-    datasets = client.get("/api/admin/datasets").json()
-    by_name = {row["name"]: row["waves"] for row in datasets}
+    by_name = _datasets(client)
     assert by_name["QuALITY_dev"] == ["fall25"]
     assert by_name["shade_arena"] == ["fall25", "sp26"]
-    assert by_name["culturalbench_hard"] == ["sp26"]
+    assert by_name["longbenchv2"] == ["sum26"]
+    # A collected-only card gets a row only when one of its collections is here.
+    assert "safeagentbench_abstracted" not in by_name
 
     second = _sync()
     assert second["datasets_created"] == []
     assert second["datasets_updated"] == []
-    assert len(client.get("/api/admin/datasets").json()) == len(PIPELINE_DATASETS)
+    assert len(_datasets(client)) == len(PIPELINE_DATASETS)
 
 
 def test_sync_unions_catalog_waves_onto_existing_dataset(client: TestClient):
@@ -89,60 +123,153 @@ def test_sync_unions_catalog_waves_onto_existing_dataset(client: TestClient):
     assert fetched["name"] == "shade_arena"
 
 
-def test_sync_assigns_singleton_wave_from_filename(client: TestClient):
+def test_a_listed_collection_is_assigned_to_its_recorded_wave(client: TestClient):
     experiment = _create_experiment(client, "CulturalBench run")
     _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
 
-    result = _sync()
+    result = _sync(collections={experiment["id"]: Collection("culturalbench_hard", "none", "sp26")})
     assigned = result["experiments_assigned"]
-    assert len(assigned) == 1
-    assert assigned[0]["experiment_id"] == experiment["id"]
-    assert assigned[0]["dataset_name"] == "culturalbench_hard"
-    assert assigned[0]["wave"] == "sp26"
+    assert [(a["experiment_id"], a["dataset_name"], a["arm"], a["wave"]) for a in assigned] == [
+        (experiment["id"], "culturalbench_hard", "none", "sp26")
+    ]
     assert result["groups_created"] == ["culturalbench_hard sp26"]
 
-    listed = client.get("/api/admin/experiments").json()
-    row = next(item for item in listed if item["id"] == experiment["id"])
+    row = _experiment_row(client, experiment["id"])
     assert row["group_dataset_name"] == "culturalbench_hard"
     assert row["wave"] == "sp26"
     assert row["group_name"] == "culturalbench_hard sp26"
 
 
-def test_sync_assigns_dual_wave_when_name_has_token(client: TestClient):
-    experiment = _create_experiment(client, "shade arena sp26 rerun")
-    _upload(client, experiment["id"], "shade_arena_n50.csv")
+def test_the_recorded_wave_wins_over_the_cards_current_schedule(client: TestClient):
+    """longbenchv2 was collected in sp26 and moved to sum26 afterwards.
 
-    result = _sync()
-    assigned = result["experiments_assigned"]
-    assert assigned[0]["dataset_name"] == "shade_arena"
-    assert assigned[0]["wave"] == "sp26"
-    assert result["groups_created"] == ["shade_arena sp26"]
+    The group records the collection's wave, and the dataset's wave set gains
+    it — without that, resolve_attribution_wave would refuse sp26 and abort the
+    whole pass.
+    """
+    experiment = _create_experiment(client, "SPAR - Long Bench V2 - Baseline")
+    _upload(client, experiment["id"], "longbenchv2_n392.csv")
+
+    result = _sync(collections={experiment["id"]: Collection("longbenchv2", "none", "sp26")})
+    assert [a["wave"] for a in result["experiments_assigned"]] == ["sp26"]
+    assert result["collected_outside_schedule"] == ["longbenchv2 sp26"]
+    assert sorted(_datasets(client)["longbenchv2"]) == ["sp26", "sum26"]
+    assert _experiment_row(client, experiment["id"])["group_name"] == "longbenchv2 sp26"
 
 
-def test_sync_skips_dual_wave_without_signal(client: TestClient):
-    experiment = _create_experiment(client, "shade arena mystery")
-    _upload(client, experiment["id"], "shade_arena_n50.csv")
+def test_a_collected_card_outside_the_roster_gets_its_own_dataset(client: TestClient):
+    """safeagentbench_abstracted: collected in sp26, descheduled, still distinct.
 
-    result = _sync()
+    Its exports must land on its own dataset, not on safeagentbench — under a
+    `{card}_*` prefix rule they attached to the shorter card, and assignment
+    bypasses the post-launch lock, so that would be unrecoverable.
+    """
+    abstracted = _create_experiment(client, "abstracted baseline")
+    _upload(client, abstracted["id"], "safeagentbench_abstracted_n100.csv")
+    plain = _create_experiment(client, "plain baseline")
+    _upload(client, plain["id"], "safeagentbench_n640.csv")
+
+    result = _sync(
+        collections={
+            abstracted["id"]: Collection("safeagentbench_abstracted", "none", "sp26"),
+            plain["id"]: Collection("safeagentbench", "none", "sp26"),
+        }
+    )
+    assigned = {a["experiment_id"]: a["dataset_name"] for a in result["experiments_assigned"]}
+    assert assigned == {
+        abstracted["id"]: "safeagentbench_abstracted",
+        plain["id"]: "safeagentbench",
+    }
+    assert "safeagentbench_abstracted" in result["datasets_created"]
+    assert _datasets(client)["safeagentbench_abstracted"] == ["sp26"]
+
+
+def test_unlisted_experiments_are_reported_and_left_alone(client: TestClient):
+    experiment = _create_experiment(client, "a run nobody recorded")
+    _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
+
+    result = _sync(collections={})
     assert result["experiments_assigned"] == []
-    skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
-    assert skipped[experiment["id"]] == "ambiguous_wave"
-
-    listed = client.get("/api/admin/experiments").json()
-    row = next(item for item in listed if item["id"] == experiment["id"])
-    assert row["group_id"] is None
+    assert _skips(result) == {experiment["id"]: "not_in_manifest"}
+    assert _experiment_row(client, experiment["id"])["group_id"] is None
 
 
-def test_sync_skips_unrelated_upload(client: TestClient):
-    experiment = _create_experiment(client, "scratch draft")
-    _upload(client, experiment["id"], "questions.csv")
+def test_each_cross_check_refuses_a_disagreeing_experiment(client: TestClient, sync_engine):
+    listed = Collection("culturalbench_hard", "none", "sp26")
+    wrong_card = _create_experiment(client, "wrong card")
+    _upload(client, wrong_card["id"], "shade_arena_n106.csv")
+    unknown_file = _create_experiment(client, "primevul variant")
+    _upload(client, unknown_file["id"], "primevul_cwe_n300.csv")
+    wrong_arm = _create_experiment(client, "wrong arm", assistance_method="top_n")
+    _upload(client, wrong_arm["id"], "culturalbench_hard_n300.csv")
+    wrong_wave = _create_experiment(client, "CulturalBench fall25 rerun")
+    _upload(client, wrong_wave["id"], "culturalbench_hard_n300.csv")
+    archived = _create_experiment(client, "archived run")
+    _upload(client, archived["id"], "culturalbench_hard_n300.csv")
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET archived_at = now() WHERE id = :id"),
+            {"id": archived["id"]},
+        )
 
-    result = _sync()
-    skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
-    assert skipped[experiment["id"]] == "no_upload_match"
+    result = _sync(
+        collections={
+            wrong_card["id"]: listed,
+            unknown_file["id"]: Collection("primevul", "none", "sum26"),
+            wrong_arm["id"]: listed,
+            wrong_wave["id"]: listed,
+            archived["id"]: listed,
+        }
+    )
+    assert result["experiments_assigned"] == []
+    assert _skips(result) == {
+        wrong_card["id"]: "card_mismatch",
+        unknown_file["id"]: "card_mismatch",
+        wrong_arm["id"]: "arm_mismatch",
+        wrong_wave["id"]: "wave_conflict",
+        archived["id"]: "archived",
+    }
+    assert result["groups_created"] == []
+    # Nothing was attributed, so no collected wave was claimed for a dataset.
+    assert result["datasets_updated"] == []
+    assert result["collected_outside_schedule"] == []
 
 
-def test_sync_assigns_launched_experiments(client: TestClient, sync_engine):
+def test_assigned_collections_are_left_alone_on_a_rerun(client: TestClient):
+    experiment = _create_experiment(client, "CulturalBench run")
+    _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
+    collections = {experiment["id"]: Collection("culturalbench_hard", "none", "sp26")}
+
+    first = _sync(collections=collections)
+    group_id = first["experiments_assigned"][0]["group_id"]
+
+    second = _sync(collections=collections)
+    assert second["experiments_assigned"] == []
+    assert _skips(second) == {experiment["id"]: "already_grouped"}
+    assert second["groups_created"] == []
+    assert _experiment_row(client, experiment["id"])["group_id"] == group_id
+
+
+def test_a_listed_experiment_grouped_by_hand_is_not_moved(client: TestClient):
+    _sync()
+    dataset_id = next(
+        row["id"]
+        for row in client.get("/api/admin/datasets").json()
+        if row["name"] == "culturalbench_hard"
+    )
+    group = client.post(
+        "/api/admin/experiment-groups",
+        json={"name": "Hand-made", "dataset_id": dataset_id, "wave": "sp26"},
+    ).json()
+    experiment = _create_experiment(client, "grouped by hand", group_id=group["id"])
+    _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
+
+    result = _sync(collections={experiment["id"]: Collection("culturalbench_hard", "none", "sp26")})
+    assert _skips(result) == {experiment["id"]: "already_grouped"}
+    assert _experiment_row(client, experiment["id"])["group_name"] == "Hand-made"
+
+
+def test_a_launched_collection_is_attached(client: TestClient, sync_engine):
     experiment = _create_experiment(client, "Launched CulturalBench")
     _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
     with sync_engine.begin() as conn:
@@ -151,50 +278,30 @@ def test_sync_assigns_launched_experiments(client: TestClient, sync_engine):
             {"id": experiment["id"]},
         )
 
-    result = _sync()
+    result = _sync(collections={experiment["id"]: Collection("culturalbench_hard", "none", "sp26")})
     assert result["experiments_assigned"][0]["experiment_id"] == experiment["id"]
 
-    listed = client.get("/api/admin/experiments").json()
-    row = next(item for item in listed if item["id"] == experiment["id"])
+    row = _experiment_row(client, experiment["id"])
     assert row["status"] == "LAUNCH"
     assert row["group_name"] == "culturalbench_hard sp26"
 
 
-def test_sync_leaves_already_grouped_experiments_alone(client: TestClient):
-    seed = _sync()
-    dataset_id = next(
-        row["id"]
-        for row in client.get("/api/admin/datasets").json()
-        if row["name"] == "gpqa_diamond"
+def test_a_later_wave_on_the_same_dataset_is_a_new_group(client: TestClient):
+    """Re-collecting a dataset in a later wave is a second group, not a regroup."""
+    sp26 = _create_experiment(client, "shade arena, spring")
+    _upload(client, sp26["id"], "shade_arena_n106.csv")
+    fall25 = _create_experiment(client, "shade arena, earlier")
+    _upload(client, fall25["id"], "shade_arena_n50.csv")
+
+    result = _sync(
+        collections={
+            sp26["id"]: Collection("shade_arena", "none", "sp26"),
+            fall25["id"]: Collection("shade_arena", "none", "fall25"),
+        }
     )
-    group = client.post(
-        "/api/admin/experiment-groups",
-        json={"name": "GPQA Fall", "dataset_id": dataset_id, "wave": "fall25"},
-    ).json()
-    experiment = client.post(
-        "/api/admin/experiments",
-        json={"name": "already grouped", "group_id": group["id"]},
-    ).json()
-    _upload(client, experiment["id"], "gpqa_diamond_n20.csv")
-
-    result = _sync()
-    assert seed["datasets_created"]
-    assert all(item["experiment_id"] != experiment["id"] for item in result["experiments_assigned"])
-
-    listed = client.get("/api/admin/experiments").json()
-    row = next(item for item in listed if item["id"] == experiment["id"])
-    assert row["group_id"] == group["id"]
-    assert row["group_name"] == "GPQA Fall"
-
-
-def _async_session_maker():
-    engine = create_async_engine(get_settings().async_database_url)
-    return engine, async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-        autoflush=False,
-    )
+    assert sorted(result["groups_created"]) == ["shade_arena fall25", "shade_arena sp26"]
+    assert _experiment_row(client, sp26["id"])["wave"] == "sp26"
+    assert _experiment_row(client, fall25["id"])["wave"] == "fall25"
 
 
 def test_catalog_dataset_unique_race_reuses_row_and_keeps_sibling_insert():
@@ -318,60 +425,45 @@ def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestCli
         )
         assert renamed.status_code == 200, renamed.text
 
-    experiment = _create_experiment(client, "bbeh sp26 run")
+    experiment = _create_experiment(client, "bbeh run")
     _upload(client, experiment["id"], "bbeh_mini_n40.csv")
+    collections = {experiment["id"]: Collection("bbeh_mini", "none", "sp26")}
 
-    body = _sync()
+    body = _sync(collections=collections)
 
     # Reported as a skip, and the experiment is left ungrouped for a human.
-    assert any(
-        item["experiment_id"] == experiment["id"] and item["reason"] == "group_name_conflict"
-        for item in body["experiments_skipped"]
-    ), body["experiments_skipped"]
-    assert all(item["experiment_id"] != experiment["id"] for item in body["experiments_assigned"])
-    row = next(
-        item
-        for item in client.get("/api/admin/experiments").json()
-        if item["id"] == experiment["id"]
-    )
-    assert row["group_id"] is None
+    assert _skips(body) == {experiment["id"]: "group_name_conflict"}
+    assert body["experiments_assigned"] == []
+    assert _experiment_row(client, experiment["id"])["group_id"] is None
 
-    # Still idempotent, and other experiments in the same pass are unaffected.
-    again = _sync()
-    assert any(
-        item["experiment_id"] == experiment["id"] and item["reason"] == "group_name_conflict"
-        for item in again["experiments_skipped"]
-    )
+    # Still idempotent.
+    again = _sync(collections=collections)
+    assert _skips(again) == {experiment["id"]: "group_name_conflict"}
 
     # Freeing one of the two names lets a later sync place it.
     groups = client.get("/api/admin/experiment-groups").json()
     clash = next(group for group in groups if group["name"] == "bbeh_mini (sp26)")
     client.patch(f"/api/admin/experiment-groups/{clash['id']}", json={"name": "bbeh_mini summer"})
 
-    final = _sync()
-    assert any(item["experiment_id"] == experiment["id"] for item in final["experiments_assigned"])
-
-
-def _experiment_row(client: TestClient, experiment_id: int) -> dict:
-    return next(
-        item for item in client.get("/api/admin/experiments").json() if item["id"] == experiment_id
-    )
+    final = _sync(collections=collections)
+    assert [a["experiment_id"] for a in final["experiments_assigned"]] == [experiment["id"]]
 
 
 def test_dry_run_writes_nothing_and_reports_exactly_what_apply_writes(client: TestClient):
-    experiment = _create_experiment(client, "gpqa run")
-    _upload(client, experiment["id"], "gpqa_diamond_n20.csv")
+    experiment = _create_experiment(client, "Long Bench run")
+    _upload(client, experiment["id"], "longbenchv2_n392.csv")
+    collections = {experiment["id"]: Collection("longbenchv2", "none", "sp26")}
     datasets_before = client.get("/api/admin/datasets").json()
     groups_before = client.get("/api/admin/experiment-groups").json()
 
-    dry = _sync(apply=False)
+    dry = _sync(apply=False, collections=collections)
     assert dry["applied"] is False
-    assert any(item["experiment_id"] == experiment["id"] for item in dry["experiments_assigned"])
+    assert [a["experiment_id"] for a in dry["experiments_assigned"]] == [experiment["id"]]
     assert client.get("/api/admin/datasets").json() == datasets_before
     assert client.get("/api/admin/experiment-groups").json() == groups_before
     assert _experiment_row(client, experiment["id"])["group_id"] is None
 
-    applied = _sync()
+    applied = _sync(collections=collections)
     assert applied["applied"] is True
 
     def comparable(report: dict) -> tuple:
@@ -391,51 +483,33 @@ def test_dry_run_writes_nothing_and_reports_exactly_what_apply_writes(client: Te
         )
 
     assert comparable(dry) == comparable(applied)
-    assert _experiment_row(client, experiment["id"])["group_name"] == "gpqa_diamond fall25"
+    assert _experiment_row(client, experiment["id"])["group_name"] == "longbenchv2 sp26"
 
 
-def test_exports_from_cards_outside_the_roster_do_not_attach_to_a_shorter_card(
-    client: TestClient,
-):
-    """A file whose name merely starts with a scheduled card is not that card's.
-
-    safeagentbench_abstracted left the roster; under a `{card}_*` prefix rule
-    its exports attached to safeagentbench, and primevul_cwe / primevul_audit
-    to primevul. Assignment bypasses the post-launch group lock, so that would
-    be unrecoverable through the API. They are now skipped and reported.
-    """
-    ids = {}
-    for filename in (
-        "safeagentbench_abstracted_n10.csv",
-        "primevul_cwe_n300.csv",
-        "primevul_audit_n300.csv",
-        "safeagentbench_n10.csv",
-        "primevul_n300.csv",
-    ):
-        experiment = _create_experiment(client, filename)
-        _upload(client, experiment["id"], filename)
-        ids[filename] = experiment["id"]
-
-    result = _sync()
-    assigned = {
-        item["experiment_id"]: item["dataset_name"] for item in result["experiments_assigned"]
-    }
-    skipped = {item["experiment_id"]: item["reason"] for item in result["experiments_skipped"]}
-
-    for filename in (
-        "safeagentbench_abstracted_n10.csv",
-        "primevul_cwe_n300.csv",
-        "primevul_audit_n300.csv",
-    ):
-        assert ids[filename] not in assigned, filename
-        assert skipped[ids[filename]] == "no_upload_match", filename
-    assert assigned[ids["safeagentbench_n10.csv"]] == "safeagentbench"
-    assert assigned[ids["primevul_n300.csv"]] == "primevul"
+def _insert_experiment(conn, experiment_id: int, name: str, arm: str, filename: str) -> None:
+    """An experiment at a fixed id, as the recorded collection names it."""
+    conn.execute(
+        text(
+            "INSERT INTO experiments (id, name, internal_name, num_ratings_per_question, "
+            "assistance_method) VALUES (:id, :name, :name, 3, :arm)"
+        ),
+        {"id": experiment_id, "name": name, "arm": arm},
+    )
+    conn.execute(
+        text(
+            "INSERT INTO uploads (experiment_id, filename, question_count) "
+            "VALUES (:id, :filename, 1)"
+        ),
+        {"id": experiment_id, "filename": filename},
+    )
 
 
-def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestClient):
-    experiment = _create_experiment(client, "culturalbench run")
-    _upload(client, experiment["id"], "culturalbench_hard_n300.csv")
+def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestClient, sync_engine):
+    # The script always runs the real record, so use one of its ids.
+    with sync_engine.begin() as conn:
+        _insert_experiment(
+            conn, 133, "SPAR - Long Bench V2 - Baseline", "none", "longbenchv2_n392.csv"
+        )
     datasets_before = client.get("/api/admin/datasets").json()
 
     def run(*args: str) -> subprocess.CompletedProcess[str]:
@@ -447,17 +521,178 @@ def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestC
             text=True,
         )
 
-    expected_line = f'#{experiment["id"]} "culturalbench run" -> culturalbench_hard sp26'
+    expected_line = '#133 "SPAR - Long Bench V2 - Baseline" -> longbenchv2 sp26, arm none'
 
     dry = run()
     assert dry.returncode == 0, dry.stderr
     assert "DRY RUN" in dry.stdout
     assert expected_line in dry.stdout
     assert client.get("/api/admin/datasets").json() == datasets_before
-    assert _experiment_row(client, experiment["id"])["group_id"] is None
+    assert _experiment_row(client, 133)["group_id"] is None
 
     applied = run("--apply")
     assert applied.returncode == 0, applied.stderr
     assert "APPLIED" in applied.stdout
     assert expected_line in applied.stdout
-    assert _experiment_row(client, experiment["id"])["group_name"] == "culturalbench_hard sp26"
+    assert _experiment_row(client, 133)["group_name"] == "longbenchv2 sp26"
+
+
+# Production's 39 experiments as of 2026-09-28: id, internal name, upload,
+# assistance method, archived. Read-only snapshot; used to check the recorded
+# collections against what production actually holds.
+PRODUCTION = (
+    (
+        20,
+        "Difference Awareness Baseline",
+        "multidimensional_difference_awareness_n64.parquet",
+        "none",
+        True,
+    ),
+    (22, "Liars Bench Baseline", "liars_bench_n464.parquet", "none", True),
+    (31, "SPAR - BBEH Mini - Baseline", "bbeh_mini_n376.csv", "none", True),
+    (65, "SPAR -  FACTS Search -  Baseline", "facts_search_public_n300.csv", "none", False),
+    (67, "SPAR - safeagentbench -  baseline", "safeagentbench_n640.csv", "none", False),
+    (
+        68,
+        "SPAR - safeagentbench -abstracted - baseline",
+        "safeagentbench_abstracted_n100.csv",
+        "none",
+        False,
+    ),
+    (71, "SPAR - Shade Arena - Baseline", "shade_arena_n106.csv", "none", False),
+    (
+        72,
+        "SPAR - multidimensional_difference_awareness - baseline",
+        "multidimensional_difference_awareness_n120.csv",
+        "none",
+        False,
+    ),
+    (75, "SPAR - liars_bench - baseline", "liars_bench_n464_fixed.csv", "none", False),
+    (
+        76,
+        "SUM26 FindTheFlaws CELS Lojban (match) — baseline — dipo101",
+        "find_the_flaws_cels_lojban_match_n88.parquet",
+        "none",
+        False,
+    ),
+    (
+        78,
+        "SUM26 - MARS - find_the_flaws_modified_gpqa_flaw  - baseline - dipo101",
+        "find_the_flaws_modified_gpqa_flaw_n122.parquet",
+        "none",
+        False,
+    ),
+    (
+        80,
+        "SPAR - safeagentbench -abstracted - ISD",
+        "safeagentbench_abstracted_n100.csv",
+        "human_as_a_tool",
+        False,
+    ),
+    (
+        81,
+        "SPAR - safeagentbench -abstracted - Top-3",
+        "safeagentbench_abstracted_n100.csv",
+        "top_n",
+        True,
+    ),
+    (82, "SPAR -  CulturalBench Hard -  Baseline", "culturalbench_hard_n1227.csv", "none", False),
+    (
+        83,
+        "SPAR -  AttuneBench Pairwise -  Baseline",
+        "attunebench_pairwise_n800.csv",
+        "none",
+        False,
+    ),
+    (84, "SPAR -  FACTS Search - ISD", "facts_search_public_n300.csv", "human_as_a_tool", False),
+    (85, "SPAR - Shade Arena -  ISD", "shade_arena_n106.csv", "human_as_a_tool", False),
+    (117, "SPAR -  SafeAgentBench -  ISD", "safeagentbench_n640.csv", "human_as_a_tool", False),
+    (119, "SPAR -  BBEH Mini -  ISD", "bbeh_mini_n376.csv", "human_as_a_tool", True),
+    (
+        120,
+        "SPAR -  Multidimensional Difference Awareness -  ISD",
+        "multidimensional_difference_awareness_n120.csv",
+        "human_as_a_tool",
+        False,
+    ),
+    (
+        121,
+        "SPAR - AttuneBench Pairwise -  ISD",
+        "attunebench_pairwise_n800.csv",
+        "human_as_a_tool",
+        False,
+    ),
+    (122, "SPAR -  Liars Bench -  ISD", "liars_bench_n464.csv", "human_as_a_tool", False),
+    (
+        123,
+        "SPAR - CulturalBench Hard -  ISD",
+        "culturalbench_hard_n1227.csv",
+        "human_as_a_tool",
+        False,
+    ),
+    (124, "SPAR -  FACTS Search -  Top-3", "facts_search_public_n300.csv", "top_n", False),
+    (125, "SPAR - Liars Bench - Top-3", "liars_bench_n464_fixed.csv", "top_n", False),
+    (126, "SPAR -  Shade Arena -  Top-3", "shade_arena_n106.csv", "top_n", False),
+    (127, "SPAR -  SafeAgent Bench -  Top-3", "safeagentbench_n640.csv", "top_n", False),
+    (
+        128,
+        "SPAR -  SafeAgent Bench abstracted -  Top-3",
+        "safeagentbench_abstracted_n100.csv",
+        "top_n",
+        False,
+    ),
+    (129, "SPAR - CulturalBench Hard -  Top-3", "culturalbench_hard_n1227.csv", "top_n", False),
+    (130, "SPAR - AttuneBench Pairwise -  Top-3", "attunebench_pairwise_n800.csv", "top_n", False),
+    (
+        131,
+        "SPAR - Multidimensional Difference Awareness -  Top-3",
+        "multidimensional_difference_awareness_n120.csv",
+        "top_n",
+        False,
+    ),
+    (132, "SPAR - BBEH Mini - ISD", "bbeh_mini_n376.csv", "human_as_a_tool", True),
+    (133, "SPAR - Long Bench V2 - Baseline", "longbenchv2_n392.csv", "none", False),
+    (134, "SPAR - Long Safety - Baseline", "longsafety_n569.csv", "none", False),
+    (135, "SPAR - BBEH Safety - Baseline", "bbeh_safety_n300.csv", "none", False),
+    (136, "SPAR - BBEH Safety - ISD", "bbeh_safety_n300.csv", "human_as_a_tool", False),
+    (236, "SPAR - BBEH Safety - Top-3", "bbeh_safety_n300.csv", "top_n", False),
+    (237, "SPAR - Long Bench V2 - ISD", "longbenchv2_n392.csv", "human_as_a_tool", True),
+    (238, "SPAR - Long Safety - ISD", "longsafety_n569.csv", "human_as_a_tool", True),
+)
+
+
+def test_the_recorded_collections_pass_every_check_against_production(
+    client: TestClient, sync_engine
+):
+    """The real record, run over production's shape, gives exactly the record.
+
+    Every listed experiment is assigned to its recorded card and wave — so no
+    cross-check would refuse it on apply — and nothing else is touched.
+    """
+    with sync_engine.begin() as conn:
+        for eid, name, filename, arm, archived in PRODUCTION:
+            _insert_experiment(conn, eid, name, arm, filename)
+            if archived:
+                conn.execute(
+                    text("UPDATE experiments SET archived_at = now() WHERE id = :id"),
+                    {"id": eid},
+                )
+
+    result = _sync(apply=False)
+
+    assigned = {
+        a["experiment_id"]: (a["dataset_name"], a["arm"], a["wave"])
+        for a in result["experiments_assigned"]
+    }
+    assert assigned == {eid: (c.card, c.arm, c.wave) for eid, c in COLLECTIONS.items()}
+    unlisted = {eid for eid, *_ in PRODUCTION} - set(COLLECTIONS)
+    assert _skips(result) == {eid: "not_in_manifest" for eid in unlisted}
+    assert unlisted == {eid for eid, *_, archived in PRODUCTION if archived}
+    assert result["manifest_missing"] == []
+    assert len(result["groups_created"]) == 13
+    assert sorted(result["collected_outside_schedule"]) == [
+        "longbenchv2 sp26",
+        "longsafety sp26",
+        "safeagentbench_abstracted sp26",
+    ]
+    assert "safeagentbench_abstracted" in result["datasets_created"]
