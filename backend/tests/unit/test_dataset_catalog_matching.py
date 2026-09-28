@@ -57,7 +57,7 @@ def test_match_card_name_uses_pipeline_export_prefix():
     assert match_card_name("facts_search_public_n300.csv", ROSTER) == "FACTS_search_public"
 
 
-def test_match_card_name_prefers_longest_card():
+def test_match_card_name_gives_each_card_only_its_own_exports():
     names = ["safeagentbench", "safeagentbench_abstracted"]
     assert match_card_name("safeagentbench_abstracted_n10.parquet", names) == (
         "safeagentbench_abstracted"
@@ -65,10 +65,11 @@ def test_match_card_name_prefers_longest_card():
     assert match_card_name("safeagentbench_n10.parquet", names) == "safeagentbench"
 
 
-def test_match_card_name_accepts_the_export_shapes():
-    # optional wave infix between card and count
-    assert match_card_name("shade_arena_fall25_n20.parquet", ROSTER) == "shade_arena"
-    # anything after the count
+def test_match_card_name_refuses_a_name_that_fits_two_cards():
+    assert match_card_name("x_n1.csv", ["x", "x_n1"]) is None
+
+
+def test_match_card_name_accepts_anything_after_the_count():
     assert match_card_name("liars_bench_n464_fixed.csv", ROSTER) == "liars_bench"
     assert match_card_name("gpqa_diamond_n20.tar.gz", ROSTER) == "gpqa_diamond"
 
@@ -82,8 +83,8 @@ def test_match_card_name_only_accepts_the_export_shape():
     assert match_card_name("primevul_cwe_n300.parquet", ROSTER) is None
     assert match_card_name("primevul_audit_n300.parquet", ROSTER) is None
     assert match_card_name("gpqa_diamond_v2.csv", ROSTER) is None
-    # a wave-looking infix that isn't a known token is not an infix
-    assert match_card_name("shade_arena_winter30_n20.parquet", ROSTER) is None
+    # nothing goes between card and count; export_study.py never writes a wave there
+    assert match_card_name("shade_arena_fall25_n20.parquet", ROSTER) is None
 
 
 def test_match_card_name_rejects_unrelated_files():
@@ -123,14 +124,26 @@ def test_check_collection_refuses_an_archived_experiment():
 def test_check_collection_refuses_uploads_of_another_card():
     reason, detail = _check_collection(_experiment(), ["longsafety_n569.csv"], LONGBENCH, ROSTER)
     assert reason == "card_mismatch"
-    assert "longsafety" in detail
+    assert "longsafety_n569.csv" in detail
     reason, _ = _check_collection(_experiment(), ["questions.csv"], LONGBENCH, ROSTER)
     assert reason == "card_mismatch"
-    # an extra upload of a different card is a disagreement too
-    reason, _ = _check_collection(
-        _experiment(), ["longbenchv2_n392.csv", "longsafety_n569.csv"], LONGBENCH, ROSTER
-    )
+
+
+def test_check_collection_refuses_any_upload_that_is_not_the_listed_card():
+    """Every upload must agree, not just one of them."""
+    for extra in ("longsafety_n569.csv", "questions.csv"):
+        reason, detail = _check_collection(
+            _experiment(), ["longbenchv2_n392.csv", extra], LONGBENCH, ROSTER
+        )
+        assert reason == "card_mismatch"
+        assert extra in detail
+        assert "longbenchv2_n392.csv" not in detail
+
+
+def test_check_collection_refuses_an_experiment_without_uploads():
+    reason, detail = _check_collection(_experiment(), [], LONGBENCH, ROSTER)
     assert reason == "card_mismatch"
+    assert "no uploads" in detail
 
 
 def test_check_collection_refuses_another_arm():
@@ -148,3 +161,8 @@ def test_check_collection_refuses_names_carrying_another_wave():
     # the recorded wave's own token is agreement, not conflict
     agreeing = _experiment(internal_name="SP26 - Long Bench V2")
     assert _check_collection(agreeing, ["longbenchv2_n392.csv"], LONGBENCH, ROSTER) is None
+    # ...unless another wave's token appears beside it
+    both = _experiment(name="SP26 Long Bench V2", internal_name="SUM26 rerun")
+    reason, detail = _check_collection(both, ["longbenchv2_n392.csv"], LONGBENCH, ROSTER)
+    assert reason == "wave_conflict"
+    assert "sp26, sum26" in detail

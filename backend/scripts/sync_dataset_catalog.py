@@ -1,9 +1,9 @@
 """One-time backfill: seed datasets and put past collections into their groups.
 
 Only experiments in the vendored collection record (`COLLECTIONS` in
-services/admin/dataset_catalog.py) are ever assigned, each to the wave the
-pipeline recorded for it, after its card, arm and names are cross-checked.
-Everything else is reported and left alone.
+services/admin/dataset_catalog.py) are ever assigned, each to its recorded
+wave, after its card, arm and names are cross-checked. Everything else is
+reported and left alone.
 
 Dry run by default: prints exactly what would change, then rolls back. Pass
 --apply to write. Read the dry run first. Assignment bypasses the post-launch
@@ -25,6 +25,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -51,7 +52,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def format_report(report: DatasetCatalogSyncReport) -> str:
+def _database_label() -> str:
+    """Where the sync runs, without credentials: host:port/database."""
+    url = make_url(get_settings().sync_database_url)
+    return f"{url.host}:{url.port}/{url.database}"
+
+
+def format_report(report: DatasetCatalogSyncReport, database: str) -> str:
     """Human-readable summary; groups are named rather than numbered.
 
     In a dry run, ids of newly created groups belong to rolled-back rows.
@@ -59,7 +66,20 @@ def format_report(report: DatasetCatalogSyncReport) -> str:
     mode = (
         "APPLIED" if report.applied else "DRY RUN (nothing written; re-run with --apply to write)"
     )
-    lines = [f"Dataset catalog sync: {mode}", f"Pipeline snapshot: {report.pipeline_commit}", ""]
+    listed = [s for s in report.experiments_skipped if s.reason != "not_in_manifest"]
+    unlisted = [s for s in report.experiments_skipped if s.reason == "not_in_manifest"]
+    already_grouped = sum(1 for s in listed if s.reason == "already_grouped")
+    lines = [
+        f"Dataset catalog sync: {mode}",
+        f"Database: {database}",
+        f"Pipeline snapshot: {report.pipeline_commit}",
+        (
+            f"Record: {report.listed} listed; {len(report.experiments_assigned)} assigned, "
+            f"{already_grouped} already grouped, {len(listed) - already_grouped} refused, "
+            f"{len(report.manifest_missing)} not in this database"
+        ),
+        "",
+    ]
 
     def names(title: str, items: list[str]) -> None:
         lines.append(f"{title} ({len(items)}){': ' + ', '.join(items) if items else ''}")
@@ -77,11 +97,15 @@ def format_report(report: DatasetCatalogSyncReport) -> str:
             f'  #{item.experiment_id} "{label}" -> {item.dataset_name} {item.wave}, '
             f'arm {item.arm} (group "{item.group_name}")'
         )
-    lines.append(f"Experiments skipped ({len(report.experiments_skipped)})")
-    for item in report.experiments_skipped:
-        label = item.internal_name or item.experiment_name
-        detail = f" ({item.detail})" if item.detail else ""
-        lines.append(f'  #{item.experiment_id} "{label}": {item.reason}{detail}')
+    for title, skips in (
+        ("Listed but not assigned", listed),
+        ("Not in the record, left alone", unlisted),
+    ):
+        lines.append(f"{title} ({len(skips)})")
+        for item in skips:
+            label = item.internal_name or item.experiment_name
+            detail = f" ({item.detail})" if item.detail else ""
+            lines.append(f'  #{item.experiment_id} "{label}": {item.reason}{detail}')
     if report.manifest_missing:
         missing = ", ".join(str(eid) for eid in report.manifest_missing)
         lines.append(f"Listed but not in this database ({len(report.manifest_missing)}): {missing}")
@@ -108,7 +132,7 @@ async def _run(apply: bool) -> DatasetCatalogSyncReport:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     report = asyncio.run(_run(args.apply))
-    print(format_report(report))
+    print(format_report(report, _database_label()))
     return 0
 
 

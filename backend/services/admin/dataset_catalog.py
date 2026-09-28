@@ -4,15 +4,17 @@ Run through `backend/scripts/sync_dataset_catalog.py` — a dry run by default,
 `--apply` to write. It is an operator one-off rather than an API route, so it
 does not linger as an endpoint anyone with admin access can re-trigger.
 
-Two vendored snapshots, both as of inference-pipeline commit `PIPELINE_COMMIT`
-and frozen there (this is a backfill, not a card sync):
+Two vendored snapshots, frozen (this is a backfill, not a card sync):
 
 - `PIPELINE_DATASETS` — cards and the waves they are *scheduled* for (card
-  `inclusion`, which the pipeline calls roadmap intent). Seeds one dataset row
-  per card, named after the card: the cross-repo join key.
+  `inclusion`, which the pipeline calls roadmap intent), as of pipeline commit
+  `PIPELINE_COMMIT`. Seeds one dataset row per card, named after the card: the
+  cross-repo join key.
 - `COLLECTIONS` — which experiments on this platform were collected for which
-  wave, from the pipeline's own collection record. This is the only source of
-  an experiment's wave. Card inclusion never is: a card's schedule changes
+  wave. The sp26 entries are the pipeline's own collection record at
+  `PIPELINE_COMMIT`; the two MARS sum26 entries are not in any pipeline pull yet
+  and rest on the SUM26 token in their names. This is the only source of an
+  experiment's wave. Card inclusion never is: a card's schedule changes
   after the fact (longbenchv2 and longsafety moved sp26 -> sum26 after their
   sp26 collection ran), and the pipeline treats the two as legitimately
   diverging (inference-pipeline #168).
@@ -24,8 +26,8 @@ ends up as the waves it is scheduled for *or* was collected in: an
 assignment adds its wave to the dataset when the card no longer lists it.
 
 Only experiments listed in `COLLECTIONS` are ever assigned, and each is
-cross-checked first. Its upload filenames must be exports of the listed card,
-its assistance method must be the listed arm, and any wave token in its names
+cross-checked first. Every upload must be an export of the listed card, its
+assistance method must be the listed arm, and any wave token in its names
 must agree with the listed wave. One that disagrees, is archived, or is
 already grouped is reported and left alone, as is every unlisted ungrouped
 experiment. Assignment writes `group_id` directly, bypassing the post-launch
@@ -51,7 +53,7 @@ from models import Dataset, Experiment, ExperimentGroup, Upload
 from .groups import resolve_attribution_wave
 from .waves import normalize_waves
 
-# The inference-pipeline commit both snapshots below were taken from.
+# The inference-pipeline commit the roster and the sp26 collections were taken from.
 PIPELINE_COMMIT = "9f75a12"
 
 # Cards scheduled for at least one wave (`dataset_names_for_wave`), with those
@@ -97,6 +99,9 @@ class Collection:
 # sum26 — the MARS summer 2026 FindTheFlaws baselines. No pipeline pull covers
 # them yet; their internal names carry the SUM26 token, which the wave check
 # confirms.
+# Deliberately absent: archived experiments, which stay ungrouped. That includes
+# #20, the difference-awareness baseline, whose ratings the pipeline keeps in
+# inputs/baselines_excluded, outside every wave (scripts/build/da_baselines.py).
 COLLECTIONS: dict[int, Collection] = {
     # platform_facts_search
     65: Collection("FACTS_search_public", "none", "sp26"),
@@ -174,6 +179,7 @@ class DatasetCatalogSkip:
 class DatasetCatalogSyncReport:
     applied: bool
     pipeline_commit: str
+    listed: int
     datasets_created: list[str] = field(default_factory=list)
     datasets_updated: list[str] = field(default_factory=list)
     groups_created: list[str] = field(default_factory=list)
@@ -187,34 +193,30 @@ class DatasetCatalogSyncReport:
     manifest_missing: list[int] = field(default_factory=list)
 
 
-_WAVE_INFIX = "|".join(re.escape(token) for token in _WAVE_TOKENS)
-
-
 @lru_cache(maxsize=None)
 def _export_pattern(card: str) -> re.Pattern[str]:
     card = re.escape(card.lower())
     return re.compile(
         # the bare card name, optionally with an extension
         rf"{card}(?:\..+)?"
-        # {card}_n{count} or {card}_{wave}_n{count}, then anything after the count
-        rf"|{card}(?:_(?:{_WAVE_INFIX}))?_n\d+(?:[._].*)?"
+        # {card}_n{count}, then anything after the count
+        rf"|{card}_n\d+(?:[._].*)?"
     )
 
 
 def match_card_name(filename: str, card_names: Iterable[str]) -> str | None:
     """Return the card a pipeline export filename belongs to, or None.
 
-    Pipeline exports look like `{card}_n{count}`, optionally
-    `{card}_{wave}_n{count}`, with any extension or suffix after the count.
-    Only that shape matches. A looser `{card}_*` prefix rule attached
-    `safeagentbench_abstracted_n10` to `safeagentbench`, and would do the same
-    to `primevul_cwe_*`. Longest card name wins if two still match.
+    The pipeline names its exports `{card}_n{count}` (scripts/export_study.py),
+    and anything may follow the count (`liars_bench_n464_fixed.csv`); the bare
+    card name, with or without an extension, also matches. Only those shapes
+    match. A looser `{card}_*` prefix rule attached `safeagentbench_abstracted_n10`
+    to `safeagentbench`, and would do the same to `primevul_cwe_*`. A name that
+    fits more than one card is ambiguous and matches none.
     """
     stem = PurePosixPath(filename.replace("\\", "/")).name.lower()
     matches = [name for name in card_names if _export_pattern(name).fullmatch(stem)]
-    if not matches:
-        return None
-    return max(matches, key=lambda name: len(name))
+    return matches[0] if len(matches) == 1 else None
 
 
 def wave_tokens(texts: Iterable[str]) -> set[str]:
@@ -244,7 +246,9 @@ async def sync_dataset_catalog(
     states which one it means. In a dry-run report, ids of newly created groups
     belong to rolled-back rows; identify those groups by name.
     """
-    report = DatasetCatalogSyncReport(applied=apply, pipeline_commit=PIPELINE_COMMIT)
+    report = DatasetCatalogSyncReport(
+        applied=apply, pipeline_commit=PIPELINE_COMMIT, listed=len(collections)
+    )
     by_lower = await _seed_datasets(db, report)
     await _assign_experiments(db, by_lower, collections, report)
     if apply:
@@ -307,20 +311,33 @@ async def _dataset_for_collection(
     collection: Collection,
     report: DatasetCatalogSyncReport,
 ) -> _DatasetRow:
-    """The dataset a collection belongs to, holding the collection's wave.
+    """The dataset a collection belongs to.
 
     A card the pipeline no longer schedules still names a real collection, so
-    its row is created here on first use. And a card whose schedule no longer
-    lists the wave it was collected in gets that wave back — otherwise
-    resolve_attribution_wave would refuse the group.
+    its row is created here on first use, with no waves yet: the wave is only
+    claimed once its group is placed (_claim_collected_wave).
     """
     row = by_lower.get(collection.card.lower())
     if row is None:
-        dataset, created_now = await _insert_or_get_dataset(collection.card, [collection.wave], db)
+        dataset, created_now = await _insert_or_get_dataset(collection.card, [], db)
         row = _DatasetRow(id=dataset.id, name=dataset.name, waves=json.loads(dataset.waves))
         by_lower[collection.card.lower()] = row
         if created_now:
             report.datasets_created.append(row.name)
+    return row
+
+
+async def _claim_collected_wave(
+    db: AsyncSession,
+    row: _DatasetRow,
+    collection: Collection,
+    report: DatasetCatalogSyncReport,
+) -> None:
+    """Add a placed collection's wave to its dataset.
+
+    A dataset's waves include every wave it was collected in, so a card whose
+    schedule does not list that wave gets it here, and the report says so.
+    """
     await _union_waves(db, row, [collection.wave], report)
     scheduled = {name.lower(): waves for name, waves in PIPELINE_DATASETS}.get(
         collection.card.lower(), ()
@@ -328,7 +345,6 @@ async def _dataset_for_collection(
     note = f"{row.name} {collection.wave}"
     if collection.wave not in scheduled and note not in report.collected_outside_schedule:
         report.collected_outside_schedule.append(note)
-    return row
 
 
 async def _insert_or_get_dataset(
@@ -368,10 +384,15 @@ def _check_collection(
     if experiment.archived_at is not None:
         return "archived", ""
 
-    cards = {match_card_name(filename, known_cards) for filename in filenames} - {None}
-    if {card.lower() for card in cards} != {collection.card.lower()}:
-        found = ", ".join(sorted(cards)) if cards else "no card"
-        return "card_mismatch", f"uploads are exports of {found}; listed as {collection.card}"
+    if not filenames:
+        return "card_mismatch", f"no uploads; listed as {collection.card}"
+    others = sorted(
+        filename
+        for filename in filenames
+        if (match_card_name(filename, known_cards) or "").lower() != collection.card.lower()
+    )
+    if others:
+        return "card_mismatch", f"{', '.join(others)}: not an export of {collection.card}"
 
     arm = experiment.assistance_method or "none"
     if arm != collection.arm:
@@ -448,7 +469,7 @@ async def _assign_experiments(
             continue
 
         dataset = await _dataset_for_collection(db, by_lower, collection, report)
-        placed = await _get_or_create_group(db, dataset, collection.wave)
+        placed = await _get_or_create_group(db, dataset, collection, report)
         if placed is None:
             skip(experiment, "group_name_conflict")
             continue
@@ -471,7 +492,10 @@ async def _assign_experiments(
 
 
 async def _get_or_create_group(
-    db: AsyncSession, dataset: _DatasetRow, wave: str
+    db: AsyncSession,
+    dataset: _DatasetRow,
+    collection: Collection,
+    report: DatasetCatalogSyncReport,
 ) -> tuple[ExperimentGroup, bool] | None:
     """Find or create this dataset x wave group. None when it cannot be named.
 
@@ -479,7 +503,11 @@ async def _get_or_create_group(
     be taken by human-renamed groups on other waves. That is a name-index
     violation, not the dataset x wave race, and the caller skips the experiment
     rather than failing a sync documented as idempotent.
+
+    The collection's wave is claimed for the dataset only once the group is
+    placed, so an experiment skipped here leaves no wave behind.
     """
+    wave = collection.wave
     existing = (
         await db.execute(
             select(ExperimentGroup).where(
@@ -489,20 +517,22 @@ async def _get_or_create_group(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        return existing, False
+        placed = existing, False
+    else:
+        name = await _free_group_name(db, dataset, wave)
+        if name is None:
+            return None
+        group = ExperimentGroup(name=name, dataset_id=dataset.id, wave=wave)
+        placed = await _insert_or_get_group(db, group)
+        if placed is None:
+            return None
 
-    # The collection's wave was added to the dataset just before this, so this
-    # cannot refuse; it keeps group creation on the same rule the API uses.
+    await _claim_collected_wave(db, dataset, collection, report)
+    # Holds the group to the rule the API uses; cannot refuse once the wave is claimed.
     dataset_row = await db.get(Dataset, dataset.id)
     assert dataset_row is not None
-    wave = resolve_attribution_wave(dataset_row, wave)
-
-    name = await _free_group_name(db, dataset, wave)
-    if name is None:
-        return None
-
-    group = ExperimentGroup(name=name, dataset_id=dataset.id, wave=wave)
-    return await _insert_or_get_group(db, group)
+    resolve_attribution_wave(dataset_row, wave)
+    return placed
 
 
 async def _free_group_name(db: AsyncSession, dataset: _DatasetRow, wave: str) -> str | None:

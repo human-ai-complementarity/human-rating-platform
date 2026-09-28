@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from config import get_settings
@@ -112,14 +113,15 @@ def test_sync_seeds_the_roster_and_is_idempotent(client: TestClient):
 
 def test_sync_unions_catalog_waves_onto_existing_dataset(client: TestClient):
     created = client.post(
-        "/api/admin/datasets", json={"name": "shade_arena", "waves": ["fall25"]}
+        "/api/admin/datasets", json={"name": "shade_arena", "waves": ["sum26"]}
     ).json()
-    assert created["waves"] == ["fall25"]
+    assert created["waves"] == ["sum26"]
 
     result = _sync()
     assert "shade_arena" in result["datasets_updated"]
     fetched = client.get(f"/api/admin/datasets/{created['id']}").json()
-    assert fetched["waves"] == ["fall25", "sp26"]
+    # A union: the admin's wave stays beside the scheduled ones.
+    assert sorted(fetched["waves"]) == ["fall25", "sp26", "sum26"]
     assert fetched["name"] == "shade_arena"
 
 
@@ -150,11 +152,17 @@ def test_the_recorded_wave_wins_over_the_cards_current_schedule(client: TestClie
     experiment = _create_experiment(client, "SPAR - Long Bench V2 - Baseline")
     _upload(client, experiment["id"], "longbenchv2_n392.csv")
 
-    result = _sync(collections={experiment["id"]: Collection("longbenchv2", "none", "sp26")})
+    collections = {experiment["id"]: Collection("longbenchv2", "none", "sp26")}
+    result = _sync(collections=collections)
     assert [a["wave"] for a in result["experiments_assigned"]] == ["sp26"]
     assert result["collected_outside_schedule"] == ["longbenchv2 sp26"]
     assert sorted(_datasets(client)["longbenchv2"]) == ["sp26", "sum26"]
     assert _experiment_row(client, experiment["id"])["group_name"] == "longbenchv2 sp26"
+
+    # Re-seeding from the schedule does not take the collected wave away.
+    again = _sync(collections=collections)
+    assert again["datasets_updated"] == []
+    assert sorted(_datasets(client)["longbenchv2"]) == ["sp26", "sum26"]
 
 
 def test_a_collected_card_outside_the_roster_gets_its_own_dataset(client: TestClient):
@@ -230,9 +238,31 @@ def test_each_cross_check_refuses_a_disagreeing_experiment(client: TestClient, s
         archived["id"]: "archived",
     }
     assert result["groups_created"] == []
-    # Nothing was attributed, so no collected wave was claimed for a dataset.
-    assert result["datasets_updated"] == []
+
+
+def test_a_refused_collection_claims_no_wave(client: TestClient, sync_engine):
+    """Only an assigned collection adds its wave to a dataset, or creates one."""
+    archived = _create_experiment(client, "archived Long Bench run")
+    _upload(client, archived["id"], "longbenchv2_n392.csv")
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET archived_at = now() WHERE id = :id"),
+            {"id": archived["id"]},
+        )
+    wrong_arm = _create_experiment(client, "abstracted, other arm", assistance_method="top_n")
+    _upload(client, wrong_arm["id"], "safeagentbench_abstracted_n100.csv")
+
+    result = _sync(
+        collections={
+            archived["id"]: Collection("longbenchv2", "none", "sp26"),
+            wrong_arm["id"]: Collection("safeagentbench_abstracted", "none", "sp26"),
+        }
+    )
+    assert _skips(result) == {archived["id"]: "archived", wrong_arm["id"]: "arm_mismatch"}
     assert result["collected_outside_schedule"] == []
+    datasets = _datasets(client)
+    assert datasets["longbenchv2"] == ["sum26"]
+    assert "safeagentbench_abstracted" not in datasets
 
 
 def test_assigned_collections_are_left_alone_on_a_rerun(client: TestClient):
@@ -290,18 +320,19 @@ def test_a_later_wave_on_the_same_dataset_is_a_new_group(client: TestClient):
     """Re-collecting a dataset in a later wave is a second group, not a regroup."""
     sp26 = _create_experiment(client, "shade arena, spring")
     _upload(client, sp26["id"], "shade_arena_n106.csv")
-    fall25 = _create_experiment(client, "shade arena, earlier")
-    _upload(client, fall25["id"], "shade_arena_n50.csv")
+    sum26 = _create_experiment(client, "shade arena, summer")
+    _upload(client, sum26["id"], "shade_arena_n50.csv")
 
     result = _sync(
         collections={
             sp26["id"]: Collection("shade_arena", "none", "sp26"),
-            fall25["id"]: Collection("shade_arena", "none", "fall25"),
+            sum26["id"]: Collection("shade_arena", "none", "sum26"),
         }
     )
-    assert sorted(result["groups_created"]) == ["shade_arena fall25", "shade_arena sp26"]
+    assert result["groups_created"] == ["shade_arena sp26", "shade_arena sum26"]
     assert _experiment_row(client, sp26["id"])["wave"] == "sp26"
-    assert _experiment_row(client, fall25["id"])["wave"] == "fall25"
+    assert _experiment_row(client, sum26["id"])["wave"] == "sum26"
+    assert sorted(_datasets(client)["shade_arena"]) == ["fall25", "sp26", "sum26"]
 
 
 def test_catalog_dataset_unique_race_reuses_row_and_keeps_sibling_insert():
@@ -399,20 +430,20 @@ def test_catalog_group_unique_race_reuses_row_and_keeps_the_experiment():
 def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestClient):
     """Both generated names taken by human-renamed groups must not crash the sync.
 
-    `_get_or_create_group` falls back from "{dataset} {wave}" to
-    "{dataset} ({wave})" without checking the second name is free, and the
-    IntegrityError recovery only re-queries by (dataset_id, wave) — so a
-    collision on the name index used to be mis-diagnosed and re-raised.
+    `_get_or_create_group` used to fall back from "{dataset} {wave}" to
+    "{dataset} ({wave})" without checking the second name was free, and the
+    IntegrityError recovery only re-queried by (dataset_id, wave) — so a
+    collision on the name index was mis-diagnosed and re-raised.
     """
     _sync()
     dataset_id = next(
         row["id"] for row in client.get("/api/admin/datasets").json() if row["name"] == "bbeh_mini"
     )
-    # Admin widens the wave set, then renames two groups onto the names the
-    # backfill would generate for sp26.
+    # Admin adds a second wave, then renames two groups onto the names the
+    # backfill would generate for sp26 — a wave bbeh_mini is not scheduled for.
     client.patch(
         f"/api/admin/datasets/{dataset_id}",
-        json={"waves": ["fall25", "sp26", "sum26"]},
+        json={"waves": ["fall25", "sum26"]},
     )
     for wave, name in (("fall25", "bbeh_mini sp26"), ("sum26", "bbeh_mini (sp26)")):
         created = client.post(
@@ -435,6 +466,9 @@ def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestCli
     assert _skips(body) == {experiment["id"]: "group_name_conflict"}
     assert body["experiments_assigned"] == []
     assert _experiment_row(client, experiment["id"])["group_id"] is None
+    # An unplaced collection claims no wave.
+    assert body["collected_outside_schedule"] == []
+    assert sorted(_datasets(client)["bbeh_mini"]) == ["fall25", "sum26"]
 
     # Still idempotent.
     again = _sync(collections=collections)
@@ -447,6 +481,8 @@ def test_sync_survives_a_group_name_collision_on_both_candidates(client: TestCli
 
     final = _sync(collections=collections)
     assert [a["experiment_id"] for a in final["experiments_assigned"]] == [experiment["id"]]
+    assert final["collected_outside_schedule"] == ["bbeh_mini sp26"]
+    assert sorted(_datasets(client)["bbeh_mini"]) == ["fall25", "sp26", "sum26"]
 
 
 def test_dry_run_writes_nothing_and_reports_exactly_what_apply_writes(client: TestClient):
@@ -466,34 +502,41 @@ def test_dry_run_writes_nothing_and_reports_exactly_what_apply_writes(client: Te
     applied = _sync(collections=collections)
     assert applied["applied"] is True
 
-    def comparable(report: dict) -> tuple:
-        # Ids of groups created in a dry run belong to rolled-back rows, so
-        # compare by name.
-        return (
-            sorted(report["datasets_created"]),
-            sorted(report["datasets_updated"]),
-            sorted(report["groups_created"]),
-            sorted(
-                (item["experiment_id"], item["dataset_name"], item["wave"], item["group_name"])
-                for item in report["experiments_assigned"]
-            ),
-            sorted(
-                (item["experiment_id"], item["reason"]) for item in report["experiments_skipped"]
-            ),
-        )
+    def comparable(report: dict) -> dict:
+        # Everything but the mode and the ids of groups created in a dry run,
+        # which belong to rolled-back rows.
+        return {
+            **report,
+            "applied": None,
+            "experiments_assigned": [
+                {**item, "group_id": None} for item in report["experiments_assigned"]
+            ],
+        }
 
     assert comparable(dry) == comparable(applied)
     assert _experiment_row(client, experiment["id"])["group_name"] == "longbenchv2 sp26"
 
 
-def _insert_experiment(conn, experiment_id: int, name: str, arm: str, filename: str) -> None:
+def _insert_experiment(
+    conn,
+    experiment_id: int,
+    name: str,
+    arm: str,
+    filename: str,
+    internal_name: str | None = None,
+) -> None:
     """An experiment at a fixed id, as the recorded collection names it."""
     conn.execute(
         text(
             "INSERT INTO experiments (id, name, internal_name, num_ratings_per_question, "
-            "assistance_method) VALUES (:id, :name, :name, 3, :arm)"
+            "assistance_method) VALUES (:id, :name, :internal_name, 3, :arm)"
         ),
-        {"id": experiment_id, "name": name, "arm": arm},
+        {
+            "id": experiment_id,
+            "name": name,
+            "internal_name": internal_name or name,
+            "arm": arm,
+        },
     )
     conn.execute(
         text(
@@ -508,7 +551,12 @@ def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestC
     # The script always runs the real record, so use one of its ids.
     with sync_engine.begin() as conn:
         _insert_experiment(
-            conn, 133, "SPAR - Long Bench V2 - Baseline", "none", "longbenchv2_n392.csv"
+            conn,
+            133,
+            "Long Bench V2",
+            "none",
+            "longbenchv2_n392.csv",
+            internal_name="SPAR - Long Bench V2 - Baseline",
         )
     datasets_before = client.get("/api/admin/datasets").json()
 
@@ -521,12 +569,22 @@ def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestC
             text=True,
         )
 
+    # Labelled by internal name: public names repeat across a dataset's arms.
     expected_line = '#133 "SPAR - Long Bench V2 - Baseline" -> longbenchv2 sp26, arm none'
+    tally = (
+        f"Record: {len(COLLECTIONS)} listed; 1 assigned, 0 already grouped, 0 refused, "
+        f"{len(COLLECTIONS) - 1} not in this database"
+    )
 
     dry = run()
     assert dry.returncode == 0, dry.stderr
     assert "DRY RUN" in dry.stdout
     assert expected_line in dry.stdout
+    assert tally in dry.stdout.splitlines()
+    # Says which database it ran against, without credentials.
+    database = next(line for line in dry.stdout.splitlines() if line.startswith("Database: "))
+    url = make_url(get_settings().sync_database_url)
+    assert database == f"Database: {url.host}:{url.port}/{url.database}"
     assert client.get("/api/admin/datasets").json() == datasets_before
     assert _experiment_row(client, 133)["group_id"] is None
 
@@ -537,9 +595,9 @@ def test_script_is_a_dry_run_by_default_and_writes_only_with_apply(client: TestC
     assert _experiment_row(client, 133)["group_name"] == "longbenchv2 sp26"
 
 
-# Production's 39 experiments as of 2026-09-28: id, internal name, upload,
-# assistance method, archived. Read-only snapshot; used to check the recorded
-# collections against what production actually holds.
+# Production's 39 experiments as of 2026-09-28, read from the production admin
+# API (read-only): id, internal name, upload, assistance method, archived. Used
+# to check the recorded collections against what production actually holds.
 PRODUCTION = (
     (
         20,
@@ -689,10 +747,28 @@ def test_the_recorded_collections_pass_every_check_against_production(
     assert _skips(result) == {eid: "not_in_manifest" for eid in unlisted}
     assert unlisted == {eid for eid, *_, archived in PRODUCTION if archived}
     assert result["manifest_missing"] == []
-    assert len(result["groups_created"]) == 13
+    assert sorted(result["groups_created"]) == [
+        "FACTS_search_public sp26",
+        "attunebench_pairwise sp26",
+        "bbeh_safety sp26",
+        "culturalbench_hard sp26",
+        "find_the_flaws_cels_lojban_match sum26",
+        "find_the_flaws_modified_gpqa_flaw sum26",
+        "liars_bench sp26",
+        "longbenchv2 sp26",
+        "longsafety sp26",
+        "multidimensional_difference_awareness sp26",
+        "safeagentbench sp26",
+        "safeagentbench_abstracted sp26",
+        "shade_arena sp26",
+    ]
     assert sorted(result["collected_outside_schedule"]) == [
         "longbenchv2 sp26",
         "longsafety sp26",
         "safeagentbench_abstracted sp26",
     ]
-    assert "safeagentbench_abstracted" in result["datasets_created"]
+    # Production has no datasets yet, so every row is new.
+    assert sorted(result["datasets_created"]) == sorted(
+        [name for name, _ in PIPELINE_DATASETS] + ["safeagentbench_abstracted"]
+    )
+    assert result["datasets_updated"] == []
