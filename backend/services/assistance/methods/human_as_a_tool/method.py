@@ -54,6 +54,17 @@ class HumanAsAToolMethod(InitialStepPreparation):
         "adjust before submitting."
     )
 
+    def preparation_params(self, params: dict) -> dict:
+        settings = get_settings().llm
+        return {
+            **params,
+            "assistance_models": {
+                **(params.get("assistance_models") or {}),
+                "human_as_a_tool": resolve_model(params, "human_as_a_tool", self.default_model()),
+            },
+            "confidence_model": params.get("confidence_model") or settings.confidence_model,
+        }
+
     def __init__(self, confidence_estimator: ConfidenceEstimator | None = None) -> None:
         self._decomposer = SubtaskDecomposer()
         self._estimator = confidence_estimator

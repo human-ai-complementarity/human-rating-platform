@@ -217,3 +217,19 @@ async def test_real_human_as_a_tool_preparation_preserves_question_and_context(m
     assert snapshot.parent_question_text in scoring_messages[1]["content"]
     assert decomposition.call_args.kwargs["model"] == "openrouter/decomposition-test"
     assert confidence.call_args.kwargs["model"] == "openrouter/confidence-test"
+
+
+def test_runtime_identity_isolates_question_rater_and_session():
+    from datetime import UTC, datetime, timedelta
+    from services.assistance.runner import preparation_identity
+
+    now = datetime.now(UTC)
+    spec = PreparationSpec("evidence", 1, "{}")
+    identities = {
+        preparation_identity(1, 1, now, "example", spec),
+        preparation_identity(2, 1, now, "example", spec),
+        preparation_identity(1, 2, now, "example", spec),
+        preparation_identity(1, 1, now + timedelta(seconds=1), "example", spec),
+        preparation_identity(1, 1, now, "example", replace(spec, version=2)),
+    }
+    assert len(identities) == 5

@@ -8,12 +8,8 @@ current step; the event rows keep the history.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import time
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
@@ -21,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AssistanceEvent, AssistanceSession
+from models import AssistancePreparation, AssistanceSession
 from schemas import AssistanceStepResponse
 from services.queries import (
     fetch_experiment_or_404,
@@ -33,6 +29,11 @@ from services.queries import (
 
 from .base import InteractionStep, StepType
 from .registry import get_method
+from .events import _call_method, _record_call, _last_human_input
+from .session_values import optional_json, step_columns
+from .preparation import PreparationContext, QuestionSnapshot
+from .runner import PreparationRunner
+from session_policy import resolve_session_policy
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +53,9 @@ async def _fetch_session_or_404(session_id: int, db: AsyncSession) -> Assistance
 
 
 def _apply_step_to_session(session: AssistanceSession, step: InteractionStep) -> None:
-    session.step_type = step.type
-    session.state = json.dumps(step.state) if step.state else None
-    session.payload = json.dumps(step.payload) if step.payload else None
-    session.is_complete = step.is_terminal
+    for name, value in step_columns(step, datetime.now(UTC)).items():
+        setattr(session, name, value)
     session.turn += 1
-    session.updated_at = datetime.now(UTC)
 
 
 def _step_to_response(
@@ -107,85 +105,6 @@ async def _fetch_existing_session(
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _MethodCall:
-    """Outcome of one start()/advance() invocation, as the event log records it."""
-
-    step: InteractionStep
-    latency_ms: int
-    # Exception text or the method's failure_reason; None when the call succeeded.
-    error: str | None
-
-
-async def _call_method(
-    invoke: Callable[[], Awaitable[InteractionStep]],
-    *,
-    fallback: StepType,
-    log_message: str,
-    log_attributes: dict,
-) -> _MethodCall:
-    """Run a method call, timing it and degrading any failure to ``fallback``.
-
-    RuntimeError is the methods' documented "give up" signal, but anything
-    else escaping a method (a KeyError on corrupt state, a provider exception
-    the method forgot to catch) is just as unrecoverable from here, and a 500
-    would roll back the event row that is supposed to explain it. So every
-    exception degrades to the fallback step and is logged with its traceback.
-    """
-    started = time.monotonic()
-    try:
-        step = await invoke()
-    except Exception as exc:
-        latency_ms = _elapsed_ms(started)
-        logger.error(log_message, exc_info=True, extra={"attributes": log_attributes})
-        return _MethodCall(
-            step=InteractionStep(type=fallback, is_terminal=True),
-            latency_ms=latency_ms,
-            error=f"{type(exc).__name__}: {exc}",
-        )
-    latency_ms = _elapsed_ms(started)
-    # A set failure_reason means the method caught its own failure and
-    # returned a degraded step.
-    return _MethodCall(step, latency_ms, step.failure_reason)
-
-
-def _elapsed_ms(started: float) -> int:
-    return int((time.monotonic() - started) * 1000)
-
-
-def _record_call(db: AsyncSession, *, session_id: int, request: dict, call: _MethodCall) -> None:
-    """Append the one event row for a start()/advance() call."""
-    response: dict = {
-        "payload": call.step.payload,
-        "state": call.step.state,
-        "is_terminal": call.step.is_terminal,
-    }
-    if call.step.failure_reason:
-        response["failure_reason"] = call.step.failure_reason
-    db.add(
-        AssistanceEvent(
-            assistance_session_id=session_id,
-            step_type=call.step.type.value,
-            latency_ms=call.latency_ms,
-            payload=json.dumps({"request": request, "response": response}),
-            error=call.error,
-        )
-    )
-
-
-async def _last_human_input(session_id: int, db: AsyncSession) -> str | None:
-    """The ``human_input`` of the session's most recent call, if it was an advance."""
-    payload = (
-        await db.execute(
-            select(AssistanceEvent.payload)
-            .where(AssistanceEvent.assistance_session_id == session_id)
-            .order_by(AssistanceEvent.id.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    return load_json_column(payload).get("request", {}).get("human_input")
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -195,12 +114,11 @@ async def start_assistance(
     *,
     rater_id: int,
     question_id: int,
+    runner: PreparationRunner | None = None,
     db: AsyncSession,
 ) -> AssistanceStepResponse:
-    rater, question = await asyncio.gather(
-        fetch_rater_or_404(rater_id, db),
-        fetch_question_or_404(question_id, db),
-    )
+    rater = await fetch_rater_or_404(rater_id, db)
+    question = await fetch_question_or_404(question_id, db)
     if not rater.is_active:
         raise HTTPException(status_code=400, detail="Rater session is not active")
 
@@ -210,6 +128,20 @@ async def start_assistance(
         )
 
     existing = await _fetch_existing_session(rater_id, question_id, db)
+    if existing and runner is not None:
+        prepared = (
+            await db.execute(
+                select(AssistancePreparation.id)
+                .where(
+                    AssistancePreparation.rater_id == rater_id,
+                    AssistancePreparation.question_id == question_id,
+                    AssistancePreparation.session_start == rater.session_start,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if prepared is not None:
+            return _resume(existing)
     if existing and existing.step_type not in (StepType.NONE, StepType.SKIP):
         return _resume(existing)
     if existing:
@@ -241,6 +173,31 @@ async def start_assistance(
         if question.parent_question_id is not None
         else None
     )
+
+    if runner is not None and existing is None:
+        params = method.preparation_params(params)
+        spec = method.plan_preparation(
+            PreparationContext(
+                QuestionSnapshot.capture(question),
+                json.dumps(params, sort_keys=True),
+                parent_question_text,
+                experiment.system_prompt,
+            )
+        )
+        if spec is not None:
+            policy = resolve_session_policy(experiment)
+            await db.commit()
+            identifier = await runner.ensure(
+                rater_id=rater_id,
+                question_id=question_id,
+                session_start=rater.session_start,
+                method_name=experiment.assistance_method,
+                spec=spec,
+                params=params,
+                deadline_at=policy.hard_deadline(rater.session_start),
+                demanded=True,
+            )
+            return _resume(await runner.wait(identifier))
 
     call = await _call_method(
         lambda: method.start(
@@ -276,11 +233,8 @@ async def start_assistance(
             experiment_id=rater.experiment_id,
             question_id=question_id,
             method_name=experiment.assistance_method,
-            params=json.dumps(params) if params else None,
-            step_type=step.type,
-            state=json.dumps(step.state) if step.state else None,
-            payload=json.dumps(step.payload) if step.payload else None,
-            is_complete=step.is_terminal,
+            params=optional_json(params),
+            **step_columns(step, datetime.now(UTC)),
             turn=1,
         )
         db.add(assistance_session)

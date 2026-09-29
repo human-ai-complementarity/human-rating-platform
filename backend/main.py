@@ -16,6 +16,7 @@ from config import get_settings
 from database import build_database
 from logging_config import configure_logging
 from routers import admin, raters, v1
+from services.assistance.runner import PreparationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,17 @@ async def global_exception_handler(request: Request, exc: Exception):
 _COMMIT = os.environ.get("RENDER_GIT_COMMIT", "dev")
 
 
-async def health():
-    return {"status": "healthy", "version": _COMMIT[:8], "commit": _COMMIT}
+async def health(request: Request):
+    runner = getattr(request.app.state, "preparation_runner", None)
+    ready = runner is not None and runner.ready
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "healthy" if ready else "unready",
+            "version": _COMMIT[:8],
+            "commit": _COMMIT,
+        },
+    )
 
 
 # Only the versioned programmatic API is meant for outside consumers; the admin
@@ -127,10 +137,17 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         await database.connect()
         app.state.database = database
+        runner = PreparationRunner(database)
+        app.state.preparation_runner = runner
         try:
+            runner.start()
+            await runner.wait_ready()
             yield
         finally:
-            await database.disconnect()
+            try:
+                await runner.close()
+            finally:
+                await database.disconnect()
 
     app = FastAPI(
         title="Human Rating Platform",

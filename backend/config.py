@@ -158,6 +158,10 @@ class LLMSettings(_StrictModel):
     max_retries: int = 2
 
 
+class PrefetchSettings(_StrictModel):
+    worker_count: int = Field(default=8, ge=2, le=64)
+
+
 class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -168,6 +172,7 @@ class Settings(BaseSettings):
     seeding: SeedingSettings = Field(default_factory=SeedingSettings)
     prolific: ProlificSettings = Field(default_factory=ProlificSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)
