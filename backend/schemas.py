@@ -64,6 +64,28 @@ class PilotStudyCreate(BaseModel):
         return _dedupe_preserve_order(v)
 
 
+class OneClickLaunchRequest(BaseModel):
+    """Launch a pilot straight from the dataset card (#96).
+
+    Everything else comes from the card; `places` is the one knob worth
+    overriding per launch.
+    """
+
+    places: Optional[int] = Field(default=None, ge=1)
+
+
+class ExperimentRef(BaseModel):
+    id: int
+    name: str
+
+
+class OneClickLaunchPreview(BaseModel):
+    """What a one-click launch would do beyond the card: the experiments
+    whose participants it excludes."""
+
+    excluded_experiments: list[ExperimentRef] = Field(default_factory=list)
+
+
 class ExperimentRoundCreate(BaseModel):
     places: int = Field(ge=1)
 

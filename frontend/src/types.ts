@@ -385,6 +385,11 @@ export interface PilotStudyCreate {
   excluded_experiment_ids: number[];
 }
 
+// What a one-click launch excludes: every other experiment on the dataset.
+export interface LaunchPreview {
+  excluded_experiments: { id: number; name: string }[];
+}
+
 export interface RecommendationResponse {
   avg_time_per_question_seconds: number;
   remaining_rating_actions: number;

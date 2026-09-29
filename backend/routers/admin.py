@@ -25,6 +25,8 @@ from schemas import (
     ExperimentCreate,
     ExperimentResponse,
     ExperimentUpdate,
+    OneClickLaunchPreview,
+    OneClickLaunchRequest,
     PilotStudyCreate,
     TagResponse,
     PlatformStatus,
@@ -347,6 +349,34 @@ async def run_pilot_study(
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.run_pilot_study(experiment_id=experiment_id, payload=payload, db=db)
+
+
+@secure_router.post(
+    "/experiments/{experiment_id}/launch",
+    response_model=ExperimentRoundResponse,
+)
+async def launch_from_card(
+    experiment_id: int,
+    payload: OneClickLaunchRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    """Create the pilot draft from a complete dataset card, without the pilot form.
+
+    Publishing stays a separate action — it spends money.
+    """
+    return await admin_service.launch_from_card(experiment_id=experiment_id, payload=payload, db=db)
+
+
+@secure_router.get(
+    "/experiments/{experiment_id}/launch/preview",
+    response_model=OneClickLaunchPreview,
+)
+async def preview_launch_from_card(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """The experiments a one-click launch would exclude, before launching."""
+    return await admin_service.preview_launch_from_card(experiment_id=experiment_id, db=db)
 
 
 @secure_router.get(
