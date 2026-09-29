@@ -8,6 +8,7 @@ from models import Experiment, Question, Rating, Rater, Upload
 from schemas import ExperimentResponse, ResolvedModel
 from services.assistance.registry import resolved_models
 from .groups import GroupSnapshot
+from .status import experiment_launch_blockers
 
 QUESTION_PREVIEW_LENGTH = 100
 
@@ -38,6 +39,7 @@ def build_experiment_response(
 ) -> ExperimentResponse:
     params = json.loads(experiment.assistance_params) if experiment.assistance_params else None
     resolved = resolved_models(params if isinstance(params, dict) else {})
+    launch_blockers = experiment_launch_blockers(experiment)
     return ExperimentResponse(
         id=experiment.id,
         name=experiment.name,
@@ -72,6 +74,10 @@ def build_experiment_response(
         group_dataset_name=group.dataset_name if group else None,
         wave=group.wave if group else None,
         tags=list(tags or []),
+        # Same helper the 400 at pilot creation uses, so the UI can grey out
+        # the launch button with exactly the list the API would reject with.
+        launch_blockers=launch_blockers,
+        launch_ready=not launch_blockers,
     )
 
 
