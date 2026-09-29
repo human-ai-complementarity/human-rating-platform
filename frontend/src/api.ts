@@ -19,6 +19,7 @@ import type {
   Tag,
   ExperimentStats,
   ExperimentStatus,
+  LaunchPreview,
   PilotStudyCreate,
   PlatformStatus,
   Question,
@@ -656,6 +657,21 @@ export const api = {
       method: 'POST',
       json: data,
     });
+  },
+
+  // One-click: builds the pilot draft from the dataset card instead of the
+  // form. Only a complete card (economics included) qualifies, so a dataset's
+  // first study usually goes through the pilot form. Publishing is still separate.
+  // It excludes the dataset's other experiments; getLaunchPreview lists them.
+  async launchFromCard(experimentId: number, places?: number): Promise<ExperimentRound> {
+    return requestJson<ExperimentRound>(`/admin/experiments/${experimentId}/launch`, {
+      method: 'POST',
+      json: places != null ? { places } : {},
+    });
+  },
+
+  async getLaunchPreview(experimentId: number): Promise<LaunchPreview> {
+    return requestJson<LaunchPreview>(`/admin/experiments/${experimentId}/launch/preview`);
   },
 
   async getRecommendation(
