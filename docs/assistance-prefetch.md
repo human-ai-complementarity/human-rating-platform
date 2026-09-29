@@ -80,3 +80,28 @@ unclaimed in the durable queue does not. Raising workers does not raise the shar
 eight-provider-call limit (four speculative). Validate expected arrival bursts
 before deployment, and inspect assistance waits and timeouts during the first study.
 The default is a starting limit, not a measured production capacity guarantee.
+
+## Authoritative queue
+
+`POST /raters/queue` reserves at most two questions: one active question and one
+successor. Activation is an explicit revision-checked mutation. The existing
+experiment assignment lock serializes selection; a rater-row lock serializes
+queue mutation, submission, reset, and end. Selection retains the existing
+coverage tiers and includes the active question's parent when choosing a sibling.
+Preview reservations do not count toward real participant coverage.
+
+New queue submissions carry assignment ID and generation. An exact retry returns
+the existing rating; a conflicting answer returns 409. The old submission
+contract remains unchanged for sessions that have not entered the queue protocol.
+Legacy `/next-question` remains an object or null, including during queue rollout.
+
+Only an activated question can start assistance or be submitted. Grace preserves
+the active question and releases unactivated reservations. Ending releases all
+reservations. Preview reset deletes assignments and invalidates older signed
+session generations. Failed multi-turn SKIP results require an explicit skip
+mutation and cannot reselect the same question in that session.
+
+Set `prefetch.experiment_ids` (or `PREFETCH__EXPERIMENT_IDS` as a JSON array) to opt
+experiments in. The default is empty. Removing an experiment stops new speculative
+requests and limits further refills to one; existing active work and already
+reserved work can drain through the same protocol.

@@ -233,3 +233,12 @@ def test_runtime_identity_isolates_question_rater_and_session():
         preparation_identity(1, 1, now, "example", replace(spec, version=2)),
     }
     assert len(identities) == 5
+
+
+@pytest.mark.parametrize("depth", [-1, 6])
+def test_lookahead_configuration_rejects_unbounded_reservations(depth):
+    from config import PrefetchSettings
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        PrefetchSettings(lookahead_questions=depth)

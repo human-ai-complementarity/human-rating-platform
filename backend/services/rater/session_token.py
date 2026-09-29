@@ -59,7 +59,15 @@ def issue_rater_session_token(
     """
     now = int(time.time())
     exp = int(session_start.timestamp()) + policy.token_ttl_seconds
-    payload = _b64url_json({"rid": rater_id, "eid": experiment_id, "iat": now, "exp": exp})
+    payload = _b64url_json(
+        {
+            "rid": rater_id,
+            "eid": experiment_id,
+            "iat": now,
+            "exp": exp,
+            "generation": session_start.isoformat(),
+        }
+    )
     sig = _sign(settings.effective_rater_session_secret, payload)
     return f"{VERSION}.{payload}.{sig}"
 
@@ -106,4 +114,10 @@ def verify_rater_session_token(settings: Settings, token: str) -> dict:
         "Rater session token verified",
         extra={"attributes": {"rater_id": rid, "experiment_id": eid}},
     )
-    return {"rater_id": rid, "experiment_id": eid, "issued_at": iat, "expires_at": exp}
+    return {
+        "rater_id": rid,
+        "experiment_id": eid,
+        "issued_at": iat,
+        "expires_at": exp,
+        "session_generation": data.get("generation"),
+    }

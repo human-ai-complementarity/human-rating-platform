@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import select, text
+from sqlalchemy import select, text, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
@@ -25,7 +25,7 @@ from schemas import (
     SessionStatusResponse,
 )
 from services.admin.prolific import ProlificAPIError, add_participant_to_group, stop_study
-from services.assistance import get_rater_instructions
+from services.assistance.registry import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
 from services.queries import fetch_remaining_rating_actions
 from session_policy import SessionPolicy, resolve_session_policy
@@ -102,16 +102,15 @@ async def start_session(
 
     if existing_rater:
         if existing_rater.is_preview:
-            # Serialize reset with durable assistance publication before reading
-            # or deleting sessions. Refresh the row after any lock wait.
-            existing_rater = (
-                await db.execute(
-                    select(Rater)
-                    .where(Rater.id == existing_rater.id)
-                    .execution_options(populate_existing=True)
-                    .with_for_update()
-                )
-            ).scalar_one()
+            from .queue import lock_rater
+
+            # Lock before reading sessions, retaining publication/reset ordering.
+            existing_rater = await lock_rater(existing_rater.id, db)
+            await db.execute(
+                delete(QuestionAssignment).where(QuestionAssignment.rater_id == existing_rater.id)
+            )
+            existing_rater.queue_revision = 0
+            existing_rater.queue_mode = False
             # Reset preview rater so they can run through the flow again from scratch
             for rating in (
                 await db.execute(select(Rating).where(Rating.rater_id == existing_rater.id))
@@ -311,12 +310,15 @@ async def _reserve_question(
         existing.assigned_at = now
         existing.expires_at = expires_at
         existing.completed_at = None
+        existing.activated_at = now
+        existing.generation += 1
     else:
         db.add(
             QuestionAssignment(
                 question_id=question_id,
                 rater_id=rater_id,
                 assigned_at=now,
+                activated_at=now,
                 expires_at=expires_at,
             )
         )
@@ -329,6 +331,26 @@ async def get_next_question(
     db: AsyncSession,
 ) -> Optional[QuestionResponse]:
     rater = await fetch_rater_or_404(rater_id, db)
+    if rater.queue_mode:
+        from .queue import queue_action
+        from schemas import QueueRequest
+
+        state = await queue_action(rater_id=rater_id, body=QueueRequest(), db=db)
+        if not state.items:
+            return None
+        item = state.items[0]
+        if not item.activated:
+            state = await queue_action(
+                rater_id=rater_id,
+                body=QueueRequest(
+                    action="activate",
+                    revision=state.revision,
+                    assignment_id=item.assignment_id,
+                    generation=item.generation,
+                ),
+                db=db,
+            )
+        return state.items[0].question
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
 
     policy = resolve_session_policy(experiment)
@@ -470,6 +492,37 @@ async def submit_rating(
     db: AsyncSession,
 ) -> RatingResponse:
     rater = await fetch_rater_or_404(rater_id, db)
+    if rater.queue_mode:
+        from .queue import lock_rater, require_assignment
+
+        rater = await lock_rater(rater_id, db)
+        if payload.assignment_id is None or payload.assignment_generation is None:
+            raise HTTPException(409, "Submission requires the active assignment")
+        previous = await fetch_existing_rating(
+            rater_id=rater_id, question_id=payload.question_id, db=db
+        )
+        if previous is not None:
+            assignment = await fetch_assignment_for_question(
+                rater_id=rater_id, question_id=payload.question_id, db=db
+            )
+            if (
+                assignment is not None
+                and assignment.id == payload.assignment_id
+                and assignment.generation == payload.assignment_generation
+                and previous.answer == payload.answer
+                and previous.confidence == payload.confidence
+                and previous.time_started == _normalize_to_utc_aware(payload.time_started)
+                and previous.assistance_session_id == payload.assistance_session_id
+            ):
+                return RatingResponse(id=previous.id, success=True)
+            raise HTTPException(409, "A different answer was already submitted")
+        await require_assignment(
+            rater,
+            payload.question_id,
+            db,
+            identifier=payload.assignment_id,
+            generation=payload.assignment_generation,
+        )
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
     policy = resolve_session_policy(experiment)
 
@@ -533,6 +586,8 @@ async def submit_rating(
     )
     if assignment is not None and assignment.completed_at is None:
         assignment.completed_at = now
+        if rater.queue_mode:
+            rater.queue_revision += 1
 
     await db.commit()
     await db.refresh(db_rating)
@@ -656,7 +711,9 @@ async def end_session(
     rater_id: int,
     db: AsyncSession,
 ) -> dict[str, str]:
-    rater = await fetch_rater_or_404(rater_id, db)
+    from .queue import lock_rater, current_assignments, release
+
+    rater = await lock_rater(rater_id, db)
 
     now = datetime.now(UTC)
     rater.is_active = False
@@ -664,9 +721,9 @@ async def end_session(
 
     # Release any outstanding reservation right away rather than waiting for
     # its TTL, so the slot is immediately servable to other raters.
-    live_assignment = await fetch_live_assignment_for_rater(rater_id=rater_id, now=now, db=db)
-    if live_assignment is not None:
-        live_assignment.expires_at = now
+    for assignment in await current_assignments(rater_id, db):
+        await release(assignment, db, now)
+    rater.queue_revision += 1
 
     await db.commit()
 

@@ -217,6 +217,12 @@ class Rater(SQLModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    queue_revision: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default=text("0"))
+    )
+    queue_mode: bool = Field(
+        default=False, sa_column=Column(Boolean, nullable=False, server_default=text("false"))
+    )
     prolific_id: str = Field(sa_column=Column(String(64), nullable=False))
     study_id: Optional[str] = Field(
         default=None,
@@ -341,6 +347,12 @@ class QuestionAssignment(SQLModel, table=True):
             ForeignKey("raters.id", ondelete="CASCADE"),
             nullable=False,
         )
+    )
+    generation: int = Field(
+        default=1, sa_column=Column(Integer, nullable=False, server_default=text("1"))
+    )
+    activated_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
     )
     assigned_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -770,6 +782,10 @@ class AssistancePreparation(SQLModel, table=True):
     identity: str = Field(sa_column=Column(String(64), nullable=False))
     rater_id: int = Field(foreign_key="raters.id", ondelete="CASCADE", index=True)
     question_id: int = Field(foreign_key="questions.id", ondelete="CASCADE")
+    assignment_id: Optional[int] = Field(
+        default=None, foreign_key="question_assignments.id", ondelete="CASCADE"
+    )
+    assignment_generation: Optional[int] = None
     session_start: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     method_name: str = Field(sa_column=Column(String(64), nullable=False))
     spec_json: str = Field(sa_column=Column(Text, nullable=False))
