@@ -217,8 +217,9 @@ async function throwHttpError(response: Response, url: string): Promise<never> {
   throw new Error(httpErrorMessage(response.status, response.statusText, body, url));
 }
 
-// FastAPI returns `{"detail": "..."}` for HTTPException; unwrap so users see
-// the message directly instead of escaped JSON.
+// FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
+// list of `{loc, msg, ...}` from request validation (Pydantic). Unwrap both so
+// users see the message instead of escaped JSON.
 function extractDetail(body: string): string | null {
   const trimmed = body.trim();
   if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
@@ -227,10 +228,38 @@ function extractDetail(body: string): string | null {
     if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
       return parsed.detail.trim();
     }
+    if (parsed && Array.isArray(parsed.detail)) {
+      return formatValidationErrors(parsed.detail);
+    }
   } catch {
     // not JSON — fall through to raw body fallback in caller
   }
   return null;
+}
+
+// One "<field>: <msg>" per error, joined. `input` is deliberately never shown:
+// it echoes the rejected value, and for a missing field it is the whole
+// request body.
+function formatValidationErrors(errors: unknown[]): string | null {
+  const lines = errors.flatMap((error) => {
+    if (!error || typeof error !== 'object') return [];
+    const { loc, msg } = error as { loc?: unknown; msg?: unknown };
+    if (typeof msg !== 'string' || !msg.trim()) return [];
+    const field = Array.isArray(loc) ? formatErrorLocation(loc) : '';
+    return [field ? `${field}: ${msg.trim()}` : msg.trim()];
+  });
+  return lines.length > 0 ? lines.join('; ') : null;
+}
+
+// ["body", "tags", 0] -> "tags[0]". The leading segment names where the value
+// came from (body, query, path, ...), not a field, so it is dropped.
+const ERROR_LOCATION_SOURCES = new Set(['body', 'query', 'path', 'header', 'cookie']);
+function formatErrorLocation(loc: unknown[]): string {
+  const parts = typeof loc[0] === 'string' && ERROR_LOCATION_SOURCES.has(loc[0]) ? loc.slice(1) : loc;
+  return parts.reduce<string>((path, part) => {
+    if (typeof part === 'number') return `${path}[${part}]`;
+    return path ? `${path}.${String(part)}` : String(part);
+  }, '');
 }
 
 function parseJsonBody<T>(body: string, contentType: string, url: string): T {
