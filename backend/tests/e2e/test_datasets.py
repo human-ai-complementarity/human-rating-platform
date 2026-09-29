@@ -97,3 +97,77 @@ def test_delete_removes_dataset(client: TestClient) -> None:
 
     assert client.get("/api/admin/datasets").json() == []
     assert client.delete(f"/api/admin/datasets/{created['id']}").status_code == 404
+
+
+def test_card_fields_round_trip_and_drive_launch_readiness(client: TestClient) -> None:
+    """A hand-created dataset can be made launchable, then complete, without a deploy.
+
+    This is why the card lives in columns rather than in a file shipped with
+    the code: the vendored roster in `dataset_catalog.py` carries names and
+    waves only, and a `POST /admin/datasets` row is not in it at all, so a
+    read-through design would leave such rows permanently un-launchable.
+    """
+    created = _create(client, "hand-made", ["fall25"])
+    assert created["launch_ready"] is False
+    assert created["complete"] is False
+    assert "study_blurb" in created["missing_for_launch"]
+    assert "reward" not in created["missing_for_launch"]
+    assert "reward" in created["missing_for_complete"]
+    assert created["study_blurb"] is None
+
+    filled = client.patch(
+        f"/api/admin/datasets/{created['id']}",
+        json={
+            "external_study_name": "Passage rating",
+            "internal_study_name": "hand-made fall25",
+            "study_blurb": "Rate short passages.",
+        },
+    )
+    assert filled.status_code == 200, filled.text
+    body = filled.json()
+    assert body["launch_ready"] is True
+    assert body["missing_for_launch"] == []
+    # Economics are optional at onboarding, but the card isn't complete without them.
+    assert body["complete"] is False
+    assert body["missing_for_complete"] == ["estimated_completion_time", "reward"]
+    assert body["name"] == "hand-made"  # untouched by a card-only PATCH
+
+    completed = client.patch(
+        f"/api/admin/datasets/{created['id']}",
+        json={"estimated_completion_time": 20, "reward": 450},
+    ).json()
+    assert completed["complete"] is True
+    assert completed["missing_for_complete"] == []
+    assert client.get(f"/api/admin/datasets/{created['id']}").json()["complete"] is True
+
+
+def test_declared_empty_list_differs_from_undeclared(client: TestClient) -> None:
+    """`None` is "nobody has said"; `[]` is a declaration of "none"."""
+    created = _create(client, "screened")
+    assert client.get(f"/api/admin/datasets/{created['id']}").json()["screeners"] is None
+
+    client.patch(f"/api/admin/datasets/{created['id']}", json={"screeners": []})
+    assert client.get(f"/api/admin/datasets/{created['id']}").json()["screeners"] == []
+
+    client.patch(f"/api/admin/datasets/{created['id']}", json={"screeners": ["ai_taskers"]})
+    assert client.get(f"/api/admin/datasets/{created['id']}").json()["screeners"] == ["ai_taskers"]
+
+
+def test_card_fields_are_accepted_at_create(client: TestClient) -> None:
+    resp = client.post(
+        "/api/admin/datasets",
+        json={"name": "at-create", "waves": ["sp26"], "study_blurb": "A blurb."},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["study_blurb"] == "A blurb."
+
+
+def test_omitted_card_field_is_unchanged_while_explicit_null_clears(client: TestClient) -> None:
+    created = _create(client, "partial")
+    client.patch(f"/api/admin/datasets/{created['id']}", json={"study_blurb": "A blurb."})
+
+    client.patch(f"/api/admin/datasets/{created['id']}", json={"study_label": "annotation"})
+    assert client.get(f"/api/admin/datasets/{created['id']}").json()["study_blurb"] == "A blurb."
+
+    client.patch(f"/api/admin/datasets/{created['id']}", json={"study_blurb": None})
+    assert client.get(f"/api/admin/datasets/{created['id']}").json()["study_blurb"] is None

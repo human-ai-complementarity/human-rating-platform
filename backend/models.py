@@ -623,6 +623,40 @@ class Dataset(SQLModel, table=True):
         default="[]",
         sa_column=Column(Text, nullable=False, server_default=text("'[]'")),
     )  # JSON-encoded list of wave tokens, e.g. '["fall25", "sp26"]'
+
+    # --- Dataset card (#96) -------------------------------------------------
+    # Study configuration declared once per dataset, set by editing the
+    # dataset (POST/PATCH /admin/datasets). All nullable: a card is filled in
+    # over time, and an unfinished one is legal — it just can't launch a study.
+    #
+    # Prefixed `card_` so a card column never reads as the same thing as the
+    # `experiments` column next to it. `None` means undeclared.
+    #
+    # This card covers how a *study* is run. What the dataset is and how it
+    # must be presented — rater instructions, prompt prefix/suffix, system
+    # prompt, Prolific pool — is not here: the pipeline's DatasetCard owns it
+    # and stamps it into the export, which `services/admin/uploads.py`
+    # applies to the experiment. The models and per-dataset tools are absent
+    # too: they change between waves, so inference-pipeline's
+    # `configs/waves/<wave>.yaml` owns them.
+    card_external_study_name: Optional[str] = Field(
+        default=None, sa_column=Column(String(255), nullable=True)
+    )
+    card_internal_study_name: Optional[str] = Field(
+        default=None, sa_column=Column(String(255), nullable=True)
+    )
+    card_study_blurb: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    card_estimated_completion_time: Optional[int] = Field(
+        default=None, sa_column=Column(Integer, nullable=True)
+    )
+    card_reward: Optional[int] = Field(default=None, sa_column=Column(Integer, nullable=True))
+    card_num_ratings_per_question: Optional[int] = Field(
+        default=None, sa_column=Column(Integer, nullable=True)
+    )
+    card_study_label: Optional[str] = Field(
+        default=None, sa_column=Column(String(64), nullable=True)
+    )
+    card_screeners: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(

@@ -480,7 +480,32 @@ WaveToken = Annotated[str, Field(min_length=1, max_length=64)]
 MAX_WAVES_PER_DATASET = 20
 
 
-class DatasetCreate(BaseModel):
+class DatasetCardFields(BaseModel):
+    """The dataset card: study configuration declared once per dataset (#96).
+
+    Shared by create / update / response so the three cannot drift. Every
+    field is optional — a card is filled in over time, and an unfinished one
+    is still legal (it just isn't launchable). On PATCH an omitted field is
+    left unchanged and an explicit `null` clears it.
+
+    Scope is how a *study* on the dataset is run. The dataset's own
+    presentation (rater instructions, prompt prefix/suffix, system prompt,
+    Prolific pool) travels with the pipeline's export instead — see
+    `DATASET_META_FIELDS` in services/admin/uploads.py.
+    """
+
+    external_study_name: Optional[str] = Field(default=None, max_length=255)
+    internal_study_name: Optional[str] = Field(default=None, max_length=255)
+    study_blurb: Optional[str] = None
+
+    estimated_completion_time: Optional[int] = Field(default=None, ge=1)
+    reward: Optional[int] = Field(default=None, ge=1)
+    num_ratings_per_question: Optional[int] = Field(default=None, ge=1)
+    study_label: Optional[StudyLabel] = None
+    screeners: Optional[list[Screener]] = None
+
+
+class DatasetCreate(DatasetCardFields):
     # Strip before length validation so a whitespace-only name is rejected as
     # empty. Internal casing/punctuation is preserved — for pipeline datasets
     # the name must match the card name verbatim (cross-repo join key).
@@ -489,18 +514,28 @@ class DatasetCreate(BaseModel):
     waves: list[WaveToken] = Field(default_factory=list, max_length=MAX_WAVES_PER_DATASET)
 
 
-class DatasetUpdate(BaseModel):
+class DatasetUpdate(DatasetCardFields):
     # None = leave unchanged; both fields optional so PATCH is partial.
     model_config = ConfigDict(str_strip_whitespace=True)
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     waves: Optional[list[WaveToken]] = Field(default=None, max_length=MAX_WAVES_PER_DATASET)
 
 
-class DatasetResponse(BaseModel):
+class DatasetResponse(DatasetCardFields):
     id: int
     name: str
     waves: list[str] = Field(default_factory=list)
     created_at: datetime
+    # Two levels of card readiness. Neither is needed to create, upload to,
+    # or analyse a dataset. `launch_ready`: every field in
+    # `LAUNCH_REQUIRED_FIELDS` is declared. `complete`: launch-ready and the
+    # economics (estimated_completion_time, reward) are on the card too.
+    # Each `missing_for_*` lists what that level still lacks, so
+    # `missing_for_complete` includes `missing_for_launch`.
+    launch_ready: bool = False
+    missing_for_launch: list[str] = Field(default_factory=list)
+    complete: bool = False
+    missing_for_complete: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
