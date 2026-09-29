@@ -58,11 +58,39 @@ export interface Tag {
   usage_count: number;
 }
 
-export interface Dataset {
+// Card fields a dataset declares once so studies on it stop being retyped
+// (#96). All optional: a card is filled in over time, and an unfinished one is
+// legal — it just can't launch a study.
+//
+// Scope is how a *study* is run. The dataset's own presentation (rater
+// instructions, prompt prefix/suffix, system prompt, Prolific pool) is not
+// here: the inference pipeline stamps it into the exported file and the
+// upload applies it to the experiment — see DATASET_META_FIELDS below.
+export interface DatasetCardFields {
+  external_study_name: string | null;
+  internal_study_name: string | null;
+  study_blurb: string | null;
+  estimated_completion_time: number | null;
+  reward: number | null;
+  num_ratings_per_question: number | null;
+  study_label: StudyLabel | null;
+  screeners: Screener[] | null;
+}
+
+export interface Dataset extends DatasetCardFields {
   id: number;
   name: string;
   waves: string[];
   created_at: string;
+  // Card readiness, two levels; neither is needed to upload or analyse.
+  // Launch-ready: the study names and blurb are declared. Complete: launch-ready
+  // plus the economics (estimated_completion_time, reward), which are optional
+  // at onboarding. Each missing list is what that level still lacks, so
+  // missing_for_complete includes missing_for_launch.
+  launch_ready: boolean;
+  missing_for_launch: string[];
+  complete: boolean;
+  missing_for_complete: string[];
 }
 
 export interface ExperimentGroup {
