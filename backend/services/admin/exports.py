@@ -5,12 +5,12 @@ import io
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from config import get_settings
-from models import Question, Rating, Rater
+from models import Question, Rating, Rater, AssistanceSession
 from services.queries import canonical_rating_rank_subquery, counts_toward_target
 from .queries import fetch_experiment_or_404
 
@@ -39,6 +39,8 @@ EXPORT_COLUMNS = [
     "time_submitted",
     "response_time_seconds",
     "counts_toward_target",
+    "assistance_method",
+    "assistance_outcome",
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
@@ -88,6 +90,8 @@ def _build_export_row(
     counts_toward_target: bool,
     parent_question_id: str | None,
     parent_row_id: int | None,
+    assistance_method: str | None = None,
+    assistance_outcome: str | None = None,
 ) -> list[object]:
     response_time = (rating.time_submitted - rating.time_started).total_seconds()
     return [
@@ -106,6 +110,8 @@ def _build_export_row(
         rating.time_submitted.isoformat(),
         round(response_time, 2),
         counts_toward_target,
+        assistance_method or "",
+        assistance_outcome or "unknown",
     ]
 
 
@@ -144,11 +150,20 @@ async def stream_export_csv_chunks(
             rating_rank.c.rank,
             parent_question.question_id.label("parent_question_id"),
             parent_question.id.label("parent_row_id"),
+            AssistanceSession.method_name,
+            AssistanceSession.outcome,
         )
         .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
         .outerjoin(parent_question, parent_question.id == Question.parent_question_id)
         .outerjoin(rating_rank, Rating.id == rating_rank.c.rating_id)
+        .outerjoin(
+            AssistanceSession,
+            and_(
+                AssistanceSession.rater_id == Rating.rater_id,
+                AssistanceSession.question_id == Rating.question_id,
+            ),
+        )
         .where(Question.experiment_id == experiment_id)
         .order_by(Rating.id)
         .execution_options(stream_results=True, yield_per=resolved_batch_size)
@@ -163,10 +178,12 @@ async def stream_export_csv_chunks(
         rows_in_chunk = 0
         total_rows = 0
 
-        async for rating, question, rater, rank, parent_id, parent_pk in result:
+        async for rating, question, rater, rank, parent_id, parent_pk, method, outcome in result:
             counts = counts_toward_target(rank, experiment.num_ratings_per_question)
             writer.writerow(
-                _build_export_row(rating, question, rater, counts, parent_id, parent_pk)
+                _build_export_row(
+                    rating, question, rater, counts, parent_id, parent_pk, method, outcome
+                )
             )
             rows_in_chunk += 1
             total_rows += 1

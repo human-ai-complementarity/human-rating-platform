@@ -81,6 +81,7 @@ export function useRaterQueue() {
     const q = current.current;
     if (!s || !q || !s.assistance_method || s.assistance_method === 'none') return;
     const generation = epoch.current;
+    const started = performance.now();
     setResource(previous => ({ ...previous, loading: true, error: null }));
     try {
       const step = await api.startAssistance(s.rater_session_token, q.id);
@@ -88,6 +89,7 @@ export function useRaterQueue() {
       // Retain draft subtask answers when reconciliation returns the same step.
       const accepted = JSON.stringify(currentStep.current) === JSON.stringify(step) ? currentStep.current! : step;
       currentStep.current = accepted;
+      void api.observeAssistance(s.rater_session_token, step.session_id, performance.now() - started).catch(() => {});
       setResource(previous => ({ ...previous, step: accepted, loading: false, error: null }));
     } catch (error) {
       if (generation === epoch.current) setResource(previous => ({ ...previous, loading: false, error: message(error) }));

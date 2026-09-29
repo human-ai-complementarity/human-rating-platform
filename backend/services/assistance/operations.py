@@ -26,6 +26,7 @@ from services.queries import (
     fetch_rater_or_404,
 )
 
+from .llm import provider_context
 from .base import InteractionStep, StepType
 from .registry import get_method
 
@@ -47,6 +48,7 @@ async def _fetch_session_or_404(session_id: int, db: AsyncSession) -> Assistance
 
 def _apply_step_to_session(session: AssistanceSession, step: InteractionStep) -> None:
     session.step_type = step.type
+    session.outcome = step.outcome
     session.state = json.dumps(step.state) if step.state else None
     session.payload = json.dumps(step.payload) if step.payload else None
     session.is_complete = step.is_terminal
@@ -147,6 +149,7 @@ async def start_assistance(
                 params=params,
                 deadline_at=policy.hard_deadline(rater.session_start),
                 demanded=True,
+                system_prompt=experiment.system_prompt,
                 assignment_id=assignment.id if assignment else None,
                 assignment_generation=assignment.generation if assignment else None,
             )
@@ -160,12 +163,18 @@ async def start_assistance(
             )
 
     try:
-        step = await method.start(
-            question,
-            params,
-            parent_question_text=parent_question_text,
-            experiment_system_prompt=experiment.system_prompt,
-        )
+        with provider_context(
+            rater_id=rater_id,
+            question_id=question_id,
+            experiment_id=experiment.id,
+            method=experiment.assistance_method,
+        ):
+            step = await method.start(
+                question,
+                params,
+                parent_question_text=parent_question_text,
+                experiment_system_prompt=experiment.system_prompt,
+            )
     except RuntimeError:
         logger.error(
             "Assistance start failed with unrecoverable error; continuing without assistance",
@@ -178,15 +187,19 @@ async def start_assistance(
                 }
             },
         )
-        step = InteractionStep(type=StepType.NONE, is_terminal=True)
+        step = InteractionStep(
+            type=StepType.NONE, is_terminal=True, failure_reason="execution_error"
+        )
 
     assistance_session = AssistanceSession(
         rater_id=rater_id,
         experiment_id=rater.experiment_id,
         question_id=question_id,
         method_name=experiment.assistance_method,
+        context_snapshot=json.dumps({"system_prompt": experiment.system_prompt}),
         params=json.dumps(params) if params else None,
         step_type=step.type,
+        outcome=step.outcome,
         state=json.dumps(step.state) if step.state else None,
         payload=json.dumps(step.payload) if step.payload else None,
         is_complete=step.is_terminal,
@@ -283,17 +296,30 @@ async def advance_assistance(
     params = _load_json(session.params)
     state = _load_json(session.state)
     method = get_method(session.method_name)
-    system_prompt = experiment.system_prompt
+    system_prompt = (
+        _load_json(session.context_snapshot).get("system_prompt")
+        if session.context_snapshot is not None
+        else experiment.system_prompt
+    )
     await db.commit()
     try:
         try:
-            async with asyncio.timeout(EXECUTION_SECONDS):
-                step = await method.advance(
-                    state, human_input, params, experiment_system_prompt=system_prompt
-                )
+            with provider_context(
+                rater_id=rater_id,
+                question_id=session.question_id,
+                experiment_id=experiment.id,
+                session_id=session_id,
+                method=session.method_name,
+            ):
+                async with asyncio.timeout(EXECUTION_SECONDS):
+                    step = await method.advance(
+                        state, human_input, params, experiment_system_prompt=system_prompt
+                    )
         except (RuntimeError, TimeoutError):
             logger.exception("Assistance advance failed; skipping question")
-            step = InteractionStep(type=StepType.SKIP, is_terminal=True)
+            step = InteractionStep(
+                type=StepType.SKIP, is_terminal=True, failure_reason="execution_error"
+            )
 
         rater, _, session = await locked_session()
         if rater.session_start != generation:
@@ -361,7 +387,31 @@ async def prepare_assistance(*, rater_id, assignment_id, generation, runner, db)
         params=params,
         deadline_at=policy.deadline(rater.session_start),
         demanded=False,
+        system_prompt=experiment.system_prompt,
         assignment_id=assignment.id,
         assignment_generation=generation,
+    )
+    return {"status": "accepted"}
+
+
+async def observe_assistance(*, rater_id: int, session_id: int, wait_ms: float, db: AsyncSession):
+    session = await _fetch_session_or_404(session_id, db)
+    if session.rater_id != rater_id:
+        raise HTTPException(404, "Assistance session not found")
+    logger.info(
+        "Assistance visible wait",
+        extra={
+            "attributes": {
+                "prefetch.event": "visible_wait",
+                "rater_id": rater_id,
+                "question_id": session.question_id,
+                "session_id": session.id,
+                "method": session.method_name,
+                "duration_ms": wait_ms,
+                "outcome": session.step_type,
+                "assistance_outcome": session.outcome,
+                "source": "browser",
+            }
+        },
     )
     return {"status": "accepted"}

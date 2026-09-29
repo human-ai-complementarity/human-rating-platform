@@ -24,3 +24,9 @@ prolific_completion_url = ""
 mode = "disabled"
 api_token = ""
 base_url = "https://api.prolific.com/api/v1"
+
+[prefetch]
+# Opt new sessions into the queue only for explicitly selected experiments.
+# Set lookahead_questions = 0 for queue-only comparison without speculation.
+experiment_ids = []
+lookahead_questions = 1

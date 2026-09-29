@@ -10,19 +10,20 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, delete
 from sqlalchemy.dialects.postgresql import insert
 
 from database import Database
 from models import AssistancePreparation, AssistanceSession, Rater, QuestionAssignment
 
 from .base import InteractionStep, StepType
-from .llm import speculative_call
+from .llm import speculative_call, provider_context
 from .preparation import PreparationSpec
 from .registry import get_method
 
@@ -41,6 +42,30 @@ def preparation_identity(
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _snapshot_prompt(encoded: str) -> str | None:
+    value = json.loads(encoded)
+    if "spec" in value:
+        return value.get("system_prompt")
+    # Drain initial-step jobs created by the previous stack layer/deployment.
+    return json.loads(value.get("inputs_json", "{}")).get("experiment_system_prompt")
+
+
+def log_preparation_event(event: str, row: AssistancePreparation, **attributes):
+    logger.info(
+        "Assistance preparation",
+        extra={
+            "attributes": {
+                "prefetch.event": event,
+                "preparation_id": row.id,
+                "rater_id": row.rater_id,
+                "question_id": row.question_id,
+                "method": row.method_name,
+                **attributes,
+            }
+        },
+    )
+
+
 class PreparationRunner:
     def __init__(self, database: Database):
         self.database = database
@@ -48,6 +73,7 @@ class PreparationRunner:
         self._worker_events = [asyncio.Event() for _ in range(3)]
         self._listening = asyncio.Event()
         self._waiters: dict[int, set[asyncio.Event]] = {}
+        self._next_cleanup = 0.0
 
     def start(self):
         # One worker cannot be occupied by speculative work. Database claims
@@ -111,12 +137,16 @@ class PreparationRunner:
         params: dict,
         deadline_at: datetime,
         demanded: bool,
+        system_prompt: str | None = None,
         assignment_id: int | None = None,
         assignment_generation: int | None = None,
     ) -> int:
         identity = preparation_identity(rater_id, question_id, session_start, method_name, spec)
         identity = hashlib.sha256(
-            f"{identity}:{assignment_id}:{assignment_generation}".encode()
+            json.dumps(
+                [identity, assignment_id, assignment_generation, params, system_prompt],
+                sort_keys=True,
+            ).encode()
         ).hexdigest()
         now = datetime.now(UTC)
         async with self.database.session() as db:
@@ -128,7 +158,7 @@ class PreparationRunner:
                 question_id=question_id,
                 session_start=session_start,
                 method_name=method_name,
-                spec_json=json.dumps(asdict(spec)),
+                spec_json=json.dumps({"spec": asdict(spec), "system_prompt": system_prompt}),
                 params_json=json.dumps(params),
                 status="queued",
                 demanded=demanded,
@@ -137,11 +167,14 @@ class PreparationRunner:
                 created_at=now,
                 updated_at=now,
             )
-            await db.execute(
-                insert(AssistancePreparation)
-                .values(**values)
-                .on_conflict_do_nothing(index_elements=[AssistancePreparation.identity])
-            )
+            created = (
+                await db.execute(
+                    insert(AssistancePreparation)
+                    .values(**values)
+                    .on_conflict_do_nothing(index_elements=[AssistancePreparation.identity])
+                    .returning(AssistancePreparation.id)
+                )
+            ).scalar_one_or_none() is not None
             row = (
                 await db.execute(
                     select(AssistancePreparation)
@@ -149,6 +182,10 @@ class PreparationRunner:
                     .with_for_update()
                 )
             ).scalar_one()
+            if demanded and (created or not row.demanded):
+                log_preparation_event("demand", row, ready=row.status == "ready")
+            elif created:
+                log_preparation_event("scheduled", row)
             if demanded:
                 if row.status == "cancelled":
                     row.status = "ready" if row.artifact_json is not None else "queued"
@@ -162,6 +199,7 @@ class PreparationRunner:
     async def wait(self, identifier: int) -> AssistanceSession:
         # The browser can retry after this bounded wait. Disconnecting a waiter
         # does not cancel a claim or turn a transport retry into new provider work.
+        started = time.monotonic()
         stop = asyncio.get_running_loop().time() + CLAIM_SECONDS * (MAX_ATTEMPTS + 1)
         wake = asyncio.Event()
         self._waiters.setdefault(identifier, set()).add(wake)
@@ -184,6 +222,13 @@ class PreparationRunner:
                                 )
                             ).scalar_one_or_none()
                             if session is not None:
+                                log_preparation_event(
+                                    "server_wait",
+                                    row,
+                                    duration_ms=round((time.monotonic() - started) * 1000, 1),
+                                    outcome=session.step_type,
+                                    assistance_outcome=session.outcome,
+                                )
                                 return session
                             raise HTTPException(409, "Assistance session was reset")
                     await wake.wait()
@@ -201,6 +246,9 @@ class PreparationRunner:
             # cannot be swallowed between the empty claim and wait.
             wake.clear()
             try:
+                if foreground_only and time.monotonic() >= self._next_cleanup:
+                    self._next_cleanup = time.monotonic() + 60
+                    await self.cleanup()
                 row = await self._claim(foreground_only=foreground_only)
                 if row is not None:
                     await self._execute(row)
@@ -215,6 +263,38 @@ class PreparationRunner:
                 await asyncio.wait_for(wake.wait(), timeout=30)
             except TimeoutError:
                 pass
+
+    async def cleanup(self) -> int:
+        """Bounded retention, after every possible session/token has expired."""
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
+        async with self.database.session() as db:
+            rows = list(
+                (
+                    await db.execute(
+                        select(AssistancePreparation)
+                        .where(AssistancePreparation.deadline_at < cutoff)
+                        .order_by(AssistancePreparation.id)
+                        .with_for_update(skip_locked=True)
+                        .limit(500)
+                    )
+                ).scalars()
+            )
+            if not rows:
+                return 0
+            await db.execute(
+                delete(AssistancePreparation).where(
+                    AssistancePreparation.id.in_([row.id for row in rows])
+                )
+            )
+            await db.commit()
+            for row in rows:
+                log_preparation_event(
+                    "retired",
+                    row,
+                    unused=not row.demanded and (row.artifact_json is not None or row.attempts > 0),
+                    previous_status=row.status,
+                )
+            return len(rows)
 
     async def _claim(self, *, foreground_only: bool) -> AssistancePreparation | None:
         now = datetime.now(UTC)
@@ -287,6 +367,7 @@ class PreparationRunner:
         return assignment.expires_at > now and speculation_enabled(rater.experiment_id)
 
     async def _execute(self, row: AssistancePreparation):
+        started = time.monotonic()
         artifact = None
         step = None
         failed = row.attempts > MAX_ATTEMPTS
@@ -294,12 +375,21 @@ class PreparationRunner:
         try:
             if not failed:
                 method = get_method(row.method_name)
-                spec = PreparationSpec(**json.loads(row.spec_json))
-                async with asyncio.timeout(EXECUTION_SECONDS):
-                    if row.status == "preparing":
-                        artifact = json.dumps(await method.prepare(spec))
-                    else:
-                        step = await method.consume_preparation(spec, json.loads(row.artifact_json))
+                encoded = json.loads(row.spec_json)
+                spec = PreparationSpec(**encoded.get("spec", encoded))
+                with provider_context(
+                    preparation_id=row.id,
+                    rater_id=row.rater_id,
+                    question_id=row.question_id,
+                    method=row.method_name,
+                ):
+                    async with asyncio.timeout(EXECUTION_SECONDS):
+                        if row.status == "preparing":
+                            artifact = json.dumps(await method.prepare(spec))
+                        else:
+                            step = await method.consume_preparation(
+                                spec, json.loads(row.artifact_json)
+                            )
         except Exception:
             failed = True
             logger.exception(
@@ -314,7 +404,9 @@ class PreparationRunner:
         finally:
             speculative_call.reset(token)
         if failed:
-            step = InteractionStep(type=StepType.NONE, is_terminal=True)
+            step = InteractionStep(
+                type=StepType.NONE, is_terminal=True, failure_reason="execution_error"
+            )
         now = datetime.now(UTC)
         async with self.database.session() as db:
             # Serialize publication with reset/end, before locking the work row.
@@ -329,6 +421,7 @@ class PreparationRunner:
                 )
             ).scalar_one_or_none()
             if current is None or current.owner_token != row.owner_token:
+                log_preparation_event("fenced", row)
                 return
             now = datetime.now(UTC)
             if current.claim_expires_at <= now:
@@ -349,7 +442,11 @@ class PreparationRunner:
                         question_id=current.question_id,
                         method_name=current.method_name,
                         params=current.params_json,
+                        context_snapshot=json.dumps(
+                            {"system_prompt": _snapshot_prompt(current.spec_json)}
+                        ),
                         step_type=step.type,
+                        outcome=step.outcome,
                         payload=json.dumps(step.payload),
                         state=json.dumps(step.state),
                         is_complete=step.is_terminal,
@@ -367,6 +464,10 @@ class PreparationRunner:
                         )
                     )
                     current.status = "complete"
+                    # The durable assistance session now owns the visible step.
+                    current.artifact_json = None
+                    current.spec_json = "{}"
+                    current.params_json = "{}"
                 else:
                     # A failed speculative result is terminal too. Demand uses
                     # this sentinel without paying for another provider attempt.
@@ -377,4 +478,15 @@ class PreparationRunner:
             current.owner_token = None
             current.claim_expires_at = None
             await db.commit()
+            log_preparation_event(
+                "execution",
+                current,
+                stage=row.status,
+                outcome=current.status,
+                assistance_outcome=step.outcome if step is not None else None,
+                failed=failed,
+                duration_ms=round((time.monotonic() - started) * 1000, 1),
+                speculative=not row.demanded,
+                claim_attempt=row.attempts,
+            )
         self._wake_workers()
