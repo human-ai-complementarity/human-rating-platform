@@ -25,6 +25,7 @@ from .dataset_card import (
     write_card_values,
 )
 from .groups import assert_waves_unused_except, dataset_has_groups
+from .study_names import check_card_templates
 from .waves import normalize_waves
 
 
@@ -88,9 +89,11 @@ async def _commit_name_change(dataset: Dataset, db: AsyncSession) -> None:
 
 
 async def create_dataset(payload: DatasetCreate, db: AsyncSession) -> DatasetResponse:
+    card_values = _payload_card_values(payload)
+    check_card_templates(card_values)
     await _check_name_available(payload.name, db)
     dataset = Dataset(name=payload.name, waves=json.dumps(normalize_waves(payload.waves)))
-    write_card_values(dataset, _payload_card_values(payload))
+    write_card_values(dataset, card_values)
     await _commit_name_change(dataset, db)
     return _to_response(dataset)
 
@@ -108,6 +111,8 @@ async def update_dataset(
     dataset_id: int, payload: DatasetUpdate, db: AsyncSession
 ) -> DatasetResponse:
     dataset = await fetch_dataset_or_404(dataset_id, db)
+    card_values = _payload_card_values(payload)
+    check_card_templates(card_values)
 
     if payload.name is not None:
         await _check_name_available(payload.name, db, exclude_id=dataset_id)
@@ -116,7 +121,7 @@ async def update_dataset(
         waves = normalize_waves(payload.waves)
         await assert_waves_unused_except(dataset_id, waves, db)
         dataset.waves = json.dumps(waves)
-    write_card_values(dataset, _payload_card_values(payload))
+    write_card_values(dataset, card_values)
 
     await _commit_name_change(dataset, db)
     return _to_response(dataset)
