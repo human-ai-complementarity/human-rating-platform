@@ -1,13 +1,10 @@
 import { useState, useEffect } from 'react';
-import { api } from '../api';
-import type { AssistanceStep, Subtask } from '../types';
+import type { AssistanceResource } from '../hooks/useRaterQueue';
+import type { Subtask } from '../types';
 import { Banner, textareaStyle } from './experiment-detail/ui';
 
 interface AssistancePanelProps {
-  sessionToken: string;
-  questionId: number;
-  onSessionId: (sessionId: number) => void;
-  onStepChange: (step: AssistanceStep | null) => void;
+  resource: AssistanceResource;
 }
 
 const monoLabel = {
@@ -247,40 +244,10 @@ const answeredRowStyle: React.CSSProperties = {
   borderBottom: '1px solid var(--line)',
 };
 
-function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }: AssistancePanelProps) {
-  const [step, setStep] = useState<AssistanceStep | null>(null);
-  const [loading, setLoading] = useState(true);
+function AssistancePanel({ resource }: AssistancePanelProps) {
+  const { step, loading, error } = resource;
   const [submitting, setSubmitting] = useState(false);
   const [answers, setAnswers] = useState<Record<number, { answer: string; confidence: number }>>({});
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setStep(null);
-    setAnswers({});
-    setError(null);
-    onStepChange(null);
-
-    api
-      .startAssistance(sessionToken, questionId)
-      .then(s => {
-        if (cancelled) return;
-        setStep(s);
-        onSessionId(s.session_id);
-        onStepChange(s);
-      })
-      .catch(err => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Failed to load assistance');
-        onStepChange(null);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => { cancelled = true; };
-  }, [sessionToken, questionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Prefill high-confidence subtasks with the AI's answer; leave low-confidence blank.
   useEffect(() => {
@@ -303,11 +270,7 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
     if (!step) return;
     setSubmitting(true);
     try {
-      const result = await api.advanceAssistance(sessionToken, step, answers);
-      setStep(result);
-      onStepChange(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to submit answers');
+      await resource.advance(answers);
     } finally {
       setSubmitting(false);
     }
@@ -344,12 +307,14 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
         </div>
         <div style={panelBodyStyle}>
           <Banner tone="danger">{error}</Banner>
+          <button type="button" onClick={() => void resource.retry()}>Retry assistance</button>
         </div>
       </div>
     );
   }
 
-  if (!step || step.type === 'none' || step.type === 'skip') return null;
+  if (step?.type === 'skip') return <Banner tone="danger">Assistance could not complete. You can answer without it.</Banner>;
+  if (!step || step.type === 'none') return null;
 
   if (step.type === 'display' && step.payload.kind === 'top_n') {
     const candidates = step.payload.candidates ?? [];

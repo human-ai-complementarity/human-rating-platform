@@ -144,3 +144,41 @@ an active assignment once the session enters queue mode.
 Legacy reservations inserted after the migration backfill are valid before
 queue enrollment. Enrollment marks those already-served reservations active,
 preventing assistance from getting stuck after a rolling deployment.
+## Browser ownership
+
+`useRaterQueue` owns reservation, activation, preparation requests, and assistance
+responses. It accepts only responses for the current request generation and
+ignores older queue revisions. Refills coalesce while retaining pending demand.
+`AssistancePanel` renders the supplied resource and submits actual human input;
+it no longer independently starts assistance. No hidden components do work.
+
+Both fresh and restored sessions wait for intro acknowledgment before reserving
+or preparing work. The hook activates a question before exposing it to the view,
+then starts foreground assistance and requests preparation for the successor.
+Submission transport failures freeze the exact request and keep the answer
+visible until an identical retry is acknowledged. Assistance transport recovery retries frozen input with its original turn counter.
+The server returns an already committed step or reports that its claim is still
+active. A turn claim uses the existing assistance-session row and the same bounded
+execution/expiry budgets as preparation. Provider calls run outside transactions;
+publication rechecks ownership and session validity. Submission conflicts offer
+an explicit refresh from saved progress without overwriting an accepted answer.
+New sessions use the queue protocol at depth one by default. The experiment
+allowlist enables only the second slot and speculation. Stored legacy sessions
+retain their original path until they drain.
+
+Initial assistance HTTP waits end after 90 seconds with a retryable 503; the
+180-second execution and 195-second claim budgets remain independent. The browser
+keeps the loading UI and reattaches to the same persisted job after network errors
+or HTTP 502/503/504, with up to six total requests and 1/2/4/5/5-second backoffs.
+Other errors surface immediately. Exhaustion exposes the existing manual retry;
+changing question/session or leaving the view cancels requests and retry timers.
+Human-input advances keep their existing explicit retry behavior.
+
+
+The runtime reuses the existing `turn` counter and assistance event history.
+Committed-turn retries must match the previous turn and its exact human input;
+other mismatches return 409. A concurrent request also receives retryable 409
+while the owner computes outside a transaction. There is no second assistance
+revision counter. Accepted background starts append their history atomically with
+session creation; their latency includes preparation and consumption, excluding
+queue residence. Retries of durable results add no event or provider call.

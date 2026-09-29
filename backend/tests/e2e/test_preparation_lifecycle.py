@@ -333,3 +333,46 @@ def test_preview_reset_locks_before_reading_sessions(client, monkeypatch):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     client.portal.call(scenario)
+
+
+def test_short_http_wait_reattaches_without_restarting_computation(client, monkeypatch):
+    session, _, question = setup_rater(client)
+
+    async def scenario():
+        runner = client.app.state.preparation_runner
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def prepare(_):
+            entered.set()
+            await release.wait()
+            return {}
+
+        method = AsyncMock()
+        method.prepare.side_effect = prepare
+        method.consume_preparation.return_value = InteractionStep(
+            type=StepType.DISPLAY, is_terminal=True
+        )
+        monkeypatch.setattr("services.assistance.runner.get_method", lambda _: method)
+        monkeypatch.setattr("services.assistance.runner.WAIT_SECONDS", 0.05)
+        identifier = await enqueue(runner, session["rater_id"], question["id"])
+        await asyncio.wait_for(entered.wait(), 5)
+        try:
+            with pytest.raises(HTTPException) as error:
+                await runner.wait(identifier)
+            assert error.value.status_code == 503
+            # Retry reuses durable demand; the timed-out HTTP waiter did not
+            # cancel the running provider computation or consume an attempt.
+            assert await enqueue(runner, session["rater_id"], question["id"]) == identifier
+            async with runner.database.session() as db:
+                row = await db.get(AssistancePreparation, identifier)
+                assert row.status == "preparing"
+                assert row.attempts == 1
+            monkeypatch.setattr("services.assistance.runner.WAIT_SECONDS", 5)
+            release.set()
+            result = await runner.wait(identifier)
+            assert result.step_type == StepType.DISPLAY
+            assert method.prepare.await_count == 1
+        finally:
+            release.set()
+
+    client.portal.call(scenario)

@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 EXECUTION_SECONDS = 180
 CLAIM_SECONDS = EXECUTION_SECONDS + 15
 MAX_ATTEMPTS = 2
+WAIT_SECONDS = 90
 STARTUP_SECONDS = 10
 SHUTDOWN_SECONDS = 5
 
@@ -225,7 +226,7 @@ class PreparationRunner:
     async def wait(self, identifier: int) -> AssistanceSession:
         # The browser can retry after this bounded wait. Disconnecting a waiter
         # does not cancel a claim or turn a transport retry into new provider work.
-        stop = asyncio.get_running_loop().time() + CLAIM_SECONDS * (MAX_ATTEMPTS + 1)
+        stop = asyncio.get_running_loop().time() + WAIT_SECONDS
         wake = asyncio.Event()
         self._waiters.setdefault(identifier, set()).add(wake)
         try:

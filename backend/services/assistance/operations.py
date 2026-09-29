@@ -8,12 +8,14 @@ current step; the event rows keep the history.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,7 +26,6 @@ from services.queries import (
     fetch_experiment_or_404,
     fetch_parent_question_text,
     fetch_question_or_404,
-    fetch_rater_or_404,
     load_json_column,
 )
 
@@ -33,7 +34,7 @@ from .registry import get_method
 from .events import _call_method, _record_call, _last_human_input
 from .session_values import optional_json, step_columns
 from .preparation import PreparationContext, QuestionSnapshot
-from .runner import PreparationRunner
+from .runner import PreparationRunner, CLAIM_SECONDS, EXECUTION_SECONDS
 from session_policy import resolve_session_policy
 
 logger = logging.getLogger(__name__)
@@ -102,11 +103,6 @@ async def _fetch_existing_session(
 
 
 # ---------------------------------------------------------------------------
-# Event log
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -118,7 +114,11 @@ async def start_assistance(
     runner: PreparationRunner | None = None,
     db: AsyncSession,
 ) -> AssistanceStepResponse:
-    rater = await fetch_rater_or_404(rater_id, db)
+    from services.rater.queue import lock_rater
+
+    observed = await _fetch_existing_session(rater_id, question_id, db)
+    observed_turn = observed.turn if observed else None
+    rater = await lock_rater(rater_id, db)
     question = await fetch_question_or_404(question_id, db)
     if not rater.is_active:
         raise HTTPException(status_code=400, detail="Rater session is not active")
@@ -135,7 +135,9 @@ async def start_assistance(
         from services.rater.queue import require_assignment
 
         assignment = await require_assignment(rater, question_id, db)
-    existing = await _fetch_existing_session(rater_id, question_id, db)
+    existing = await _fetch_existing_session(rater_id, question_id, db, lock=True)
+    if existing and existing.turn != observed_turn:
+        return _resume(existing)
     if existing and runner is not None:
         prepared = (
             await db.execute(
@@ -152,22 +154,6 @@ async def start_assistance(
             return _resume(existing)
     if existing and existing.step_type not in (StepType.NONE, StepType.SKIP):
         return _resume(existing)
-    if existing:
-        # A NONE/SKIP session is retried from scratch. The row is reused rather
-        # than deleted so the failed attempt's events stay attached to it.
-        # Reusing it forfeits the unique-constraint guard a fresh INSERT would
-        # have, so take the row lock instead: a concurrent retry for the same
-        # rater/question blocks here until this one commits. If the row's turn
-        # moved while we waited, that retry already ran the method for this
-        # double-click, so report its outcome (even another failure) rather
-        # than running and logging our own.
-        seen_turn = existing.turn
-        existing = await _fetch_existing_session(rater_id, question_id, db, lock=True)
-        if existing and (
-            existing.turn != seen_turn or existing.step_type not in (StepType.NONE, StepType.SKIP)
-        ):
-            return _resume(existing)
-
     params = load_json_column(experiment.assistance_params)
 
     try:
@@ -287,104 +273,109 @@ async def advance_assistance(
     rater_id: int,
     session_id: int,
     human_input: str,
-    turn: int | None = None,
     db: AsyncSession,
+    turn: int | None = None,
 ) -> AssistanceStepResponse:
-    assistance_session = await _fetch_session_or_404(session_id, db)
+    from services.rater.queue import lock_rater, require_assignment
 
-    if assistance_session.rater_id != rater_id:
-        raise HTTPException(status_code=403, detail="Session does not belong to rater")
-
-    if turn is not None and turn != assistance_session.turn:
-        # The client is not answering the step the session is on. If it is
-        # re-sending the answer that just moved the session off the previous
-        # turn (a retry or double-click that waited behind the first on the
-        # row lock), hand back the step that answer produced. Anything else is
-        # a stale or confused client whose input we must not silently drop.
-        if turn == assistance_session.turn - 1 and (
-            await _last_human_input(session_id, db) == human_input
-        ):
-            logger.info(
-                "Assistance advance deduplicated",
-                extra={"attributes": {"session_id": session_id, "turn": turn}},
+    async def locked_session():
+        rater = await lock_rater(rater_id, db)
+        if not rater.is_active:
+            raise HTTPException(403, "Session expired")
+        experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+        await validate_rater_session_not_over(rater, db, resolve_session_policy(experiment))
+        session = (
+            await db.execute(
+                select(AssistanceSession)
+                .where(AssistanceSession.id == session_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
             )
-            return _resume(assistance_session)
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Assistance session is on turn {assistance_session.turn}, not {turn}; "
-                "reload to see the current step"
-            ),
+        ).scalar_one_or_none()
+        if session is None:
+            raise HTTPException(404, "Assistance session not found")
+        if session.rater_id != rater_id:
+            raise HTTPException(403, "Session does not belong to rater")
+        if rater.queue_mode or not rater.is_preview:
+            await require_assignment(rater, session.question_id, db)
+        return rater, experiment, session
+
+    def response(session):
+        return AssistanceStepResponse(
+            session_id=session.id,
+            turn=session.turn,
+            type=StepType(session.step_type),
+            payload=load_json_column(session.payload),
+            is_terminal=session.is_complete,
         )
 
-    if assistance_session.is_complete:
-        raise HTTPException(status_code=400, detail="Assistance session is already complete")
+    rater, experiment, session = await locked_session()
+    if turn is not None and turn != session.turn:
+        if turn == session.turn - 1 and await _last_human_input(session_id, db) == human_input:
+            return response(session)
+        raise HTTPException(
+            409,
+            f"Assistance session is on turn {session.turn}, not {turn}; reload to see the current step",
+        )
+    if session.is_complete:
+        raise HTTPException(400, "Assistance session is already complete")
+    now = datetime.now(UTC)
+    if session.advance_token and session.advance_expires_at > now:
+        raise HTTPException(409, "Assistance is still processing this turn. Retry shortly.")
 
-    rater = await fetch_rater_or_404(rater_id, db)
-    if not rater.is_active:
-        raise HTTPException(403, "Session expired")
-    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
-    await validate_rater_session_not_over(rater, db, resolve_session_policy(experiment))
-    if rater.queue_mode or not rater.is_preview:
-        from services.rater.queue import require_assignment
-
-        await require_assignment(rater, assistance_session.question_id, db)
-
-    params = load_json_column(assistance_session.params)
-    state = load_json_column(assistance_session.state)
-
-    try:
-        method = get_method(assistance_session.method_name)
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-    experiment = await fetch_experiment_or_404(assistance_session.experiment_id, db)
-
-    answered_step_type = assistance_session.step_type
-
-    call = await _call_method(
-        lambda: method.advance(
-            state,
-            human_input,
-            params,
-            experiment_system_prompt=experiment.system_prompt,
-        ),
-        fallback=StepType.SKIP,
-        log_message=(
-            "Assistance advance failed with unrecoverable error; skipping question for retry"
-        ),
-        log_attributes={
-            "session_id": session_id,
-            "rater_id": rater_id,
-            "question_id": assistance_session.question_id,
-            "method": assistance_session.method_name,
-        },
-    )
-    step = call.step
-
-    _apply_step_to_session(assistance_session, step)
-    _record_call(
-        db,
-        session_id=session_id,
-        request={"human_input": human_input, "step_type": answered_step_type},
-        call=call,
-    )
+    token = uuid4().hex
+    session.advance_token = token
+    session.advance_expires_at = now + timedelta(seconds=CLAIM_SECONDS)
+    generation = rater.session_start
+    params = load_json_column(session.params)
+    state = load_json_column(session.state)
+    method = get_method(session.method_name)
+    answered_step_type = session.step_type
+    system_prompt = experiment.system_prompt
     await db.commit()
+    try:
 
-    logger.info(
-        "Assistance session advanced",
-        extra={
-            "attributes": {
-                "session_id": session_id,
-                "step_type": step.type,
-                "is_terminal": step.is_terminal,
-                "error": call.error,
-                "latency_ms": call.latency_ms,
-            }
-        },
-    )
+        async def invoke():
+            async with asyncio.timeout(EXECUTION_SECONDS):
+                return await method.advance(
+                    state, human_input, params, experiment_system_prompt=system_prompt
+                )
 
-    return _step_to_response(session_id, step, turn=assistance_session.turn)
+        call = await _call_method(
+            invoke,
+            fallback=StepType.SKIP,
+            log_message="Assistance advance failed; skipping question",
+            log_attributes={"session_id": session_id, "rater_id": rater_id},
+        )
+        step = call.step
+
+        rater, _, session = await locked_session()
+        if rater.session_start != generation:
+            raise HTTPException(401, "Rater session was reset")
+        if session.advance_token != token or session.advance_expires_at <= datetime.now(UTC):
+            raise HTTPException(409, "Assistance turn ownership expired. Retry shortly.")
+        _apply_step_to_session(session, step)
+        _record_call(
+            db,
+            session_id=session_id,
+            request={"human_input": human_input, "step_type": answered_step_type},
+            call=call,
+        )
+        session.advance_token = None
+        session.advance_expires_at = None
+        await db.commit()
+        return response(session)
+    except BaseException:
+        # A disconnected request can release its own claim, never a successor's.
+        # Process death leaves a bounded lease that a later retry can recover.
+        await db.rollback()
+        await db.execute(
+            update(AssistanceSession)
+            .where(AssistanceSession.id == session_id, AssistanceSession.advance_token == token)
+            .values(advance_token=None, advance_expires_at=None)
+        )
+        await db.commit()
+        raise
 
 
 async def prepare_assistance(*, rater_id, assignment_id, generation, runner, db):
