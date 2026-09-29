@@ -12,14 +12,18 @@ If no model is passed, settings.llm.default_model is used.
 from __future__ import annotations
 
 import functools
+import logging
+import time
 import asyncio
 from contextvars import ContextVar
 from weakref import WeakKeyDictionary
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import openai
 
 from config import LLMSettings
+
+logger = logging.getLogger(__name__)
 
 Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": "..."}
 
@@ -27,6 +31,17 @@ Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": "..
 # Speculation uses at most half the slots, leaving capacity for visible work.
 speculative_call: ContextVar[bool] = ContextVar("speculative_call", default=False)
 _call_limits: WeakKeyDictionary = WeakKeyDictionary()
+_provider_context: ContextVar[dict | None] = ContextVar("provider_context", default=None)
+
+
+@contextmanager
+def provider_context(**attributes):
+    """Attach non-content identifiers to provider events, including fan-out tasks."""
+    token = _provider_context.set({**(_provider_context.get() or {}), **attributes})
+    try:
+        yield
+    finally:
+        _provider_context.reset(token)
 
 
 @asynccontextmanager
@@ -101,8 +116,32 @@ async def complete(
         kwargs["response_format"] = response_format
     if temperature is not None:
         kwargs["temperature"] = temperature
-    async with provider_slot():
-        response = await client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+    started = time.monotonic()
+    response = None
+    outcome = "error"
+    try:
+        async with provider_slot():
+            response = await client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+        outcome = "success" if response.choices else "empty"
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    finally:
+        usage = getattr(response, "usage", None)
+        logger.info(
+            "Assistance provider call",
+            extra={
+                "attributes": {
+                    **(_provider_context.get() or {}),
+                    "prefetch.event": "provider_call",
+                    "model": model_id,
+                    "speculative": speculative_call.get(),
+                    "outcome": outcome,
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                }
+            },
+        )
     if not response.choices:
         # OpenRouter sometimes returns HTTP 200 with an error body and no
         # choices; indexing [0] would 500 the rater's assistance fetch.

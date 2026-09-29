@@ -28,3 +28,7 @@ base_url = "https://api.prolific.com/api/v1"
 [prefetch]
 # One worker is reserved for foreground demand. Limits are per API process.
 worker_count = 8
+# Opt new sessions into the queue only for explicitly selected experiments.
+# Set lookahead_questions = 0 for queue-only comparison without speculation.
+experiment_ids = []
+lookahead_questions = 1

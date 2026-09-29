@@ -18,6 +18,7 @@ from models import (
 from schemas import QueueItem, QueueRequest, QueueSnapshot
 from services.assistance.preparation import PreparationContext, QuestionSnapshot
 from services.assistance.registry import get_method
+from services.assistance.runner import log_preparation_event
 from services.queries import (
     fetch_experiment_or_404,
     fetch_question_or_404,
@@ -90,6 +91,12 @@ async def release(assignment, db, now):
             )
         )
     ).scalars():
+        log_preparation_event(
+            "released",
+            row,
+            unused=not row.demanded and (row.artifact_json is not None or row.attempts > 0),
+            previous_status=row.status,
+        )
         row.status = "cancelled"
         row.owner_token = None
         row.claim_expires_at = None

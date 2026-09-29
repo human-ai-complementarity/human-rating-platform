@@ -46,7 +46,7 @@ async def _call_method(
         latency_ms = _elapsed_ms(started)
         logger.error(log_message, exc_info=True, extra={"attributes": log_attributes})
         return _MethodCall(
-            step=InteractionStep(type=fallback, is_terminal=True),
+            step=InteractionStep(type=fallback, is_terminal=True, failure_reason="execution_error"),
             latency_ms=latency_ms,
             error=f"{type(exc).__name__}: {exc}",
         )
