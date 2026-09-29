@@ -42,6 +42,33 @@ def _unique_name(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:10]}"
 
 
+# Fields the #96 launch gate requires before a study can be created. Most
+# tests here exercise Prolific plumbing rather than card completeness, so they
+# take the defaults; a test about the gate itself omits them deliberately.
+_LAUNCHABLE_FIELDS = {
+    "internal_name": "internal",
+    "description": "Rater instructions.",
+    "human_prompt_prefix": "Prefix:",
+    "human_prompt_suffix": "Suffix.",
+}
+
+
+def _make_launchable(client: TestClient, experiment_id: int) -> None:
+    """Fill in what the launch gate requires, for tests that then run a pilot.
+
+    Only fills blanks, so a test that set a value deliberately keeps it.
+    """
+    current = client.get(f"/api/admin/experiments/{experiment_id}").json()
+    fields = {k: v for k, v in _LAUNCHABLE_FIELDS.items() if not current.get(k)}
+    if not fields:
+        return
+    response = client.patch(
+        f"/api/admin/experiments/{experiment_id}",
+        json={"assistance_method": current["assistance_method"], **fields},
+    )
+    assert response.status_code == 200, response.text
+
+
 def _create_experiment(client: TestClient, *, completion_url: str | None = None) -> dict:
     response = client.post(
         "/api/admin/experiments",
@@ -1989,8 +2016,10 @@ def _create_prolific_experiment(client: TestClient) -> tuple[dict, dict]:
     create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     assert create_resp.status_code == 200, create_resp.text
     experiment = create_resp.json()
+    _make_launchable(client, experiment["id"])
 
     _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2022,6 +2051,7 @@ def test_prolific_round_names_include_round_label(client: TestClient, enable_pro
     experiment = create_resp.json()
 
     pilot_route = _mock_create_study(study_id="PILOT_STUDY")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2060,6 +2090,7 @@ def test_prolific_create_failure_returns_502(client: TestClient, enable_prolific
 
     _mock_create_study(status=500)
 
+    _make_launchable(client, experiment["id"])
     resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2087,6 +2118,7 @@ def test_prolific_create_includes_project_when_set(
     experiment = create_resp.json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2111,6 +2143,7 @@ def test_prolific_create_omits_project_when_unset(
     experiment = create_resp.json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2138,6 +2171,7 @@ def test_prolific_create_failure_propagates_message(client: TestClient, enable_p
         )
     )
 
+    _make_launchable(client, experiment["id"])
     resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2150,6 +2184,7 @@ def test_prolific_create_failure_propagates_message(client: TestClient, enable_p
 def test_prolific_second_pilot_is_rejected(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
 
+    _make_launchable(client, experiment["id"])
     resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2173,6 +2208,7 @@ def test_prolific_pilot_commit_conflict_deletes_orphaned_study(
     create_route = _mock_create_study(study_id="PILOT_ORPHAN")
     delete_route = _mock_delete_study(study_id="PILOT_ORPHAN")
 
+    _make_launchable(client, experiment["id"])
     resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -2524,6 +2560,7 @@ def test_study_description_states_the_time_limit_before_raters_accept(
     create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     experiment = create_resp.json()
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "description": "Read the article."},
@@ -2546,6 +2583,7 @@ def test_study_description_note_follows_the_experiments_session_length(
     experiment = client.post("/api/admin/experiments", json=payload).json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "description": "Read the article."},
@@ -2569,6 +2607,7 @@ def test_publishing_a_main_round_does_not_resend_the_description(
     to correct.
     """
     experiment = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+    _make_launchable(client, experiment["id"])
 
     _mock_create_study(study_id="PILOT_STUDY")
     client.post(f"/api/admin/experiments/{experiment['id']}/prolific/pilot", json=_pilot_payload())
@@ -2613,6 +2652,7 @@ def test_publishing_refreshes_a_time_limit_note_that_went_stale(
     experiment = client.post("/api/admin/experiments", json=payload).json()
 
     create_route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "description": "Read the article."},
@@ -3945,6 +3985,7 @@ def test_prolific_create_converts_description_markdown_to_html(
     experiment = create_resp.json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={
@@ -3982,6 +4023,7 @@ def test_prolific_create_sends_internal_name_when_set(
     assert experiment["internal_name"] == "Internal Q2 Eval"
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -3990,29 +4032,33 @@ def test_prolific_create_sends_internal_name_when_set(
 
     sent = json.loads(route.calls[-1].request.content.decode())
     assert sent["internal_name"] == "Internal Q2 Eval - Pilot"
+    # `annotation` is the schema default, so study_labels is still emitted.
+    assert sent["study_labels"] == ["annotation"]
 
 
 @respx.mock
-def test_prolific_create_omits_internal_name_when_unset(
+def test_pilot_is_refused_without_an_internal_name(
     client: TestClient,
     enable_prolific,
 ):
+    """#96 makes the internal study name mandatory before a study launches.
+
+    `_build_round_internal_name` still handles a blank — rows created before
+    the gate existed can still run later rounds — but the API no longer
+    produces one. That branch is covered in tests/unit/test_round_names.py.
+    """
     create_resp = client.post("/api/admin/experiments", json=_prolific_experiment_payload())
     assert create_resp.status_code == 200, create_resp.text
     experiment = create_resp.json()
     assert experiment["internal_name"] is None
 
-    route = _mock_create_study()
+    _mock_create_study()
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
     )
-    assert pilot_resp.status_code == 200, pilot_resp.text
-
-    sent = json.loads(route.calls[-1].request.content.decode())
-    assert "internal_name" not in sent
-    # `annotation` is the schema default so we still emit study_labels.
-    assert sent["study_labels"] == ["annotation"]
+    assert pilot_resp.status_code == 400
+    assert "internal study name" in pilot_resp.json()["detail"]
 
 
 @respx.mock
@@ -4025,6 +4071,7 @@ def test_prolific_create_sends_chosen_study_label(
     experiment = create_resp.json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "study_label": "survey"},
@@ -4045,6 +4092,7 @@ def test_prolific_round_inherits_pilot_study_label(
     experiment = create_resp.json()
 
     _mock_create_study(study_id="PILOT_S")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "study_label": "decision_making_task"},
@@ -4075,6 +4123,7 @@ def test_prolific_create_sends_default_screeners(
     experiment = create_resp.json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -4103,6 +4152,7 @@ def test_prolific_create_sends_only_own_group_when_screeners_empty(
     experiment = create_resp.json()
 
     route = _mock_create_study()
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "screeners": []},
@@ -4128,6 +4178,7 @@ def test_prolific_round_inherits_pilot_screeners(
     experiment = create_resp.json()
 
     _mock_create_study(study_id="PILOT_SCR")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "screeners": ["ai_taskers"]},
@@ -4191,6 +4242,7 @@ def test_prolific_pilot_with_exclusion_creates_group_and_sends_blocklist(
     new = new_resp.json()
 
     study_route = _mock_create_study(study_id="PILOT_EXCL")
+    _make_launchable(client, new["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{new['id']}/prolific/pilot",
         json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
@@ -4239,6 +4291,7 @@ def test_prolific_pilot_reuses_existing_group_no_duplicate_creation(
 
     _mock_create_study(study_id="PILOT_A")
     respx.post(f"{PROLIFIC_BASE}/participant-groups/").mock(side_effect=_spy)
+    _make_launchable(client, exp1["id"])
     resp1 = client.post(
         f"/api/admin/experiments/{exp1['id']}/prolific/pilot",
         json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
@@ -4247,6 +4300,7 @@ def test_prolific_pilot_reuses_existing_group_no_duplicate_creation(
 
     _mock_create_study(study_id="PILOT_B")
     respx.post(f"{PROLIFIC_BASE}/participant-groups/").mock(side_effect=_spy)
+    _make_launchable(client, exp2["id"])
     resp2 = client.post(
         f"/api/admin/experiments/{exp2['id']}/prolific/pilot",
         json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
@@ -4352,6 +4406,7 @@ def test_prolific_main_round_inherits_pilot_exclusions(
     new = new_resp.json()
 
     _mock_create_study(study_id="PILOT_INH")
+    _make_launchable(client, new["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{new['id']}/prolific/pilot",
         json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
@@ -4389,6 +4444,7 @@ def test_prolific_pilot_blocks_own_group_by_default(
     experiment = create_resp.json()
 
     study_route = _mock_create_study(study_id="PILOT_OWN")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json={**_pilot_payload(), "screeners": []},
@@ -4415,6 +4471,7 @@ def test_prolific_pilot_dedupes_excluded_ids(
     new = new_resp.json()
 
     study_route = _mock_create_study(study_id="PILOT_DEDUP")
+    _make_launchable(client, new["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{new['id']}/prolific/pilot",
         json={
@@ -4441,6 +4498,7 @@ def test_rater_start_session_adds_participant_to_group(
     _upload_questions(client, experiment["id"])
 
     _mock_create_study(study_id="PILOT_ADD")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -4480,6 +4538,7 @@ def test_rater_start_session_tolerates_prolific_add_failure(
     _upload_questions(client, experiment["id"])
 
     _mock_create_study(study_id="PILOT_ADDFAIL")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -4516,6 +4575,7 @@ def test_rater_start_session_skips_group_add_for_preview(
     _upload_questions(client, experiment["id"])
 
     _mock_create_study(study_id="PILOT_PREVIEW")
+    _make_launchable(client, experiment["id"])
     pilot_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/pilot",
         json=_pilot_payload(),
@@ -4768,6 +4828,7 @@ def test_pilot_exclusion_rejects_non_finished_target(
 
     new = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
     _mock_create_study(study_id="PILOT_REJ")
+    _make_launchable(client, new["id"])
     resp = client.post(
         f"/api/admin/experiments/{new['id']}/prolific/pilot",
         json={**_pilot_payload(), "excluded_experiment_ids": [draft_target["id"]]},

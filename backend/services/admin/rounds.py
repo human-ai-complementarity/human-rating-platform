@@ -54,7 +54,7 @@ from services.queries import parent_question_ids_subquery
 from session_policy import SessionPolicy, resolve_session_policy
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
-from .status import is_locked, validate_new_exclusion_targets
+from .status import assert_launch_ready, is_locked, validate_new_exclusion_targets
 
 logger = logging.getLogger(__name__)
 
@@ -677,6 +677,7 @@ async def run_pilot_study(
             status_code=400,
             detail="A pilot study has already been run for this experiment",
         )
+    assert_launch_ready(experiment)
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
     # Pilot creation is the first write for this experiment's exclusion list —
