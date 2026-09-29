@@ -511,10 +511,8 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
     # otherwise a PATCH that omits the field trips the lock on any experiment
     # that has params set.
     if payload.assistance_params is not None:
-        current_params = (
-            json.loads(experiment.assistance_params) if experiment.assistance_params else None
-        )
-        if payload.assistance_params != current_params:
+        current_params = _stored_assistance_params(experiment)
+        if _merged_assistance_params(experiment, payload.assistance_params) != current_params:
             changes.append("assistance_params")
     for field_name in _LOCKED_META_FIELDS:
         proposed = getattr(payload, field_name)
@@ -532,6 +530,26 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
     if "group_id" in payload.model_fields_set and payload.group_id != experiment.group_id:
         changes.append("group_id")
     return changes
+
+
+def _stored_assistance_params(experiment: Experiment) -> dict[str, Any]:
+    return json.loads(experiment.assistance_params) if experiment.assistance_params else {}
+
+
+def _merged_assistance_params(experiment: Experiment, incoming: dict[str, Any]) -> dict[str, Any]:
+    """PATCH semantics for the `assistance_params` blob: named keys are set,
+    omitted keys are kept.
+
+    The admin UI sends partials — the Top-N stepper PATCHes `{"n": 4}` alone,
+    the confidence dropdown `{"confidence_method": ...}` alone — so replacing
+    the blob silently dropped everything else in it: the model an upload
+    pinned, or `max_rounds`/`num_samples` set at create. The study still looked
+    configured but ran on platform defaults.
+
+    An explicit `None` is stored rather than dropped, so `{"model": None}`
+    stays a deliberate clear that a later upload will not re-pin.
+    """
+    return {**_stored_assistance_params(experiment), **incoming}
 
 
 async def update_experiment(
@@ -561,7 +579,9 @@ async def update_experiment(
     experiment.assistance_method = payload.assistance_method
 
     if payload.assistance_params is not None:
-        experiment.assistance_params = json.dumps(payload.assistance_params)
+        experiment.assistance_params = json.dumps(
+            _merged_assistance_params(experiment, payload.assistance_params)
+        )
     if payload.name is not None:
         stripped_name = payload.name.strip()
         if not stripped_name:

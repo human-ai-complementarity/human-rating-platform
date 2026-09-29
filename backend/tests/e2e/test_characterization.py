@@ -4645,6 +4645,54 @@ def test_update_experiment_allows_unchanged_locked_fields(
     assert resp.json()["internal_name"] == "renamed"
 
 
+def test_update_experiment_merges_partial_assistance_params(client: TestClient):
+    """The confidence dropdown PATCHes `{"confidence_method": ...}` alone; keys
+    it doesn't name, like `max_rounds` set at create, must survive."""
+    created = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("experiment"),
+            "assistance_method": "human_as_a_tool",
+            "assistance_params": {"confidence_method": "self_report", "max_rounds": 2},
+        },
+    ).json()
+
+    resp = client.patch(
+        f"/api/admin/experiments/{created['id']}",
+        json={
+            "assistance_method": "human_as_a_tool",
+            "assistance_params": {"confidence_method": "sampling"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assistance_params"] == {"confidence_method": "sampling", "max_rounds": 2}
+
+
+def test_update_experiment_lock_compares_merged_assistance_params(
+    client: TestClient,
+    sync_engine,
+):
+    """Under merge semantics a partial that restates a stored value is a no-op,
+    and one that changes a value is still a locked-field edit."""
+    created = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": _unique_name("experiment"),
+            "assistance_method": "top_n",
+            "assistance_params": {"n": 3, "model": "openrouter/openai/gpt-4o"},
+        },
+    ).json()
+    _mark_experiment_status(sync_engine, created["id"], "LAUNCH")
+    url = f"/api/admin/experiments/{created['id']}"
+
+    restated = client.patch(url, json={"assistance_method": "top_n", "assistance_params": {"n": 3}})
+    assert restated.status_code == 200, restated.text
+
+    changed = client.patch(url, json={"assistance_method": "top_n", "assistance_params": {"n": 4}})
+    assert changed.status_code == 400
+    assert "assistance_params" in changed.json()["detail"]
+
+
 def test_upload_questions_locked_after_launch(client: TestClient, sync_engine):
     experiment = _create_experiment(client)
     _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")

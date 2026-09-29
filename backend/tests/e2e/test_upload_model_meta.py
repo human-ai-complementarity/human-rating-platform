@@ -56,6 +56,21 @@ def test_it_merges_into_assistance_params_rather_than_replacing(client: TestClie
     assert after["assistance_params"] == {"n": 7, "model": _MODEL}
 
 
+def test_a_pinned_model_survives_the_top_n_stepper(client: TestClient):
+    """The stepper PATCHes `{"n": 4}` alone; replacing the blob dropped the
+    model on the first nudge, and Top-N fell back to the platform default."""
+    exp = _experiment(client, assistance_method="top_n", assistance_params={"n": 3})
+    _upload(client, exp["id"], {"model": _MODEL})
+
+    resp = client.patch(
+        f"/api/admin/experiments/{exp['id']}",
+        json={"assistance_method": "top_n", "assistance_params": {"n": 4}},
+    )
+    assert resp.status_code == 200, resp.text
+    after = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert after["assistance_params"] == {"n": 4, "model": _MODEL}
+
+
 def test_a_model_already_pinned_is_reported_not_clobbered(client: TestClient):
     """An admin who typed a model in is usually running a deliberate deviation;
     snapping it back to the wave's would invalidate the comparison silently."""
