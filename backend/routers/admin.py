@@ -439,8 +439,9 @@ async def create_dataset(
 
     `name` is unique case-insensitively (409 on duplicate). For datasets from
     the inference pipeline, use the card name verbatim — it is the cross-repo
-    join key. `waves` is the set of wave tokens the dataset is included in
-    (e.g. `["fall25", "sp26"]`), lowercased and deduped on write.
+    join key. `waves` is the set of wave tokens the dataset is scheduled for or
+    was collected in (e.g. `["fall25", "sp26"]`), lowercased and deduped on
+    write.
     """
     return await admin_service.create_dataset(payload, db)
 
