@@ -170,7 +170,10 @@ class TagResponse(BaseModel):
 
 # Experiment schemas
 class ExperimentCreate(BaseModel):
-    name: str
+    # Optional only because a grouped experiment can take its name from the
+    # dataset card's `external_study_name` template. Without a card template
+    # to fall back on, the service rejects a missing name with a 400.
+    name: Optional[str] = Field(default=None, max_length=255)
     # `internal_name` is capped to match the DB column (`String(255)`) so an
     # overlong value is rejected by Pydantic as a clean 422 instead of falling
     # through to Postgres and surfacing as a 500.
