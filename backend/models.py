@@ -511,6 +511,10 @@ class AssistanceSession(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded snapshot of experiment.assistance_params at session creation
+    # NULL identifies sessions created before context snapshots were supported.
+    # Null means historical/unknown, never an inferred success.
+    outcome: Optional[str] = Field(default=None, sa_column=Column(String(32), nullable=True))
+    context_snapshot: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     advance_token: Optional[str] = Field(default=None, sa_column=Column(String(32)))
     advance_expires_at: Optional[datetime] = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
@@ -801,8 +805,10 @@ class AssistancePreparation(SQLModel, table=True):
     claim_expires_at: Optional[datetime] = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
-    deadline_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     execution_ms: int = Field(default=0)
+    deadline_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
     attempts: int = Field(default=0)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

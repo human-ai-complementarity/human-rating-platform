@@ -5,16 +5,17 @@ assistance interaction. `step_type`, `state` and `payload` are overwritten on
 every advance, so once a multi-turn session ends there is no record of how it
 got there.
 
-`assistance_events` fixes that. It is append-only and written by
-`services/assistance/operations.py`: exactly one row per `start` or `advance`
-call, in the same transaction as the session update.
+`assistance_events` preserves that history. The request service and durable
+runner share `services/assistance/events.py` and append one row per accepted
+initial step or advance, in the same transaction as the session update.
+Replayed requests and fenced workers add no rows.
 
 | column                  | meaning                                                                 |
 | ----------------------- | ----------------------------------------------------------------------- |
 | `assistance_session_id` | FK to `assistance_sessions` (CASCADE delete)                            |
 | `created_at`            | when the row was written                                                |
 | `step_type`             | the step the call produced                                              |
-| `latency_ms`            | wall-clock duration of the method call                                  |
+| `latency_ms`            | method-call duration; for prepared starts, accepted preparation plus consumption time, excluding queue residence |
 | `payload`               | JSON `{"request": ..., "response": ...}`, see below                     |
 | `error`                 | exception text, or the method's `failure_reason`; null when the call succeeded |
 
@@ -24,13 +25,20 @@ on start (`retried_step_type` is null on a session's first start and the
 advance (`step_type` being the step the input answered). `payload.response` is
 the step that came out: `{"payload", "state", "is_terminal"}` plus
 `failure_reason` when the method reported one. `response.payload` is exactly
-what the rater was shown at that turn, so reliance analysis can be computed
-from the event stream without a separate presented-candidates column.
+the public payload offered at that turn. It is not proof the browser received
+or displayed the response.
 
 Resuming an open session (a second `start` for the same question) writes
 nothing; nothing crossed the method boundary.
 
-A `none` or `skip` session is retried on the rater's next visit. The session
+For methods using durable preparation, a saved result, including `none` or
+`skip`, is reused on the next visit without another provider call or event.
+An initial event is written when the prepared step is published to a session,
+not when speculation starts. Unused speculative work has no assistance-session
+history; preparation/provider telemetry tracks that work separately.
+
+For starts outside durable preparation, a `none` or `skip` session retains
+the existing retry behavior on the rater's next visit. The session
 row is reused rather than deleted so the failed attempt's row stays attached;
 the retry adds its own. Reusing the row forfeits the unique-constraint guard a
 fresh insert had, so the retry takes a `SELECT ... FOR UPDATE` on it: two
@@ -47,20 +55,24 @@ provider timeouts themselves and report them as `failure_reason=provider_error`.
 
 ## Turns
 
-`advance` locks its session row too, but a lock alone cannot tell a duplicate
+`advance` briefly locks its session row, but a lock alone cannot tell a duplicate
 submit from a genuine next-turn input with the same text. `assistance_sessions.turn`
 counts the steps the method has produced for the session (1 after start,
 failed attempts included). Every `AssistanceStepResponse` carries it, and the
 client echoes it as `turn` on advance. After the lock:
 
-- `turn` matches: the input is applied as normal.
+- `turn` matches and no execution claim is active: the input is applied.
+- An execution claim is active: retryable 409. The request does not run another call.
 - `turn` is one behind and `human_input` equals the last call's: a duplicate
   submit. The step that submit produced is returned; the method does not run
   and nothing is written.
 - any other mismatch: 409. The rater's input is not applied, and the client is
   told rather than left thinking it was.
 
-Clients that send no `turn` get the old behaviour.
+Provider work runs outside the transaction under an expiring owner claim.
+Publication checks ownership and session validity before recording the step and
+event together. Clients without `turn` remain accepted but cannot deduplicate a
+retry after commit.
 
 ## Reading it
 

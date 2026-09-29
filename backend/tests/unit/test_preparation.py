@@ -235,6 +235,55 @@ def test_runtime_identity_isolates_question_rater_and_session():
     assert len(identities) == 5
 
 
+@pytest.mark.asyncio
+async def test_provider_slots_leave_capacity_for_foreground_fanout():
+    import asyncio
+    from services.assistance.llm import provider_slot, speculative_call
+
+    release = asyncio.Event()
+    full = asyncio.Event()
+    counts = {"total": 0, "speculative": 0, "max_total": 0, "max_speculative": 0}
+
+    async def call(speculative):
+        token = speculative_call.set(speculative)
+        try:
+            async with provider_slot():
+                counts["total"] += 1
+                counts["speculative"] += int(speculative)
+                counts["max_total"] = max(counts["total"], counts["max_total"])
+                counts["max_speculative"] = max(counts["speculative"], counts["max_speculative"])
+                if counts["total"] == 8:
+                    full.set()
+                try:
+                    await release.wait()
+                finally:
+                    counts["total"] -= 1
+                    counts["speculative"] -= int(speculative)
+        finally:
+            speculative_call.reset(token)
+
+    tasks = [asyncio.create_task(call(True)) for _ in range(8)]
+    tasks.extend(asyncio.create_task(call(False)) for _ in range(4))
+    try:
+        await asyncio.wait_for(full.wait(), 2)
+        assert counts["total"] == 8
+        assert counts["speculative"] == 4
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert counts["max_total"] == 8
+    assert counts["max_speculative"] == 4
+
+
+def test_speculation_is_disabled_without_an_explicit_allowlist(monkeypatch):
+    from config import Settings
+
+    monkeypatch.delenv("PREFETCH__EXPERIMENT_IDS", raising=False)
+    assert Settings(app_secret_key="test").prefetch.experiment_ids == []
+    monkeypatch.setenv("PREFETCH__EXPERIMENT_IDS", "[123]")
+    assert Settings(app_secret_key="test").prefetch.experiment_ids == [123]
+
+
 @pytest.mark.parametrize("depth", [-1, 6])
 def test_lookahead_configuration_rejects_unbounded_reservations(depth):
     from config import PrefetchSettings
@@ -242,3 +291,31 @@ def test_lookahead_configuration_rejects_unbounded_reservations(depth):
 
     with pytest.raises(ValidationError):
         PrefetchSettings(lookahead_questions=depth)
+
+
+@pytest.mark.parametrize(
+    "method_name,default_field",
+    [("top_n", "default_model"), ("human_as_a_tool", "decomposition_model")],
+)
+@pytest.mark.parametrize("explicit", [False, True])
+def test_preparation_captures_per_method_model_before_defaults_change(
+    monkeypatch, method_name, default_field, explicit
+):
+    from config import get_settings
+    from services.assistance.model_resolution import resolve_model
+    from services.assistance.registry import get_method
+
+    settings = get_settings().llm
+    monkeypatch.setattr(settings, default_field, "openrouter/original-default")
+    method = get_method(method_name)
+    source = {"assistance_models": {"other_method": "openrouter/other"}}
+    if explicit:
+        source["assistance_models"][method_name] = "openrouter/researcher-choice"
+    captured = method.preparation_params(source)
+    monkeypatch.setattr(settings, default_field, "openrouter/changed-default")
+    expected = "openrouter/researcher-choice" if explicit else "openrouter/original-default"
+    assert resolve_model(captured, method_name, method.default_model()) == expected
+    assert captured["assistance_models"]["other_method"] == "openrouter/other"
+    assert "model" not in captured
+    source["assistance_models"][method_name] = "openrouter/later-edit"
+    assert captured["assistance_models"][method_name] == expected

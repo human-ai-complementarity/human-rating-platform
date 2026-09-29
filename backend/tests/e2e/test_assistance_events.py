@@ -315,7 +315,12 @@ def test_start_raising_is_logged_as_error_with_none_fallback(client: TestClient,
     (event,) = _events(sync_engine, started.json()["session_id"])
     assert event["step_type"] == "none"
     assert event["error"] == "RuntimeError: provider exploded"
-    assert event["payload"]["response"] == {"payload": {}, "state": {}, "is_terminal": True}
+    assert event["payload"]["response"] == {
+        "payload": {},
+        "state": {},
+        "is_terminal": True,
+        "failure_reason": "execution_error",
+    }
 
 
 def test_method_reported_failure_is_logged_as_error(client: TestClient, sync_engine):
