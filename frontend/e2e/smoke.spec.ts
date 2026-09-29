@@ -2034,10 +2034,14 @@ test('a validation error shows each field and message, not the raw JSON body', a
 
 test('tag input enforces the length and count limits while typing', async ({ page }) => {
   const state = createMockState();
+  // One existing tag, so there is a suggestion chip for the full state to hide.
+  state.experiments = [buildExperiment(state, { name: 'Tagged', tags: ['needs-review'] })];
   await installApiMocks(page, state);
   await page.goto('/admin');
 
   const input = page.getByTestId('experiment-tags-input');
+  const suggestion = page.getByTestId('tag-suggestion-needs-review');
+  await expect(suggestion).toBeVisible();
 
   // Length: typing stops at 64 characters rather than failing on submit.
   await input.pressSequentially('x'.repeat(70));
@@ -2052,6 +2056,8 @@ test('tag input enforces the length and count limits while typing', async ({ pag
   await expect(page.getByTestId('selected-tag-tag-19')).toBeVisible();
   await expect(input).toHaveAttribute('readonly', '');
   await expect(input).toHaveAttribute('placeholder', /Limit of 20 tags reached/);
+  // Suggestions would be dead buttons while full, so they are hidden.
+  await expect(suggestion).toHaveCount(0);
   await input.pressSequentially('tag-20');
   await input.press('Enter');
   await expect(page.getByTestId('selected-tag-tag-20')).toHaveCount(0);
@@ -2060,6 +2066,7 @@ test('tag input enforces the length and count limits while typing', async ({ pag
   await input.press('Backspace');
   await expect(page.getByTestId('selected-tag-tag-19')).toHaveCount(0);
   await expect(input).not.toHaveAttribute('readonly', '');
+  await expect(suggestion).toBeVisible();
   await input.fill('tag-20');
   await input.press('Enter');
   await expect(page.getByTestId('selected-tag-tag-20')).toBeVisible();
