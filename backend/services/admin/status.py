@@ -7,6 +7,8 @@ finish) applies the same rules against a single source of truth.
 
 from __future__ import annotations
 
+import json
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,7 @@ from models import (
     ExperimentStatus,
     ProlificStudyStatus,
 )
+from services.assistance.model_resolution import pinned_model
 
 
 def is_locked(experiment: Experiment) -> bool:
@@ -54,6 +57,99 @@ def compute_attention_reason(
     if remaining_actions > 0:
         return "All rounds have closed but the rating target isn't met — launch another round."
     return "The rating target is met — mark the experiment finished."
+
+
+# --- Launch readiness (#96) ----------------------------------------------
+# Read off the *experiment row*, not the dataset card. Two reasons: the card
+# snapshots onto the row at create, so the card's current state has nothing to
+# do with what raters will see; and #84 deliberately keeps ungrouped
+# experiments valid, so they have no card at all. Asking the row — "will this
+# rater actually get instructions, framing and a pinned model?" — is a question
+# every experiment can answer, and holds ungrouped ones to the same bar instead
+# of blocking them wholesale or waving them through.
+_ROW_REQUIRED_TEXT: tuple[tuple[str, str], ...] = (
+    ("description", "rater instructions"),
+    ("human_prompt_prefix", "prompt prefix"),
+    ("human_prompt_suffix", "prompt suffix"),
+    ("internal_name", "internal study name"),
+)
+
+
+def experiment_launch_blockers(experiment: Experiment) -> list[str]:
+    """What still stops this experiment launching a study, in report order.
+
+    `name` is not checked: it is required at create, so it is always present.
+    The model is only required when assistance is actually on — a control arm
+    never calls an LLM. It arrives with the upload, stamped into the export by
+    the pipeline from the wave's comparable arm, so a wave that declares no
+    comparable arm lands here and is asked for one. It is present when
+    `pinned_model` finds one for the current method, the resolver's own test,
+    so the gate and the model that runs cannot disagree.
+    """
+    blockers = [
+        label for attr, label in _ROW_REQUIRED_TEXT if not (getattr(experiment, attr) or "").strip()
+    ]
+    if experiment.assistance_method != "none":
+        params = json.loads(experiment.assistance_params) if experiment.assistance_params else {}
+        if not pinned_model(params, experiment.assistance_method):
+            blockers.append("assistance model")
+    return blockers
+
+
+# Blockers whose value is part of the pipeline export's metadata, applied at
+# upload (`_apply_meta_to_experiment`). The internal study name is the one
+# gated field the dataset card supplies instead — and only when an experiment
+# is created, so editing the card afterwards cannot fix an existing one.
+_FROM_UPLOAD_META = ("rater instructions", "prompt prefix", "prompt suffix", "assistance model")
+
+
+def launch_blocker_fixes(blockers: list[str]) -> list[str]:
+    """The fix for each blocker, grouped by where its value comes from."""
+    fixes: list[str] = []
+    from_upload = [b for b in blockers if b in _FROM_UPLOAD_META]
+    if from_upload:
+        them = "it" if len(from_upload) == 1 else "them"
+        listed = ", ".join(from_upload)
+        via_api = (
+            " The assistance model has no field in the UI. The export declares it per"
+            " method under `assistance_models`; to set it by hand, PATCH"
+            " assistance_params.assistance_models.<method>."
+            if "assistance model" in from_upload
+            else ""
+        )
+        fixes.append(
+            f"{listed[0].upper()}{listed[1:]}: part of the pipeline export's "
+            f"metadata, applied at upload. If the upload lacked {them}, set {them} on "
+            "this experiment directly; uploading the file again would add its "
+            f"questions twice.{via_api}"
+        )
+    if "internal study name" in blockers:
+        fixes.append(
+            "Internal study name: copied from the dataset card's template only when "
+            "an experiment is created, so set it on this experiment."
+        )
+    return fixes
+
+
+def assert_launch_ready(experiment: Experiment) -> None:
+    """Refuse to create a study for an experiment that isn't fully onboarded.
+
+    Bites at first study creation — the last moment before a Prolific study
+    object and real money exist. Not at experiment create (per Joshua on #96,
+    headroom analysis must keep working on an unfinished card) and not at
+    publish, where refusing would leave an orphan draft study to discard.
+    """
+    blockers = experiment_launch_blockers(experiment)
+    if blockers:
+        raise HTTPException(
+            status_code=400,
+            detail=" ".join(
+                [
+                    f"Cannot launch: this experiment is missing {', '.join(blockers)}.",
+                    *launch_blocker_fixes(blockers),
+                ]
+            ),
+        )
 
 
 def assert_editable(experiment: Experiment, action: str) -> None:

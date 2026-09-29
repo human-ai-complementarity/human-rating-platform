@@ -173,6 +173,10 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     group_dataset_name: null,
     wave: null,
     tags: [],
+    // Ready by default so existing pilot coverage is unaffected; the gate has
+    // its own test below.
+    launch_ready: true,
+    launch_blockers: [],
     ...partial,
   };
 }
@@ -2149,4 +2153,56 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 
   await expect(page.getByRole('heading', { name: 'Tagged draft' })).toBeVisible();
   expect(state.experiments[0].tags).toEqual(['needs-review', 'client-x']);
+});
+
+
+test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Unfinished Experiment',
+      question_count: 2,
+      launch_ready: false,
+      launch_blockers: [
+        'rater instructions',
+        'prompt prefix',
+        'internal study name',
+        'assistance model',
+      ],
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [
+    {
+      id: 1,
+      filename: 'sample_questions.csv',
+      uploaded_at: '2026-03-09T00:01:00Z',
+      question_count: 2,
+      dataset_meta: null,
+    },
+  ];
+  state.rounds[1] = [];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  // The same list the API would reject the launch with, shown before the
+  // admin fills in the whole form.
+  await expect(page.getByTestId('launch-blockers')).toContainText('rater instructions');
+  await expect(page.getByTestId('launch-blockers')).toContainText('prompt prefix');
+  // Each blocker gets the fix for where its value comes from: the text from
+  // the upload (editable here), the internal name from the card only at create.
+  await expect(page.getByTestId('launch-blockers')).toContainText(
+    'If the upload lacked them, edit them under Instructions & prompts.',
+  );
+  await expect(page.getByTestId('launch-blockers')).toContainText(
+    'Internal study name: the dataset card fills it only when an experiment is created.',
+  );
+  // The model has no field: the export carries a per-method map, and a PATCH can set an entry.
+  await expect(page.getByTestId('launch-blockers')).toContainText(
+    'PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>.',
+  );
+  await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
 });

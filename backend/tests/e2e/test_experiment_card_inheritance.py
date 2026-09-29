@@ -476,3 +476,18 @@ def test_an_upload_declaring_no_models_leaves_pinned_ones_alone(client: TestClie
 
     _upload_with_meta(client, exp["id"], {"description": _EXPORT_META["description"]})
     assert _pinned_models(client, exp["id"]) == _UPLOADED_MODELS
+
+
+def test_one_upload_takes_an_assisted_arm_from_blocked_to_launchable(client: TestClient):
+    """End to end. The gate reads the experiment *row* — rater text plus a
+    pinned model — and with the models on the export, one upload now
+    satisfies every part of it that the pipeline owns."""
+    group = _carded_group(client)
+    exp = _create(client, group_id=group["id"], assistance_method="top_n")
+    assert "assistance model" in exp["launch_blockers"]
+
+    _upload_with_meta(client, exp["id"], {**_EXPORT_META, "assistance_models": _UPLOADED_MODELS})
+
+    after = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert after["launch_blockers"] == []
+    assert after["launch_ready"] is True

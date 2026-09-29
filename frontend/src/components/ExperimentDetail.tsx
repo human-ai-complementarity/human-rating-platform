@@ -2720,6 +2720,7 @@ function LaunchPanel(props: {
                   onSubmit={onRunPilot}
                   otherExperiments={otherExperiments}
                   datasetDescription={experiment.description}
+                  launchBlockers={experiment.launch_blockers ?? []}
                 />
               )}
             </>
@@ -3244,6 +3245,40 @@ function RecommendationCard({
   );
 }
 
+// The fix for each launch blocker, by where its value comes from. Mirrors
+// launch_blocker_fixes in backend/services/admin/status.py, in this page's
+// terms: the text fields are editable under Instructions & prompts, the model
+// has no field here, and only the internal name comes from the dataset card —
+// at create, so editing the card later can't fix this experiment.
+const UPLOAD_TEXT_BLOCKERS = ['rater instructions', 'prompt prefix', 'prompt suffix'];
+
+function launchBlockerFixes(blockers: string[]): string[] {
+  const fixes: string[] = [];
+  const text = blockers.filter((blocker) => UPLOAD_TEXT_BLOCKERS.includes(blocker));
+  if (text.length > 0) {
+    const listed = text.join(', ');
+    const them = text.length === 1 ? 'it' : 'them';
+    fixes.push(
+      `${listed[0].toUpperCase()}${listed.slice(1)}: part of the pipeline export's metadata, ` +
+        `applied at upload. If the upload lacked ${them}, edit ${them} under Instructions & prompts.`,
+    );
+  }
+  if (blockers.includes('assistance model')) {
+    fixes.push(
+      "Assistance model: part of the pipeline export's metadata, per method under " +
+        'assistance_models, applied at upload. It has no field on this page; to set it by hand, ' +
+        'PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>.',
+    );
+  }
+  if (blockers.includes('internal study name')) {
+    fixes.push(
+      'Internal study name: the dataset card fills it only when an experiment is created. ' +
+        'Set it with the pencil by the title.',
+    );
+  }
+  return fixes;
+}
+
 function PilotForm(props: {
   pilotForm: Omit<PilotStudyCreate, 'reward'>;
   onPilotChange: (form: Omit<PilotStudyCreate, 'reward'>) => void;
@@ -3256,6 +3291,7 @@ function PilotForm(props: {
   otherExperiments: Experiment[];
   datasetDescription: string | null;
   sessionDurationMinutes: number;
+  launchBlockers: string[];
 }) {
   const {
     pilotForm,
@@ -3269,6 +3305,7 @@ function PilotForm(props: {
     otherExperiments,
     datasetDescription,
     sessionDurationMinutes,
+    launchBlockers,
   } = props;
   const prefilledFromDataset =
     !!datasetDescription && pilotForm.description === datasetDescription;
@@ -3461,7 +3498,28 @@ function PilotForm(props: {
             style={inputStyle}
           />
         </Field>
-        <button data-testid="run-pilot-button" type="submit" style={{ ...primaryButton, width: '100%' }}>
+        {launchBlockers.length > 0 && (
+          <div data-testid="launch-blockers" style={{ marginBottom: 12 }}>
+            <Banner tone="warn">
+              This study can't launch yet — it's missing {launchBlockers.join(', ')}.
+              {launchBlockerFixes(launchBlockers).map((fix) => (
+                <div key={fix} style={{ marginTop: 6 }}>
+                  {fix}
+                </div>
+              ))}
+            </Banner>
+          </div>
+        )}
+        <button
+          data-testid="run-pilot-button"
+          type="submit"
+          disabled={launchBlockers.length > 0}
+          style={{
+            ...primaryButton,
+            width: '100%',
+            ...(launchBlockers.length > 0 ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+          }}
+        >
           Create pilot draft
         </button>
       </form>

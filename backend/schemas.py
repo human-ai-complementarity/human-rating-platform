@@ -255,6 +255,10 @@ class ExperimentResponse(BaseModel):
     wave: Optional[str] = None
     # Free-form tags, alphabetical. Empty when none are attached.
     tags: list[str] = Field(default_factory=list)
+    # What still stops this experiment launching a study (#96). Empty means
+    # ready. Not needed to upload or analyse — only to launch.
+    launch_ready: bool = True
+    launch_blockers: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
