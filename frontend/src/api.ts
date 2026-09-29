@@ -11,6 +11,8 @@ import type {
   AssistanceStep,
   ConsentResponse,
   StudyFlag,
+  QueueSnapshot,
+  QueueRequest,
   ExperimentRound,
   TermsPreview,
   TermsStatus,
@@ -64,6 +66,7 @@ type RequestOptions = {
   json?: unknown; // mutually exclusive with formData
   formData?: FormData; // mutually exclusive with json
   headers?: Record<string, string>;
+  signal?: AbortSignal;
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -123,6 +126,8 @@ const routes = {
     sessionStatus: '/raters/session-status',
     endSession: '/raters/end-session',
     assistanceStart: '/raters/assistance/start',
+    queue: '/raters/queue',
+    assistancePrepare: '/raters/assistance/prepare',
     assistanceAdvance: '/raters/assistance/advance',
   },
 } as const;
@@ -225,9 +230,13 @@ function httpErrorMessage(status: number, statusText: string, body: string, url:
   return `Request failed (${status}) for ${url}: ${fallback}`;
 }
 
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); }
+}
+
 async function throwHttpError(response: Response, url: string): Promise<never> {
   const body = await readText(response);
-  throw new Error(httpErrorMessage(response.status, response.statusText, body, url));
+  throw new ApiError(response.status, httpErrorMessage(response.status, response.statusText, body, url));
 }
 
 // FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
@@ -238,6 +247,7 @@ function extractDetail(body: string): string | null {
   if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
   try {
     const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed.detail?.message === 'string') return parsed.detail.message;
     if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
       return parsed.detail.trim();
     }
@@ -316,7 +326,7 @@ async function request(
     throw new Error('Invalid request options: provide either json or formData, not both.');
   }
 
-  const init: RequestInit = { method, credentials: 'include' };
+  const init: RequestInit = { method, credentials: 'include', signal: options.signal };
 
   if (formData !== undefined) {
     init.body = formData;
@@ -871,9 +881,23 @@ export const api = {
     });
   },
 
-  async startAssistance(sessionToken: string, questionId: number): Promise<AssistanceStep> {
+  async questionQueue(sessionToken: string, data: QueueRequest): Promise<QueueSnapshot> {
+    return requestJson<QueueSnapshot>(routes.rater.queue, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken }, json: data,
+    });
+  },
+
+  async prepareAssistance(sessionToken: string, assignmentId: number, generation: number): Promise<void> {
+    await requestJson(routes.rater.assistancePrepare, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken },
+      json: { assignment_id: assignmentId, generation },
+    });
+  },
+
+  async startAssistance(sessionToken: string, questionId: number, signal?: AbortSignal): Promise<AssistanceStep> {
     return requestJson<AssistanceStep>(routes.rater.assistanceStart, {
       method: 'POST',
+      signal,
       headers: { 'X-Rater-Session': sessionToken },
       json: { question_id: questionId },
     });
