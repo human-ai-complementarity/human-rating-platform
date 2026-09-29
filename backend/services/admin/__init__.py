@@ -35,6 +35,7 @@ from .exports import (
     stream_documents_export_csv_chunks,
     stream_export_csv_chunks,
 )
+from .one_click import launch_from_card, preview_launch_from_card
 from .rounds import (
     calculate_recommendation,
     close_experiment_round,
@@ -81,6 +82,8 @@ __all__ = [
     "get_prolific_pricing",
     "refresh_experiment_spend",
     "run_experiment_round",
+    "launch_from_card",
+    "preview_launch_from_card",
     "run_pilot_study",
     "stream_documents_export_csv_chunks",
     "stream_export_csv_chunks",
