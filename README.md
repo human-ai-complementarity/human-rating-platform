@@ -21,7 +21,8 @@ backend/              FastAPI app, models, services, migrations, tests
     assistance/       Assistance method plugin system (base, registry, operations, methods/)
     v1/               Read models for the programmatic /api/v1 API
   alembic/            Migration config + versions
-  scripts/            migrate.sh, predeploy.sh, seed_dev.py, config_check.py
+  scripts/            migrate.sh, predeploy.sh, seed_dev.py, config_check.py,
+                      sync_dataset_catalog.py (dataset/group backfill; dry run unless --apply)
   config.toml         Default local settings
 frontend/             React + TypeScript + Vite SPA
   src/api.ts          API client (route map, request pipeline, error handling)
