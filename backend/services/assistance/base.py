@@ -58,6 +58,10 @@ class AssistanceMethod(ABC):
 
     rater_instructions: str = ""
 
+    def preparation_params(self, params: dict) -> dict:
+        """Resolve method defaults before taking a durable input snapshot."""
+        return dict(params)
+
     def plan_preparation(self, context: PreparationContext) -> PreparationSpec | None:
         """Declare optional work safe to compute before the question is displayed.
 

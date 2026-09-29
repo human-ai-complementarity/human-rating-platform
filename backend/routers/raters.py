@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
@@ -93,6 +93,7 @@ async def end_session(
 
 @router.post("/assistance/start", response_model=AssistanceStepResponse)
 async def start_assistance(
+    request: Request,
     body: AssistanceStartRequest,
     session: RaterSession = Depends(require_rater_session),
     db: AsyncSession = Depends(get_session),
@@ -101,6 +102,7 @@ async def start_assistance(
         rater_id=session.rater_id,
         question_id=body.question_id,
         db=db,
+        runner=request.app.state.preparation_runner,
     )
 
 

@@ -9,9 +9,7 @@ shows neither the rank nor the model's confidence, so the rater sees the
 shortlist without the model's ordering anchoring their choice. Each candidate
 still carries its `rank`, persisted with the session payload for analysis.
 The payload also records `parse_status` (`clean` / `unparseable` /
-`no_candidates`) on the step the rater saw. NONE sessions are deleted on the
-next visit, so that field is not durable; recurrence is the structured
-warning log (`parse_status`, question, model), which survives the delete.
+`no_candidates`) on the persisted step, including terminal NONE results.
 Unparseable JSON — a comparison token, a truncated wrapper, anything the
 decoder rejects — fails closed rather than salvaging a biased subset.
 
@@ -348,6 +346,9 @@ def _compose_system_prompt(extra: str | None) -> str:
 
 
 class TopNAssistance(InitialStepPreparation):
+    def preparation_params(self, params: dict) -> dict:
+        return {**params, "model": params.get("model") or get_settings().llm.default_model}
+
     async def start(
         self,
         question: Question | QuestionSnapshot,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -13,6 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AssistanceSession
+from session_policy import resolve_session_policy
+from .preparation import PreparationContext, QuestionSnapshot
+from .runner import PreparationRunner
 from schemas import AssistanceStepResponse
 from services.queries import (
     fetch_experiment_or_404,
@@ -75,11 +77,10 @@ async def start_assistance(
     rater_id: int,
     question_id: int,
     db: AsyncSession,
+    runner: PreparationRunner | None = None,
 ) -> AssistanceStepResponse:
-    rater, question = await asyncio.gather(
-        fetch_rater_or_404(rater_id, db),
-        fetch_question_or_404(question_id, db),
-    )
+    rater = await fetch_rater_or_404(rater_id, db)
+    question = await fetch_question_or_404(question_id, db)
     if not rater.is_active:
         raise HTTPException(status_code=400, detail="Rater session is not active")
 
@@ -89,7 +90,7 @@ async def start_assistance(
         )
 
     existing = await _fetch_existing_session(rater_id, question_id, db)
-    if existing and existing.step_type != StepType.NONE:
+    if existing:
         step = InteractionStep(
             type=StepType(existing.step_type),
             payload=_load_json(existing.payload),
@@ -97,10 +98,6 @@ async def start_assistance(
             is_terminal=existing.is_complete,
         )
         return _step_to_response(existing.id, step)
-
-    if existing and existing.step_type in (StepType.NONE, StepType.SKIP):
-        await db.delete(existing)
-        await db.commit()
 
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
     params = _load_json(experiment.assistance_params)
@@ -115,6 +112,37 @@ async def start_assistance(
         if question.parent_question_id is not None
         else None
     )
+
+    if runner is not None:
+        params = method.preparation_params(params)
+        context = PreparationContext(
+            question=QuestionSnapshot.capture(question),
+            params_json=json.dumps(params, sort_keys=True),
+            parent_question_text=parent_question_text,
+            experiment_system_prompt=experiment.system_prompt,
+        )
+        spec = method.plan_preparation(context)
+        if spec is not None:
+            policy = resolve_session_policy(experiment)
+            # Release the request transaction before waiting on provider work.
+            await db.commit()
+            identifier = await runner.ensure(
+                rater_id=rater_id,
+                question_id=question_id,
+                session_start=rater.session_start,
+                method_name=experiment.assistance_method,
+                spec=spec,
+                params=params,
+                deadline_at=policy.hard_deadline(rater.session_start),
+                demanded=True,
+            )
+            prepared_session = await runner.wait(identifier)
+            return AssistanceStepResponse(
+                session_id=prepared_session.id,
+                type=StepType(prepared_session.step_type),
+                payload=_load_json(prepared_session.payload),
+                is_terminal=prepared_session.is_complete,
+            )
 
     try:
         step = await method.start(
