@@ -145,6 +145,8 @@ async def fetch_eligible_questions_with_counts(
         )
         .join(Question, QuestionAssignment.question_id == Question.id)
         .where(Question.experiment_id == experiment_id)
+        .join(Rater, QuestionAssignment.rater_id == Rater.id)
+        .where(Rater.is_preview == False)  # noqa: E712
         .where(QuestionAssignment.completed_at.is_(None))
         .where(QuestionAssignment.expires_at > now)
         .where(QuestionAssignment.rater_id != rater_id)

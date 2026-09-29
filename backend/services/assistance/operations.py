@@ -11,10 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import AssistanceSession
+from models import AssistanceSession, QuestionAssignment
 from session_policy import resolve_session_policy
 from .preparation import PreparationContext, QuestionSnapshot
 from .runner import PreparationRunner
+from services.rater.validators import validate_rater_session_not_over
 from schemas import AssistanceStepResponse
 from services.queries import (
     fetch_experiment_or_404,
@@ -89,6 +90,13 @@ async def start_assistance(
             status_code=400, detail="Question does not belong to rater's experiment"
         )
 
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    await validate_rater_session_not_over(rater, db, resolve_session_policy(experiment))
+    assignment = None
+    if rater.queue_mode or not rater.is_preview:
+        from services.rater.queue import require_assignment
+
+        assignment = await require_assignment(rater, question_id, db)
     existing = await _fetch_existing_session(rater_id, question_id, db)
     if existing:
         step = InteractionStep(
@@ -99,7 +107,6 @@ async def start_assistance(
         )
         return _step_to_response(existing.id, step)
 
-    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
     params = _load_json(experiment.assistance_params)
 
     try:
@@ -135,6 +142,8 @@ async def start_assistance(
                 params=params,
                 deadline_at=policy.hard_deadline(rater.session_start),
                 demanded=True,
+                assignment_id=assignment.id if assignment else None,
+                assignment_generation=assignment.generation if assignment else None,
             )
             prepared_session = await runner.wait(identifier)
             return AssistanceStepResponse(
@@ -223,6 +232,16 @@ async def advance_assistance(
     if assistance_session.is_complete:
         raise HTTPException(status_code=400, detail="Assistance session is already complete")
 
+    rater = await fetch_rater_or_404(rater_id, db)
+    if not rater.is_active:
+        raise HTTPException(403, "Session expired")
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    await validate_rater_session_not_over(rater, db, resolve_session_policy(experiment))
+    if rater.queue_mode or not rater.is_preview:
+        from services.rater.queue import require_assignment
+
+        await require_assignment(rater, assistance_session.question_id, db)
+
     params = _load_json(assistance_session.params)
     state = _load_json(assistance_session.state)
 
@@ -270,3 +289,51 @@ async def advance_assistance(
     )
 
     return _step_to_response(session_id, step)
+
+
+async def prepare_assistance(*, rater_id, assignment_id, generation, runner, db):
+    from services.rater.queue import speculation_enabled, lock_rater, require_assignment
+
+    rater = await lock_rater(rater_id, db)
+    if not rater.queue_mode or not speculation_enabled(rater.experiment_id) or not rater.is_active:
+        raise HTTPException(409, "Preparation is not enabled")
+    assignment = await db.get(QuestionAssignment, assignment_id)
+    if assignment is None or assignment.rater_id != rater_id:
+        raise HTTPException(404, "Assignment not found")
+    await require_assignment(rater, assignment.question_id, db, active=False, generation=generation)
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    policy = resolve_session_policy(experiment)
+    if datetime.now(UTC) > policy.deadline(rater.session_start):
+        raise HTTPException(403, "Session expired")
+    question = await fetch_question_or_404(assignment.question_id, db)
+    method = get_method(experiment.assistance_method)
+    params = method.preparation_params(_load_json(experiment.assistance_params))
+    parent = (
+        await fetch_parent_question_text(question.parent_question_id, db)
+        if question.parent_question_id
+        else None
+    )
+    spec = method.plan_preparation(
+        PreparationContext(
+            QuestionSnapshot.capture(question),
+            json.dumps(params, sort_keys=True),
+            parent,
+            experiment.system_prompt,
+        )
+    )
+    if spec is None:
+        return {"status": "unsupported"}
+    await db.commit()
+    await runner.ensure(
+        rater_id=rater_id,
+        question_id=question.id,
+        session_start=rater.session_start,
+        method_name=experiment.assistance_method,
+        spec=spec,
+        params=params,
+        deadline_at=policy.deadline(rater.session_start),
+        demanded=False,
+        assignment_id=assignment.id,
+        assignment_generation=generation,
+    )
+    return {"status": "accepted"}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ class RaterSession:
     experiment_id: int
     issued_at: int
     expires_at: int
+    session_generation: str | None = None
 
 
 async def require_rater_session(
@@ -49,9 +51,23 @@ async def require_rater_session(
         )
         raise HTTPException(status_code=401, detail="Invalid rater session")
 
+    generation = data.get("session_generation")
+    if generation is not None and getattr(rater, "session_start", None) is not None:
+        try:
+            reset = rater.session_start > datetime.fromisoformat(generation)
+        except (ValueError, TypeError):
+            raise HTTPException(401, "Invalid rater session")
+        if reset:
+            raise HTTPException(401, "Rater session was reset")
+
+    # Preserve the identity authenticated before any later lock wait or refresh.
+    # SQLAlchemy identity-map objects are weakly held; they are not an auth snapshot.
+    db.info["authenticated_rater_generation"] = (rater.id, rater.session_start)
+
     return RaterSession(
         rater_id=data["rater_id"],
         experiment_id=data["experiment_id"],
         issued_at=data["issued_at"],
         expires_at=data["expires_at"],
+        session_generation=generation,
     )
