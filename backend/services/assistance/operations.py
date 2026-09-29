@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import AssistanceSession, QuestionAssignment
 from session_policy import resolve_session_policy
 from .preparation import PreparationContext, QuestionSnapshot
-from .runner import PreparationRunner
+from .runner import PreparationRunner, CLAIM_SECONDS, EXECUTION_SECONDS
 from services.rater.validators import validate_rater_session_not_over
 from schemas import AssistanceStepResponse
 from services.queries import (
@@ -51,9 +53,12 @@ def _apply_step_to_session(session: AssistanceSession, step: InteractionStep) ->
     session.updated_at = datetime.now(UTC)
 
 
-def _step_to_response(session_id: int, step: InteractionStep) -> AssistanceStepResponse:
+def _step_to_response(
+    session_id: int, step: InteractionStep, revision: int = 0
+) -> AssistanceStepResponse:
     return AssistanceStepResponse(
         session_id=session_id,
+        revision=revision,
         type=step.type,
         payload=step.payload,
         is_terminal=step.is_terminal,
@@ -105,7 +110,7 @@ async def start_assistance(
             state=_load_json(existing.state),
             is_terminal=existing.is_complete,
         )
-        return _step_to_response(existing.id, step)
+        return _step_to_response(existing.id, step, existing.revision)
 
     params = _load_json(experiment.assistance_params)
 
@@ -148,6 +153,7 @@ async def start_assistance(
             prepared_session = await runner.wait(identifier)
             return AssistanceStepResponse(
                 session_id=prepared_session.id,
+                revision=prepared_session.revision,
                 type=StepType(prepared_session.step_type),
                 payload=_load_json(prepared_session.payload),
                 is_terminal=prepared_session.is_complete,
@@ -198,7 +204,7 @@ async def start_assistance(
                 state=_load_json(existing.state),
                 is_terminal=existing.is_complete,
             )
-            return _step_to_response(existing.id, step)
+            return _step_to_response(existing.id, step, existing.revision)
         raise
     await db.refresh(assistance_session)
 
@@ -223,72 +229,94 @@ async def advance_assistance(
     session_id: int,
     human_input: str,
     db: AsyncSession,
+    expected_revision: int | None = None,
 ) -> AssistanceStepResponse:
-    assistance_session = await _fetch_session_or_404(session_id, db)
+    from services.rater.queue import lock_rater, require_assignment
 
-    if assistance_session.rater_id != rater_id:
-        raise HTTPException(status_code=403, detail="Session does not belong to rater")
+    async def locked_session():
+        rater = await lock_rater(rater_id, db)
+        if not rater.is_active:
+            raise HTTPException(403, "Session expired")
+        experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+        await validate_rater_session_not_over(rater, db, resolve_session_policy(experiment))
+        session = (
+            await db.execute(
+                select(AssistanceSession)
+                .where(AssistanceSession.id == session_id)
+                .execution_options(populate_existing=True)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if session is None:
+            raise HTTPException(404, "Assistance session not found")
+        if session.rater_id != rater_id:
+            raise HTTPException(403, "Session does not belong to rater")
+        if rater.queue_mode or not rater.is_preview:
+            await require_assignment(rater, session.question_id, db)
+        return rater, experiment, session
 
-    if assistance_session.is_complete:
-        raise HTTPException(status_code=400, detail="Assistance session is already complete")
-
-    rater = await fetch_rater_or_404(rater_id, db)
-    if not rater.is_active:
-        raise HTTPException(403, "Session expired")
-    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
-    await validate_rater_session_not_over(rater, db, resolve_session_policy(experiment))
-    if rater.queue_mode or not rater.is_preview:
-        from services.rater.queue import require_assignment
-
-        await require_assignment(rater, assistance_session.question_id, db)
-
-    params = _load_json(assistance_session.params)
-    state = _load_json(assistance_session.state)
-
-    try:
-        method = get_method(assistance_session.method_name)
-    except ValueError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-    experiment = await fetch_experiment_or_404(assistance_session.experiment_id, db)
-
-    try:
-        step = await method.advance(
-            state,
-            human_input,
-            params,
-            experiment_system_prompt=experiment.system_prompt,
+    def response(session):
+        return AssistanceStepResponse(
+            session_id=session.id,
+            revision=session.revision,
+            type=StepType(session.step_type),
+            payload=_load_json(session.payload),
+            is_terminal=session.is_complete,
         )
-    except RuntimeError:
-        logger.error(
-            "Assistance advance failed with unrecoverable error; skipping question for retry",
-            exc_info=True,
-            extra={
-                "attributes": {
-                    "session_id": session_id,
-                    "rater_id": rater_id,
-                    "question_id": assistance_session.question_id,
-                    "method": assistance_session.method_name,
-                }
-            },
-        )
-        step = InteractionStep(type=StepType.SKIP, is_terminal=True)
 
-    _apply_step_to_session(assistance_session, step)
+    rater, experiment, session = await locked_session()
+    if expected_revision is not None and expected_revision < session.revision:
+        # A retry refers to a turn already committed. Never apply its input again.
+        return response(session)
+    if expected_revision is not None and expected_revision != session.revision:
+        raise HTTPException(409, "Assistance step changed; reload assistance")
+    if session.is_complete:
+        raise HTTPException(400, "Assistance session is already complete")
+    now = datetime.now(UTC)
+    if session.advance_token and session.advance_expires_at > now:
+        raise HTTPException(409, "Assistance is still processing this turn. Retry shortly.")
+
+    token = uuid4().hex
+    session.advance_token = token
+    session.advance_expires_at = now + timedelta(seconds=CLAIM_SECONDS)
+    generation = rater.session_start
+    params = _load_json(session.params)
+    state = _load_json(session.state)
+    method = get_method(session.method_name)
+    system_prompt = experiment.system_prompt
     await db.commit()
+    try:
+        try:
+            async with asyncio.timeout(EXECUTION_SECONDS):
+                step = await method.advance(
+                    state, human_input, params, experiment_system_prompt=system_prompt
+                )
+        except (RuntimeError, TimeoutError):
+            logger.exception("Assistance advance failed; skipping question")
+            step = InteractionStep(type=StepType.SKIP, is_terminal=True)
 
-    logger.info(
-        "Assistance session advanced",
-        extra={
-            "attributes": {
-                "session_id": session_id,
-                "step_type": step.type,
-                "is_terminal": step.is_terminal,
-            }
-        },
-    )
-
-    return _step_to_response(session_id, step)
+        rater, _, session = await locked_session()
+        if rater.session_start != generation:
+            raise HTTPException(401, "Rater session was reset")
+        if session.advance_token != token or session.advance_expires_at <= datetime.now(UTC):
+            raise HTTPException(409, "Assistance turn ownership expired. Retry shortly.")
+        _apply_step_to_session(session, step)
+        session.revision += 1
+        session.advance_token = None
+        session.advance_expires_at = None
+        await db.commit()
+        return response(session)
+    except BaseException:
+        # A disconnected request can release its own claim, never a successor's.
+        # Process death leaves a bounded lease that a later retry can recover.
+        await db.rollback()
+        await db.execute(
+            update(AssistanceSession)
+            .where(AssistanceSession.id == session_id, AssistanceSession.advance_token == token)
+            .values(advance_token=None, advance_expires_at=None)
+        )
+        await db.commit()
+        raise
 
 
 async def prepare_assistance(*, rater_id, assignment_id, generation, runner, db):

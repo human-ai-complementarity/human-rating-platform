@@ -346,11 +346,13 @@ class AssistanceStartRequest(BaseModel):
 
 class AssistanceAdvanceRequest(BaseModel):
     session_id: int
+    expected_revision: Optional[int] = Field(default=None, ge=0)
     human_input: str
 
 
 class AssistanceStepResponse(BaseModel):
     session_id: int
+    revision: int = 0
     type: StepType
     payload: dict
     is_terminal: bool
