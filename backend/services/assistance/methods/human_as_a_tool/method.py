@@ -26,7 +26,8 @@ import openai
 from config import get_settings
 from models import Question
 
-from ...base import AssistanceMethod, InteractionStep, StepType
+from ...base import InteractionStep, StepType
+from ...preparation import InitialStepPreparation, QuestionSnapshot
 from ...confidence import (
     ConfidenceEstimator,
     LLMConfidenceEstimator,
@@ -41,7 +42,7 @@ _CONFIDENCE_THRESHOLD = 75
 _EVIDENCE_EMPTY_CONFIDENCE_PENALTY = 20
 
 
-class HumanAsAToolMethod(AssistanceMethod):
+class HumanAsAToolMethod(InitialStepPreparation):
     rater_instructions = (
         "For each question, an AI will break it down into smaller subtasks. "
         "Subtasks the AI is confident about will be pre-filled with its answer — "
@@ -57,7 +58,7 @@ class HumanAsAToolMethod(AssistanceMethod):
 
     async def start(
         self,
-        question: Question,
+        question: Question | QuestionSnapshot,
         params: dict,
         *,
         parent_question_text: str | None = None,
@@ -106,7 +107,9 @@ class HumanAsAToolMethod(AssistanceMethod):
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
         except (RuntimeError, ValueError, openai.OpenAIError):
             logger.exception("human_as_a_tool start() failed; returning no-assistance step")
-            return InteractionStep(type=StepType.NONE, is_terminal=True)
+            return InteractionStep(
+                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+            )
 
         return InteractionStep(
             type=StepType.ASK_INPUT,
@@ -191,7 +194,9 @@ class HumanAsAToolMethod(AssistanceMethod):
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
         except (RuntimeError, ValueError, openai.OpenAIError):
             logger.exception("human_as_a_tool advance() failed; returning no-assistance step")
-            return InteractionStep(type=StepType.NONE, is_terminal=True)
+            return InteractionStep(
+                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+            )
 
         return InteractionStep(
             type=StepType.ASK_INPUT,

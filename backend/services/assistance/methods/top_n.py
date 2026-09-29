@@ -34,7 +34,8 @@ import openai
 from config import LLMSettings, get_settings
 from models import Question
 
-from ..base import AssistanceMethod, InteractionStep, StepType
+from ..base import InteractionStep, StepType
+from ..preparation import InitialStepPreparation, QuestionSnapshot
 from ..llm import complete
 
 logger = logging.getLogger(__name__)
@@ -183,6 +184,7 @@ def _none_step(parse_status: str) -> InteractionStep:
     return InteractionStep(
         type=StepType.NONE,
         payload={"kind": "top_n", "parse_status": parse_status},
+        failure_reason="invalid_response",
         is_terminal=True,
     )
 
@@ -345,10 +347,10 @@ def _compose_system_prompt(extra: str | None) -> str:
     return f"Study-specific context:\n{extra.strip()}\n\n{_SYSTEM_PROMPT}"
 
 
-class TopNAssistance(AssistanceMethod):
+class TopNAssistance(InitialStepPreparation):
     async def start(
         self,
-        question: Question,
+        question: Question | QuestionSnapshot,
         params: dict,
         *,
         parent_question_text: str | None = None,
@@ -400,7 +402,9 @@ class TopNAssistance(AssistanceMethod):
             )
         except (RuntimeError, ValueError, openai.OpenAIError):
             logger.exception("Top-N LLM call failed; returning no-assistance step")
-            return InteractionStep(type=StepType.NONE, is_terminal=True)
+            return InteractionStep(
+                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+            )
 
         try:
             parsed = _parse_top_n_response(raw)
