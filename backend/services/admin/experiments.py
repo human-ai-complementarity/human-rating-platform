@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from models import (
+    Dataset,
     Experiment,
     ExperimentGroup,
     ExperimentRound,
@@ -23,6 +25,7 @@ from models import (
     Upload,
 )
 from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
+from .dataset_card import card_values_from_row
 from .mappers import build_experiment_response
 from fastapi import HTTPException
 from .groups import fetch_group_or_404, fetch_group_snapshot, fetch_group_snapshots
@@ -42,6 +45,11 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
+from .study_names import (
+    disambiguate,
+    external_placeholders,
+    render_study_name,
+)
 from .waves import normalize_wave_token
 from .queries import (
     fetch_experiment_or_404,
@@ -50,6 +58,88 @@ from .queries import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# --- Dataset card inheritance (#96) ---------------------------------------
+# The card is a template, not a live binding: what it supplies — the study
+# name templates and the ratings target — is copied onto the row here, at
+# create, and the config lock freezes it at launch.
+#
+# What the card does not supply is the dataset's own presentation (rater
+# instructions, prompt prefix/suffix, system prompt, Prolific pool) or the
+# wave's assistance models. The pipeline stamps those into the export and the
+# upload applies them, which only works because nothing writes them first:
+# `_apply_meta_to_experiment` never overwrites a populated value, so anything
+# inherited at create — always strictly before any upload — would have turned
+# the authoritative one into a discarded `meta_conflict`. Precedence is
+# payload > card > upload meta over what remains, with PATCH the deliberate
+# override while DRAFT.
+
+
+@dataclass(frozen=True)
+class _GroupCard:
+    """A group's dataset card, plus what its name templates can interpolate."""
+
+    values: dict[str, Any]
+    context: dict[str, str]
+
+
+async def _fetch_card_for_group(group_id: int | None, db: AsyncSession) -> _GroupCard | None:
+    """Card values for a group's dataset, or None when ungrouped."""
+    if group_id is None:
+        return None
+    group = await fetch_group_or_404(group_id, db)
+    dataset = await db.get(Dataset, group.dataset_id)
+    if dataset is None:
+        return None
+    return _GroupCard(
+        values=card_values_from_row(dataset),
+        context={"dataset": dataset.name, "wave": group.wave},
+    )
+
+
+async def _existing_experiment_names(db: AsyncSession) -> set[str]:
+    return set((await db.execute(select(Experiment.name))).scalars().all())
+
+
+async def _resolve_names(
+    payload: ExperimentCreate,
+    card: _GroupCard | None,
+    db: AsyncSession,
+) -> tuple[str, str | None]:
+    """Experiment name / internal name, from the payload or the card templates.
+
+    An explicit payload value always wins; the card only fills a blank.
+    """
+    name = (payload.name or "").strip()
+    internal_name = (payload.internal_name or "").strip() or None
+    context = dict(card.context) if card else {}
+    context["method"] = payload.assistance_method
+
+    if not name and card and card.values.get("external_study_name"):
+        name = render_study_name(
+            card.values["external_study_name"],
+            context=context,
+            field="external_study_name",
+            allowed=external_placeholders(),
+        )
+        name = disambiguate(name, await _existing_experiment_names(db))
+    if not name:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Experiment name is required: none was supplied and the dataset card "
+                "for this group does not declare an external_study_name template."
+            ),
+        )
+
+    if internal_name is None and card and card.values.get("internal_study_name"):
+        internal_name = render_study_name(
+            card.values["internal_study_name"],
+            context=context,
+            field="internal_study_name",
+        )
+    return name, internal_name
 
 
 async def create_experiment(
@@ -62,24 +152,30 @@ async def create_experiment(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     group_id = payload.group_id
-    if group_id is not None:
-        await fetch_group_or_404(group_id, db)
-    if payload.assistance_params:
-        reject_removed_model_key(
-            payload.assistance_params, where="assistance_params", hint=RELOAD_HINT
-        )
-        _validate_changed_models({}, payload.assistance_params)
+    card = await _fetch_card_for_group(group_id, db)
+    name, internal_name = await _resolve_names(payload, card, db)
+
+    ratings_target = payload.num_ratings_per_question
+    if "num_ratings_per_question" not in payload.model_fields_set and card:
+        ratings_target = card.values.get("num_ratings_per_question") or ratings_target
+
+    # The models are not inherited here. They are the wave's, and the wave's
+    # copy lives in the pipeline — it reaches us stamped into the export's
+    # `dataset_meta` and is pinned by the upload. Only an explicit payload
+    # `assistance_models` pins one at create.
+    assistance_params = dict(payload.assistance_params or {}) or None
+    if assistance_params:
+        reject_removed_model_key(assistance_params, where="assistance_params", hint=RELOAD_HINT)
+        _validate_changed_models({}, assistance_params)
 
     db_experiment = Experiment(
-        name=payload.name,
-        internal_name=(payload.internal_name.strip() or None) if payload.internal_name else None,
-        num_ratings_per_question=payload.num_ratings_per_question,
+        name=name,
+        internal_name=internal_name,
+        num_ratings_per_question=ratings_target,
         session_duration_minutes=payload.session_duration_minutes,
         prolific_completion_url=payload.prolific_completion_url,
         assistance_method=payload.assistance_method,
-        assistance_params=json.dumps(payload.assistance_params)
-        if payload.assistance_params
-        else None,
+        assistance_params=json.dumps(assistance_params) if assistance_params else None,
         group_id=group_id,
     )
     db.add(db_experiment)
