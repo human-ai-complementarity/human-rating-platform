@@ -5,12 +5,12 @@ import io
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from config import get_settings
-from models import ConsentRecord, Question, Rating, Rater
+from models import ConsentRecord, Question, Rating, Rater, AssistanceSession
 from services.queries import canonical_rating_rank_subquery, counts_toward_target
 from services.terms import statement_ref
 from .queries import fetch_experiment_or_404
@@ -50,6 +50,8 @@ EXPORT_COLUMNS = [
     "counts_toward_target",
     "assistance_session_id",
     "exclusion_key",
+    "assistance_method",
+    "assistance_outcome",
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
@@ -101,6 +103,8 @@ def _build_export_row(
     parent_row_id: int | None,
     consent_version: str | None = None,
     consented_at: object | None = None,
+    assistance_method: str | None = None,
+    assistance_outcome: str | None = None,
 ) -> list[object]:
     response_time = (rating.time_submitted - rating.time_started).total_seconds()
     return [
@@ -131,6 +135,8 @@ def _build_export_row(
         # Blank when the question has no key. Groups related questions, of
         # which each rater is served at most one.
         question.exclusion_key or "",
+        assistance_method or "",
+        assistance_outcome or "unknown",
     ]
 
 
@@ -172,12 +178,21 @@ async def stream_export_csv_chunks(
             ConsentRecord.statement,
             ConsentRecord.version,
             ConsentRecord.accepted_at,
+            AssistanceSession.method_name,
+            AssistanceSession.outcome,
         )
         .join(Question, Rating.question_id == Question.id)
         .join(Rater, Rating.rater_id == Rater.id)
         .outerjoin(parent_question, parent_question.id == Question.parent_question_id)
         .outerjoin(rating_rank, Rating.id == rating_rank.c.rating_id)
         .outerjoin(ConsentRecord, ConsentRecord.rater_id == Rater.id)
+        .outerjoin(
+            AssistanceSession,
+            and_(
+                AssistanceSession.rater_id == Rating.rater_id,
+                AssistanceSession.question_id == Rating.question_id,
+            ),
+        )
         .where(Question.experiment_id == experiment_id)
         .order_by(Rating.id)
         .execution_options(stream_results=True, yield_per=resolved_batch_size)
@@ -202,6 +217,8 @@ async def stream_export_csv_chunks(
             consent_statement,
             consent_version,
             consented_at,
+            method,
+            outcome,
         ) in result:
             counts = counts_toward_target(rank, experiment.num_ratings_per_question)
             writer.writerow(
@@ -216,6 +233,8 @@ async def stream_export_csv_chunks(
                     if consent_statement
                     else None,
                     consented_at,
+                    method,
+                    outcome,
                 )
             )
             rows_in_chunk += 1
