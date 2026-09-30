@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Literal
 
 from models import Question, StepType
+
+if TYPE_CHECKING:
+    from .preparation import PreparationContext, PreparationSpec, QuestionSnapshot
+
+FailureReason = Literal["provider_error", "invalid_response", "execution_error"]
 
 __all__ = ["AssistanceMethod", "InteractionStep", "StepType"]
 
@@ -28,6 +34,14 @@ class InteractionStep:
     payload: dict = field(default_factory=dict)
     state: dict = field(default_factory=dict)
     is_terminal: bool = False
+    # Research attribution only; never sent in the participant payload.
+    failure_reason: FailureReason | None = None
+
+    @property
+    def outcome(self) -> str:
+        return self.failure_reason or (
+            "no_assistance" if self.type == StepType.NONE else "provided"
+        )
 
 
 class AssistanceMethod(ABC):
@@ -44,10 +58,27 @@ class AssistanceMethod(ABC):
 
     rater_instructions: str = ""
 
+    def plan_preparation(self, context: PreparationContext) -> PreparationSpec | None:
+        """Declare optional work safe to compute before the question is displayed.
+
+        Planning must be deterministic and have no side effects. Methods that
+        opt in also implement prepare() and consume_preparation(). The service
+        owns participant isolation, persistence, and execution limits.
+        """
+        return None
+
+    async def prepare(self, spec: PreparationSpec) -> dict:
+        """Produce a private JSON artifact without anticipating human input."""
+        raise NotImplementedError
+
+    async def consume_preparation(self, spec: PreparationSpec, artifact: dict) -> InteractionStep:
+        """Validate and use prepared work; never silently regenerate it."""
+        raise NotImplementedError
+
     @abstractmethod
     async def start(
         self,
-        question: Question,
+        question: Question | QuestionSnapshot,
         params: dict,
         *,
         parent_question_text: str | None = None,

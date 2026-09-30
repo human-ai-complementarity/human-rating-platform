@@ -35,6 +35,11 @@ test different approaches and compare their effect on rating quality.
 4. Configure an experiment to use it by setting assistance_method="hint" on
    ExperimentCreate (and optionally assistance_params for method-specific config).
 
+Preparation is optional. See docs/assistance-prefetch.md for the preparation
+contract and extension guide. Use InitialStepPreparation when the entire first
+step can run before human input; methods remain responsible for their normal
+start() and advance() behavior.
+
 ## One-shot vs multi-turn methods
 
 One-shot methods (hints, evidence display, search results) only implement
