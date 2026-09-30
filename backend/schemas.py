@@ -292,6 +292,7 @@ class QuestionResponse(BaseModel):
 
 # Rater schemas
 class RaterStartResponse(BaseModel):
+    queue_enabled: bool = False
     rater_id: int
     session_start: datetime
     session_end_time: datetime
@@ -324,6 +325,8 @@ class SessionStatusResponse(BaseModel):
 
 # Rating schemas
 class RatingSubmit(BaseModel):
+    assignment_id: Optional[int] = None
+    assignment_generation: Optional[int] = None
     question_id: int
     answer: str
     confidence: int = Field(ge=1, le=5)
@@ -502,3 +505,31 @@ class ApiKeyResponse(BaseModel):
 class ApiKeyCreated(ApiKeyResponse):
     # The full secret, returned exactly once (create or regenerate).
     plaintext_key: str
+
+
+class QueueItem(BaseModel):
+    assignment_id: int
+    generation: int
+    activated: bool
+    question: QuestionResponse
+
+
+class QueueSnapshot(BaseModel):
+    session_generation: str
+    revision: int
+    phase: str
+    prefetch_enabled: bool
+    items: list[QueueItem]
+
+
+class QueueRequest(BaseModel):
+    action: Literal["reserve", "activate", "skip"] = "reserve"
+    revision: Optional[int] = None
+    assignment_id: Optional[int] = None
+    generation: Optional[int] = None
+    pinned_question_id: Optional[int] = None
+
+
+class PreparationRequest(BaseModel):
+    assignment_id: int
+    generation: int

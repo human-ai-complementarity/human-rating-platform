@@ -158,6 +158,13 @@ class LLMSettings(_StrictModel):
     max_retries: int = 2
 
 
+class PrefetchSettings(_StrictModel):
+    # Empty by default. Existing queue sessions remain drainable after removal.
+    experiment_ids: list[int] = Field(default_factory=list)
+    # Number ahead of the active question. Zero enables queue-only comparison.
+    lookahead_questions: int = Field(default=1, ge=0, le=5)
+
+
 class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -168,6 +175,7 @@ class Settings(BaseSettings):
     seeding: SeedingSettings = Field(default_factory=SeedingSettings)
     prolific: ProlificSettings = Field(default_factory=ProlificSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)

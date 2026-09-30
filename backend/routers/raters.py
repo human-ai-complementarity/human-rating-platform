@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
 from database import get_session
 from schemas import (
+    QueueRequest,
+    QueueSnapshot,
+    PreparationRequest,
     AssistanceAdvanceRequest,
     AssistanceStartRequest,
     AssistanceStepResponse,
@@ -34,7 +37,7 @@ async def start_session(
     settings: Settings = Depends(get_settings),
     db: AsyncSession = Depends(get_session),
 ):
-    return await rater.start_session(
+    result = await rater.start_session(
         settings=settings,
         experiment_id=experiment_id,
         prolific_pid=PROLIFIC_PID,
@@ -43,6 +46,12 @@ async def start_session(
         is_preview=preview,
         db=db,
     )
+
+    from models import Rater
+
+    stored = await db.get(Rater, result.rater_id)
+    result.queue_enabled = stored.queue_mode or experiment_id in settings.prefetch.experiment_ids
+    return result
 
 
 @router.get("/next-question", response_model=Optional[QuestionResponse])
@@ -117,4 +126,36 @@ async def advance_assistance(
         session_id=body.session_id,
         human_input=body.human_input,
         db=db,
+    )
+
+
+@router.post("/queue", response_model=QueueSnapshot)
+async def queue_action(
+    body: QueueRequest,
+    session: RaterSession = Depends(require_rater_session),
+    db: AsyncSession = Depends(get_session),
+):
+    from services.rater.queue import queue_action as perform
+
+    if session.session_generation is None:
+        raise HTTPException(409, "Resume the session before using the queue")
+
+    return await perform(rater_id=session.rater_id, body=body, db=db)
+
+
+@router.post("/assistance/prepare", status_code=202)
+async def prepare_assistance(
+    request: Request,
+    body: PreparationRequest,
+    session: RaterSession = Depends(require_rater_session),
+    db: AsyncSession = Depends(get_session),
+):
+    from services.assistance.operations import prepare_assistance as prepare
+
+    return await prepare(
+        rater_id=session.rater_id,
+        assignment_id=body.assignment_id,
+        generation=body.generation,
+        db=db,
+        runner=request.app.state.preparation_runner,
     )
