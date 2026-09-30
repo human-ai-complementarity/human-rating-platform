@@ -511,6 +511,13 @@ class AssistanceSession(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded snapshot of experiment.assistance_params at session creation
+    revision: int = Field(
+        default=0, sa_column=Column(Integer, nullable=False, server_default=text("0"))
+    )
+    advance_token: Optional[str] = Field(default=None, sa_column=Column(String(32)))
+    advance_expires_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
     step_type: str = Field(sa_column=Column(String(32), nullable=False))
     state: Optional[str] = Field(
         default=None,

@@ -9,6 +9,8 @@ import type {
   ApiKey,
   ApiKeyCreated,
   AssistanceStep,
+  QueueSnapshot,
+  QueueRequest,
   ExperimentRound,
   ExperimentRoundUpdate,
   Dataset,
@@ -110,6 +112,8 @@ const routes = {
     sessionStatus: '/raters/session-status',
     endSession: '/raters/end-session',
     assistanceStart: '/raters/assistance/start',
+    queue: '/raters/queue',
+    assistancePrepare: '/raters/assistance/prepare',
     assistanceAdvance: '/raters/assistance/advance',
   },
 } as const;
@@ -212,9 +216,13 @@ function httpErrorMessage(status: number, statusText: string, body: string, url:
   return `Request failed (${status}) for ${url}: ${fallback}`;
 }
 
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); }
+}
+
 async function throwHttpError(response: Response, url: string): Promise<never> {
   const body = await readText(response);
-  throw new Error(httpErrorMessage(response.status, response.statusText, body, url));
+  throw new ApiError(response.status, httpErrorMessage(response.status, response.statusText, body, url));
 }
 
 // FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
@@ -225,6 +233,7 @@ function extractDetail(body: string): string | null {
   if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
   try {
     const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed.detail?.message === 'string') return parsed.detail.message;
     if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
       return parsed.detail.trim();
     }
@@ -790,6 +799,19 @@ export const api = {
     });
   },
 
+  async questionQueue(sessionToken: string, data: QueueRequest): Promise<QueueSnapshot> {
+    return requestJson<QueueSnapshot>(routes.rater.queue, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken }, json: data,
+    });
+  },
+
+  async prepareAssistance(sessionToken: string, assignmentId: number, generation: number): Promise<void> {
+    await requestJson(routes.rater.assistancePrepare, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken },
+      json: { assignment_id: assignmentId, generation },
+    });
+  },
+
   async startAssistance(sessionToken: string, questionId: number): Promise<AssistanceStep> {
     return requestJson<AssistanceStep>(routes.rater.assistanceStart, {
       method: 'POST',
@@ -801,12 +823,13 @@ export const api = {
   async advanceAssistance(
     sessionToken: string,
     sessionId: number,
-    answers: Record<number, { answer: string; confidence: number }>
+    answers: Record<number, { answer: string; confidence: number }>,
+    expectedRevision?: number
   ): Promise<AssistanceStep> {
     return requestJson<AssistanceStep>(routes.rater.assistanceAdvance, {
       method: 'POST',
       headers: { 'X-Rater-Session': sessionToken },
-      json: { session_id: sessionId, human_input: JSON.stringify(answers) },
+      json: { session_id: sessionId, human_input: JSON.stringify(answers), expected_revision: expectedRevision },
     });
   },
 };

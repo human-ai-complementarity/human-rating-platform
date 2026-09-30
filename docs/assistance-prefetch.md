@@ -86,3 +86,25 @@ Set `prefetch.experiment_ids` (or `PREFETCH__EXPERIMENT_IDS` as a JSON array) to
 experiments in. The default is empty. Removing an experiment stops new speculative
 requests and limits further refills to one; existing active work and already
 reserved work can drain through the same protocol.
+
+## Browser ownership
+
+`useRaterQueue` owns reservation, activation, preparation requests, and assistance
+responses. It accepts only responses for the current request generation and
+ignores older queue revisions. Refills coalesce while retaining pending demand.
+`AssistancePanel` renders the supplied resource and submits actual human input;
+it no longer independently starts assistance. No hidden components do work.
+
+Both fresh and restored sessions wait for intro acknowledgment before reserving
+or preparing work. The hook activates a question before exposing it to the view,
+then starts foreground assistance and requests preparation for the successor.
+Submission transport failures freeze the exact request and keep the answer
+visible until an identical retry is acknowledged. Assistance transport recovery retries frozen input with its original step revision.
+The server returns an already committed step or reports that its claim is still
+active. A turn claim uses the existing assistance-session row and the same bounded
+execution/expiry budgets as preparation. Provider calls run outside transactions;
+publication rechecks ownership and session validity. Submission conflicts offer
+an explicit refresh from saved progress without overwriting an accepted answer.
+New sessions use the queue protocol at depth one by default. The experiment
+allowlist enables only the second slot and speculation. Stored legacy sessions
+retain their original path until they drain.
