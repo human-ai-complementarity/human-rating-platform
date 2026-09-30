@@ -16,6 +16,7 @@ from config import get_settings
 from database import build_database
 from logging_config import configure_logging
 from routers import admin, raters, v1
+from services.assistance.runner import PreparationRunner
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +128,13 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         await database.connect()
         app.state.database = database
+        runner = PreparationRunner(database)
+        app.state.preparation_runner = runner
+        runner.start()
         try:
             yield
         finally:
+            await runner.close()
             await database.disconnect()
 
     app = FastAPI(
