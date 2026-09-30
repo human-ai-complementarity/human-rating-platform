@@ -114,6 +114,7 @@ const routes = {
     assistanceStart: '/raters/assistance/start',
     queue: '/raters/queue',
     assistancePrepare: '/raters/assistance/prepare',
+    assistanceObservation: '/raters/assistance/observation',
     assistanceAdvance: '/raters/assistance/advance',
   },
 } as const;
@@ -809,6 +810,13 @@ export const api = {
     await requestJson(routes.rater.assistancePrepare, {
       method: 'POST', headers: { 'X-Rater-Session': sessionToken },
       json: { assignment_id: assignmentId, generation },
+    });
+  },
+
+  async observeAssistance(sessionToken: string, sessionId: number, waitMs: number): Promise<void> {
+    await requestJson(routes.rater.assistanceObservation, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken },
+      json: { session_id: sessionId, wait_ms: Math.min(600_000, Math.max(0, waitMs)) },
     });
   },
 

@@ -227,6 +227,55 @@ def test_runtime_identity_isolates_question_rater_and_session():
     assert len(identities) == 5
 
 
+@pytest.mark.asyncio
+async def test_provider_slots_leave_capacity_for_foreground_fanout():
+    import asyncio
+    from services.assistance.llm import provider_slot, speculative_call
+
+    release = asyncio.Event()
+    full = asyncio.Event()
+    counts = {"total": 0, "speculative": 0, "max_total": 0, "max_speculative": 0}
+
+    async def call(speculative):
+        token = speculative_call.set(speculative)
+        try:
+            async with provider_slot():
+                counts["total"] += 1
+                counts["speculative"] += int(speculative)
+                counts["max_total"] = max(counts["total"], counts["max_total"])
+                counts["max_speculative"] = max(counts["speculative"], counts["max_speculative"])
+                if counts["total"] == 8:
+                    full.set()
+                try:
+                    await release.wait()
+                finally:
+                    counts["total"] -= 1
+                    counts["speculative"] -= int(speculative)
+        finally:
+            speculative_call.reset(token)
+
+    tasks = [asyncio.create_task(call(True)) for _ in range(8)]
+    tasks.extend(asyncio.create_task(call(False)) for _ in range(4))
+    try:
+        await asyncio.wait_for(full.wait(), 2)
+        assert counts["total"] == 8
+        assert counts["speculative"] == 4
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+    assert counts["max_total"] == 8
+    assert counts["max_speculative"] == 4
+
+
+def test_speculation_is_disabled_without_an_explicit_allowlist(monkeypatch):
+    from config import Settings
+
+    monkeypatch.delenv("PREFETCH__EXPERIMENT_IDS", raising=False)
+    assert Settings(app_secret_key="test").prefetch.experiment_ids == []
+    monkeypatch.setenv("PREFETCH__EXPERIMENT_IDS", "[123]")
+    assert Settings(app_secret_key="test").prefetch.experiment_ids == [123]
+
+
 @pytest.mark.parametrize("depth", [-1, 6])
 def test_lookahead_configuration_rejects_unbounded_reservations(depth):
     from config import PrefetchSettings

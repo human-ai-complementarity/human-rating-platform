@@ -535,3 +535,8 @@ class QueueRequest(BaseModel):
 class PreparationRequest(BaseModel):
     assignment_id: int
     generation: int
+
+
+class AssistanceObservation(BaseModel):
+    session_id: int
+    wait_ms: float = Field(ge=0, le=600_000)
