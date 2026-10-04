@@ -83,6 +83,21 @@ class StepType(str, Enum):
     SKIP = "skip"  # unrecoverable error mid-session; question skipped for retry later (terminal)
 
 
+class AssistanceEventDirection(str, Enum):
+    """Which way an assistance event flowed through the method boundary."""
+
+    REQUEST = "request"  # input handed to the method (start trigger or rater's human_input)
+    RESPONSE = "response"  # step the method produced (what the rater was then shown)
+
+
+class AssistanceEventStatus(str, Enum):
+    """Outcome of the method call an assistance event records."""
+
+    OK = "ok"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+
+
 class Experiment(SQLModel, table=True):
     __tablename__ = "experiments"
 
@@ -528,6 +543,53 @@ class AssistanceSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+
+
+class AssistanceEvent(SQLModel, table=True):
+    """Append-only log of everything that crossed the assistance method boundary.
+
+    AssistanceSession.state/payload hold only the *current* step; each advance
+    overwrites them. This table keeps every step, so a failed or surprising
+    session can be reconstructed after the fact, and what the rater was shown
+    at each turn is recoverable for reliance analysis without a separate
+    presented-candidates field.
+
+    Rows are written by services.assistance.operations and never updated or
+    deleted on their own; they go away only with their session (CASCADE).
+    """
+
+    __tablename__ = "assistance_events"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assistance_session_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("assistance_sessions.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    # Response rows: the step type the method produced. Request rows: the step
+    # the rater was answering (null on the opening start request, which has
+    # no prior step).
+    step_type: Optional[str] = Field(default=None, sa_column=Column(String(32), nullable=True))
+    direction: str = Field(sa_column=Column(String(16), nullable=False))
+    # Wall-clock duration of the method call; response rows only.
+    latency_ms: Optional[int] = Field(default=None, sa_column=Column(Integer, nullable=True))
+    status: str = Field(sa_column=Column(String(16), nullable=False))
+    payload: Optional[str] = Field(
+        default=None,
+        sa_column=Column(Text, nullable=True),
+    )  # JSON snapshot: {"human_input"|"params"} on requests, {"payload","state",...} on responses
+    error: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
 
 class Dataset(SQLModel, table=True):

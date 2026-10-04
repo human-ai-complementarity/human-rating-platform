@@ -353,6 +353,39 @@ class AssistanceStepResponse(BaseModel):
     is_terminal: bool
 
 
+# Admin read models over the assistance tables. Both decode the JSON text
+# columns so callers get structured data rather than strings to parse.
+class AssistanceSessionResponse(BaseModel):
+    id: int
+    rater_id: int
+    experiment_id: int
+    question_id: int
+    method_name: str
+    params: dict
+    step_type: str
+    is_complete: bool
+    created_at: datetime
+    updated_at: datetime
+    event_count: int = 0
+
+
+class AssistanceEventResponse(BaseModel):
+    id: int
+    created_at: datetime
+    direction: str
+    step_type: Optional[str] = None
+    status: str
+    latency_ms: Optional[int] = None
+    payload: dict
+    error: Optional[str] = None
+
+
+class AssistanceSessionDetail(AssistanceSessionResponse):
+    # Current step as the rater sees it, and the full event log in order.
+    payload: dict
+    events: list[AssistanceEventResponse]
+
+
 # ---------------------------------------------------------------------------
 # /api/v1 programmatic read API
 # ---------------------------------------------------------------------------

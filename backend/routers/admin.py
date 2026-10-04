@@ -11,6 +11,8 @@ from schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyResponse,
+    AssistanceSessionDetail,
+    AssistanceSessionResponse,
     DatasetCreate,
     DatasetResponse,
     DatasetUpdate,
@@ -190,6 +192,40 @@ async def list_uploads(
         limit=limit,
         db=db,
     )
+
+
+@secure_router.get(
+    "/experiments/{experiment_id}/assistance-sessions",
+    response_model=list[AssistanceSessionResponse],
+)
+async def list_assistance_sessions(
+    experiment_id: int,
+    rater_id: int | None = Query(None),
+    question_id: int | None = Query(None),
+    step_type: str | None = Query(None),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    db: AsyncSession = Depends(get_session),
+):
+    """Assistance sessions for an experiment, newest first, with event counts.
+
+    Filter by rater, question or current step type (e.g. `skip` to find the
+    sessions that failed mid-way) to locate the one to inspect."""
+    return await admin_service.list_assistance_sessions(
+        experiment_id=experiment_id,
+        rater_id=rater_id,
+        question_id=question_id,
+        step_type=step_type,
+        skip=skip,
+        limit=limit,
+        db=db,
+    )
+
+
+@secure_router.get("/assistance-sessions/{session_id}", response_model=AssistanceSessionDetail)
+async def get_assistance_session(session_id: int, db: AsyncSession = Depends(get_session)):
+    """One session with its full append-only event log, oldest event first."""
+    return await admin_service.get_assistance_session(session_id=session_id, db=db)
 
 
 @secure_router.get("/experiments/{experiment_id}/export")

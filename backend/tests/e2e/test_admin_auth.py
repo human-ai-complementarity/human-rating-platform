@@ -40,6 +40,21 @@ def test_no_session_cookie_returns_403_on_platform_status(monkeypatch: pytest.Mo
         assert response.json()["detail"] == "Admin session required"
 
 
+def test_no_session_cookie_returns_403_on_assistance_session_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The event log holds every payload a rater was shown and typed; it sits
+    # behind the admin session like the rest of the admin surface.
+    with _build_app_with_admin_env(monkeypatch, admin_auth_enabled=True) as client:
+        for path in (
+            "/api/admin/experiments/1/assistance-sessions",
+            "/api/admin/assistance-sessions/1",
+        ):
+            response = client.get(path)
+            assert response.status_code == 403, path
+            assert response.json()["detail"] == "Admin session required"
+
+
 def test_missing_or_invalid_bearer_on_login_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
     with _build_app_with_admin_env(monkeypatch, admin_auth_enabled=True) as client:
         # No Authorization header
