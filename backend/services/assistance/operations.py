@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,16 +33,13 @@ from services.queries import (
     fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rater_or_404,
+    load_json_column,
 )
 
 from .base import InteractionStep, StepType
 from .registry import get_method
 
 logger = logging.getLogger(__name__)
-
-
-def _load_json(value: str | None) -> dict:
-    return json.loads(value) if value else {}
 
 
 async def _fetch_session_or_404(session_id: int, db: AsyncSession) -> AssistanceSession:
@@ -64,6 +61,7 @@ def _apply_step_to_session(session: AssistanceSession, step: InteractionStep) ->
     session.state = json.dumps(step.state) if step.state else None
     session.payload = json.dumps(step.payload) if step.payload else None
     session.is_complete = step.is_terminal
+    session.turn += 1
     session.updated_at = datetime.now(UTC)
 
 
@@ -79,35 +77,15 @@ def _step_to_response(
     )
 
 
-async def _current_turn(session_id: int, db: AsyncSession) -> int:
-    """How many steps the method has produced for this session so far.
-
-    Counted from the event log rather than stored on the session, so it is
-    exactly the number of ``response`` rows and needs no extra column. It is
-    the idempotency token for advance: a client answers a specific turn, and
-    once that turn has been answered the count has moved on.
-    """
-    return int(
-        (
-            await db.execute(
-                select(func.count())
-                .select_from(AssistanceEvent)
-                .where(
-                    AssistanceEvent.assistance_session_id == session_id,
-                    AssistanceEvent.direction == AssistanceEventDirection.RESPONSE.value,
-                )
-            )
-        ).scalar_one()
-    )
-
-
-def _restore_step(session: AssistanceSession) -> InteractionStep:
-    return InteractionStep(
+def _resume(session: AssistanceSession) -> AssistanceStepResponse:
+    """Report the step a session is currently on, without touching it."""
+    step = InteractionStep(
         type=StepType(session.step_type),
-        payload=_load_json(session.payload),
-        state=_load_json(session.state),
+        payload=load_json_column(session.payload),
+        state=load_json_column(session.state),
         is_terminal=session.is_complete,
     )
+    return _step_to_response(session.id, step, turn=session.turn)
 
 
 async def _fetch_existing_session(
@@ -151,17 +129,20 @@ async def _call_method(
     log_message: str,
     log_attributes: dict,
 ) -> _MethodCall:
-    """Run a method call, timing it and degrading unrecoverable failures to ``fallback``.
+    """Run a method call, timing it and degrading any failure to ``fallback``.
 
-    RuntimeError is the methods' documented "give up" signal. A TimeoutError
-    escaping a method (an ``asyncio.wait_for`` deadline, say) is treated the
-    same way so the rater is never handed a 500, and recorded as ``timeout``
-    so it can be told apart from a provider or parsing failure.
+    RuntimeError is the methods' documented "give up" signal, but anything
+    else escaping a method (a KeyError on corrupt state, a provider exception
+    the method forgot to catch) is just as unrecoverable from here, and a 500
+    would roll back the event rows that are supposed to explain it. So every
+    exception degrades to the fallback step and is logged with its traceback.
+    A TimeoutError is recorded as ``timeout`` so it can be told apart from a
+    provider or parsing failure.
     """
     started = time.monotonic()
     try:
         step = await invoke()
-    except (RuntimeError, TimeoutError) as exc:
+    except Exception as exc:
         latency_ms = _elapsed_ms(started)
         logger.error(log_message, exc_info=True, extra={"attributes": log_attributes})
         status = (
@@ -225,6 +206,22 @@ def _record_response(db: AsyncSession, *, session_id: int, call: _MethodCall) ->
     )
 
 
+async def _last_human_input(session_id: int, db: AsyncSession) -> str | None:
+    """The ``human_input`` of the most recent advance request, if any."""
+    payload = (
+        await db.execute(
+            select(AssistanceEvent.payload)
+            .where(
+                AssistanceEvent.assistance_session_id == session_id,
+                AssistanceEvent.direction == AssistanceEventDirection.REQUEST.value,
+            )
+            .order_by(AssistanceEvent.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return load_json_column(payload).get("human_input")
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -250,24 +247,25 @@ async def start_assistance(
 
     existing = await _fetch_existing_session(rater_id, question_id, db)
     if existing and existing.step_type not in (StepType.NONE, StepType.SKIP):
-        return _step_to_response(
-            existing.id, _restore_step(existing), turn=await _current_turn(existing.id, db)
-        )
+        return _resume(existing)
     if existing:
         # A NONE/SKIP session is retried from scratch. The row is reused rather
         # than deleted so the failed attempt's events stay attached to it.
         # Reusing it forfeits the unique-constraint guard a fresh INSERT would
         # have, so take the row lock instead: a concurrent retry for the same
-        # rater/question blocks here until this one commits, then re-reads the
-        # row and returns our step rather than running (and logging) its own.
+        # rater/question blocks here until this one commits. If the row's turn
+        # moved while we waited, that retry already ran the method for this
+        # double-click, so report its outcome (even another failure) rather
+        # than running and logging our own.
+        seen_turn = existing.turn
         existing = await _fetch_existing_session(rater_id, question_id, db, lock=True)
-        if existing and existing.step_type not in (StepType.NONE, StepType.SKIP):
-            return _step_to_response(
-                existing.id, _restore_step(existing), turn=await _current_turn(existing.id, db)
-            )
+        if existing and (
+            existing.turn != seen_turn or existing.step_type not in (StepType.NONE, StepType.SKIP)
+        ):
+            return _resume(existing)
 
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
-    params = _load_json(experiment.assistance_params)
+    params = load_json_column(experiment.assistance_params)
 
     try:
         method = get_method(experiment.assistance_method)
@@ -301,10 +299,14 @@ async def start_assistance(
 
     if existing:
         assistance_session = existing
+        # The request row names the failed step being retried; only the very
+        # first start of a session has no prior step and gets a null here.
+        retried_step_type: str | None = existing.step_type
         assistance_session.method_name = experiment.assistance_method
         assistance_session.params = json.dumps(params) if params else None
         _apply_step_to_session(assistance_session, step)
     else:
+        retried_step_type = None
         assistance_session = AssistanceSession(
             rater_id=rater_id,
             experiment_id=rater.experiment_id,
@@ -315,13 +317,17 @@ async def start_assistance(
             state=json.dumps(step.state) if step.state else None,
             payload=json.dumps(step.payload) if step.payload else None,
             is_complete=step.is_terminal,
+            turn=1,
         )
         db.add(assistance_session)
     try:
         # Flush first so the new row has an id for the events to point at.
         await db.flush()
         _record_request(
-            db, session_id=assistance_session.id, step_type=None, payload={"params": params}
+            db,
+            session_id=assistance_session.id,
+            step_type=retried_step_type,
+            payload={"params": params},
         )
         _record_response(db, session_id=assistance_session.id, call=call)
         await db.commit()
@@ -330,12 +336,8 @@ async def start_assistance(
         await db.rollback()
         existing = await _fetch_existing_session(rater_id, question_id, db)
         if existing:
-            return _step_to_response(
-                existing.id, _restore_step(existing), turn=await _current_turn(existing.id, db)
-            )
+            return _resume(existing)
         raise
-    await db.refresh(assistance_session)
-    turn = await _current_turn(assistance_session.id, db)
 
     logger.info(
         "Assistance session started",
@@ -351,7 +353,7 @@ async def start_assistance(
         },
     )
 
-    return _step_to_response(assistance_session.id, step, turn=turn)
+    return _step_to_response(assistance_session.id, step, turn=assistance_session.turn)
 
 
 async def advance_assistance(
@@ -367,29 +369,33 @@ async def advance_assistance(
     if assistance_session.rater_id != rater_id:
         raise HTTPException(status_code=403, detail="Session does not belong to rater")
 
-    current_turn = await _current_turn(session_id, db)
-    if turn is not None and turn != current_turn:
-        # The step this input answers has already been answered: a duplicate
-        # submit that waited behind the first on the row lock, or a stale
-        # client. Hand back the step the session is on now; running the method
-        # again would advance it twice and log a second pair for one input.
-        logger.info(
-            "Assistance advance ignored: turn already answered",
-            extra={
-                "attributes": {
-                    "session_id": session_id,
-                    "submitted_turn": turn,
-                    "current_turn": current_turn,
-                }
-            },
+    if turn is not None and turn != assistance_session.turn:
+        # The client is not answering the step the session is on. If it is
+        # re-sending the answer that just moved the session off the previous
+        # turn (a retry or double-click that waited behind the first on the
+        # row lock), hand back the step that answer produced. Anything else is
+        # a stale or confused client whose input we must not silently drop.
+        if turn == assistance_session.turn - 1 and (
+            await _last_human_input(session_id, db) == human_input
+        ):
+            logger.info(
+                "Assistance advance deduplicated",
+                extra={"attributes": {"session_id": session_id, "turn": turn}},
+            )
+            return _resume(assistance_session)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Assistance session is on turn {assistance_session.turn}, not {turn}; "
+                "reload to see the current step"
+            ),
         )
-        return _step_to_response(session_id, _restore_step(assistance_session), turn=current_turn)
 
     if assistance_session.is_complete:
         raise HTTPException(status_code=400, detail="Assistance session is already complete")
 
-    params = _load_json(assistance_session.params)
-    state = _load_json(assistance_session.state)
+    params = load_json_column(assistance_session.params)
+    state = load_json_column(assistance_session.state)
 
     try:
         method = get_method(assistance_session.method_name)
@@ -442,4 +448,4 @@ async def advance_assistance(
         },
     )
 
-    return _step_to_response(session_id, step, turn=current_turn + 1)
+    return _step_to_response(session_id, step, turn=assistance_session.turn)

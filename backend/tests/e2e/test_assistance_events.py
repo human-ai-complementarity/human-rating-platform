@@ -77,6 +77,28 @@ class _TimesOutOnAdvance(_TwoTurn):
         raise TimeoutError("deadline exceeded")
 
 
+class _AlwaysFailsSlowly(AssistanceMethod):
+    """Every start raises, slowly enough for two retries to overlap."""
+
+    calls = 0
+
+    async def start(
+        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+    ):
+        type(self).calls += 1
+        await asyncio.sleep(0.5)
+        raise RuntimeError("provider down")
+
+
+class _RaisesValueErrorOnStart(AssistanceMethod):
+    """An exception the method did not anticipate and the service never documented."""
+
+    async def start(
+        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+    ):
+        raise ValueError("corrupt state")
+
+
 class _FailsThenSlow(AssistanceMethod):
     """First start raises; later starts take long enough to overlap a retry."""
 
@@ -111,6 +133,8 @@ class _SlowAdvance(_TwoTurn):
 
 _METHODS = {
     "test_fails_then_slow": _FailsThenSlow,
+    "test_always_fails_slowly": _AlwaysFailsSlowly,
+    "test_raises_value_error_on_start": _RaisesValueErrorOnStart,
     "test_slow_advance": _SlowAdvance,
     "test_two_turn": _TwoTurn,
     "test_raises_on_start": _RaisesOnStart,
@@ -126,6 +150,7 @@ def _register_methods():
         register(name, cls)
     _RaisesOnStart.calls = 0
     _FailsThenSlow.calls = 0
+    _AlwaysFailsSlowly.calls = 0
     _SlowAdvance.advances = 0
 
 
@@ -331,12 +356,13 @@ def test_retrying_a_failed_session_keeps_its_history(client: TestClient, sync_en
     assert len(_session_rows(sync_engine, question_id)) == 1
 
     events = _events(sync_engine, first["session_id"])
-    assert [(e["direction"], e["status"]) for e in events] == [
-        ("request", "ok"),
-        ("response", "error"),
-        ("request", "ok"),
-        ("response", "error"),
+    assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
+        ("request", None, "ok"),
+        ("response", "none", "error"),
+        ("request", "none", "ok"),  # the retry names the failed step it is retrying
+        ("response", "none", "error"),
     ]
+    assert second["turn"] == 2
 
 
 def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sync_engine):
@@ -367,11 +393,52 @@ def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sy
     assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
         ("request", None, "ok"),
         ("response", "none", "error"),
-        ("request", None, "ok"),
+        ("request", "none", "ok"),
         ("response", "ask_input", "ok"),
     ]
     (session,) = _session_rows(sync_engine, question_id)
     assert session["step_type"] == "ask_input"
+
+
+def test_concurrent_retries_that_both_would_fail_run_the_method_once(
+    client: TestClient, sync_engine
+):
+    """When the first retry fails too, the second still reports its outcome rather than
+    hitting the (down) provider again for the same double-click."""
+    headers, question_id = _setup(client, "test_always_fails_slowly")
+    first = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    ).json()
+    assert first["type"] == "none"
+
+    def _retry() -> dict:
+        response = client.post(
+            "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = list(pool.map(lambda _: _retry(), range(2)))
+
+    assert a == b
+    assert a["type"] == "none" and a["turn"] == 2
+    assert _AlwaysFailsSlowly.calls == 2  # the original attempt and one retry
+    assert len(_events(sync_engine, first["session_id"])) == 4
+
+
+def test_unexpected_exception_degrades_and_is_logged(client: TestClient, sync_engine):
+    headers, question_id = _setup(client, "test_raises_value_error_on_start")
+
+    started = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    )
+    assert started.status_code == 200, started.text
+    assert started.json()["type"] == "none"
+
+    response = _events(sync_engine, started.json()["session_id"])[1]
+    assert (response["step_type"], response["status"]) == ("none", "error")
+    assert response["error"] == "ValueError: corrupt state"
 
 
 def test_advance_raising_is_logged_as_error_with_skip_fallback(client: TestClient, sync_engine):
@@ -478,7 +545,8 @@ def test_stale_turn_returns_current_step_without_advancing(client: TestClient, s
     ).json()
     assert first["turn"] == 2
 
-    # Re-sends the answer to turn 1, which has already been consumed.
+    # Re-sends the very answer that consumed turn 1: a duplicate, so it gets the
+    # step that answer produced.
     replay = client.post(
         "/api/raters/assistance/advance",
         json={"session_id": started["session_id"], "human_input": "one", "turn": 1},
@@ -486,6 +554,26 @@ def test_stale_turn_returns_current_step_without_advancing(client: TestClient, s
     )
     assert replay.status_code == 200, replay.text
     assert replay.json() == first
+    assert _SlowAdvance.advances == 1
+    assert len(_events(sync_engine, started["session_id"])) == 4
+
+    # A *different* answer to the consumed turn is not a duplicate. Dropping it
+    # silently would lose the rater's input, so it is refused instead.
+    stale = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "changed my mind", "turn": 1},
+        headers=headers,
+    )
+    assert stale.status_code == 409, stale.text
+    assert "turn 2" in stale.json()["detail"]
+
+    # So is a client claiming to be ahead of the server.
+    ahead = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "x", "turn": 7},
+        headers=headers,
+    )
+    assert ahead.status_code == 409, ahead.text
     assert _SlowAdvance.advances == 1
     assert len(_events(sync_engine, started["session_id"])) == 4
 
@@ -579,6 +667,7 @@ def test_admin_session_detail_returns_decoded_event_log(client: TestClient, sync
     assert detail["params"] == {}
     assert detail["step_type"] == "complete"
     assert detail["is_complete"] is True
+    assert detail["turn"] == 2
     assert detail["payload"] == {"answer": "YES", "turns": 2}
     assert detail["event_count"] == 4
 

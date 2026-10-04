@@ -13,8 +13,8 @@ got there.
 | `assistance_session_id` | FK to `assistance_sessions` (CASCADE delete)                            |
 | `created_at`            | when the row was written                                                |
 | `direction`             | `request` (what went into the method) or `response` (what came out)     |
-| `step_type`             | response: the step produced; request: the step being answered (null on the opening start) |
-| `status`                | `ok`, `error` (RuntimeError or a method-reported `failure_reason`), `timeout` (TimeoutError) |
+| `step_type`             | response: the step produced; request: the step being answered (null on a session's very first start; `none`/`skip` on a retry of a failed start) |
+| `status`                | `ok`; `error` (any exception escaping the method, or a method-reported `failure_reason`); `timeout` (a `TimeoutError` escaping the method; note the shipped methods catch provider timeouts themselves and report them as `error` / `provider_error`) |
 | `latency_ms`            | wall-clock duration of the method call; response rows only              |
 | `payload`               | JSON. request: `{"params"}` on start, `{"human_input"}` on advance. response: `{"payload", "state", "is_terminal", "failure_reason"?}` |
 | `error`                 | exception text or `failure_reason`; null on success                     |
@@ -27,17 +27,31 @@ A `none` or `skip` session is retried on the rater's next visit. The session
 row is reused rather than deleted so the failed attempt's rows stay attached;
 the retry adds its own pair. Reusing the row forfeits the unique-constraint
 guard a fresh insert had, so the retry takes a `SELECT ... FOR UPDATE` on it:
-two overlapping retries (a double-click, a client retry) serialize, the second
-re-reads the row once the first commits and returns that step without running
-the method or logging a duplicate pair.
+two overlapping retries (a double-click, a client retry) serialize, and the
+second, finding the row's `turn` moved while it waited, reports the first's
+outcome (success or another failure) without running the method or logging a
+pair of its own.
 
-`advance` locks its session row the same way, but a lock alone cannot tell a
-duplicate submit from a genuine next-turn input with the same text. Every
-`AssistanceStepResponse` therefore carries `turn`, the number of `response`
-rows the session has so far, and the client echoes it as `turn` on advance.
-After the lock, a `turn` that no longer matches means that step has already
-been answered: the current step is returned, the method does not run, and no
-rows are written. Clients that send no `turn` get the old behaviour.
+Any exception escaping a method, not only `RuntimeError`, degrades to the
+fallback step (`none` on start, `skip` on advance) and is logged as an `error`
+response row. A 500 would roll back the very rows meant to explain the failure.
+
+## Turns
+
+`advance` locks its session row too, but a lock alone cannot tell a duplicate
+submit from a genuine next-turn input with the same text. `assistance_sessions.turn`
+counts the steps the method has produced for the session (1 after start,
+failed attempts included). Every `AssistanceStepResponse` carries it, and the
+client echoes it as `turn` on advance. After the lock:
+
+- `turn` matches: the input is applied as normal.
+- `turn` is one behind and `human_input` equals the last advance request's:
+  a duplicate submit. The step that submit produced is returned; the method
+  does not run and nothing is written.
+- any other mismatch: 409. The rater's input is not applied, and the client is
+  told rather than left thinking it was.
+
+Clients that send no `turn` get the old behaviour.
 
 ## Reading it
 

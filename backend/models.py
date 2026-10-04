@@ -543,6 +543,14 @@ class AssistanceSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+    # Number of steps the method has produced for this session, failed attempts
+    # included; 1 once start() has run. Returned to the client with every step
+    # and echoed back on advance, so a duplicate submit of an already-answered
+    # step can be recognised instead of advancing the session twice.
+    turn: int = Field(
+        default=1,
+        sa_column=Column(Integer, nullable=False, server_default=text("1")),
+    )
 
 
 class AssistanceEvent(SQLModel, table=True):

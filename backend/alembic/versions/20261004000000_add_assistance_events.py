@@ -19,6 +19,12 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    # Every existing session has produced exactly one step (its start), so the
+    # server default is also the correct backfill.
+    op.add_column(
+        "assistance_sessions",
+        sa.Column("turn", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    )
     op.create_table(
         "assistance_events",
         sa.Column("id", sa.Integer(), nullable=False),
@@ -50,3 +56,4 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_index("ix_assistance_events_assistance_session_id", table_name="assistance_events")
     op.drop_table("assistance_events")
+    op.drop_column("assistance_sessions", "turn")

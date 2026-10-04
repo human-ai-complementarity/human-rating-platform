@@ -372,6 +372,7 @@ class AssistanceSessionResponse(BaseModel):
     params: dict
     step_type: str
     is_complete: bool
+    turn: int
     created_at: datetime
     updated_at: datetime
     event_count: int = 0

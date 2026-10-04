@@ -7,8 +7,6 @@ database shell; they never write.
 
 from __future__ import annotations
 
-import json
-
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,11 +17,7 @@ from schemas import (
     AssistanceSessionDetail,
     AssistanceSessionResponse,
 )
-from services.queries import fetch_experiment_or_404
-
-
-def _load_json(value: str | None) -> dict:
-    return json.loads(value) if value else {}
+from services.queries import fetch_experiment_or_404, load_json_column
 
 
 def _session_fields(session: AssistanceSession, event_count: int) -> dict:
@@ -33,9 +27,10 @@ def _session_fields(session: AssistanceSession, event_count: int) -> dict:
         "experiment_id": session.experiment_id,
         "question_id": session.question_id,
         "method_name": session.method_name,
-        "params": _load_json(session.params),
+        "params": load_json_column(session.params),
         "step_type": session.step_type,
         "is_complete": session.is_complete,
+        "turn": session.turn,
         "created_at": session.created_at,
         "updated_at": session.updated_at,
         "event_count": event_count,
@@ -99,7 +94,7 @@ async def get_assistance_session(*, session_id: int, db: AsyncSession) -> Assist
     )
     return AssistanceSessionDetail(
         **_session_fields(session, len(events)),
-        payload=_load_json(session.payload),
+        payload=load_json_column(session.payload),
         events=[
             AssistanceEventResponse(
                 id=event.id,
@@ -108,7 +103,7 @@ async def get_assistance_session(*, session_id: int, db: AsyncSession) -> Assist
                 step_type=event.step_type,
                 status=event.status,
                 latency_ms=event.latency_ms,
-                payload=_load_json(event.payload),
+                payload=load_json_column(event.payload),
                 error=event.error,
             )
             for event in events
