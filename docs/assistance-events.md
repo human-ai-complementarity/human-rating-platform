@@ -25,7 +25,12 @@ question) writes nothing; nothing crossed the method boundary.
 
 A `none` or `skip` session is retried on the rater's next visit. The session
 row is reused rather than deleted so the failed attempt's rows stay attached;
-the retry adds its own pair.
+the retry adds its own pair. Reusing the row forfeits the unique-constraint
+guard a fresh insert had, so the retry takes a `SELECT ... FOR UPDATE` on it:
+two overlapping retries (a double-click, a client retry) serialize, the second
+re-reads the row once the first commits and returns that step without running
+the method or logging a duplicate pair. `advance` locks its session row the
+same way.
 
 ## Reading it
 

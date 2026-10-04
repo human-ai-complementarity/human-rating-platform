@@ -46,8 +46,13 @@ def _load_json(value: str | None) -> dict:
 
 
 async def _fetch_session_or_404(session_id: int, db: AsyncSession) -> AssistanceSession:
+    # Row-locked for the rest of the transaction: a second advance for the same
+    # session (a double-submit) waits here until the first commits, then sees
+    # its result instead of racing it to the UPDATE and logging a duplicate pair.
     session = (
-        await db.execute(select(AssistanceSession).where(AssistanceSession.id == session_id))
+        await db.execute(
+            select(AssistanceSession).where(AssistanceSession.id == session_id).with_for_update()
+        )
     ).scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Assistance session not found")
@@ -81,16 +86,22 @@ def _restore_step(session: AssistanceSession) -> InteractionStep:
 
 
 async def _fetch_existing_session(
-    rater_id: int, question_id: int, db: AsyncSession
+    rater_id: int, question_id: int, db: AsyncSession, *, lock: bool = False
 ) -> AssistanceSession | None:
-    return (
-        await db.execute(
-            select(AssistanceSession).where(
-                AssistanceSession.rater_id == rater_id,
-                AssistanceSession.question_id == question_id,
-            )
-        )
-    ).scalar_one_or_none()
+    """The rater's session for this question, if any.
+
+    With ``lock``, the row is SELECT ... FOR UPDATE'd and its attributes
+    re-read from the database once the lock is held, so a caller that waited
+    behind a concurrent writer sees what that writer committed rather than
+    the stale copy already in the identity map.
+    """
+    query = select(AssistanceSession).where(
+        AssistanceSession.rater_id == rater_id,
+        AssistanceSession.question_id == question_id,
+    )
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    return (await db.execute(query)).scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +226,16 @@ async def start_assistance(
     existing = await _fetch_existing_session(rater_id, question_id, db)
     if existing and existing.step_type not in (StepType.NONE, StepType.SKIP):
         return _step_to_response(existing.id, _restore_step(existing))
-    # A NONE/SKIP session is retried from scratch. The row is reused rather
-    # than deleted so the failed attempt's events stay attached to it.
+    if existing:
+        # A NONE/SKIP session is retried from scratch. The row is reused rather
+        # than deleted so the failed attempt's events stay attached to it.
+        # Reusing it forfeits the unique-constraint guard a fresh INSERT would
+        # have, so take the row lock instead: a concurrent retry for the same
+        # rater/question blocks here until this one commits, then re-reads the
+        # row and returns our step rather than running (and logging) its own.
+        existing = await _fetch_existing_session(rater_id, question_id, db, lock=True)
+        if existing and existing.step_type not in (StepType.NONE, StepType.SKIP):
+            return _step_to_response(existing.id, _restore_step(existing))
 
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
     params = _load_json(experiment.assistance_params)

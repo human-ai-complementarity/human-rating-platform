@@ -9,7 +9,9 @@ the session row alone cannot explain after the fact.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
@@ -75,7 +77,25 @@ class _TimesOutOnAdvance(_TwoTurn):
         raise TimeoutError("deadline exceeded")
 
 
+class _FailsThenSlow(AssistanceMethod):
+    """First start raises; later starts take long enough to overlap a retry."""
+
+    calls = 0
+
+    async def start(
+        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+    ):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            raise RuntimeError("first attempt fails")
+        await asyncio.sleep(0.5)
+        return InteractionStep(
+            type=StepType.ASK_INPUT, payload={"attempt": type(self).calls}, state={"x": 1}
+        )
+
+
 _METHODS = {
+    "test_fails_then_slow": _FailsThenSlow,
     "test_two_turn": _TwoTurn,
     "test_raises_on_start": _RaisesOnStart,
     "test_degrades_on_start": _DegradesOnStart,
@@ -89,6 +109,7 @@ def _register_methods():
     for name, cls in _METHODS.items():
         register(name, cls)
     _RaisesOnStart.calls = 0
+    _FailsThenSlow.calls = 0
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +318,41 @@ def test_retrying_a_failed_session_keeps_its_history(client: TestClient, sync_en
         ("request", "ok"),
         ("response", "error"),
     ]
+
+
+def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sync_engine):
+    """Two overlapping retries of a NONE session: one runs the method, the other waits
+    on the row lock and returns the same step. One event pair, not two."""
+    headers, question_id = _setup(client, "test_fails_then_slow")
+    first = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    ).json()
+    assert first["type"] == "none"
+
+    def _retry() -> dict:
+        response = client.post(
+            "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = list(pool.map(lambda _: _retry(), range(2)))
+
+    assert a == b
+    assert a["session_id"] == first["session_id"]
+    assert a["type"] == "ask_input"
+    assert _FailsThenSlow.calls == 2  # the failed attempt plus exactly one retry
+
+    events = _events(sync_engine, first["session_id"])
+    assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
+        ("request", None, "ok"),
+        ("response", "none", "error"),
+        ("request", None, "ok"),
+        ("response", "ask_input", "ok"),
+    ]
+    (session,) = _session_rows(sync_engine, question_id)
+    assert session["step_type"] == "ask_input"
 
 
 def test_advance_raising_is_logged_as_error_with_skip_fallback(client: TestClient, sync_engine):
