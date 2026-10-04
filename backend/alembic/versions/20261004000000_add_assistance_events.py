@@ -19,8 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Every existing session has produced exactly one step (its start), so the
-    # server default is also the correct backfill.
+    # Backfills existing rows to 1: every existing session is on its start step.
     op.add_column(
         "assistance_sessions",
         sa.Column("turn", sa.Integer(), nullable=False, server_default=sa.text("1")),
