@@ -114,5 +114,6 @@ async def advance_assistance(
         rater_id=session.rater_id,
         session_id=body.session_id,
         human_input=body.human_input,
+        turn=body.turn,
         db=db,
     )

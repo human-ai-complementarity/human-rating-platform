@@ -303,7 +303,7 @@ function AssistancePanel({ sessionToken, questionId, onSessionId, onStepChange }
     if (!step) return;
     setSubmitting(true);
     try {
-      const result = await api.advanceAssistance(sessionToken, step.session_id, answers);
+      const result = await api.advanceAssistance(sessionToken, step, answers);
       setStep(result);
       onStepChange(result);
     } catch (err) {

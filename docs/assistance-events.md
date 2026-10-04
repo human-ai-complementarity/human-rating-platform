@@ -29,8 +29,15 @@ the retry adds its own pair. Reusing the row forfeits the unique-constraint
 guard a fresh insert had, so the retry takes a `SELECT ... FOR UPDATE` on it:
 two overlapping retries (a double-click, a client retry) serialize, the second
 re-reads the row once the first commits and returns that step without running
-the method or logging a duplicate pair. `advance` locks its session row the
-same way.
+the method or logging a duplicate pair.
+
+`advance` locks its session row the same way, but a lock alone cannot tell a
+duplicate submit from a genuine next-turn input with the same text. Every
+`AssistanceStepResponse` therefore carries `turn`, the number of `response`
+rows the session has so far, and the client echoes it as `turn` on advance.
+After the lock, a `turn` that no longer matches means that step has already
+been answered: the current step is returned, the method does not run, and no
+rows are written. Clients that send no `turn` get the old behaviour.
 
 ## Reading it
 

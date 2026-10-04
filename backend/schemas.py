@@ -344,6 +344,11 @@ class AssistanceStartRequest(BaseModel):
 class AssistanceAdvanceRequest(BaseModel):
     session_id: int
     human_input: str
+    # The `turn` of the step this input answers, echoed from the last
+    # AssistanceStepResponse. Lets the server recognise a duplicate submit
+    # (retry, double-click) and return the step already produced instead of
+    # advancing the session twice. Optional so older clients keep working.
+    turn: Optional[int] = None
 
 
 class AssistanceStepResponse(BaseModel):
@@ -351,6 +356,9 @@ class AssistanceStepResponse(BaseModel):
     type: StepType
     payload: dict
     is_terminal: bool
+    # Monotonic per session: the number of steps the method has produced so
+    # far, including failed attempts. Send it back as `turn` on advance.
+    turn: int
 
 
 # Admin read models over the assistance tables. Both decode the JSON text

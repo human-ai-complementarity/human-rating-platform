@@ -94,8 +94,24 @@ class _FailsThenSlow(AssistanceMethod):
         )
 
 
+class _SlowAdvance(_TwoTurn):
+    """Non-terminal advance that takes long enough for a duplicate submit to overlap."""
+
+    advances = 0
+
+    async def advance(self, state, human_input, params, *, experiment_system_prompt=None):
+        type(self).advances += 1
+        await asyncio.sleep(0.5)
+        return InteractionStep(
+            type=StepType.ASK_INPUT,
+            payload={"prompt": f"round {state['turn'] + 1}", "got": human_input},
+            state={"turn": state["turn"] + 1},
+        )
+
+
 _METHODS = {
     "test_fails_then_slow": _FailsThenSlow,
+    "test_slow_advance": _SlowAdvance,
     "test_two_turn": _TwoTurn,
     "test_raises_on_start": _RaisesOnStart,
     "test_degrades_on_start": _DegradesOnStart,
@@ -110,6 +126,7 @@ def _register_methods():
         register(name, cls)
     _RaisesOnStart.calls = 0
     _FailsThenSlow.calls = 0
+    _SlowAdvance.advances = 0
 
 
 # ---------------------------------------------------------------------------
@@ -206,14 +223,16 @@ def test_two_turn_session_logs_every_step(client: TestClient, sync_engine):
     )
     assert started.status_code == 200, started.text
     session_id = started.json()["session_id"]
+    assert started.json()["turn"] == 1
 
     advanced = client.post(
         "/api/raters/assistance/advance",
-        json={"session_id": session_id, "human_input": "yes"},
+        json={"session_id": session_id, "human_input": "yes", "turn": 1},
         headers=headers,
     )
     assert advanced.status_code == 200, advanced.text
     assert advanced.json()["type"] == "complete"
+    assert advanced.json()["turn"] == 2
 
     events = _events(sync_engine, session_id)
     assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
@@ -406,6 +425,125 @@ def test_events_go_with_their_session(client: TestClient, sync_engine):
     with sync_engine.begin() as conn:
         conn.execute(text("DELETE FROM assistance_sessions WHERE id = :sid"), {"sid": session_id})
     assert _events(sync_engine, session_id) == []
+
+
+def test_concurrent_duplicate_advances_apply_once(client: TestClient, sync_engine):
+    """Two overlapping advances answering the same turn: the method runs once, both
+    callers get the same next step, and the log has one request/response pair."""
+    headers, question_id = _setup(client, "test_slow_advance")
+    started = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    ).json()
+
+    def _advance() -> dict:
+        response = client.post(
+            "/api/raters/assistance/advance",
+            json={
+                "session_id": started["session_id"],
+                "human_input": "yes",
+                "turn": started["turn"],
+            },
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a, b = list(pool.map(lambda _: _advance(), range(2)))
+
+    assert a == b
+    assert a["type"] == "ask_input"
+    assert a["payload"] == {"prompt": "round 2", "got": "yes"}
+    assert a["turn"] == 2
+    assert _SlowAdvance.advances == 1
+
+    events = _events(sync_engine, started["session_id"])
+    assert [(e["direction"], e["step_type"]) for e in events] == [
+        ("request", None),
+        ("response", "ask_input"),
+        ("request", "ask_input"),
+        ("response", "ask_input"),
+    ]
+
+
+def test_stale_turn_returns_current_step_without_advancing(client: TestClient, sync_engine):
+    headers, question_id = _setup(client, "test_slow_advance")
+    started = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    ).json()
+    first = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "one", "turn": 1},
+        headers=headers,
+    ).json()
+    assert first["turn"] == 2
+
+    # Re-sends the answer to turn 1, which has already been consumed.
+    replay = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "one", "turn": 1},
+        headers=headers,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == first
+    assert _SlowAdvance.advances == 1
+    assert len(_events(sync_engine, started["session_id"])) == 4
+
+    # Answering the current turn advances as normal.
+    second = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "two", "turn": 2},
+        headers=headers,
+    ).json()
+    assert second["turn"] == 3 and second["payload"]["got"] == "two"
+    assert _SlowAdvance.advances == 2
+
+
+def test_advance_without_turn_is_not_deduplicated(client: TestClient, sync_engine):
+    """Older clients that send no turn keep the pre-existing behaviour."""
+    headers, question_id = _setup(client, "test_slow_advance")
+    session_id = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    ).json()["session_id"]
+    for human_input in ("one", "one"):
+        response = client.post(
+            "/api/raters/assistance/advance",
+            json={"session_id": session_id, "human_input": human_input},
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+    assert _SlowAdvance.advances == 2
+    assert len(_events(sync_engine, session_id)) == 6
+
+
+def test_stale_turn_on_a_completed_session_returns_the_final_step(client: TestClient):
+    headers, question_id = _setup(client, "test_two_turn")
+    started = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    ).json()
+    final = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "yes", "turn": 1},
+        headers=headers,
+    ).json()
+    assert final["type"] == "complete"
+
+    # A duplicate of the completing submit gets the completed step, not a 400.
+    replay = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "yes", "turn": 1},
+        headers=headers,
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json() == final
+
+    # Whereas a genuinely new input against a finished session is still refused.
+    again = client.post(
+        "/api/raters/assistance/advance",
+        json={"session_id": started["session_id"], "human_input": "more", "turn": 2},
+        headers=headers,
+    )
+    assert again.status_code == 400
 
 
 # ---------------------------------------------------------------------------
