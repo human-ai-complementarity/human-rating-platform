@@ -135,6 +135,22 @@ def test_a_patch_of_other_params_keeps_the_map(client: TestClient):
     assert _params(client, exp["id"]) == {"n": 5, "assistance_models": _MODELS}
 
 
+def test_a_patch_of_one_method_keeps_the_others_and_their_null_markers(client: TestClient):
+    exp = _experiment(client)
+    _upload_csv(client, exp["id"], {"assistance_models": _MODELS})
+
+    _patch_params(client, exp["id"], {"assistance_models": {"top_n": None}})
+    _patch_params(client, exp["id"], {"assistance_models": {"human_as_a_tool": _OTHER}})
+    assert _params(client, exp["id"])["assistance_models"] == {
+        "top_n": None,
+        "human_as_a_tool": _OTHER,
+    }
+
+    body = _upload_csv(client, exp["id"], {"assistance_models": _MODELS}).json()
+    assert body["meta_conflicts"] == _BOTH
+    assert _params(client, exp["id"])["assistance_models"]["top_n"] is None
+
+
 def test_the_map_inherits_the_config_lock(client: TestClient, sync_engine):
     exp = _experiment(client, assistance_params={"n": 3})
     _upload_csv(client, exp["id"], {"assistance_models": _MODELS})
@@ -148,6 +164,15 @@ def test_the_map_inherits_the_config_lock(client: TestClient, sync_engine):
         url, json={"assistance_method": "top_n", "assistance_params": _params(client, exp["id"])}
     )
     assert resent.status_code == 200, resent.text
+
+    restated = client.patch(
+        url,
+        json={
+            "assistance_method": "top_n",
+            "assistance_params": {"assistance_models": {"top_n": _TOP_N}},
+        },
+    )
+    assert restated.status_code == 200, restated.text
 
     changed = client.patch(
         url,

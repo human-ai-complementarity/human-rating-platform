@@ -548,8 +548,17 @@ def _merged_assistance_params(experiment: Experiment, incoming: dict[str, Any]) 
 
     An explicit `None` is stored rather than dropped, so `{"model": None}`
     stays a deliberate clear that a later upload will not re-pin.
+
+    `assistance_models` merges one level deeper, per method, so PATCHing one
+    method's model keeps the others and their `None` markers. Sending
+    `"assistance_models": None` still clears the whole map.
     """
-    return {**_stored_assistance_params(experiment), **incoming}
+    stored = _stored_assistance_params(experiment)
+    merged = {**stored, **incoming}
+    stored_map, incoming_map = stored.get("assistance_models"), incoming.get("assistance_models")
+    if isinstance(stored_map, dict) and isinstance(incoming_map, dict):
+        merged["assistance_models"] = {**stored_map, **incoming_map}
+    return merged
 
 
 async def update_experiment(
