@@ -15,6 +15,24 @@ from fastapi import HTTPException
 # The prefix `llm._parse_model` requires.
 MODEL_PREFIX = "openrouter/"
 
+# `assistance_params` key holding the wave's per-method models, e.g.
+# {"top_n": "openrouter/...", "human_as_a_tool": "openrouter/..."}.
+ASSISTANCE_MODELS_KEY = "assistance_models"
+
+
+def resolve_model(params: dict, method: str, default: str) -> str:
+    """The model `method` runs on.
+
+    An explicit `model` (admin override) wins, then the wave's entry for this
+    method in `assistance_models`, then `default`.
+    """
+    if params.get("model"):
+        return params["model"]
+    models = params.get(ASSISTANCE_MODELS_KEY)
+    if isinstance(models, dict) and models.get(method):
+        return models[method]
+    return default
+
 
 def validate_model_id(model: str, *, field: str = "assistance_params.model") -> None:
     """Reject a model id the transport cannot parse, as a 400.
