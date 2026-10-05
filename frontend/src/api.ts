@@ -485,6 +485,10 @@ export const api = {
     });
   },
 
+  async getDataset(datasetId: number): Promise<Dataset> {
+    return requestJson<Dataset>(`${routes.admin.datasets}/${datasetId}`);
+  },
+
   // Partial: omitted keys are left alone, an explicit null clears the field.
   async updateDatasetCard(
     datasetId: number,
