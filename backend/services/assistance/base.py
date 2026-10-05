@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Literal
 
 from models import Question, StepType
 
+from .model_resolution import role_default
+
 if TYPE_CHECKING:
     from .preparation import PreparationContext, PreparationSpec, QuestionSnapshot
 
@@ -58,13 +60,18 @@ class AssistanceMethod(ABC):
 
     rater_instructions: str = ""
 
+    # Which `model_resolution` role this method's rater-facing call runs on;
+    # None for a method that calls no model. Read without instantiation, like
+    # `rater_instructions`, so a session can record the model that actually ran.
+    primary_model_role: str | None = None
+
     @classmethod
     def default_model(cls) -> str | None:
         """The model this method runs on without an `assistance_models` entry.
 
         None for a method that calls no model.
         """
-        return None
+        return role_default(cls.primary_model_role) if cls.primary_model_role else None
 
     def plan_preparation(self, context: PreparationContext) -> PreparationSpec | None:
         """Declare optional work safe to compute before the question is displayed.

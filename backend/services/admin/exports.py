@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 #
 # question_id strings are not unique within an experiment, so the join key
 # across the two files is the numeric row id (questions.id), not the string.
-EXPORT_COLUMNS = [
+#
+# Per Joshua on #96: "lets not duplicate data where possible… just attach the
+# experiment ID or session id associated with the rating". The session carries
+# the method and the resolved model, so one id is enough to load either later.
+_BASE_EXPORT_COLUMNS = [
     "rating_id",
     "question_id",
     "question_text",
@@ -42,6 +46,11 @@ EXPORT_COLUMNS = [
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
+
+
+def export_columns() -> list[str]:
+    """Header for the ratings CSV."""
+    return [*_BASE_EXPORT_COLUMNS, "assistance_session_id"]
 
 
 def build_export_filename(experiment_id: int) -> str:
@@ -77,7 +86,7 @@ def _csv_row(values: list[object]) -> str:
 def _build_export_header_chunk() -> str:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(EXPORT_COLUMNS)
+    writer.writerow(export_columns())
     return output.getvalue()
 
 
@@ -106,6 +115,10 @@ def _build_export_row(
         rating.time_submitted.isoformat(),
         round(response_time, 2),
         counts_toward_target,
+        # Blank when the rating had no assistance. Join to assistance_sessions
+        # for the method (`method_name`) and the model that actually ran
+        # (`resolved_model` in its `params`).
+        rating.assistance_session_id or "",
     ]
 
 

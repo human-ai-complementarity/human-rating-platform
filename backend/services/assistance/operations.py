@@ -32,6 +32,7 @@ from services.queries import (
 )
 
 from .base import InteractionStep, StepType
+from .model_resolution import RESOLVED_MODEL_KEY, resolve_model
 from .registry import get_method
 
 logger = logging.getLogger(__name__)
@@ -261,13 +262,25 @@ async def start_assistance(
     )
     step = call.step
 
+    # Snapshot the *resolved* model alongside the params so the session records
+    # what actually ran, whether from `assistance_models` or settings.
+    # Provenance the export can join against. advance() gets this snapshot
+    # back as its params, so the record must not use the removed `model` key.
+    # The event's request keeps the params start() was actually given.
+    recorded_params = dict(params) if params else {}
+    if method.primary_model_role is not None:
+        recorded_params[RESOLVED_MODEL_KEY] = resolve_model(
+            recorded_params, experiment.assistance_method, method.primary_model_role
+        )
+    recorded_params_json = json.dumps(recorded_params) if recorded_params else None
+
     if existing:
         assistance_session = existing
         # The event names the failed step being retried; only the very first
         # start of a session has no prior step and gets a null here.
         retried_step_type: str | None = existing.step_type
         assistance_session.method_name = experiment.assistance_method
-        assistance_session.params = json.dumps(params) if params else None
+        assistance_session.params = recorded_params_json
         _apply_step_to_session(assistance_session, step)
     else:
         retried_step_type = None
@@ -276,7 +289,7 @@ async def start_assistance(
             experiment_id=rater.experiment_id,
             question_id=question_id,
             method_name=experiment.assistance_method,
-            params=json.dumps(params) if params else None,
+            params=recorded_params_json,
             step_type=step.type,
             state=json.dumps(step.state) if step.state else None,
             payload=json.dumps(step.payload) if step.payload else None,
