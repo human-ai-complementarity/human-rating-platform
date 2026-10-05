@@ -79,9 +79,19 @@ export const DATASET_META_FIELDS = [
 ] as const;
 export type DatasetMetaField = (typeof DATASET_META_FIELDS)[number];
 
-export const UPLOAD_META_KEYS = [...DATASET_META_FIELDS, 'model'] as const;
+// Keys an upload reports in meta_applied / meta_conflicts. `assistance_models`
+// is reported per method.
+export const UPLOAD_META_KEYS = [
+  ...DATASET_META_FIELDS,
+  'model',
+  'assistance_models.top_n',
+  'assistance_models.human_as_a_tool',
+] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
-export type DatasetMeta = Partial<Record<DatasetMetaField, string>>;
+// What an upload declared; `assistance_models` maps method to model.
+export type DatasetMeta = Partial<Record<DatasetMetaField | 'model', string>> & {
+  assistance_models?: Record<string, string>;
+};
 
 export type StudyLabel =
   | 'annotation'
@@ -128,10 +138,12 @@ export interface Upload {
 // `meta_applied` lists fields the experiment picked up from this upload's
 // dataset metadata. `meta_conflicts` lists fields whose declared value
 // disagreed with the experiment's existing value — the existing value wins.
+// Keys are UploadMetaKeys, or `assistance_models.<method>` for a method added
+// to the backend registry since.
 export interface UploadResponse {
   message: string;
-  meta_applied: DatasetMetaField[];
-  meta_conflicts: DatasetMetaField[];
+  meta_applied: string[];
+  meta_conflicts: string[];
 }
 
 export interface Session {

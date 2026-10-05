@@ -113,6 +113,11 @@ def get_method(name: str) -> AssistanceMethod:
     return cls()
 
 
+def assisted_methods() -> list[str]:
+    """Registered methods that run on a model: every one but `none`."""
+    return sorted(name for name in _REGISTRY if name != "none")
+
+
 def register(name: str, cls: type[AssistanceMethod]) -> None:
     """Register a new method at runtime (useful for tests or plugins)."""
     _REGISTRY[name] = cls

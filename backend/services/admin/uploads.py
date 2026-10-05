@@ -13,7 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, Question, Upload
-from services.assistance.model_resolution import validate_model_id
+from services.assistance.model_resolution import ASSISTANCE_MODELS_KEY, validate_model_id
+from services.assistance.registry import assisted_methods
 from services.question_separator import separator_upload_offenders
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
@@ -41,11 +42,17 @@ DATASET_META_FIELDS = (
 # `_apply_model_meta`.
 MODEL_META_FIELD = "model"
 
+# The wave's model per assistance method, e.g. {"top_n": "openrouter/..."}.
+# Pinned into `assistance_params` alongside `model`; see
+# `_apply_assistance_models_meta`. Reported per method as
+# "assistance_models.<method>" in meta_applied / meta_conflicts.
+ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
+
 # Everything an upload may declare. Keys are matched against this allowlist so
 # unknown keys surface as a clean 400 instead of silently filling columns we
 # don't model. Applies to both the CSV `#META:` header line and the Parquet
 # schema's `dataset_meta` key — the export writes the same JSON shape for both.
-DATASET_META_KEYS = (*DATASET_META_FIELDS, MODEL_META_FIELD)
+DATASET_META_KEYS = (*DATASET_META_FIELDS, MODEL_META_FIELD, ASSISTANCE_MODELS_META_FIELD)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
@@ -73,8 +80,46 @@ def _get_upload_size(file: UploadFile) -> int:
     return size
 
 
-def _validate_meta_dict(parsed: Any) -> dict[str, str]:
+def _validate_assistance_models(value: Any) -> dict[str, str]:
+    """Validate the `assistance_models` meta value: {method: model id}.
+
+    Unlike other keys' empty values, an empty or null entry is a 400, not
+    dropped: each method's model is set explicitly.
+    """
+    if not isinstance(value, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"dataset metadata {ASSISTANCE_MODELS_META_FIELD!r} must be a JSON "
+                "object mapping assistance method to model"
+            ),
+        )
+    allowed = assisted_methods()
+    unknown = sorted(set(value) - set(allowed))
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unknown assistance methods in dataset metadata "
+                f"{ASSISTANCE_MODELS_META_FIELD!r}: {', '.join(unknown)}. "
+                f"Allowed: {', '.join(allowed)}."
+            ),
+        )
+    for method, model in value.items():
+        field = f"dataset metadata '{ASSISTANCE_MODELS_META_FIELD}.{method}'"
+        if not isinstance(model, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model {model!r} in {field}. Expected a string.",
+            )
+        validate_model_id(model, field=field)
+    return dict(value)
+
+
+def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     """Validate a decoded `#META:` / `dataset_meta` payload and normalise to str.
+
+    `assistance_models` is the one non-string value: it stays an object.
 
     Shared between the CSV and Parquet readers so the wire format and error
     messages stay identical. Raises HTTPException(400) for bad shapes — silently
@@ -95,9 +140,17 @@ def _validate_meta_dict(parsed: Any) -> dict[str, str]:
                 f"Allowed keys: {', '.join(DATASET_META_KEYS)}."
             ),
         )
+    parsed = dict(parsed)
+    assistance_models = parsed.pop(ASSISTANCE_MODELS_META_FIELD, None)
     # Coerce all values to strings — JSON may have given us ints/bools for
     # `prolific_pool` etc. Drop empty strings so they don't overwrite existing values.
-    values = {k: str(v) for k, v in parsed.items() if v is not None and str(v) != ""}
+    values: dict[str, Any] = {
+        k: str(v) for k, v in parsed.items() if v is not None and str(v) != ""
+    }
+    if assistance_models is not None:
+        assistance_models = _validate_assistance_models(assistance_models)
+        if assistance_models:
+            values[ASSISTANCE_MODELS_META_FIELD] = assistance_models
     # Reject a model the transport cannot parse here, at the door, rather than
     # storing it and discovering it at rater time: `_parse_model` raises and
     # both assistance methods swallow that into a NONE step, so a bad prefix
@@ -110,7 +163,7 @@ def _validate_meta_dict(parsed: Any) -> dict[str, str]:
     return values
 
 
-def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, str] | None:
+def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, Any] | None:
     """Peek the first line; if it starts with `#META:`, parse and consume it.
 
     Returns a dict on success, None when no meta header is present.
@@ -132,7 +185,7 @@ def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, str] | None:
     return _validate_meta_dict(parsed)
 
 
-def _parse_parquet_schema_meta(table: pq.lib.Table) -> dict[str, str] | None:
+def _parse_parquet_schema_meta(table: pq.lib.Table) -> dict[str, Any] | None:
     """Extract dataset metadata from the Parquet schema's key-value metadata.
 
     Mirrors the CSV `#META:` line: looks for a JSON object under the
@@ -154,7 +207,7 @@ def _parse_parquet_schema_meta(table: pq.lib.Table) -> dict[str, str] | None:
 
 
 def _apply_meta_to_experiment(
-    experiment: Experiment, meta: dict[str, str]
+    experiment: Experiment, meta: dict[str, Any]
 ) -> tuple[list[str], list[str]]:
     """Apply meta to experiment fields without overwriting existing non-empty values.
 
@@ -176,12 +229,13 @@ def _apply_meta_to_experiment(
         elif current_value != new_value:
             conflicts.append(field_name)
     _apply_model_meta(experiment, meta, applied, conflicts)
+    _apply_assistance_models_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
 
 
 def _apply_model_meta(
     experiment: Experiment,
-    meta: dict[str, str],
+    meta: dict[str, Any],
     applied: list[str],
     conflicts: list[str],
 ) -> None:
@@ -222,6 +276,40 @@ def _apply_model_meta(
     applied.append(MODEL_META_FIELD)
 
 
+def _apply_assistance_models_meta(
+    experiment: Experiment,
+    meta: dict[str, Any],
+    applied: list[str],
+    conflicts: list[str],
+) -> None:
+    """Merge the wave's per-method models into `assistance_params["assistance_models"]`.
+
+    `_apply_model_meta`'s rules, per method: presence-keyed, never overwriting
+    a method already set (an explicit null included), and reported as
+    "assistance_models.<method>". A stored map that is not an object (e.g. a
+    PATCHed null) counts as set for every method.
+    """
+    declared = meta.get(ASSISTANCE_MODELS_META_FIELD)
+    if not declared:
+        return
+    params = json.loads(experiment.assistance_params) if experiment.assistance_params else {}
+    stored = params.get(ASSISTANCE_MODELS_META_FIELD, {})
+    if not isinstance(stored, dict):
+        conflicts.extend(f"{ASSISTANCE_MODELS_META_FIELD}.{m}" for m in sorted(declared))
+        return
+    merged = dict(stored)
+    for method, model in sorted(declared.items()):
+        key = f"{ASSISTANCE_MODELS_META_FIELD}.{method}"
+        if method not in merged:
+            merged[method] = model
+            applied.append(key)
+        elif merged[method] != model:
+            conflicts.append(key)
+    if merged != stored:
+        params[ASSISTANCE_MODELS_META_FIELD] = merged
+        experiment.assistance_params = json.dumps(params)
+
+
 def _serialize_cell(value: Any) -> str:
     """Coerce a Parquet cell value into the canonical DB string form.
 
@@ -243,7 +331,7 @@ def _serialize_cell(value: Any) -> str:
     return str(value)
 
 
-def _read_csv(file: UploadFile) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+def _read_csv(file: UploadFile) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Parse a CSV upload into (rows, meta).
 
     Rows are returned as raw dict[str, str] — values are whatever the CSV
@@ -275,7 +363,7 @@ def _read_csv(file: UploadFile) -> tuple[list[dict[str, Any]], dict[str, str] | 
 
 def _read_parquet(
     file: UploadFile,
-) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Parse a Parquet upload into (rows, meta).
 
     Each row dict has the same shape the CSV reader produces — `options` becomes

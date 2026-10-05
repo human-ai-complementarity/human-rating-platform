@@ -54,8 +54,9 @@ function formatSessionLength(minutes: number): string {
 
 // Labels for every key an upload can declare. The first five are the editable
 // fields in the Instructions & prompts panel, in the order the CSV `#META:`
-// JSON uses; `model` has no editable field — it is reported in upload results
-// only, because the upload pins it into assistance_params.
+// JSON uses; `model` and the per-method `assistance_models.<method>` keys have
+// no editable field — they are reported in upload results only, because the
+// upload pins them into assistance_params.
 const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
@@ -63,7 +64,14 @@ const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   human_prompt_suffix: 'Question suffix (shown below)',
   prolific_pool: 'Prolific participant pool',
   model: 'Assistance model',
+  'assistance_models.top_n': 'Top-N model',
+  'assistance_models.human_as_a_tool': 'Human-as-a-Tool model',
 };
+
+// A key with no label (a method added since) shows as itself.
+function metaLabel(key: string): string {
+  return DATASET_META_LABELS[key as UploadMetaKey] ?? key;
+}
 
 const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
   description:
@@ -732,13 +740,13 @@ function ExperimentDetail({
       const parts: string[] = [result.message];
       if (result.meta_applied.length > 0) {
         parts.push(
-          `Applied metadata: ${result.meta_applied.map((f) => DATASET_META_LABELS[f]).join(', ')}.`,
+          `Applied metadata: ${result.meta_applied.map(metaLabel).join(', ')}.`,
         );
       }
       if (result.meta_conflicts.length > 0) {
         parts.push(
           `Kept existing values (this upload declared different ${result.meta_conflicts
-            .map((f) => DATASET_META_LABELS[f])
+            .map(metaLabel)
             .join(', ')}).`,
         );
       }
@@ -1819,9 +1827,7 @@ function QuestionsPanel({
           }}
         >
           {uploads.map((upload, idx) => {
-            const metaKeys = upload.dataset_meta
-              ? (Object.keys(upload.dataset_meta) as DatasetMetaField[])
-              : [];
+            const metaKeys = upload.dataset_meta ? Object.keys(upload.dataset_meta) : [];
             return (
               <div
                 key={upload.id}
