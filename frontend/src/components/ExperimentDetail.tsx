@@ -17,6 +17,7 @@ import type {
   UploadMetaKey,
 } from '../types';
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
+import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import {
   StepperTabs,
   type StepDef,
@@ -2706,6 +2707,22 @@ function LaunchPanel(props: {
                   pricing={pricing}
                 />
               )}
+
+              {/* After a pilot, offer its time and reward to the dataset card so
+                  the dataset's next study can launch in one click. */}
+              {recommendation &&
+                recommendation.avg_time_per_question_seconds > 0 &&
+                experiment.group_dataset_id !== null &&
+                rounds.length > 0 &&
+                rounds[0].prolific_study_status !== 'UNPUBLISHED' && (
+                  <SaveToDatasetCard
+                    datasetId={experiment.group_dataset_id}
+                    datasetName={experiment.group_dataset_name ?? 'dataset'}
+                    pilot={rounds[0]}
+                    currencyCode={currencyCode}
+                    currencySymbol={currencySymbol}
+                  />
+                )}
 
               {rounds.length === 0 && (
                 <PilotForm
