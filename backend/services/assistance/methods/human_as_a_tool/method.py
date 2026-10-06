@@ -6,7 +6,7 @@ the threshold) to the human. It repeats this for up to max_rounds rounds,
 incorporating human answers each time, before synthesising a final answer.
 
 assistance_params:
-    model:                LLM for decomposition; overrides assistance_models["human_as_a_tool"]
+    assistance_models:    {"human_as_a_tool": LLM for decomposition}
                           (default: settings.llm.decomposition_model)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
     confidence_model:     LLM for confidence scoring (default: settings.llm.confidence_model)

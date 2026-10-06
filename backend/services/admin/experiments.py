@@ -34,7 +34,11 @@ from .tags import (
 from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
-from services.assistance.model_resolution import ASSISTANCE_MODELS_KEY, validate_model_id
+from services.assistance.model_resolution import (
+    ASSISTANCE_MODELS_KEY,
+    reject_removed_model_key,
+    validate_model_id,
+)
 from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
 from .waves import normalize_wave_token
@@ -60,6 +64,7 @@ async def create_experiment(
     if group_id is not None:
         await fetch_group_or_404(group_id, db)
     if payload.assistance_params:
+        reject_removed_model_key(payload.assistance_params, where="assistance_params")
         _validate_changed_models({}, payload.assistance_params)
 
     db_experiment = Experiment(
@@ -545,16 +550,14 @@ def _merged_assistance_params(experiment: Experiment, incoming: dict[str, Any]) 
 
     The admin UI sends partials — the Top-N stepper PATCHes `{"n": 4}` alone,
     the confidence dropdown `{"confidence_method": ...}` alone — so replacing
-    the blob silently dropped everything else in it: the model an upload
+    the blob silently dropped everything else in it: the models an upload
     pinned, or `max_rounds`/`num_samples` set at create. The study still looked
     configured but ran on platform defaults.
 
-    An explicit `None` is stored rather than dropped, so `{"model": None}`
-    stays a deliberate clear that a later upload will not re-pin.
-
     `assistance_models` merges one level deeper, per method, so PATCHing one
-    method's model keeps the others and their `None` markers. Sending
-    `"assistance_models": None` still clears the whole map.
+    method's model keeps the others. An explicit `None` entry is stored rather
+    than dropped: a deliberate clear that a later upload will not re-pin.
+    Sending `"assistance_models": None` clears the whole map.
     """
     stored = _stored_assistance_params(experiment)
     merged = {**stored, **incoming}
@@ -580,10 +583,6 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
     changes are checked: the admin UI re-sends the stored params on every save,
     so a legacy value it merely restates must not block an unrelated edit.
     """
-    model = merged.get("model")
-    if model not in (None, "") and model != stored.get("model"):
-        _check_model_id(model, "assistance_params.model")
-
     models = merged.get(ASSISTANCE_MODELS_KEY)
     if models is None or models == stored.get(ASSISTANCE_MODELS_KEY):
         return
@@ -619,6 +618,9 @@ async def update_experiment(
         get_method(payload.assistance_method)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+    if payload.assistance_params is not None:
+        reject_removed_model_key(payload.assistance_params, where="assistance_params")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
 

@@ -54,16 +54,15 @@ function formatSessionLength(minutes: number): string {
 
 // Labels for every key an upload can declare. The first five are the editable
 // fields in the Instructions & prompts panel, in the order the CSV `#META:`
-// JSON uses; `model` and the per-method `assistance_models.<method>` keys have
-// no editable field — they are reported in upload results only, because the
-// upload pins them into assistance_params.
+// JSON uses; the per-method `assistance_models.<method>` keys have no editable
+// field — they are reported in upload results only, because the upload pins
+// them into assistance_params.
 const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
   human_prompt_prefix: 'Question prefix (shown above)',
   human_prompt_suffix: 'Question suffix (shown below)',
   prolific_pool: 'Prolific participant pool',
-  model: 'Assistance model',
   'assistance_models.top_n': 'Top-N model',
   'assistance_models.human_as_a_tool': 'Human-as-a-Tool model',
 };

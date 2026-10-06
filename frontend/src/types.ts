@@ -83,13 +83,12 @@ export type DatasetMetaField = (typeof DATASET_META_FIELDS)[number];
 // is reported per method.
 export const UPLOAD_META_KEYS = [
   ...DATASET_META_FIELDS,
-  'model',
   'assistance_models.top_n',
   'assistance_models.human_as_a_tool',
 ] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 // What an upload declared; `assistance_models` maps method to model.
-export type DatasetMeta = Partial<Record<DatasetMetaField | 'model', string>> & {
+export type DatasetMeta = Partial<Record<DatasetMetaField, string>> & {
   assistance_models?: Record<string, string>;
 };
 

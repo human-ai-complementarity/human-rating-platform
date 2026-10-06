@@ -16,9 +16,9 @@ Unparseable JSON — a comparison token, a truncated wrapper, anything the
 decoder rejects — fails closed rather than salvaging a biased subset.
 
 assistance_params:
-    model: LLM to use for ranking; overrides assistance_models["top_n"]
-           (default: settings.llm.default_model)
-    n:     Number of candidates to show (default: 3, range 1-10)
+    assistance_models: {"top_n": LLM to use for ranking}
+                       (default: settings.llm.default_model)
+    n:                 Number of candidates to show (default: 3, range 1-10)
 """
 
 from __future__ import annotations

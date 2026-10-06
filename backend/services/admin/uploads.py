@@ -13,7 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Experiment, Question, Upload
-from services.assistance.model_resolution import ASSISTANCE_MODELS_KEY, validate_model_id
+from services.assistance.model_resolution import (
+    ASSISTANCE_MODELS_KEY,
+    reject_removed_model_key,
+    validate_model_id,
+)
 from services.assistance.registry import assisted_methods
 from services.question_separator import separator_upload_offenders
 from .mappers import build_upload_response
@@ -36,14 +40,9 @@ DATASET_META_FIELDS = (
     "prolific_pool",
 )
 
-# The wave's assistance model (#96). Deliberately *not* in the tuple above: it
-# has no Experiment column. It lives one level deeper, inside the JSON blob
-# `Experiment.assistance_params`, so it needs its own routing — see
-# `_apply_model_meta`.
-MODEL_META_FIELD = "model"
-
 # The wave's model per assistance method, e.g. {"top_n": "openrouter/..."}.
-# Pinned into `assistance_params` alongside `model`; see
+# Deliberately *not* in the tuple above: it has no Experiment column. It is
+# pinned into the JSON blob `Experiment.assistance_params`; see
 # `_apply_assistance_models_meta`. Reported per method as
 # "assistance_models.<method>" in meta_applied / meta_conflicts.
 ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
@@ -52,7 +51,7 @@ ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
 # unknown keys surface as a clean 400 instead of silently filling columns we
 # don't model. Applies to both the CSV `#META:` header line and the Parquet
 # schema's `dataset_meta` key — the export writes the same JSON shape for both.
-DATASET_META_KEYS = (*DATASET_META_FIELDS, MODEL_META_FIELD, ASSISTANCE_MODELS_META_FIELD)
+DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
@@ -131,6 +130,7 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
             status_code=400,
             detail="dataset metadata must be a JSON object",
         )
+    reject_removed_model_key(parsed, where="dataset metadata")
     unknown = sorted(set(parsed) - set(DATASET_META_KEYS))
     if unknown:
         raise HTTPException(
@@ -151,15 +151,6 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         assistance_models = _validate_assistance_models(assistance_models)
         if assistance_models:
             values[ASSISTANCE_MODELS_META_FIELD] = assistance_models
-    # Reject a model the transport cannot parse here, at the door, rather than
-    # storing it and discovering it at rater time: `_parse_model` raises and
-    # both assistance methods swallow that into a NONE step, so a bad prefix
-    # would mean a study that looks completed and gave nobody any assistance.
-    if MODEL_META_FIELD in values:
-        validate_model_id(
-            values[MODEL_META_FIELD],
-            field=f"dataset metadata {MODEL_META_FIELD!r}",
-        )
     return values
 
 
@@ -228,52 +219,8 @@ def _apply_meta_to_experiment(
             applied.append(field_name)
         elif current_value != new_value:
             conflicts.append(field_name)
-    _apply_model_meta(experiment, meta, applied, conflicts)
     _apply_assistance_models_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
-
-
-def _apply_model_meta(
-    experiment: Experiment,
-    meta: dict[str, Any],
-    applied: list[str],
-    conflicts: list[str],
-) -> None:
-    """Pin the exported model into `assistance_params["model"]` (#96).
-
-    Same never-overwrite rule as the column-backed fields, one level deeper.
-    The model has no Experiment column: it rides in the `assistance_params`
-    JSON blob so it inherits the config lock, the per-`AssistanceSession`
-    snapshot and `resolve_model`'s precedence for free.
-
-    Never-overwrite matters more here than elsewhere. An admin who typed a
-    model in deliberately is usually running a *deviation* — a different arm,
-    a cheaper model for a smoke test — and silently snapping it back to the
-    wave's would invalidate the comparison without saying so. Reporting the
-    disagreement lets them see it and choose.
-
-    Stamped regardless of `assistance_method`: the method is still editable
-    while DRAFT, so an arm switched on after the upload should find the wave's
-    model already pinned rather than fall back to the platform default.
-    """
-    if MODEL_META_FIELD not in meta:
-        return
-    new_value = meta[MODEL_META_FIELD]
-    params = json.loads(experiment.assistance_params) if experiment.assistance_params else {}
-    # Presence, not truthiness. An explicit `{"model": null}` is a deliberate
-    # clearing — the PATCH path treats it that way — and `or ""` would collapse
-    # it into "never set" and silently re-pin the wave's model, which is the
-    # opposite of the never-overwrite guarantee this function exists to give.
-    if MODEL_META_FIELD in params:
-        if params[MODEL_META_FIELD] != new_value:
-            conflicts.append(MODEL_META_FIELD)
-        return
-    # Merged into the existing blob, never assigned over it: `n` and
-    # `confidence_method` live here too, and replacing would leave an
-    # experiment that still looks configured but runs on defaults.
-    params[MODEL_META_FIELD] = new_value
-    experiment.assistance_params = json.dumps(params)
-    applied.append(MODEL_META_FIELD)
 
 
 def _apply_assistance_models_meta(
@@ -284,10 +231,16 @@ def _apply_assistance_models_meta(
 ) -> None:
     """Merge the wave's per-method models into `assistance_params["assistance_models"]`.
 
-    `_apply_model_meta`'s rules, per method: presence-keyed, never overwriting
-    a method already set (an explicit null included), and reported as
-    "assistance_models.<method>". A stored map that is not an object (e.g. a
-    PATCHed null) counts as set for every method.
+    The column-backed fields' never-overwrite rule, per method, reported as
+    "assistance_models.<method>". Keyed on presence: an explicit null entry is
+    a deliberate clear, not re-pinned, and a stored map that is not an object
+    (e.g. a PATCHed null) counts as set for every method. An admin's own model
+    is usually a deliberate deviation; snapping it back silently would spoil
+    the comparison.
+
+    Merged into the blob (`n` and `confidence_method` live there too), and
+    pinned whatever the experiment's method, so an arm switched on later finds
+    the wave's model.
     """
     declared = meta.get(ASSISTANCE_MODELS_META_FIELD)
     if not declared:

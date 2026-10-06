@@ -15,7 +15,7 @@ from services.assistance.model_resolution import resolve_model
 # let a call site that ignores the map pass anyway.
 _TOP_N = "openrouter/test/top-n-entry"
 _HAAT = "openrouter/test/human-as-a-tool-entry"
-_OVERRIDE = "openrouter/test/explicit-override"
+_SESSION = "openrouter/test/session-state"
 _MAP = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": _HAAT}}
 _DEFAULT = "openrouter/default"
 
@@ -23,18 +23,12 @@ _DEFAULT = "openrouter/default"
 def test_sentinels_differ_from_every_settings_default():
     llm = get_settings().llm
     defaults = {llm.default_model, llm.decomposition_model, llm.confidence_model}
-    assert defaults.isdisjoint({_TOP_N, _HAAT, _OVERRIDE})
+    assert defaults.isdisjoint({_TOP_N, _HAAT, _SESSION})
 
 
 def test_each_method_resolves_its_own_entry():
     assert resolve_model(_MAP, "top_n", _DEFAULT) == _TOP_N
     assert resolve_model(_MAP, "human_as_a_tool", _DEFAULT) == _HAAT
-
-
-def test_an_explicit_model_wins_over_the_map():
-    params = {**_MAP, "model": _OVERRIDE}
-    assert resolve_model(params, "top_n", _DEFAULT) == _OVERRIDE
-    assert resolve_model(params, "human_as_a_tool", _DEFAULT) == _OVERRIDE
 
 
 @pytest.mark.parametrize(
@@ -44,15 +38,16 @@ def test_an_explicit_model_wins_over_the_map():
         {"assistance_models": {"human_as_a_tool": _HAAT}},
         {"assistance_models": {"top_n": None}},
         {"assistance_models": None},
-        {"model": None},
     ],
 )
 def test_it_falls_back_to_the_default(params):
     assert resolve_model(params, "top_n", _DEFAULT) == _DEFAULT
 
 
-def test_a_cleared_model_falls_through_to_the_map():
-    assert resolve_model({**_MAP, "model": None}, "top_n", _DEFAULT) == _TOP_N
+def test_a_leftover_model_key_is_ignored():
+    """`model` was removed; an old session snapshot may still carry it."""
+    assert resolve_model({"model": _SESSION}, "top_n", _DEFAULT) == _DEFAULT
+    assert resolve_model({**_MAP, "model": _SESSION}, "top_n", _DEFAULT) == _TOP_N
 
 
 def _question() -> Question:
@@ -84,7 +79,7 @@ async def test_human_as_a_tool_start_uses_its_entry():
 
 @pytest.mark.parametrize(
     ("state_model", "expected"),
-    [(None, _HAAT), (_OVERRIDE, _OVERRIDE)],
+    [(None, _HAAT), (_SESSION, _SESSION)],
 )
 @pytest.mark.asyncio
 async def test_human_as_a_tool_advance_prefers_the_session_model(state_model, expected):

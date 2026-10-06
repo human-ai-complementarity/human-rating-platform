@@ -1,7 +1,7 @@
 """`assistance_models` as a dataset_meta key: the wave's model per method.
 
 One export file usually serves both arms of a wave, so it declares a model per
-assisted method rather than one `model` for all.
+assisted method. The old single `model` key is refused.
 """
 
 from __future__ import annotations
@@ -79,12 +79,23 @@ def test_the_map_is_pinned_on_upload(client: TestClient, upload):
     assert uploads[0]["dataset_meta"] == {"assistance_models": _MODELS}
 
 
-def test_an_explicit_model_is_pinned_alongside_the_map(client: TestClient):
-    exp = _experiment(client)
-    body = _upload_csv(client, exp["id"], {"model": _OTHER, "assistance_models": _MODELS}).json()
+@pytest.mark.parametrize("model", [_OTHER, None])
+@pytest.mark.parametrize("upload", [_upload_csv, _upload_parquet])
+def test_the_removed_model_key_rejects_the_upload(client: TestClient, upload, model):
+    exp = _experiment(client, assistance_params={"n": 4})
+    resp = upload(client, exp["id"], {"model": model, "assistance_models": _MODELS})
 
-    assert body["meta_applied"] == [*_BOTH, "model"]
-    assert _params(client, exp["id"]) == {"model": _OTHER, "assistance_models": _MODELS}
+    assert resp.status_code == 400
+    assert "use 'assistance_models'" in resp.json()["detail"]
+    assert _params(client, exp["id"]) == {"n": 4}
+
+
+def test_an_upload_without_the_map_leaves_assistance_params_alone(client: TestClient):
+    exp = _experiment(client, assistance_params={"n": 4})
+    body = _upload_csv(client, exp["id"], {"description": "A guide."}).json()
+
+    assert body["meta_applied"] == ["description"]
+    assert _params(client, exp["id"]) == {"n": 4}
 
 
 def test_a_method_already_set_is_reported_not_clobbered(client: TestClient):

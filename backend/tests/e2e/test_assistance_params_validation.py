@@ -1,4 +1,5 @@
-"""Model ids in `assistance_params` are validated on create and PATCH.
+"""Model ids in `assistance_params` are validated on create and PATCH, and the
+removed `model` key is refused.
 
 Unvalidated, a bad id fails only at rater time: `_parse_model` raises, which the
 methods turn into a silent no-assistance step, or a 500 for a non-string.
@@ -34,8 +35,8 @@ def _params(client: TestClient, experiment_id: int) -> dict | None:
 
 
 _BAD = [
-    pytest.param({"model": "gpt-4o"}, "assistance_params.model", id="unprefixed-model"),
-    pytest.param({"model": 5}, "assistance_params.model", id="non-string-model"),
+    pytest.param({"model": _GOOD}, "use 'assistance_models'", id="removed-model"),
+    pytest.param({"model": None}, "use 'assistance_models'", id="removed-model-null"),
     pytest.param(
         {"assistance_models": {"top_n": "gpt-4o"}},
         "assistance_params.assistance_models.top_n",
@@ -70,8 +71,7 @@ def test_patch_rejects_a_bad_model_and_stores_nothing(client: TestClient, params
 
 
 def test_good_models_and_clears_pass(client: TestClient):
-    exp = _create(client, {"model": _GOOD, "assistance_models": {"top_n": _GOOD}}).json()
-    assert _patch(client, exp["id"], {"model": None}).status_code == 200
+    exp = _create(client, {"assistance_models": {"top_n": _GOOD}}).json()
     assert _patch(client, exp["id"], {"assistance_models": {"top_n": None}}).status_code == 200
     assert _patch(client, exp["id"], {"assistance_models": None}).status_code == 200
 
@@ -80,7 +80,7 @@ def test_a_restated_legacy_value_does_not_block_an_unrelated_edit(client: TestCl
     """The UI re-sends the stored params on every save; a value written before
     validation existed must not lock the experiment out of edits."""
     exp = _create(client).json()
-    legacy = {"model": "gpt-4o", "assistance_models": {"top_n": "gpt-4o"}}
+    legacy = {"assistance_models": {"top_n": "gpt-4o"}}
     with sync_engine.begin() as conn:
         conn.execute(
             text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),

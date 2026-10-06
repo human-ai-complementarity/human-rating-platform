@@ -19,22 +19,32 @@ MODEL_PREFIX = "openrouter/"
 # {"top_n": "openrouter/...", "human_as_a_tool": "openrouter/..."}.
 ASSISTANCE_MODELS_KEY = "assistance_models"
 
+# The removed single-model key: it silently beat `assistance_models`.
+REMOVED_MODEL_KEY = "model"
+
 
 def resolve_model(params: dict, method: str, default: str) -> str:
-    """The model `method` runs on.
-
-    An explicit `model` (admin override) wins, then the wave's entry for this
-    method in `assistance_models`, then `default`.
-    """
-    if params.get("model"):
-        return params["model"]
+    """The model `method` runs on: its `assistance_models` entry, else `default`."""
     models = params.get(ASSISTANCE_MODELS_KEY)
     if isinstance(models, dict) and models.get(method):
         return models[method]
     return default
 
 
-def validate_model_id(model: str, *, field: str = "assistance_params.model") -> None:
+def reject_removed_model_key(values: dict, *, where: str) -> None:
+    """400 when `values` still carries the removed `model` key."""
+    if REMOVED_MODEL_KEY in values:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{REMOVED_MODEL_KEY!r} is no longer supported in {where}; use "
+                f"{ASSISTANCE_MODELS_KEY!r}, which sets each method's model, e.g. "
+                f'{{"top_n": "{MODEL_PREFIX}anthropic/claude-sonnet-4.6"}}.'
+            ),
+        )
+
+
+def validate_model_id(model: str, *, field: str) -> None:
     """Reject a model id the transport cannot parse, as a 400.
 
     Catches malformed ids, not unreachable ones: OpenRouter accepts arbitrary
