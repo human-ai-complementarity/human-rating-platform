@@ -18,6 +18,7 @@ import type {
 } from '../types';
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
+import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
 import {
   StepperTabs,
   type StepDef,
@@ -930,6 +931,13 @@ function ExperimentDetail({
     }
   };
 
+  const handleLaunchedFromCard = async () => {
+    showSuccess('Pilot draft created from the dataset card. Publish it when ready.', 4000);
+    onRefresh();
+    await loadRounds();
+    await loadRecommendation();
+  };
+
   const handleRunRound = async () => {
     if (!recommendation) return;
     const places = recommendation.recommended_places;
@@ -1291,6 +1299,7 @@ function ExperimentDetail({
             pilotRewardInput={pilotRewardInput}
             onPilotRewardChange={setPilotRewardInput}
             onRunPilot={handleRunPilot}
+            onLaunchedFromCard={handleLaunchedFromCard}
             onRunRound={handleRunRound}
             otherExperiments={otherExperiments}
             onBack={() => setTab('assistance')}
@@ -2510,6 +2519,7 @@ function LaunchPanel(props: {
   pilotRewardInput: string;
   onPilotRewardChange: (v: string) => void;
   onRunPilot: (e: React.FormEvent) => void;
+  onLaunchedFromCard: () => Promise<void>;
   onRunRound: () => void;
   otherExperiments: Experiment[];
   onBack: () => void;
@@ -2546,6 +2556,7 @@ function LaunchPanel(props: {
     pilotRewardInput,
     onPilotRewardChange,
     onRunPilot,
+    onLaunchedFromCard,
     onRunRound,
     otherExperiments,
     onBack,
@@ -2723,6 +2734,18 @@ function LaunchPanel(props: {
                     currencySymbol={currencySymbol}
                   />
                 )}
+
+              {rounds.length === 0 && experiment.group_dataset_id !== null && (
+                <OneClickLaunch
+                  experimentId={experiment.id}
+                  datasetId={experiment.group_dataset_id}
+                  datasetName={experiment.group_dataset_name ?? 'dataset'}
+                  launchBlockers={experiment.launch_blockers ?? []}
+                  currencyCode={currencyCode}
+                  currencySymbol={currencySymbol}
+                  onLaunched={onLaunchedFromCard}
+                />
+              )}
 
               {rounds.length === 0 && (
                 <PilotForm

@@ -4,9 +4,10 @@ import type { Experiment } from '../../types';
 /**
  * Prior-participant exclusion picker used by both the pilot form and the
  * round-edit form. Only FINISHED experiments are valid new picks (their rater
- * set is fixed); any already-selected non-FINISHED experiment is grandfathered
- * — kept visible with a tag so admins can preserve prior selections but not
- * add new non-FINISHED targets. Matches backend validation in
+ * set is fixed); any already-selected non-FINISHED experiment (from a prior
+ * round, or a one-click pilot's own exclusions) is grandfathered — kept
+ * visible with a tag warning that, once removed, it can't be re-added until
+ * it finishes. Matches backend validation in
  * services/admin/status.py:validate_new_exclusion_targets.
  */
 function experimentSearchHaystack(exp: Experiment): string {
@@ -141,7 +142,7 @@ export function ExperimentExclusionPicker({
                       letterSpacing: '0.3px',
                     }}
                   >
-                    Kept from prior round
+                    Can't re-add until finished
                   </span>
                 )}
                 {subtitle && <span style={{ color: 'var(--muted)' }}> — {subtitle}</span>}
