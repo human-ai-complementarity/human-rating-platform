@@ -89,6 +89,8 @@ def test_the_removed_model_key_rejects_the_upload(client: TestClient, upload, mo
 
     assert resp.status_code == 400
     assert "use 'assistance_models'" in resp.json()["detail"]
+    # The file is at fault, not a stale admin page.
+    assert "reload" not in resp.json()["detail"]
     assert _params(client, exp["id"]) == {"n": 4}
 
 

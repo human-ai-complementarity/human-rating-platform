@@ -36,6 +36,7 @@ from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
+    RELOAD_HINT,
     reject_removed_model_key,
     validate_model_id,
 )
@@ -64,7 +65,9 @@ async def create_experiment(
     if group_id is not None:
         await fetch_group_or_404(group_id, db)
     if payload.assistance_params:
-        reject_removed_model_key(payload.assistance_params, where="assistance_params")
+        reject_removed_model_key(
+            payload.assistance_params, where="assistance_params", hint=RELOAD_HINT
+        )
         _validate_changed_models({}, payload.assistance_params)
 
     db_experiment = Experiment(
@@ -620,7 +623,9 @@ async def update_experiment(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     if payload.assistance_params is not None:
-        reject_removed_model_key(payload.assistance_params, where="assistance_params")
+        reject_removed_model_key(
+            payload.assistance_params, where="assistance_params", hint=RELOAD_HINT
+        )
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
 

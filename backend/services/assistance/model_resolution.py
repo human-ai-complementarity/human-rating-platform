@@ -42,7 +42,14 @@ def resolve_model(params: dict, method: str, default: str) -> str:
     return resolve_model_and_source(params, method, default)[0]
 
 
-def reject_removed_model_key(values: dict, *, where: str) -> None:
+# Appended on create/PATCH: an admin page loaded before `model` was removed
+# re-sends the stored params, old key included, on every save.
+RELOAD_HINT = (
+    "If you opened this admin page before the update, reload it: its saves still send the old key."
+)
+
+
+def reject_removed_model_key(values: dict, *, where: str, hint: str = "") -> None:
     """400 when `values` still carries the removed `model` key."""
     if REMOVED_MODEL_KEY in values:
         raise HTTPException(
@@ -51,6 +58,7 @@ def reject_removed_model_key(values: dict, *, where: str) -> None:
                 f"{REMOVED_MODEL_KEY!r} is no longer supported in {where}; use "
                 f"{ASSISTANCE_MODELS_KEY!r}, which sets each method's model, e.g. "
                 f'{{"top_n": "{MODEL_PREFIX}anthropic/claude-sonnet-4.6"}}.'
+                + (f" {hint}" if hint else "")
             ),
         )
 

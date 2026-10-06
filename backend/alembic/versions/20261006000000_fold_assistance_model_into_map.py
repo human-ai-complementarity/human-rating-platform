@@ -5,7 +5,9 @@ Revises: 20260924000000
 Create Date: 2026-10-06 00:00:00.000000
 
 `model` used to beat every `assistance_models` entry. It is removed, so each
-experiment's `model` moves into the map where it keeps choosing the same model.
+experiment's `model` moves into the map where it keeps choosing the same model
+for the experiment's selected method. A draft switched to the other method
+afterwards runs on that method's entry or the default, not on `model`.
 AssistanceSession snapshots are left alone: Top-N is one-shot, and an
 in-flight Human-as-a-Tool session reads its model from session state.
 
@@ -94,5 +96,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # No-op: the old code resolves the folded map entries to the same models.
+    # No-op: the old code resolves the folded map entries to the same models
+    # for each experiment's selected method.
     pass

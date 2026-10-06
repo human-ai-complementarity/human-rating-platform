@@ -70,6 +70,16 @@ def test_patch_rejects_a_bad_model_and_stores_nothing(client: TestClient, params
     assert _params(client, exp["id"]) == {"n": 3}
 
 
+def test_the_removed_model_key_hints_at_reloading_a_stale_page(client: TestClient):
+    """A page opened before the update re-sends `model` on every save."""
+    created = _create(client, {"model": _GOOD})
+    patched = _patch(client, _create(client).json()["id"], {"model": _GOOD})
+    for resp in (created, patched):
+        assert resp.status_code == 400
+        assert "use 'assistance_models'" in resp.json()["detail"]
+        assert "reload it" in resp.json()["detail"]
+
+
 def test_good_models_and_clears_pass(client: TestClient):
     exp = _create(client, {"assistance_models": {"top_n": _GOOD}}).json()
     assert _patch(client, exp["id"], {"assistance_models": {"top_n": None}}).status_code == 200
