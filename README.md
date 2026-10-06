@@ -506,6 +506,31 @@ q3,Summarise the passage in one sentence.,,,FT
 
 ---
 
+## Dataset Cards
+
+A dataset's card declares once how studies on it run. Set it with `PATCH /api/admin/datasets/{id}`: an omitted field is left alone and an explicit `null` clears it.
+
+| Field | What it does |
+| --- | --- |
+| `external_study_name` | Public name template for new experiments. Only `{dataset}`, so raters can't tell which arm they're in. |
+| `internal_study_name` | Researcher-facing name template: `{dataset}`, `{wave}`, `{method}`. |
+| `study_blurb` | Prolific study description for one-click pilots. |
+| `estimated_completion_time` | Minutes. |
+| `reward` | Per participant, in the workspace currency's minor units (pence, cents; yen for JPY). |
+| `num_ratings_per_question` | Ratings target for new experiments. |
+| `study_label`, `screeners` | Prolific label and pre-screeners for one-click pilots; unset uses the pilot defaults. |
+
+Saving the card refuses a template with an unknown placeholder or its own "- Pilot"/"- Round" (each study appends that).
+
+- **Launchable vs complete.** A card is *launchable* with both name templates and the blurb, and *complete* once it also has the time and reward. Neither level is needed to upload or analyse. `GET /api/admin/datasets/{id}` reports `launch_ready`/`missing_for_launch` and `complete`/`missing_for_complete`.
+- **Inheritance at create.** A new grouped experiment takes the rendered templates and ratings target from its card for whatever the create request leaves out. It's a copy: later card edits don't reach existing experiments. The dashboard's create form always sends a public name and ratings target, so there only the internal name is inherited.
+- **What comes from the export instead.** Rater instructions, prompt prefix/suffix, system prompt, Prolific pool and the assistance models arrive with the upload's `dataset_meta`. Each assisted method runs on its `assistance_models` entry, else the platform default; the launch gate requires an entry for the experiment's method.
+- **Launch gate.** A pilot is refused until the experiment has rater instructions, a prompt prefix and suffix, an internal study name, and, when assisted, an assistance model. The pilot form lists what's missing and where each value comes from.
+- **One-click pilot.** For a grouped experiment with a complete card, the Launch tab offers **Create pilot draft from the card** (`POST /api/admin/experiments/{id}/launch`, optional `places`, default 5). It uses the card's time, reward, blurb, label and screeners, and automatically excludes the participants of every other experiment in the dataset's groups: any wave, any status, even one with no study yet, since its Prolific group fills as raters arrive. The panel lists them before you confirm (`GET /api/admin/experiments/{id}/launch/preview`). An arm created after a pilot isn't on that pilot's list, so create all of a wave's arms before piloting any. The draft can still be edited before publishing, which stays a separate step. A dataset's first study usually goes through the pilot form, since the economics are optional at onboarding.
+- **Saving pilot numbers back.** Once a grouped experiment's pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, which completes it for the next study.
+
+---
+
 ## Assistance Methods
 
 Experiments can be configured with an assistance method to provide raters with AI- or human-generated help while they rate questions. The method is set per-experiment via two fields:
@@ -550,7 +575,7 @@ Typical workflow:
 
 ### Excluding prior participants
 
-Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
+Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. A one-click pilot fills this in itself (see [Dataset Cards](#dataset-cards)). Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
 
 ### Study URL format
 
@@ -632,6 +657,9 @@ contributors.
 - `GET /api/admin/experiments/{id}/analytics` — rating analytics
 - `GET /api/admin/experiments/{id}/export` — export ratings as CSV
 - `POST /api/admin/experiments/{id}/prolific/pilot` — create the pilot round draft
+- `POST /api/admin/experiments/{id}/launch` — create the pilot draft from a complete dataset card
+- `GET /api/admin/experiments/{id}/launch/preview` — list the experiments that pilot would exclude
+- `GET`/`PATCH /api/admin/datasets/{id}` — read or edit a dataset and its card
 - `GET /api/admin/experiments/{id}/prolific/recommend` — calculate the next-round recommendation
 - `GET /api/admin/experiments/{id}/prolific/rounds` — list Prolific rounds for the experiment
 - `POST /api/admin/experiments/{id}/prolific/rounds` — create a follow-on round draft
