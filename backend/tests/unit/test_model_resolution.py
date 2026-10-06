@@ -10,6 +10,7 @@ from models import Question
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
 from services.assistance.model_resolution import resolve_model
+from services.assistance.registry import resolved_models
 
 # Sentinels, not real models: a map entry equal to a settings default would
 # let a call site that ignores the map pass anyway.
@@ -48,6 +49,21 @@ def test_a_leftover_model_key_is_ignored():
     """`model` was removed; an old session snapshot may still carry it."""
     assert resolve_model({"model": _SESSION}, "top_n", _DEFAULT) == _DEFAULT
     assert resolve_model({**_MAP, "model": _SESSION}, "top_n", _DEFAULT) == _TOP_N
+
+
+def test_resolved_models_gives_every_assisted_method_its_model_and_source():
+    llm = get_settings().llm
+    params = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": None}}
+    assert resolved_models(params) == {
+        "human_as_a_tool": (llm.decomposition_model, "default"),
+        "top_n": (_TOP_N, "assistance_models"),
+    }
+
+
+def test_an_entry_equal_to_the_default_still_reports_the_map():
+    default = get_settings().llm.default_model
+    resolved = resolved_models({"assistance_models": {"top_n": default}})
+    assert resolved["top_n"] == (default, "assistance_models")
 
 
 def _question() -> Question:

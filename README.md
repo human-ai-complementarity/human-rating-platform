@@ -492,7 +492,7 @@ q1,...,...,...,MC
 
 Allowed keys: `description` (rater intro splash + Prolific study description; supports markdown — same renderer as the Prolific description: headings, bold/italic/strike, lists, paragraphs), `system_prompt` (appended to AI prompts for Top-N / Human-as-a-Tool; plain text), `human_prompt_prefix` (rendered above every question; plain text), `human_prompt_suffix` (rendered below every question; plain text), `prolific_pool` (reference label for the target Prolific audience). All optional. Newlines inside any value must be encoded as `\n` escapes since the JSON object has to fit on one line — `json.dumps(...)` handles this automatically. Full field-by-field guide is in the admin help page in-app.
 
-An optional `assistance_models` key pins each assisted method's model into `assistance_params` instead of a column: an object mapping method to model (`{"top_n": "openrouter/anthropic/claude-sonnet-4.6", "human_as_a_tool": "openrouter/google/gemini-3-flash-preview"}`). A method without an entry runs on the platform default. Model ids must start with `openrouter/`. The old single `model` key is rejected.
+An optional `assistance_models` key pins each assisted method's model into `assistance_params` instead of a column: an object mapping method to model (`{"top_n": "openrouter/anthropic/claude-sonnet-4.6", "human_as_a_tool": "openrouter/google/gemini-3-flash-preview"}`). A method without an entry runs on the platform default; the Assistance tab shows which model each method will use. Model ids must start with `openrouter/`. The old single `model` key is rejected.
 
 A copy-pasteable example:
 

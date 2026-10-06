@@ -1,5 +1,11 @@
 export type ExperimentStatus = 'DRAFT' | 'LAUNCH' | 'FINISHED';
 
+// `assistance_models`: the experiment's own entry; `default`: the platform's.
+export interface ResolvedModel {
+  model: string;
+  source: 'assistance_models' | 'default';
+}
+
 export interface Experiment {
   id: number;
   name: string;
@@ -14,6 +20,8 @@ export interface Experiment {
   rating_count: number;
   assistance_method: string;
   assistance_params: Record<string, unknown> | null;
+  // The model each assisted method would run on, resolved by the backend.
+  resolved_models?: Record<string, ResolvedModel>;
   description: string | null;
   system_prompt: string | null;
   human_prompt_prefix: string | null;

@@ -11,6 +11,7 @@ import type {
   PilotStudyCreate,
   ProlificPricing,
   RecommendationResponse,
+  ResolvedModel,
   Screener,
   Upload,
   UploadMetaKey,
@@ -1238,6 +1239,7 @@ function ExperimentDetail({
             }
             topNValue={topNValue}
             confidenceMethod={confidenceMethod}
+            resolvedModels={experiment.resolved_models}
             systemPrompt={metaForm.system_prompt}
             onSystemPromptChange={(v) => {
               metaFormDirtyRef.current = true;
@@ -2196,10 +2198,33 @@ function MetadataPanel({
 
 // ── Rater assistance panel ───────────────────────────────────────────────
 
+// The model a method would run on, as the backend resolved it.
+function ResolvedModelLine({
+  method,
+  resolved,
+}: {
+  method: 'top_n' | 'human_as_a_tool';
+  resolved: ResolvedModel | undefined;
+}) {
+  if (!resolved) return null;
+  return (
+    <div
+      data-testid={`resolved-model-${method}`}
+      style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}
+    >
+      Model:{' '}
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{resolved.model}</span>
+      {' · '}
+      {resolved.source === 'assistance_models' ? 'from assistance_models' : 'platform default'}
+    </div>
+  );
+}
+
 function AssistanceModePanel({
   method,
   topNValue,
   confidenceMethod,
+  resolvedModels,
   systemPrompt,
   onSystemPromptChange,
   onSaveSystemPrompt,
@@ -2216,6 +2241,7 @@ function AssistanceModePanel({
   method: 'none' | 'top_n' | 'human_as_a_tool';
   topNValue: number;
   confidenceMethod: string;
+  resolvedModels: Record<string, ResolvedModel> | undefined;
   systemPrompt: string;
   onSystemPromptChange: (v: string) => void;
   onSaveSystemPrompt: () => void;
@@ -2297,6 +2323,7 @@ function AssistanceModePanel({
               style={{ ...inputStyle, width: 140 }}
             />
           </Field>
+          <ResolvedModelLine method="top_n" resolved={resolvedModels?.top_n} />
         </SectionCard>
       )}
 
@@ -2314,6 +2341,7 @@ function AssistanceModePanel({
               <option value="self_consistency">Self-consistency — K samples, majority vote</option>
             </select>
           </Field>
+          <ResolvedModelLine method="human_as_a_tool" resolved={resolvedModels?.human_as_a_tool} />
         </SectionCard>
       )}
 

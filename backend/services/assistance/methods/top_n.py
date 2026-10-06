@@ -350,6 +350,10 @@ def _compose_system_prompt(extra: str | None) -> str:
 
 
 class TopNAssistance(InitialStepPreparation):
+    @classmethod
+    def default_model(cls) -> str:
+        return get_settings().llm.default_model
+
     async def start(
         self,
         question: Question | QuestionSnapshot,
@@ -359,7 +363,7 @@ class TopNAssistance(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
-        model = resolve_model(params, "top_n", settings.llm.default_model)
+        model = resolve_model(params, "top_n", self.default_model())
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
         options = _parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n

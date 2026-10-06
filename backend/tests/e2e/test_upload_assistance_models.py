@@ -15,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from config import get_settings
+
 _TOP_N = "openrouter/anthropic/claude-sonnet-4.6"
 _HAAT = "openrouter/google/gemini-3-flash-preview"
 _OTHER = "openrouter/openai/gpt-4o"
@@ -194,6 +196,41 @@ def test_the_map_inherits_the_config_lock(client: TestClient, sync_engine):
     )
     assert changed.status_code == 400
     assert "assistance_params" in changed.json()["detail"]
+
+
+def test_the_response_reports_the_model_each_method_would_run_on(client: TestClient):
+    llm = get_settings().llm
+    entry = "openrouter/test/top-n-entry"
+    assert entry not in {llm.default_model, llm.decomposition_model}
+    haat_default = {"model": llm.decomposition_model, "source": "default"}
+
+    exp = _experiment(client, assistance_method="none")
+    assert exp["resolved_models"] == {
+        "human_as_a_tool": haat_default,
+        "top_n": {"model": llm.default_model, "source": "default"},
+    }
+
+    _upload_csv(client, exp["id"], {"assistance_models": {"top_n": entry}})
+    pinned = {
+        "top_n": {"model": entry, "source": "assistance_models"},
+        "human_as_a_tool": haat_default,
+    }
+    detail = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert detail["resolved_models"] == pinned
+    listed = client.get("/api/admin/experiments").json()
+    assert next(e for e in listed if e["id"] == exp["id"])["resolved_models"] == pinned
+
+    resp = client.patch(
+        f"/api/admin/experiments/{exp['id']}",
+        json={
+            "assistance_method": "none",
+            "assistance_params": {"assistance_models": {"top_n": None}},
+        },
+    )
+    assert resp.json()["resolved_models"]["top_n"] == {
+        "model": llm.default_model,
+        "source": "default",
+    }
 
 
 @pytest.mark.parametrize(

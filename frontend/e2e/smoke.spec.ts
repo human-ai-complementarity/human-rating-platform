@@ -15,6 +15,7 @@ type ExperimentRecord = {
   archived_at: string | null;
   is_markdown: boolean;
   assistance_method: string;
+  resolved_models?: Record<string, { model: string; source: 'assistance_models' | 'default' }>;
   needs_attention: boolean;
   attention_reason: string | null;
   spend_minor_units: number;
@@ -1523,6 +1524,43 @@ test('opening an archived experiment resolves via the per-id fetch', async ({ pa
   // experiment by id directly.
   await expect(page.getByRole('heading', { name: 'Archived Experiment' })).toBeVisible();
   await expect(page.getByText('Experiment not found')).toHaveCount(0);
+});
+
+test('the assistance config shows the model each method would run on', async ({ page }) => {
+  const state = createMockState();
+  const resolved_models = {
+    top_n: { model: 'openrouter/test/top-n-entry', source: 'assistance_models' as const },
+    human_as_a_tool: { model: 'openrouter/test/platform-default', source: 'default' as const },
+  };
+  state.experiments = [
+    buildExperiment(state, { id: 1, assistance_method: 'top_n', resolved_models }),
+    buildExperiment(state, { id: 2, assistance_method: 'human_as_a_tool', resolved_models }),
+  ];
+  for (const id of [1, 2]) {
+    state.uploads[id] = [];
+    state.rounds[id] = [];
+    state.recommendations[id] = {
+      avg_time_per_question_seconds: 0,
+      remaining_rating_actions: 0,
+      total_hours_remaining: 0,
+      recommended_places: 0,
+      is_complete: false,
+    };
+  }
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-assistance').click();
+  await expect(page.getByTestId('resolved-model-top_n')).toHaveText(
+    'Model: openrouter/test/top-n-entry · from assistance_models',
+  );
+
+  await page.goto('/admin/experiments/2');
+  await page.getByTestId('tab-assistance').click();
+  await expect(page.getByTestId('resolved-model-human_as_a_tool')).toHaveText(
+    'Model: openrouter/test/platform-default · platform default',
+  );
+  await expect(page.getByTestId('resolved-model-top_n')).toHaveCount(0);
 });
 
 test('spend card formats a zero-decimal currency (ISK) without decimals', async ({ page }) => {

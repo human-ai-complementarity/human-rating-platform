@@ -58,6 +58,10 @@ class HumanAsAToolMethod(InitialStepPreparation):
         self._decomposer = SubtaskDecomposer()
         self._estimator = confidence_estimator
 
+    @classmethod
+    def default_model(cls) -> str:
+        return get_settings().llm.decomposition_model
+
     async def start(
         self,
         question: Question | QuestionSnapshot,
@@ -66,8 +70,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         parent_question_text: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        settings = get_settings()
-        model = resolve_model(params, "human_as_a_tool", settings.llm.decomposition_model)
+        model = resolve_model(params, "human_as_a_tool", self.default_model())
         max_rounds = int(params.get("max_rounds", 5))
         max_subtasks = int(params.get("max_subtasks", 5))
         confidence_threshold = int(params.get("confidence_threshold", _CONFIDENCE_THRESHOLD))
@@ -143,10 +146,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         *,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        settings = get_settings()
-        model = state.get("model") or resolve_model(
-            params, "human_as_a_tool", settings.llm.decomposition_model
-        )
+        model = state.get("model") or resolve_model(params, "human_as_a_tool", self.default_model())
 
         try:
             raw_input: dict = json.loads(human_input)

@@ -10,6 +10,8 @@ afterwards from one where the model had nothing to offer.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import HTTPException
 
 # The prefix `llm._parse_model` requires.
@@ -23,12 +25,21 @@ ASSISTANCE_MODELS_KEY = "assistance_models"
 REMOVED_MODEL_KEY = "model"
 
 
-def resolve_model(params: dict, method: str, default: str) -> str:
-    """The model `method` runs on: its `assistance_models` entry, else `default`."""
+# Where a resolved model came from: the experiment's map, or the method default.
+ModelSource = Literal["assistance_models", "default"]
+
+
+def resolve_model_and_source(params: dict, method: str, default: str) -> tuple[str, ModelSource]:
+    """`resolve_model`, plus which of the two it used."""
     models = params.get(ASSISTANCE_MODELS_KEY)
     if isinstance(models, dict) and models.get(method):
-        return models[method]
-    return default
+        return models[method], "assistance_models"
+    return default, "default"
+
+
+def resolve_model(params: dict, method: str, default: str) -> str:
+    """The model `method` runs on: its `assistance_models` entry, else `default`."""
+    return resolve_model_and_source(params, method, default)[0]
 
 
 def reject_removed_model_key(values: dict, *, where: str) -> None:

@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from models import Experiment, Question, Rating, Rater, Upload
-from schemas import ExperimentResponse
+from schemas import ExperimentResponse, ResolvedModel
+from services.assistance.registry import resolved_models
 from .groups import GroupSnapshot
 
 QUESTION_PREVIEW_LENGTH = 100
@@ -35,6 +36,8 @@ def build_experiment_response(
     group: GroupSnapshot | None = None,
     tags: list[str] | None = None,
 ) -> ExperimentResponse:
+    params = json.loads(experiment.assistance_params) if experiment.assistance_params else None
+    resolved = resolved_models(params if isinstance(params, dict) else {})
     return ExperimentResponse(
         id=experiment.id,
         name=experiment.name,
@@ -46,9 +49,11 @@ def build_experiment_response(
         question_count=question_count,
         rating_count=rating_count,
         assistance_method=experiment.assistance_method,
-        assistance_params=json.loads(experiment.assistance_params)
-        if experiment.assistance_params
-        else None,
+        assistance_params=params,
+        resolved_models={
+            method: ResolvedModel(model=model, source=source)
+            for method, (model, source) in resolved.items()
+        },
         description=experiment.description,
         system_prompt=experiment.system_prompt,
         human_prompt_prefix=experiment.human_prompt_prefix,
