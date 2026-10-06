@@ -34,7 +34,8 @@ from .tags import (
 from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
-from services.assistance.registry import get_method
+from services.assistance.model_resolution import ASSISTANCE_MODELS_KEY, validate_model_id
+from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
 from .waves import normalize_wave_token
 from .queries import (
@@ -58,6 +59,8 @@ async def create_experiment(
     group_id = payload.group_id
     if group_id is not None:
         await fetch_group_or_404(group_id, db)
+    if payload.assistance_params:
+        _validate_changed_models({}, payload.assistance_params)
 
     db_experiment = Experiment(
         name=payload.name,
@@ -561,6 +564,52 @@ def _merged_assistance_params(experiment: Experiment, incoming: dict[str, Any]) 
     return merged
 
 
+def _check_model_id(value: Any, field: str) -> None:
+    if not isinstance(value, str):
+        raise HTTPException(
+            status_code=400, detail=f"Invalid model {value!r} in {field}. Expected a string."
+        )
+    validate_model_id(value, field=field)
+
+
+def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> None:
+    """400 on a model id the transport can't parse, here rather than at rater time.
+
+    At rater time `_parse_model` raises, which the methods turn into a silent
+    no-assistance step (or a 500 for a non-string). Only values this request
+    changes are checked: the admin UI re-sends the stored params on every save,
+    so a legacy value it merely restates must not block an unrelated edit.
+    """
+    model = merged.get("model")
+    if model not in (None, "") and model != stored.get("model"):
+        _check_model_id(model, "assistance_params.model")
+
+    models = merged.get(ASSISTANCE_MODELS_KEY)
+    if models is None or models == stored.get(ASSISTANCE_MODELS_KEY):
+        return
+    field = f"assistance_params.{ASSISTANCE_MODELS_KEY}"
+    if not isinstance(models, dict):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} must be an object mapping assistance method to model.",
+        )
+    previous = stored.get(ASSISTANCE_MODELS_KEY)
+    previous = previous if isinstance(previous, dict) else {}
+    allowed = assisted_methods()
+    for method, value in models.items():
+        if value is None or value == previous.get(method):
+            continue
+        if method not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unknown assistance method {method!r} in {field}. "
+                    f"Allowed: {', '.join(allowed)}."
+                ),
+            )
+        _check_model_id(value, f"{field}.{method}")
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -585,12 +634,15 @@ async def update_experiment(
                 ),
             )
 
+    merged_params = None
+    if payload.assistance_params is not None:
+        merged_params = _merged_assistance_params(experiment, payload.assistance_params)
+        _validate_changed_models(_stored_assistance_params(experiment), merged_params)
+
     experiment.assistance_method = payload.assistance_method
 
-    if payload.assistance_params is not None:
-        experiment.assistance_params = json.dumps(
-            _merged_assistance_params(experiment, payload.assistance_params)
-        )
+    if merged_params is not None:
+        experiment.assistance_params = json.dumps(merged_params)
     if payload.name is not None:
         stripped_name = payload.name.strip()
         if not stripped_name:
