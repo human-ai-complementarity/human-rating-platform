@@ -83,7 +83,7 @@ The pilot can't be created until the experiment has rater instructions, a prompt
 
 ### Dataset cards and the one-click pilot
 
-A grouped experiment's dataset has a **card**: study name templates, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. A new experiment copies the card's internal name template (and, for API callers, the public name and ratings target) when it's created.
+A grouped experiment's dataset has a **card**: study name templates, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. Edit it from the **card** chip on any of the dataset's groups in the Experiments page's **Grouped** view; the editor shows how ready the card is. A new experiment copies the card's internal name template (and, for API callers, the public name and ratings target) when it's created.
 
 A card is **launchable** once it has both name templates and the blurb, and **complete** once it also has the time and reward. With a complete card, the Launch tab offers **Create pilot draft from the card**: one click instead of the pilot form, publishing still separate. It automatically excludes the participants of every other experiment in the dataset's groups (any wave, any status, even one with no study yet), and lists them before you confirm. Create all of a wave's arms before piloting any: an arm added later isn't excluded by the pilots before it (see the one-way note below). The draft can still be edited before you publish it. An incomplete card names what it's missing.
 

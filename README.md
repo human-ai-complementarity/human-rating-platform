@@ -508,7 +508,7 @@ q3,Summarise the passage in one sentence.,,,FT
 
 ## Dataset Cards
 
-A dataset's card declares once how studies on it run. Set it with `PATCH /api/admin/datasets/{id}`: an omitted field is left alone and an explicit `null` clears it.
+A dataset's card declares once how studies on it run. Edit it from the **card** chip on any of the dataset's groups in the Experiments page's **Grouped** view, or with `PATCH /api/admin/datasets/{id}`: an omitted field is left alone and an explicit `null` clears it.
 
 | Field | What it does |
 | --- | --- |

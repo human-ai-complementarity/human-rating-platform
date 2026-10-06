@@ -12,6 +12,7 @@ import type {
 import StatusLabel from './StatusLabel';
 import RowActionMenu from './RowActionMenu';
 import ConfirmDialog from './ConfirmDialog';
+import DatasetCardEditor from './DatasetCardEditor';
 import { rewardDecimals } from './experiment-detail/reward';
 
 // Notification amber (from the design mock). Used for the row "needs attention"
@@ -117,6 +118,7 @@ type GroupBucket = {
   key: string;
   groupId: number | null;
   name: string;
+  datasetId: number | null;
   datasetName: string | null;
   wave: string | null;
   experiments: Experiment[];
@@ -135,6 +137,7 @@ function bucketExperiments(experiments: Experiment[]): GroupBucket[] {
       key,
       groupId: exp.group_id,
       name: exp.group_name ?? 'Ungrouped',
+      datasetId: exp.group_dataset_id,
       datasetName: exp.group_dataset_name,
       wave: exp.wave,
       experiments: [exp],
@@ -179,6 +182,7 @@ function AdminView() {
   const [groups, setGroups] = useState<ExperimentGroup[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<Tag[]>([]);
+  const [editingCard, setEditingCard] = useState<{ id: number; name: string } | null>(null);
 
   // Delete is the one destructive/irreversible action, so it still confirms;
   // archive/restore apply immediately with a toast (per the mock).
@@ -441,8 +445,21 @@ function AdminView() {
           onDuplicate={handleDuplicateExperiment}
           onArchiveToggle={handleArchiveToggle}
           onDelete={(exp) => setPendingDelete(exp)}
+          datasets={datasets}
+          onEditCard={(id, name) => setEditingCard({ id, name })}
         />
       </div>
+
+      {editingCard && (
+        <DatasetCardEditor
+          datasetId={editingCard.id}
+          datasetName={editingCard.name}
+          currencyCode={currencyCode}
+          currencySymbol={currencySymbol}
+          onClose={() => setEditingCard(null)}
+          onSaved={() => void loadCatalog()}
+        />
+      )}
 
       {pendingDelete && (
         <ConfirmDialog
@@ -495,6 +512,8 @@ function ListPanel({
   onDuplicate,
   onArchiveToggle,
   onDelete,
+  datasets,
+  onEditCard,
 }: {
   experiments: Experiment[];
   loading: boolean;
@@ -521,6 +540,8 @@ function ListPanel({
   onDuplicate: (exp: Experiment) => void;
   onArchiveToggle: (exp: Experiment) => void;
   onDelete: (exp: Experiment) => void;
+  datasets: Dataset[];
+  onEditCard: (datasetId: number, datasetName: string) => void;
 }) {
   return (
     <div>
@@ -763,6 +784,8 @@ function ListPanel({
               onDelete={onDelete}
               onWaveClick={(wave) => onWaveFilterChange(waveFilter === wave ? '' : wave)}
               onTagClick={onTagFilterChange}
+              card={datasets.find((d) => d.id === bucket.datasetId)}
+              onEditCard={onEditCard}
             />
           ))}
         </div>
@@ -806,6 +829,8 @@ function GroupCard({
   onDelete,
   onWaveClick,
   onTagClick,
+  card,
+  onEditCard,
 }: {
   bucket: GroupBucket;
   currencySymbol: string;
@@ -816,11 +841,14 @@ function GroupCard({
   onDelete: (exp: Experiment) => void;
   onWaveClick: (wave: string) => void;
   onTagClick: (tag: string) => void;
+  card: Dataset | undefined;
+  onEditCard: (datasetId: number, datasetName: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const spend = bucket.experiments.reduce((sum, exp) => sum + (exp.spend_minor_units || 0), 0);
   const attention = bucket.experiments.find((exp) => exp.needs_attention);
   const isGroup = bucket.groupId != null;
+  const datasetId = bucket.datasetId;
   const methodsPresent = new Set(
     bucket.experiments.map((exp) => exp.assistance_method || 'none'),
   );
@@ -993,6 +1021,28 @@ function GroupCard({
               </span>
             );
           })}
+          {datasetId != null && (
+            <button
+              type="button"
+              data-testid={`group-card-edit-${bucket.groupId}`}
+              title="Edit the dataset card"
+              onClick={() => onEditCard(datasetId, bucket.datasetName ?? 'dataset')}
+              style={{
+                marginLeft: 'auto',
+                border: '1px solid var(--faint)',
+                borderRadius: 999,
+                padding: '2px 10px',
+                font: '600 11px var(--font-mono)',
+                color: card?.complete ? 'var(--accent-soft-ink)' : 'var(--muted)',
+                background: 'var(--surface)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {bucket.datasetName} card ·{' '}
+              {!card ? 'edit' : card.complete ? 'complete' : card.launch_ready ? 'launchable' : 'incomplete'}
+            </button>
+          )}
         </div>
       )}
 
