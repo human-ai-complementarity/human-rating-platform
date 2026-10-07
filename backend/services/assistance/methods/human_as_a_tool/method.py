@@ -6,7 +6,8 @@ the threshold) to the human. It repeats this for up to max_rounds rounds,
 incorporating human answers each time, before synthesising a final answer.
 
 assistance_params:
-    model:                LLM to use for decomposition (default: settings.llm.decomposition_model)
+    assistance_models:    {"human_as_a_tool": LLM for decomposition}
+                          (default: settings.llm.decomposition_model)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
     confidence_model:     LLM for confidence scoring (default: settings.llm.confidence_model)
     clustering_model:     LLM for semantic clustering, sampling method only (default: same as confidence_model)
@@ -28,6 +29,7 @@ from models import Question
 
 from ...base import InteractionStep, StepType
 from ...preparation import InitialStepPreparation, QuestionSnapshot
+from ...model_resolution import resolve_model
 from ...confidence import (
     ConfidenceEstimator,
     LLMConfidenceEstimator,
@@ -56,6 +58,10 @@ class HumanAsAToolMethod(InitialStepPreparation):
         self._decomposer = SubtaskDecomposer()
         self._estimator = confidence_estimator
 
+    @classmethod
+    def default_model(cls) -> str:
+        return get_settings().llm.decomposition_model
+
     async def start(
         self,
         question: Question | QuestionSnapshot,
@@ -64,8 +70,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         parent_question_text: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        settings = get_settings()
-        model = params.get("model") or settings.llm.decomposition_model
+        model = resolve_model(params, "human_as_a_tool", self.default_model())
         max_rounds = int(params.get("max_rounds", 5))
         max_subtasks = int(params.get("max_subtasks", 5))
         confidence_threshold = int(params.get("confidence_threshold", _CONFIDENCE_THRESHOLD))
@@ -141,8 +146,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         *,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        settings = get_settings()
-        model = state.get("model") or params.get("model") or settings.llm.decomposition_model
+        model = state.get("model") or resolve_model(params, "human_as_a_tool", self.default_model())
 
         try:
             raw_input: dict = json.loads(human_input)

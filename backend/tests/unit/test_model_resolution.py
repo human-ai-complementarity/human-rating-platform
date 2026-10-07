@@ -1,0 +1,119 @@
+"""Which model each assistance method runs on (`resolve_model`)."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from config import get_settings
+from models import Question
+from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
+from services.assistance.methods.top_n import TopNAssistance
+from services.assistance.model_resolution import resolve_model
+from services.assistance.registry import resolved_models
+
+# Sentinels, not real models: a map entry equal to a settings default would
+# let a call site that ignores the map pass anyway.
+_TOP_N = "openrouter/test/top-n-entry"
+_HAAT = "openrouter/test/human-as-a-tool-entry"
+_SESSION = "openrouter/test/session-state"
+_MAP = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": _HAAT}}
+_DEFAULT = "openrouter/default"
+
+
+def test_sentinels_differ_from_every_settings_default():
+    llm = get_settings().llm
+    defaults = {llm.default_model, llm.decomposition_model, llm.confidence_model}
+    assert defaults.isdisjoint({_TOP_N, _HAAT, _SESSION})
+
+
+def test_each_method_resolves_its_own_entry():
+    assert resolve_model(_MAP, "top_n", _DEFAULT) == _TOP_N
+    assert resolve_model(_MAP, "human_as_a_tool", _DEFAULT) == _HAAT
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {},
+        {"assistance_models": {"human_as_a_tool": _HAAT}},
+        {"assistance_models": {"top_n": None}},
+        {"assistance_models": None},
+    ],
+)
+def test_it_falls_back_to_the_default(params):
+    assert resolve_model(params, "top_n", _DEFAULT) == _DEFAULT
+
+
+def test_a_leftover_model_key_is_ignored():
+    """`model` was removed; an old session snapshot may still carry it."""
+    assert resolve_model({"model": _SESSION}, "top_n", _DEFAULT) == _DEFAULT
+    assert resolve_model({**_MAP, "model": _SESSION}, "top_n", _DEFAULT) == _TOP_N
+
+
+def test_resolved_models_gives_every_assisted_method_its_model_and_source():
+    llm = get_settings().llm
+    params = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": None}}
+    assert resolved_models(params) == {
+        "human_as_a_tool": (llm.decomposition_model, "default"),
+        "top_n": (_TOP_N, "assistance_models"),
+    }
+
+
+def test_an_entry_equal_to_the_default_still_reports_the_map():
+    default = get_settings().llm.default_model
+    resolved = resolved_models({"assistance_models": {"top_n": default}})
+    assert resolved["top_n"] == (default, "assistance_models")
+
+
+def _question() -> Question:
+    return Question(
+        id=1,
+        experiment_id=1,
+        question_id="q1",
+        question_text="Q?",
+        options="A|B",
+        question_type="MC",
+    )
+
+
+@pytest.mark.asyncio
+async def test_top_n_start_uses_its_entry():
+    llm = AsyncMock(side_effect=RuntimeError("stop"))
+    with patch("services.assistance.methods.top_n._complete_with_schema_fallback", new=llm):
+        await TopNAssistance().start(_question(), _MAP)
+    assert llm.call_args.kwargs["model"] == _TOP_N
+
+
+@pytest.mark.asyncio
+async def test_human_as_a_tool_start_uses_its_entry():
+    method = HumanAsAToolMethod()
+    method._decomposer.start = AsyncMock(side_effect=RuntimeError("stop"))
+    await method.start(_question(), _MAP)
+    assert method._decomposer.start.call_args.args[3] == _HAAT
+
+
+@pytest.mark.parametrize(
+    ("state_model", "expected"),
+    [(None, _HAAT), (_SESSION, _SESSION)],
+)
+@pytest.mark.asyncio
+async def test_human_as_a_tool_advance_prefers_the_session_model(state_model, expected):
+    method = HumanAsAToolMethod()
+    method._decomposer.advance = AsyncMock(side_effect=RuntimeError("stop"))
+    await method.advance({"model": state_model}, "{}", _MAP)
+    assert method._decomposer.advance.call_args.kwargs["model"] == expected
+
+
+@pytest.mark.asyncio
+async def test_without_params_methods_keep_their_defaults():
+    llm = AsyncMock(side_effect=RuntimeError("stop"))
+    with patch("services.assistance.methods.top_n._complete_with_schema_fallback", new=llm):
+        await TopNAssistance().start(_question(), {})
+    method = HumanAsAToolMethod()
+    method._decomposer.start = AsyncMock(side_effect=RuntimeError("stop"))
+    await method.start(_question(), {})
+
+    settings = get_settings().llm
+    assert llm.call_args.kwargs["model"] == settings.default_model
+    assert method._decomposer.start.call_args.args[3] == settings.decomposition_model

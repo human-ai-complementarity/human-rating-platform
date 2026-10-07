@@ -11,6 +11,7 @@ import type {
   PilotStudyCreate,
   ProlificPricing,
   RecommendationResponse,
+  ResolvedModel,
   Screener,
   Upload,
   UploadMetaKey,
@@ -54,16 +55,23 @@ function formatSessionLength(minutes: number): string {
 
 // Labels for every key an upload can declare. The first five are the editable
 // fields in the Instructions & prompts panel, in the order the CSV `#META:`
-// JSON uses; `model` has no editable field — it is reported in upload results
-// only, because the upload pins it into assistance_params.
+// JSON uses; the per-method `assistance_models.<method>` keys have no editable
+// field — they are reported in upload results only, because the upload pins
+// them into assistance_params.
 const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   description: 'Dataset description',
   system_prompt: 'AI system prompt',
   human_prompt_prefix: 'Question prefix (shown above)',
   human_prompt_suffix: 'Question suffix (shown below)',
   prolific_pool: 'Prolific participant pool',
-  model: 'Assistance model',
+  'assistance_models.top_n': 'Top-N model',
+  'assistance_models.human_as_a_tool': 'Human-as-a-Tool model',
 };
+
+// A key with no label (a method added since) shows as itself.
+function metaLabel(key: string): string {
+  return DATASET_META_LABELS[key as UploadMetaKey] ?? key;
+}
 
 const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
   description:
@@ -732,13 +740,13 @@ function ExperimentDetail({
       const parts: string[] = [result.message];
       if (result.meta_applied.length > 0) {
         parts.push(
-          `Applied metadata: ${result.meta_applied.map((f) => DATASET_META_LABELS[f]).join(', ')}.`,
+          `Applied metadata: ${result.meta_applied.map(metaLabel).join(', ')}.`,
         );
       }
       if (result.meta_conflicts.length > 0) {
         parts.push(
           `Kept existing values (this upload declared different ${result.meta_conflicts
-            .map((f) => DATASET_META_LABELS[f])
+            .map(metaLabel)
             .join(', ')}).`,
         );
       }
@@ -1231,6 +1239,7 @@ function ExperimentDetail({
             }
             topNValue={topNValue}
             confidenceMethod={confidenceMethod}
+            resolvedModels={experiment.resolved_models}
             systemPrompt={metaForm.system_prompt}
             onSystemPromptChange={(v) => {
               metaFormDirtyRef.current = true;
@@ -1819,9 +1828,7 @@ function QuestionsPanel({
           }}
         >
           {uploads.map((upload, idx) => {
-            const metaKeys = upload.dataset_meta
-              ? (Object.keys(upload.dataset_meta) as DatasetMetaField[])
-              : [];
+            const metaKeys = upload.dataset_meta ? Object.keys(upload.dataset_meta) : [];
             return (
               <div
                 key={upload.id}
@@ -2191,10 +2198,33 @@ function MetadataPanel({
 
 // ── Rater assistance panel ───────────────────────────────────────────────
 
+// The model a method would run on, as the backend resolved it.
+function ResolvedModelLine({
+  method,
+  resolved,
+}: {
+  method: 'top_n' | 'human_as_a_tool';
+  resolved: ResolvedModel | undefined;
+}) {
+  if (!resolved) return null;
+  return (
+    <div
+      data-testid={`resolved-model-${method}`}
+      style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}
+    >
+      Model:{' '}
+      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{resolved.model}</span>
+      {' · '}
+      {resolved.source === 'assistance_models' ? 'from assistance_models' : 'platform default'}
+    </div>
+  );
+}
+
 function AssistanceModePanel({
   method,
   topNValue,
   confidenceMethod,
+  resolvedModels,
   systemPrompt,
   onSystemPromptChange,
   onSaveSystemPrompt,
@@ -2211,6 +2241,7 @@ function AssistanceModePanel({
   method: 'none' | 'top_n' | 'human_as_a_tool';
   topNValue: number;
   confidenceMethod: string;
+  resolvedModels: Record<string, ResolvedModel> | undefined;
   systemPrompt: string;
   onSystemPromptChange: (v: string) => void;
   onSaveSystemPrompt: () => void;
@@ -2292,6 +2323,7 @@ function AssistanceModePanel({
               style={{ ...inputStyle, width: 140 }}
             />
           </Field>
+          <ResolvedModelLine method="top_n" resolved={resolvedModels?.top_n} />
         </SectionCard>
       )}
 
@@ -2309,6 +2341,7 @@ function AssistanceModePanel({
               <option value="self_consistency">Self-consistency — K samples, majority vote</option>
             </select>
           </Field>
+          <ResolvedModelLine method="human_as_a_tool" resolved={resolvedModels?.human_as_a_tool} />
         </SectionCard>
       )}
 

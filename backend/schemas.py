@@ -192,6 +192,14 @@ class ExperimentCreate(BaseModel):
     tags: list[TagName] = Field(default_factory=list)
 
 
+class ResolvedModel(BaseModel):
+    """The model an assisted method would run on, from `resolve_model`."""
+
+    model: str
+    # "assistance_models": the experiment's own entry. "default": the platform's.
+    source: Literal["assistance_models", "default"]
+
+
 class ExperimentResponse(BaseModel):
     id: int
     name: str
@@ -204,6 +212,9 @@ class ExperimentResponse(BaseModel):
     rating_count: int = 0
     assistance_method: str = "none"
     assistance_params: Optional[dict] = None
+    # Keyed by assisted method, whichever is selected, so the UI shows the
+    # backend's answer rather than re-deriving defaults.
+    resolved_models: dict[str, ResolvedModel] = Field(default_factory=dict)
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None

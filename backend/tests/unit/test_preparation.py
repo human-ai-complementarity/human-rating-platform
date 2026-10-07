@@ -29,7 +29,7 @@ def context():
     )
     return PreparationContext(
         question=QuestionSnapshot.capture(question),
-        params_json='{"model": "test", "nested": {"n": 2}}',
+        params_json='{"n": 2, "nested": {"n": 2}}',
         parent_question_text="Parent context",
         experiment_system_prompt="Study instructions",
     )
@@ -139,7 +139,10 @@ async def test_real_top_n_preparation_preserves_question_and_context(monkeypatch
         )
     )
     monkeypatch.setattr("services.assistance.methods.top_n.complete", complete)
-    snapshot = replace(context(), params_json='{"model": "openrouter/preparation-test", "n": 1}')
+    snapshot = replace(
+        context(),
+        params_json='{"assistance_models": {"top_n": "openrouter/preparation-test"}, "n": 1}',
+    )
     method = get_method("top_n")
     spec = method.plan_preparation(snapshot)
     artifact = await method.prepare(spec)
@@ -184,7 +187,12 @@ async def test_real_human_as_a_tool_preparation_preserves_question_and_context(m
     monkeypatch.setattr("services.assistance.confidence.complete", confidence)
     snapshot = replace(
         context(),
-        params_json='{"model": "openrouter/decomposition-test", "confidence_model": "openrouter/confidence-test"}',
+        params_json=json.dumps(
+            {
+                "assistance_models": {"human_as_a_tool": "openrouter/decomposition-test"},
+                "confidence_model": "openrouter/confidence-test",
+            }
+        ),
     )
     method = get_method("human_as_a_tool")
     spec = method.plan_preparation(snapshot)
