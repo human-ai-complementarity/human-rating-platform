@@ -32,7 +32,29 @@ type DatasetRecord = {
   name: string;
   waves: string[];
   created_at: string;
+  // Card fields and readiness, for specs that read or edit the card.
+  external_study_name?: string | null;
+  internal_study_name?: string | null;
+  study_blurb?: string | null;
+  estimated_completion_time?: number | null;
+  reward?: number | null;
+  complete?: boolean;
+  missing_for_complete?: string[];
 };
+
+const COMPLETE_CARD_FIELDS = [
+  'external_study_name',
+  'internal_study_name',
+  'study_blurb',
+  'estimated_completion_time',
+  'reward',
+] as const;
+
+// Mirrors the backend's `complete` readiness level for the mocked card.
+function withCardReadiness(dataset: DatasetRecord): DatasetRecord {
+  const missing = COMPLETE_CARD_FIELDS.filter((field) => dataset[field] == null);
+  return { ...dataset, complete: missing.length === 0, missing_for_complete: missing };
+}
 
 type GroupRecord = {
   id: number;
@@ -133,6 +155,7 @@ type MockState = {
   recommendations: Record<number, RecommendationRecord>;
   statsRequests: string[];
   recommendationRequests: string[];
+  datasetPatches: Record<string, unknown>[];
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
@@ -207,6 +230,7 @@ function createMockState(): MockState {
     recommendations: {},
     statsRequests: [],
     recommendationRequests: [],
+    datasetPatches: [],
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
@@ -318,6 +342,21 @@ async function installApiMocks(
       };
       state.datasets = [...state.datasets, dataset];
       await fulfillJson(route, 200, dataset);
+      return;
+    }
+
+    const datasetByIdMatch = pathname.match(/^\/api\/admin\/datasets\/(\d+)$/);
+    if (datasetByIdMatch && (method === 'GET' || method === 'PATCH')) {
+      const index = state.datasets.findIndex((item) => item.id === Number(datasetByIdMatch[1]));
+      if (index === -1) {
+        await fulfillJson(route, 404, { detail: 'Dataset not found' });
+        return;
+      }
+      if (method === 'PATCH') {
+        state.datasetPatches.push(request.postDataJSON() as Record<string, unknown>);
+        state.datasets[index] = { ...state.datasets[index], ...request.postDataJSON() };
+      }
+      await fulfillJson(route, 200, withCardReadiness(state.datasets[index]));
       return;
     }
 
@@ -2205,4 +2244,109 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
     'PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>.',
   );
   await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
+});
+
+
+test("a pilot's time and reward can be saved to the dataset card", async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [
+    {
+      id: 1,
+      name: 'passages',
+      waves: ['fall25'],
+      created_at: '2026-03-09T00:00:00Z',
+      external_study_name: 'Passage rating',
+      internal_study_name: '{dataset} {wave} {method}',
+      study_blurb: 'Rate short passages.',
+      estimated_completion_time: 30,
+      reward: null,
+    },
+  ];
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Piloted Experiment',
+      question_count: 2,
+      group_id: 1,
+      group_name: 'passages fall25',
+      group_dataset_id: 1,
+      group_dataset_name: 'passages',
+      wave: 'fall25',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [
+    buildRound(state, {
+      round_number: 0,
+      prolific_study_status: 'AWAITING_REVIEW',
+      places_requested: 5,
+      estimated_completion_time: 20,
+      // Per participant, in minor units: £9.00.
+      reward: 900,
+    }),
+  ];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 42,
+    remaining_rating_actions: 300,
+    total_hours_remaining: 3.5,
+    recommended_places: 4,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  const panel = page.getByTestId('save-to-card-panel');
+  await expect(panel).toContainText('The pilot was set to 20 min and £9.00 per participant');
+  await expect(page.getByTestId('card-readiness')).toHaveText(
+    'Card incomplete: missing reward.',
+  );
+
+  // The card already has a different time: declining the confirm writes nothing.
+  // Drop the suite's accept-everything handler so this test answers itself.
+  page.removeAllListeners('dialog');
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toBe(
+      "The passages card already has 30 min. Replace with the pilot's 20 min and £9.00?",
+    );
+    await dialog.dismiss();
+  });
+  await page.getByTestId('save-to-card-button').click();
+  await expect(page.getByTestId('save-to-card-button')).toBeEnabled();
+  expect(state.datasetPatches).toEqual([]);
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByTestId('save-to-card-button').click();
+
+  // Copied unconverted: minutes, and minor units per participant.
+  await expect(page.getByTestId('card-readiness')).toHaveText(
+    'Card complete: the next study on this dataset can launch in one click.',
+  );
+  expect(state.datasetPatches).toEqual([{ estimated_completion_time: 20, reward: 900 }]);
+  await expect(page.getByTestId('save-to-card-button')).toHaveCount(0);
+  await expect(panel).toContainText('The passages card carries the same.');
+});
+
+test('an ungrouped experiment has no dataset card to save the pilot to', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Loose Experiment', question_count: 2 })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [buildRound(state, { round_number: 0, prolific_study_status: 'AWAITING_REVIEW' })];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 42,
+    remaining_rating_actions: 300,
+    total_hours_remaining: 3.5,
+    recommended_places: 4,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await expect(page.getByTestId('recommendation-panel')).toBeVisible();
+  await expect(page.getByTestId('save-to-card-panel')).toHaveCount(0);
 });
