@@ -201,6 +201,9 @@ export interface AssistanceStep {
   session_id: number;
   type: AssistanceStepType;
   is_terminal: boolean;
+  // Which step of the session this is; echoed back on advance so a duplicate
+  // submit is recognised server-side instead of advancing the session twice.
+  turn: number;
   payload: {
     kind?: 'top_n' | string;
     top_n?: number;

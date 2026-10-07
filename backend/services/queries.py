@@ -6,11 +6,18 @@ These are used across multiple service domains. Domain-specific queries
 
 from __future__ import annotations
 
+import json
+
 from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Dataset, Experiment, Question, Rater, Rating
+
+
+def load_json_column(value: str | None) -> dict:
+    """Decode a JSON-encoded Text column, treating NULL/empty as an empty object."""
+    return json.loads(value) if value else {}
 
 
 async def fetch_dataset_or_404(dataset_id: int, db: AsyncSession) -> Dataset:

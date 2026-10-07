@@ -800,13 +800,13 @@ export const api = {
 
   async advanceAssistance(
     sessionToken: string,
-    sessionId: number,
+    step: Pick<AssistanceStep, 'session_id' | 'turn'>,
     answers: Record<number, { answer: string; confidence: number }>
   ): Promise<AssistanceStep> {
     return requestJson<AssistanceStep>(routes.rater.assistanceAdvance, {
       method: 'POST',
       headers: { 'X-Rater-Session': sessionToken },
-      json: { session_id: sessionId, human_input: JSON.stringify(answers) },
+      json: { session_id: step.session_id, human_input: JSON.stringify(answers), turn: step.turn },
     });
   },
 };

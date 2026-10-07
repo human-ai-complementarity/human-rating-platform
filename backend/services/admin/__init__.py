@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .analytics import get_experiment_analytics
+from .assistance_sessions import get_assistance_session, list_assistance_sessions
 from .datasets import (
     create_dataset,
     delete_dataset,
@@ -65,7 +66,9 @@ __all__ = [
     "get_experiment",
     "get_group",
     "get_experiment_analytics",
+    "get_assistance_session",
     "get_experiment_stats",
+    "list_assistance_sessions",
     "list_datasets",
     "list_experiments",
     "list_groups",

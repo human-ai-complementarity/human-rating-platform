@@ -528,6 +528,60 @@ class AssistanceSession(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+    # Number of steps the method has produced for this session, failed attempts
+    # included; 1 once start() has run. Returned to the client with every step
+    # and echoed back on advance, so a duplicate submit of an already-answered
+    # step can be recognised instead of advancing the session twice.
+    turn: int = Field(
+        default=1,
+        sa_column=Column(Integer, nullable=False, server_default=text("1")),
+    )
+
+
+class AssistanceEvent(SQLModel, table=True):
+    """Append-only log of every call across the assistance method boundary.
+
+    One row per start()/advance() call: what went in, what came out, how long
+    it took, and what went wrong. AssistanceSession.state/payload hold only the
+    *current* step; each advance overwrites them. This table keeps every step,
+    so a failed or surprising session can be reconstructed after the fact, and
+    what the rater was shown at each turn is recoverable for reliance analysis
+    without a separate presented-candidates field.
+
+    Rows are written by services.assistance.operations and never updated or
+    deleted on their own; they go away only with their session (CASCADE).
+    """
+
+    __tablename__ = "assistance_events"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    assistance_session_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("assistance_sessions.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    # The step type the call produced.
+    step_type: str = Field(sa_column=Column(String(32), nullable=False))
+    # Wall-clock duration of the method call.
+    latency_ms: int = Field(sa_column=Column(Integer, nullable=False))
+    # JSON: {"request": {...}, "response": {...}}. request holds the inputs
+    # ({"params", "retried_step_type"} on start, {"human_input", "step_type"}
+    # on advance); response holds the step's payload, state, is_terminal and,
+    # when set, failure_reason.
+    payload: str = Field(sa_column=Column(Text, nullable=False))
+    # Exception text or the method's failure_reason; null when the call succeeded.
+    error: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
 
 class Dataset(SQLModel, table=True):
