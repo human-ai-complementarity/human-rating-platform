@@ -1,8 +1,8 @@
 """add_assistance_events
 
-Revision ID: 20261004000000
-Revises: 20260924000000
-Create Date: 2026-10-04 00:00:00.000000
+Revision ID: 20261007000000
+Revises: 20261006000000
+Create Date: 2026-10-07 00:00:00.000000
 
 """
 
@@ -12,8 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20261004000000"
-down_revision: Union[str, Sequence[str], None] = "20260924000000"
+revision: str = "20261007000000"
+down_revision: Union[str, Sequence[str], None] = "20261006000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
