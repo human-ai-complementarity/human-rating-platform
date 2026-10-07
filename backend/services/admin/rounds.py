@@ -665,6 +665,8 @@ async def run_pilot_study(
     experiment_id: int,
     payload: PilotStudyCreate,
     db: AsyncSession,
+    *,
+    preapproved_exclusion_ids: list[int] | None = None,
 ) -> ExperimentRoundResponse:
     settings = get_settings()
     if not settings.prolific.enabled:
@@ -681,18 +683,24 @@ async def run_pilot_study(
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
     # Pilot creation is the first write for this experiment's exclusion list —
-    # every listed target is "new", so all must be FINISHED. Grandfathering
-    # only kicks in on subsequent edits when IDs were already present.
+    # every listed target is "new", so all must be FINISHED, bar any the
+    # server chose itself (`preapproved_exclusion_ids`, from one-click launch).
+    # Grandfathering only kicks in on subsequent edits when IDs were already
+    # present.
     await validate_new_exclusion_targets(
         excluded_experiment_ids,
-        previously_allowed_ids=[],
+        previously_allowed_ids=preapproved_exclusion_ids or [],
         db=db,
-    )
-    blocklist_group_ids = await _build_round_blocklist_group_ids(
-        experiment, excluded_experiment_ids, db
     )
 
     try:
+        # Inside the try: building the blocklist lazily creates participant
+        # groups on Prolific (this experiment's own, and any excluded sibling's
+        # that has none yet, which one-click launch makes common), so a failure
+        # there is a Prolific failure too, reported the same way.
+        blocklist_group_ids = await _build_round_blocklist_group_ids(
+            experiment, excluded_experiment_ids, db
+        )
         result = await _create_prolific_study_for_round(
             experiment,
             round_number=0,
