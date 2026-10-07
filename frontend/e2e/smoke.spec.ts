@@ -38,22 +38,29 @@ type DatasetRecord = {
   study_blurb?: string | null;
   estimated_completion_time?: number | null;
   reward?: number | null;
+  num_ratings_per_question?: number | null;
+  study_label?: string | null;
+  screeners?: string[] | null;
+  launch_ready?: boolean;
+  missing_for_launch?: string[];
   complete?: boolean;
   missing_for_complete?: string[];
 };
 
-const COMPLETE_CARD_FIELDS = [
-  'external_study_name',
-  'internal_study_name',
-  'study_blurb',
-  'estimated_completion_time',
-  'reward',
-] as const;
+const LAUNCH_CARD_FIELDS = ['external_study_name', 'internal_study_name', 'study_blurb'] as const;
+const COMPLETE_CARD_FIELDS = [...LAUNCH_CARD_FIELDS, 'estimated_completion_time', 'reward'] as const;
 
-// Mirrors the backend's `complete` readiness level for the mocked card.
+// Mirrors the backend's two readiness levels for the mocked card.
 function withCardReadiness(dataset: DatasetRecord): DatasetRecord {
+  const missingLaunch = LAUNCH_CARD_FIELDS.filter((field) => dataset[field] == null);
   const missing = COMPLETE_CARD_FIELDS.filter((field) => dataset[field] == null);
-  return { ...dataset, complete: missing.length === 0, missing_for_complete: missing };
+  return {
+    ...dataset,
+    launch_ready: missingLaunch.length === 0,
+    missing_for_launch: missingLaunch,
+    complete: missing.length === 0,
+    missing_for_complete: missing,
+  };
 }
 
 type GroupRecord = {
@@ -335,7 +342,7 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/datasets' && method === 'GET') {
-      await fulfillJson(route, 200, state.datasets);
+      await fulfillJson(route, 200, state.datasets.map(withCardReadiness));
       return;
     }
 
@@ -2542,4 +2549,151 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   );
   await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
   await expect(page.getByTestId('launch-blockers')).toBeVisible();
+});
+
+test('the dataset card editor saves what changed and shows both readiness levels', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, {
+    external_study_name: 'Passage rating',
+    internal_study_name: null,
+    study_blurb: null,
+    estimated_completion_time: 30,
+    reward: 900,
+    num_ratings_per_question: 3,
+  });
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin');
+
+  await expect(page.getByTestId('group-card-edit-1')).toHaveText('passages card · incomplete');
+  await page.getByTestId('group-card-edit-1').click();
+  const editor = page.getByTestId('dataset-card-editor');
+  await expect(editor.getByTestId('card-launch-ready')).toHaveText(
+    'Not launchable: missing internal study name, study blurb.',
+  );
+  await expect(editor.getByTestId('card-complete')).toHaveText(
+    'Not complete: missing internal study name, study blurb.',
+  );
+  // Minor units per participant, entered as the pilot form's reward is.
+  await expect(editor.getByTestId('card-reward-input')).toHaveValue('9.00');
+
+  // An unknown placeholder is caught before anything is sent.
+  await editor.getByTestId('card-internal-name-input').fill('{dataset} {waves}');
+  await editor.getByTestId('card-save-button').click();
+  await expect(editor.getByRole('alert')).toContainText('Unknown placeholder {waves}');
+  expect(state.datasetPatches).toEqual([]);
+
+  await editor.getByTestId('card-internal-name-input').fill('{dataset} {wave} {method}');
+  await editor.getByTestId('card-blurb-input').fill('Rate short passages.');
+  await editor.getByTestId('card-reward-input').fill('12.5');
+  await editor.getByTestId('card-ratings-input').fill('');
+  await editor.getByTestId('card-save-button').click();
+
+  await expect(editor.getByTestId('card-launch-ready')).toHaveText('Launchable.');
+  await expect(editor.getByTestId('card-complete')).toHaveText(
+    'Complete: one-click pilots available.',
+  );
+  // Only what changed is sent, and a cleared field is an explicit null.
+  expect(state.datasetPatches).toEqual([
+    {
+      internal_study_name: '{dataset} {wave} {method}',
+      study_blurb: 'Rate short passages.',
+      reward: 1250,
+      num_ratings_per_question: null,
+    },
+  ]);
+  await expect(editor.getByTestId('card-reward-input')).toHaveValue('12.50');
+
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect(page.getByTestId('group-card-edit-1')).toHaveText('passages card · complete');
+});
+
+test('the card editor sends the other card fields and tells no screeners from defaults', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, COMPLETE_CARD);
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin');
+  await page.getByTestId('group-card-edit-1').click();
+  const editor = page.getByTestId('dataset-card-editor');
+
+  // The public name may only use {dataset}, and no template carries a round suffix.
+  await editor.getByTestId('card-external-name-input').fill('{dataset} {wave}');
+  await editor.getByTestId('card-save-button').click();
+  await expect(editor.getByRole('alert')).toContainText(
+    'Unknown placeholder {wave} in external study name. Available: {dataset}.',
+  );
+  await editor.getByTestId('card-external-name-input').fill('{dataset} - Pilot');
+  await editor.getByTestId('card-save-button').click();
+  await expect(editor.getByRole('alert')).toContainText(
+    'Leave "- Pilot" and "- Round" out of external study name',
+  );
+  expect(state.datasetPatches).toEqual([]);
+
+  // Unset screeners show the launch defaults; unticking them all declares none.
+  await expect(editor).toContainText('Not set: launches use these defaults.');
+  for (const screener of ['ai_taskers', 'fact_checkers', 'approval_rate']) {
+    await editor.getByTestId(`card-screener-${screener}`).uncheck();
+  }
+  await editor.getByTestId('card-external-name-input').fill('{dataset} passages');
+  await editor.getByTestId('card-time-input').fill('25');
+  await editor.getByTestId('card-study-label-select').selectOption('survey');
+  await editor.getByTestId('card-save-button').click();
+  await expect.poll(() => state.datasetPatches.length).toBe(1);
+  expect(state.datasetPatches[0]).toEqual({
+    external_study_name: '{dataset} passages',
+    estimated_completion_time: 25,
+    study_label: 'survey',
+    screeners: [],
+  });
+
+  // "Use defaults" and "Not set" clear back to null.
+  await editor.getByRole('button', { name: 'Use defaults' }).click();
+  await editor.getByTestId('card-study-label-select').selectOption('');
+  await editor.getByTestId('card-save-button').click();
+  await expect.poll(() => state.datasetPatches.length).toBe(2);
+  expect(state.datasetPatches[1]).toEqual({ study_label: null, screeners: null });
+  await expect(editor).toContainText('Not set: launches use these defaults.');
+  await expect(editor.getByTestId('card-screener-ai_taskers')).toBeChecked();
+});
+
+test('the card editor asks before discarding unsaved edits', async ({ page }) => {
+  const state = createMockState();
+  seedCardExperiment(state, COMPLETE_CARD);
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+  page.removeAllListeners('dialog');
+  const prompts: string[] = [];
+  page.on('dialog', async (dialog) => {
+    prompts.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  // Nothing edited: Escape closes without asking.
+  await page.getByTestId('group-card-edit-1').click();
+  const editor = page.getByTestId('dataset-card-editor');
+  await expect(editor.getByTestId('card-blurb-input')).toHaveValue('Rate short passages.');
+  await page.keyboard.press('Escape');
+  await expect(editor).toHaveCount(0);
+
+  // Escape, the overlay and Close each ask; dismissing keeps the edit.
+  await page.getByTestId('group-card-edit-1').click();
+  await editor.getByTestId('card-blurb-input').fill('Rate long passages.');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect.poll(() => prompts.length).toBe(3);
+  expect(prompts).toEqual(Array(3).fill('Discard unsaved changes to the passages card?'));
+  await expect(editor.getByTestId('card-blurb-input')).toHaveValue('Rate long passages.');
+
+  page.removeAllListeners('dialog');
+  page.once('dialog', (dialog) => dialog.accept());
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect(editor).toHaveCount(0);
+  expect(state.datasetPatches).toEqual([]);
 });

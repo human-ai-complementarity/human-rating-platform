@@ -3567,7 +3567,7 @@ function PilotForm(props: {
   );
 }
 
-function ScreenerCheckboxes({
+export function ScreenerCheckboxes({
   value,
   onChange,
   testIdPrefix,
