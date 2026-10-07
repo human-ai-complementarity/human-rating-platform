@@ -16,8 +16,9 @@ Unparseable JSON — a comparison token, a truncated wrapper, anything the
 decoder rejects — fails closed rather than salvaging a biased subset.
 
 assistance_params:
-    model: LLM to use for ranking (default: settings.llm.default_model)
-    n:     Number of candidates to show (default: 3, range 1-10)
+    assistance_models: {"top_n": LLM to use for ranking}
+                       (default: settings.llm.default_model)
+    n:                 Number of candidates to show (default: 3, range 1-10)
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from models import Question
 from ..base import InteractionStep, StepType
 from ..preparation import InitialStepPreparation, QuestionSnapshot
 from ..llm import complete
+from ..model_resolution import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +350,10 @@ def _compose_system_prompt(extra: str | None) -> str:
 
 
 class TopNAssistance(InitialStepPreparation):
+    @classmethod
+    def default_model(cls) -> str:
+        return get_settings().llm.default_model
+
     async def start(
         self,
         question: Question | QuestionSnapshot,
@@ -357,7 +363,7 @@ class TopNAssistance(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
-        model = params.get("model") or settings.llm.default_model
+        model = resolve_model(params, "top_n", self.default_model())
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
         options = _parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n
