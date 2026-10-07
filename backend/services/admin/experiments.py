@@ -39,6 +39,7 @@ from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
+    INSTRUMENT_MODEL_KEYS,
     RELOAD_HINT,
     reject_removed_model_key,
     validate_model_id,
@@ -162,7 +163,8 @@ async def create_experiment(
     # The models are not inherited here. They are the wave's, and the wave's
     # copy lives in the pipeline — it reaches us stamped into the export's
     # `dataset_meta` and is pinned by the upload. Only an explicit payload
-    # `assistance_models` pins one at create.
+    # `assistance_models` pins one at create; it is validated because a bad id
+    # degrades to silent no-assistance rather than to an error.
     assistance_params = dict(payload.assistance_params or {}) or None
     if assistance_params:
         reject_removed_model_key(assistance_params, where="assistance_params", hint=RELOAD_HINT)
@@ -681,7 +683,13 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
     no-assistance step (or a 500 for a non-string). Only values this request
     changes are checked: the admin UI re-sends the stored params on every save,
     so a legacy value it merely restates must not block an unrelated edit.
+    Covers the confidence/clustering overrides and `assistance_models`.
     """
+    for key in INSTRUMENT_MODEL_KEYS:
+        value = merged.get(key)
+        if value not in (None, "") and value != stored.get(key):
+            _check_model_id(value, f"assistance_params.{key}")
+
     models = merged.get(ASSISTANCE_MODELS_KEY)
     if models is None or models == stored.get(ASSISTANCE_MODELS_KEY):
         return

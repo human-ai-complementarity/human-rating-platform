@@ -9,7 +9,9 @@ assistance_params:
     assistance_models:    {"human_as_a_tool": LLM for decomposition}
                           (default: settings.llm.decomposition_model)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
-    confidence_model:     LLM for confidence scoring (default: settings.llm.confidence_model)
+    confidence_model:     LLM for confidence scoring. Does NOT inherit
+                          `assistance_models` — the measurement instrument stays
+                          fixed across datasets (default: settings.llm.confidence_model)
     clustering_model:     LLM for semantic clustering, sampling method only (default: same as confidence_model)
     num_samples:          Samples per subtask, sampling method only (default: 5)
     max_rounds:           Maximum delegation rounds before forced synthesis (default: 5)
@@ -24,18 +26,17 @@ import logging
 
 import openai
 
-from config import get_settings
 from models import Question
 
 from ...base import InteractionStep, StepType
 from ...preparation import InitialStepPreparation, QuestionSnapshot
-from ...model_resolution import resolve_model
 from ...confidence import (
     ConfidenceEstimator,
     LLMConfidenceEstimator,
     SamplingConfidenceEstimator,
     SelfConsistencyConfidenceEstimator,
 )
+from ...model_resolution import resolve_model
 from .decomposer import SubtaskDecomposer
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ _EVIDENCE_EMPTY_CONFIDENCE_PENALTY = 20
 
 
 class HumanAsAToolMethod(InitialStepPreparation):
+    primary_model_role = "decomposition"
+
     rater_instructions = (
         "For each question, an AI will break it down into smaller subtasks. "
         "Subtasks the AI is confident about will be pre-filled with its answer — "
@@ -58,10 +61,6 @@ class HumanAsAToolMethod(InitialStepPreparation):
         self._decomposer = SubtaskDecomposer()
         self._estimator = confidence_estimator
 
-    @classmethod
-    def default_model(cls) -> str:
-        return get_settings().llm.decomposition_model
-
     async def start(
         self,
         question: Question | QuestionSnapshot,
@@ -70,7 +69,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         parent_question_text: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        model = resolve_model(params, "human_as_a_tool", self.default_model())
+        model = resolve_model(params, "human_as_a_tool", "decomposition")
         max_rounds = int(params.get("max_rounds", 5))
         max_subtasks = int(params.get("max_subtasks", 5))
         confidence_threshold = int(params.get("confidence_threshold", _CONFIDENCE_THRESHOLD))
@@ -146,7 +145,9 @@ class HumanAsAToolMethod(InitialStepPreparation):
         *,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        model = state.get("model") or resolve_model(params, "human_as_a_tool", self.default_model())
+        # `state` first: the model is pinned at session start so a multi-turn
+        # interaction cannot switch models mid-flight.
+        model = state.get("model") or resolve_model(params, "human_as_a_tool", "decomposition")
 
         try:
             raw_input: dict = json.loads(human_input)
@@ -227,13 +228,12 @@ class HumanAsAToolMethod(InitialStepPreparation):
     def _get_estimator(self, params: dict) -> ConfidenceEstimator:
         if self._estimator is not None:
             return self._estimator
-        settings = get_settings()
         method = params.get("confidence_method", "self_report")
-        confidence_model = params.get("confidence_model") or settings.llm.confidence_model
+        confidence_model = resolve_model(params, "human_as_a_tool", "confidence")
         if method == "sampling":
             estimator: ConfidenceEstimator = SamplingConfidenceEstimator(
                 sampling_model=confidence_model,
-                clustering_model=params.get("clustering_model") or confidence_model,
+                clustering_model=resolve_model(params, "human_as_a_tool", "clustering"),
                 num_samples=int(params.get("num_samples", 5)),
             )
         elif method == "self_consistency":
