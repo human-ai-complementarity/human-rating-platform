@@ -79,9 +79,19 @@ Always pilot before scaling. In the **Prolific Workflow** section, create a smal
 
 Keep the **estimated completion time** at or under the session length. It is the number Prolific advertises, so an estimate longer than the session promises work that cannot be finished in the time given — raters either return the study on sight or run out of time partway through. Both the pilot form and the round editor warn you when the two disagree.
 
+The pilot can't be created until the experiment has rater instructions, a prompt prefix and suffix, an internal study name, and (when assisted) an assistance model. The pilot form lists anything missing and how to fix it.
+
+### Dataset cards and the one-click pilot
+
+A grouped experiment's dataset has a **card**: study name templates, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. A new experiment copies the card's internal name template (and, for API callers, the public name and ratings target) when it's created.
+
+A card is **launchable** once it has both name templates and the blurb, and **complete** once it also has the time and reward. With a complete card, the Launch tab offers **Create pilot draft from the card**: one click instead of the pilot form, publishing still separate. It automatically excludes the participants of every other experiment in the dataset's groups (any wave, any status, even one with no study yet), and lists them before you confirm. Create all of a wave's arms before piloting any: an arm added later isn't excluded by the pilots before it (see the one-way note below). The draft can still be edited before you publish it. An incomplete card names what it's missing.
+
+A dataset's first study usually goes through the pilot form. Once that pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, so the next study can launch in one click.
+
 ### Excluding prior participants
 
-> ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form. Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.
+> ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form (a one-click pilot picks the ones in the dataset's groups for you). Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.
 
 The picker searches over experiment names and dataset filenames — use the dataset filename to quickly find all experiments that share a dataset. Prolific hides the study from anyone who joined any selected experiment, so each experiment gets a clean, disjoint cohort. Main rounds automatically inherit the pilot's exclusion list.
 
