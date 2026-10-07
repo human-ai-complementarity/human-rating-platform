@@ -90,6 +90,7 @@ What is expected to evolve:
 from __future__ import annotations
 
 from .base import AssistanceMethod
+from .model_resolution import ModelSource, resolve_model_and_source
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
@@ -111,6 +112,24 @@ def get_method(name: str) -> AssistanceMethod:
     if cls is None:
         raise ValueError(f"Unknown assistance method {name!r}. Available: {sorted(_REGISTRY)}")
     return cls()
+
+
+def _default_models() -> dict[str, str]:
+    defaults = {name: cls.default_model() for name, cls in sorted(_REGISTRY.items())}
+    return {name: model for name, model in defaults.items() if model is not None}
+
+
+def assisted_methods() -> list[str]:
+    """Registered methods that run on a model: those with a default model."""
+    return list(_default_models())
+
+
+def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
+    """Per assisted method, the model it would run on under `params`, and its source."""
+    return {
+        name: resolve_model_and_source(params, name, default)
+        for name, default in _default_models().items()
+    }
 
 
 def register(name: str, cls: type[AssistanceMethod]) -> None:

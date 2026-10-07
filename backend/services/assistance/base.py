@@ -58,6 +58,14 @@ class AssistanceMethod(ABC):
 
     rater_instructions: str = ""
 
+    @classmethod
+    def default_model(cls) -> str | None:
+        """The model this method runs on without an `assistance_models` entry.
+
+        None for a method that calls no model.
+        """
+        return None
+
     def plan_preparation(self, context: PreparationContext) -> PreparationSpec | None:
         """Declare optional work safe to compute before the question is displayed.
 

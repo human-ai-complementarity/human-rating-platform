@@ -4679,7 +4679,10 @@ def test_update_experiment_lock_compares_merged_assistance_params(
         json={
             "name": _unique_name("experiment"),
             "assistance_method": "top_n",
-            "assistance_params": {"n": 3, "model": "openrouter/openai/gpt-4o"},
+            "assistance_params": {
+                "n": 3,
+                "assistance_models": {"top_n": "openrouter/openai/gpt-4o"},
+            },
         },
     ).json()
     _mark_experiment_status(sync_engine, created["id"], "LAUNCH")
