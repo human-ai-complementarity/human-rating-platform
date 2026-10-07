@@ -99,9 +99,7 @@ async def get_assistance_session(*, session_id: int, db: AsyncSession) -> Assist
             AssistanceEventResponse(
                 id=event.id,
                 created_at=event.created_at,
-                direction=event.direction,
                 step_type=event.step_type,
-                status=event.status,
                 latency_ms=event.latency_ms,
                 payload=load_json_column(event.payload),
                 error=event.error,

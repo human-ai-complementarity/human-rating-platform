@@ -2,9 +2,9 @@
 
 Drives real sessions through /api/raters/assistance/* with stub methods
 registered for the test, then reads ``assistance_events`` back to check that
-every method call left a request row and a response row with the right
-step type, status, latency and snapshot — including the failure paths that
-the session row alone cannot explain after the fact.
+every method call left one row with the right step type, latency, error and
+request/response snapshot — including the failure paths that the session row
+alone cannot explain after the fact.
 """
 
 from __future__ import annotations
@@ -209,7 +209,7 @@ def _events(sync_engine, session_id: int) -> list[dict]:
         rows = conn.execute(
             text(
                 """
-                SELECT direction, step_type, status, latency_ms, payload, error
+                SELECT step_type, latency_ms, payload, error
                   FROM assistance_events
                  WHERE assistance_session_id = :sid
                  ORDER BY id
@@ -260,31 +260,28 @@ def test_two_turn_session_logs_every_step(client: TestClient, sync_engine):
     assert advanced.json()["turn"] == 2
 
     events = _events(sync_engine, session_id)
-    assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
-        ("request", None, "ok"),
-        ("response", "ask_input", "ok"),
-        ("request", "ask_input", "ok"),
-        ("response", "complete", "ok"),
-    ]
+    assert [e["step_type"] for e in events] == ["ask_input", "complete"]
 
-    start_request, start_response, advance_request, advance_response = events
-    assert start_request["payload"] == {"params": {}}
-    assert start_request["latency_ms"] is None
-
-    # The intermediate step — overwritten on the session row by now — is intact,
-    # rater-facing payload and backend state both.
-    assert start_response["payload"] == {
-        "payload": {"prompt": "first?"},
-        "state": {"turn": 1, "secret": "backend-only"},
-        "is_terminal": False,
+    start, advance = events
+    assert start["payload"] == {
+        "request": {"params": {}, "retried_step_type": None},
+        # The intermediate step — overwritten on the session row by now — is
+        # intact, rater-facing payload and backend state both.
+        "response": {
+            "payload": {"prompt": "first?"},
+            "state": {"turn": 1, "secret": "backend-only"},
+            "is_terminal": False,
+        },
     }
-    assert start_response["latency_ms"] is not None and start_response["latency_ms"] >= 0
+    assert start["latency_ms"] >= 0
 
-    assert advance_request["payload"] == {"human_input": "yes"}
-    assert advance_response["payload"] == {
-        "payload": {"answer": "YES", "turns": 2},
-        "state": {},
-        "is_terminal": True,
+    assert advance["payload"] == {
+        "request": {"human_input": "yes", "step_type": "ask_input"},
+        "response": {
+            "payload": {"answer": "YES", "turns": 2},
+            "state": {},
+            "is_terminal": True,
+        },
     }
     assert all(e["error"] is None for e in events)
 
@@ -303,7 +300,7 @@ def test_resuming_an_open_session_adds_no_events(client: TestClient, sync_engine
     ).json()
 
     assert second == first
-    assert len(_events(sync_engine, first["session_id"])) == 2
+    assert len(_events(sync_engine, first["session_id"])) == 1
 
 
 def test_start_raising_is_logged_as_error_with_none_fallback(client: TestClient, sync_engine):
@@ -315,15 +312,10 @@ def test_start_raising_is_logged_as_error_with_none_fallback(client: TestClient,
     assert started.status_code == 200, started.text
     assert started.json()["type"] == "none"
 
-    events = _events(sync_engine, started.json()["session_id"])
-    assert [(e["direction"], e["status"]) for e in events] == [
-        ("request", "ok"),
-        ("response", "error"),
-    ]
-    response = events[1]
-    assert response["step_type"] == "none"
-    assert response["error"] == "RuntimeError: provider exploded"
-    assert response["payload"] == {"payload": {}, "state": {}, "is_terminal": True}
+    (event,) = _events(sync_engine, started.json()["session_id"])
+    assert event["step_type"] == "none"
+    assert event["error"] == "RuntimeError: provider exploded"
+    assert event["payload"]["response"] == {"payload": {}, "state": {}, "is_terminal": True}
 
 
 def test_method_reported_failure_is_logged_as_error(client: TestClient, sync_engine):
@@ -334,10 +326,9 @@ def test_method_reported_failure_is_logged_as_error(client: TestClient, sync_eng
     )
     assert started.json()["type"] == "none"
 
-    response = _events(sync_engine, started.json()["session_id"])[1]
-    assert response["status"] == "error"
-    assert response["error"] == "provider_error"
-    assert response["payload"]["failure_reason"] == "provider_error"
+    (event,) = _events(sync_engine, started.json()["session_id"])
+    assert event["error"] == "provider_error"
+    assert event["payload"]["response"]["failure_reason"] == "provider_error"
 
 
 def test_retrying_a_failed_session_keeps_its_history(client: TestClient, sync_engine):
@@ -356,11 +347,11 @@ def test_retrying_a_failed_session_keeps_its_history(client: TestClient, sync_en
     assert len(_session_rows(sync_engine, question_id)) == 1
 
     events = _events(sync_engine, first["session_id"])
-    assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
-        ("request", None, "ok"),
-        ("response", "none", "error"),
-        ("request", "none", "ok"),  # the retry names the failed step it is retrying
-        ("response", "none", "error"),
+    assert [
+        (e["step_type"], e["error"], e["payload"]["request"]["retried_step_type"]) for e in events
+    ] == [
+        ("none", "RuntimeError: provider exploded", None),
+        ("none", "RuntimeError: provider exploded", "none"),  # names the step it retried
     ]
     assert second["turn"] == 2
 
@@ -390,11 +381,9 @@ def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sy
     assert _FailsThenSlow.calls == 2  # the failed attempt plus exactly one retry
 
     events = _events(sync_engine, first["session_id"])
-    assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
-        ("request", None, "ok"),
-        ("response", "none", "error"),
-        ("request", "none", "ok"),
-        ("response", "ask_input", "ok"),
+    assert [(e["step_type"], e["payload"]["request"]["retried_step_type"]) for e in events] == [
+        ("none", None),
+        ("ask_input", "none"),
     ]
     (session,) = _session_rows(sync_engine, question_id)
     assert session["step_type"] == "ask_input"
@@ -424,7 +413,7 @@ def test_concurrent_retries_that_both_would_fail_run_the_method_once(
     assert a == b
     assert a["type"] == "none" and a["turn"] == 2
     assert _AlwaysFailsSlowly.calls == 2  # the original attempt and one retry
-    assert len(_events(sync_engine, first["session_id"])) == 4
+    assert len(_events(sync_engine, first["session_id"])) == 2
 
 
 def test_unexpected_exception_degrades_and_is_logged(client: TestClient, sync_engine):
@@ -436,9 +425,9 @@ def test_unexpected_exception_degrades_and_is_logged(client: TestClient, sync_en
     assert started.status_code == 200, started.text
     assert started.json()["type"] == "none"
 
-    response = _events(sync_engine, started.json()["session_id"])[1]
-    assert (response["step_type"], response["status"]) == ("none", "error")
-    assert response["error"] == "ValueError: corrupt state"
+    (event,) = _events(sync_engine, started.json()["session_id"])
+    assert event["step_type"] == "none"
+    assert event["error"] == "ValueError: corrupt state"
 
 
 def test_advance_raising_is_logged_as_error_with_skip_fallback(client: TestClient, sync_engine):
@@ -455,15 +444,15 @@ def test_advance_raising_is_logged_as_error_with_skip_fallback(client: TestClien
     assert advanced.status_code == 200, advanced.text
     assert advanced.json()["type"] == "skip"
 
-    events = _events(sync_engine, session_id)
-    assert len(events) == 4
-    assert events[2]["payload"] == {"human_input": "x"}
-    assert events[2]["step_type"] == "ask_input"
-    assert (events[3]["step_type"], events[3]["status"]) == ("skip", "error")
-    assert events[3]["error"] == "RuntimeError: mid-session failure"
+    _, event = _events(sync_engine, session_id)
+    assert event["payload"]["request"] == {"human_input": "x", "step_type": "ask_input"}
+    assert event["step_type"] == "skip"
+    assert event["error"] == "RuntimeError: mid-session failure"
 
 
-def test_advance_timing_out_is_logged_as_timeout(client: TestClient, sync_engine):
+def test_advance_timing_out_is_logged_like_any_error(client: TestClient, sync_engine):
+    """There is no special timeout status: the shipped methods catch provider
+    timeouts themselves, so a TimeoutError here is just another exception."""
     headers, question_id = _setup(client, "test_times_out_on_advance")
     session_id = client.post(
         "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
@@ -478,7 +467,7 @@ def test_advance_timing_out_is_logged_as_timeout(client: TestClient, sync_engine
     assert advanced.json()["type"] == "skip"
 
     last = _events(sync_engine, session_id)[-1]
-    assert (last["direction"], last["step_type"], last["status"]) == ("response", "skip", "timeout")
+    assert last["step_type"] == "skip"
     assert last["error"] == "TimeoutError: deadline exceeded"
 
 
@@ -496,7 +485,7 @@ def test_events_go_with_their_session(client: TestClient, sync_engine):
 
 def test_concurrent_duplicate_advances_apply_once(client: TestClient, sync_engine):
     """Two overlapping advances answering the same turn: the method runs once, both
-    callers get the same next step, and the log has one request/response pair."""
+    callers get the same next step, and the log has one row for it."""
     headers, question_id = _setup(client, "test_slow_advance")
     started = client.post(
         "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
@@ -525,12 +514,8 @@ def test_concurrent_duplicate_advances_apply_once(client: TestClient, sync_engin
     assert _SlowAdvance.advances == 1
 
     events = _events(sync_engine, started["session_id"])
-    assert [(e["direction"], e["step_type"]) for e in events] == [
-        ("request", None),
-        ("response", "ask_input"),
-        ("request", "ask_input"),
-        ("response", "ask_input"),
-    ]
+    assert [e["step_type"] for e in events] == ["ask_input", "ask_input"]
+    assert events[1]["payload"]["request"] == {"human_input": "yes", "step_type": "ask_input"}
 
 
 def test_stale_turn_returns_current_step_without_advancing(client: TestClient, sync_engine):
@@ -555,7 +540,7 @@ def test_stale_turn_returns_current_step_without_advancing(client: TestClient, s
     assert replay.status_code == 200, replay.text
     assert replay.json() == first
     assert _SlowAdvance.advances == 1
-    assert len(_events(sync_engine, started["session_id"])) == 4
+    assert len(_events(sync_engine, started["session_id"])) == 2
 
     # A *different* answer to the consumed turn is not a duplicate. Dropping it
     # silently would lose the rater's input, so it is refused instead.
@@ -575,7 +560,7 @@ def test_stale_turn_returns_current_step_without_advancing(client: TestClient, s
     )
     assert ahead.status_code == 409, ahead.text
     assert _SlowAdvance.advances == 1
-    assert len(_events(sync_engine, started["session_id"])) == 4
+    assert len(_events(sync_engine, started["session_id"])) == 2
 
     # Answering the current turn advances as normal.
     second = client.post(
@@ -601,7 +586,7 @@ def test_advance_without_turn_is_not_deduplicated(client: TestClient, sync_engin
         )
         assert response.status_code == 200, response.text
     assert _SlowAdvance.advances == 2
-    assert len(_events(sync_engine, session_id)) == 6
+    assert len(_events(sync_engine, session_id)) == 3
 
 
 def test_stale_turn_on_a_completed_session_returns_the_final_step(client: TestClient):
@@ -669,20 +654,15 @@ def test_admin_session_detail_returns_decoded_event_log(client: TestClient, sync
     assert detail["is_complete"] is True
     assert detail["turn"] == 2
     assert detail["payload"] == {"answer": "YES", "turns": 2}
-    assert detail["event_count"] == 4
+    assert detail["event_count"] == 2
 
     events = detail["events"]
     assert [e["id"] for e in events] == sorted(e["id"] for e in events)
-    assert [(e["direction"], e["step_type"], e["status"]) for e in events] == [
-        ("request", None, "ok"),
-        ("response", "ask_input", "ok"),
-        ("request", "ask_input", "ok"),
-        ("response", "complete", "ok"),
-    ]
+    assert [e["step_type"] for e in events] == ["ask_input", "complete"]
     # JSON columns come back decoded, not as strings.
-    assert events[1]["payload"]["payload"] == {"prompt": "first?"}
-    assert events[2]["payload"] == {"human_input": "yes"}
-    assert events[1]["latency_ms"] is not None
+    assert events[0]["payload"]["response"]["payload"] == {"prompt": "first?"}
+    assert events[1]["payload"]["request"] == {"human_input": "yes", "step_type": "ask_input"}
+    assert all(e["latency_ms"] >= 0 for e in events)
     assert all("created_at" in e for e in events)
 
 
@@ -705,7 +685,7 @@ def test_admin_session_list_filters_and_counts(client: TestClient, sync_engine):
     (row,) = listed.json()
     assert row["id"] == session_id
     assert row["step_type"] == "ask_input"
-    assert row["event_count"] == 2
+    assert row["event_count"] == 1
     assert "events" not in row
 
     # Fail the advance so the session lands on `skip`, then find it by step type.
@@ -719,7 +699,7 @@ def test_admin_session_list_filters_and_counts(client: TestClient, sync_engine):
         params={"step_type": "skip"},
     ).json()
     assert [s["id"] for s in skipped] == [session_id]
-    assert skipped[0]["event_count"] == 4
+    assert skipped[0]["event_count"] == 2
 
     assert (
         client.get(

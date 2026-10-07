@@ -1,9 +1,9 @@
 """Business logic for the assistance endpoints.
 
 Every call across the method boundary (start/advance) is also written to the
-append-only ``assistance_events`` table: one ``request`` row for what went in
-and one ``response`` row for the step that came out, with latency and outcome.
-The session row keeps only the current step; the event rows keep the history.
+append-only ``assistance_events`` table: one row holding what went in, the
+step that came out, latency and any error. The session row keeps only the
+current step; the event rows keep the history.
 """
 
 from __future__ import annotations
@@ -21,12 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import (
-    AssistanceEvent,
-    AssistanceEventDirection,
-    AssistanceEventStatus,
-    AssistanceSession,
-)
+from models import AssistanceEvent, AssistanceSession
 from schemas import AssistanceStepResponse
 from services.queries import (
     fetch_experiment_or_404,
@@ -118,7 +113,7 @@ class _MethodCall:
 
     step: InteractionStep
     latency_ms: int
-    status: AssistanceEventStatus
+    # Exception text or the method's failure_reason; None when the call succeeded.
     error: str | None
 
 
@@ -134,10 +129,8 @@ async def _call_method(
     RuntimeError is the methods' documented "give up" signal, but anything
     else escaping a method (a KeyError on corrupt state, a provider exception
     the method forgot to catch) is just as unrecoverable from here, and a 500
-    would roll back the event rows that are supposed to explain it. So every
+    would roll back the event row that is supposed to explain it. So every
     exception degrades to the fallback step and is logged with its traceback.
-    A TimeoutError is recorded as ``timeout`` so it can be told apart from a
-    provider or parsing failure.
     """
     started = time.monotonic()
     try:
@@ -145,81 +138,52 @@ async def _call_method(
     except Exception as exc:
         latency_ms = _elapsed_ms(started)
         logger.error(log_message, exc_info=True, extra={"attributes": log_attributes})
-        status = (
-            AssistanceEventStatus.TIMEOUT
-            if isinstance(exc, TimeoutError)
-            else AssistanceEventStatus.ERROR
-        )
         return _MethodCall(
             step=InteractionStep(type=fallback, is_terminal=True),
             latency_ms=latency_ms,
-            status=status,
             error=f"{type(exc).__name__}: {exc}",
         )
     latency_ms = _elapsed_ms(started)
-    if step.failure_reason:
-        # The method caught its own failure and returned a degraded step.
-        return _MethodCall(step, latency_ms, AssistanceEventStatus.ERROR, step.failure_reason)
-    return _MethodCall(step, latency_ms, AssistanceEventStatus.OK, None)
+    # A set failure_reason means the method caught its own failure and
+    # returned a degraded step.
+    return _MethodCall(step, latency_ms, step.failure_reason)
 
 
 def _elapsed_ms(started: float) -> int:
     return int((time.monotonic() - started) * 1000)
 
 
-def _record_request(
-    db: AsyncSession,
-    *,
-    session_id: int,
-    step_type: StepType | str | None,
-    payload: dict,
-) -> None:
-    db.add(
-        AssistanceEvent(
-            assistance_session_id=session_id,
-            direction=AssistanceEventDirection.REQUEST.value,
-            status=AssistanceEventStatus.OK.value,
-            step_type=StepType(step_type).value if step_type is not None else None,
-            payload=json.dumps(payload),
-        )
-    )
-
-
-def _record_response(db: AsyncSession, *, session_id: int, call: _MethodCall) -> None:
-    snapshot: dict = {
+def _record_call(db: AsyncSession, *, session_id: int, request: dict, call: _MethodCall) -> None:
+    """Append the one event row for a start()/advance() call."""
+    response: dict = {
         "payload": call.step.payload,
         "state": call.step.state,
         "is_terminal": call.step.is_terminal,
     }
     if call.step.failure_reason:
-        snapshot["failure_reason"] = call.step.failure_reason
+        response["failure_reason"] = call.step.failure_reason
     db.add(
         AssistanceEvent(
             assistance_session_id=session_id,
-            direction=AssistanceEventDirection.RESPONSE.value,
-            status=call.status.value,
             step_type=call.step.type.value,
             latency_ms=call.latency_ms,
-            payload=json.dumps(snapshot),
+            payload=json.dumps({"request": request, "response": response}),
             error=call.error,
         )
     )
 
 
 async def _last_human_input(session_id: int, db: AsyncSession) -> str | None:
-    """The ``human_input`` of the most recent advance request, if any."""
+    """The ``human_input`` of the session's most recent call, if it was an advance."""
     payload = (
         await db.execute(
             select(AssistanceEvent.payload)
-            .where(
-                AssistanceEvent.assistance_session_id == session_id,
-                AssistanceEvent.direction == AssistanceEventDirection.REQUEST.value,
-            )
+            .where(AssistanceEvent.assistance_session_id == session_id)
             .order_by(AssistanceEvent.id.desc())
             .limit(1)
         )
     ).scalar_one_or_none()
-    return load_json_column(payload).get("human_input")
+    return load_json_column(payload).get("request", {}).get("human_input")
 
 
 # ---------------------------------------------------------------------------
@@ -299,8 +263,8 @@ async def start_assistance(
 
     if existing:
         assistance_session = existing
-        # The request row names the failed step being retried; only the very
-        # first start of a session has no prior step and gets a null here.
+        # The event names the failed step being retried; only the very first
+        # start of a session has no prior step and gets a null here.
         retried_step_type: str | None = existing.step_type
         assistance_session.method_name = experiment.assistance_method
         assistance_session.params = json.dumps(params) if params else None
@@ -321,15 +285,14 @@ async def start_assistance(
         )
         db.add(assistance_session)
     try:
-        # Flush first so the new row has an id for the events to point at.
+        # Flush first so the new row has an id for the event to point at.
         await db.flush()
-        _record_request(
+        _record_call(
             db,
             session_id=assistance_session.id,
-            step_type=retried_step_type,
-            payload={"params": params},
+            request={"params": params, "retried_step_type": retried_step_type},
+            call=call,
         )
-        _record_response(db, session_id=assistance_session.id, call=call)
         await db.commit()
     except IntegrityError:
         # Lost a race with a concurrent start for the same rater/question.
@@ -347,7 +310,7 @@ async def start_assistance(
                 "rater_id": rater_id,
                 "question_id": question_id,
                 "method": experiment.assistance_method,
-                "status": call.status.value,
+                "error": call.error,
                 "latency_ms": call.latency_ms,
             }
         },
@@ -404,12 +367,7 @@ async def advance_assistance(
 
     experiment = await fetch_experiment_or_404(assistance_session.experiment_id, db)
 
-    _record_request(
-        db,
-        session_id=session_id,
-        step_type=assistance_session.step_type,
-        payload={"human_input": human_input},
-    )
+    answered_step_type = assistance_session.step_type
 
     call = await _call_method(
         lambda: method.advance(
@@ -432,7 +390,12 @@ async def advance_assistance(
     step = call.step
 
     _apply_step_to_session(assistance_session, step)
-    _record_response(db, session_id=session_id, call=call)
+    _record_call(
+        db,
+        session_id=session_id,
+        request={"human_input": human_input, "step_type": answered_step_type},
+        call=call,
+    )
     await db.commit()
 
     logger.info(
@@ -442,7 +405,7 @@ async def advance_assistance(
                 "session_id": session_id,
                 "step_type": step.type,
                 "is_terminal": step.is_terminal,
-                "status": call.status.value,
+                "error": call.error,
                 "latency_ms": call.latency_ms,
             }
         },

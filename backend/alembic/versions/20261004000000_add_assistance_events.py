@@ -34,11 +34,9 @@ def upgrade() -> None:
             server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
-        sa.Column("step_type", sa.String(length=32), nullable=True),
-        sa.Column("direction", sa.String(length=16), nullable=False),
-        sa.Column("latency_ms", sa.Integer(), nullable=True),
-        sa.Column("status", sa.String(length=16), nullable=False),
-        sa.Column("payload", sa.Text(), nullable=True),
+        sa.Column("step_type", sa.String(length=32), nullable=False),
+        sa.Column("latency_ms", sa.Integer(), nullable=False),
+        sa.Column("payload", sa.Text(), nullable=False),
         sa.Column("error", sa.Text(), nullable=True),
         sa.ForeignKeyConstraint(
             ["assistance_session_id"], ["assistance_sessions.id"], ondelete="CASCADE"

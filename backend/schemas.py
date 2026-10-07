@@ -381,10 +381,8 @@ class AssistanceSessionResponse(BaseModel):
 class AssistanceEventResponse(BaseModel):
     id: int
     created_at: datetime
-    direction: str
-    step_type: Optional[str] = None
-    status: str
-    latency_ms: Optional[int] = None
+    step_type: str
+    latency_ms: int
     payload: dict
     error: Optional[str] = None
 

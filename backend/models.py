@@ -83,21 +83,6 @@ class StepType(str, Enum):
     SKIP = "skip"  # unrecoverable error mid-session; question skipped for retry later (terminal)
 
 
-class AssistanceEventDirection(str, Enum):
-    """Which way an assistance event flowed through the method boundary."""
-
-    REQUEST = "request"  # input handed to the method (start trigger or rater's human_input)
-    RESPONSE = "response"  # step the method produced (what the rater was then shown)
-
-
-class AssistanceEventStatus(str, Enum):
-    """Outcome of the method call an assistance event records."""
-
-    OK = "ok"
-    ERROR = "error"
-    TIMEOUT = "timeout"
-
-
 class Experiment(SQLModel, table=True):
     __tablename__ = "experiments"
 
@@ -554,13 +539,14 @@ class AssistanceSession(SQLModel, table=True):
 
 
 class AssistanceEvent(SQLModel, table=True):
-    """Append-only log of everything that crossed the assistance method boundary.
+    """Append-only log of every call across the assistance method boundary.
 
-    AssistanceSession.state/payload hold only the *current* step; each advance
-    overwrites them. This table keeps every step, so a failed or surprising
-    session can be reconstructed after the fact, and what the rater was shown
-    at each turn is recoverable for reliance analysis without a separate
-    presented-candidates field.
+    One row per start()/advance() call: what went in, what came out, how long
+    it took, and what went wrong. AssistanceSession.state/payload hold only the
+    *current* step; each advance overwrites them. This table keeps every step,
+    so a failed or surprising session can be reconstructed after the fact, and
+    what the rater was shown at each turn is recoverable for reliance analysis
+    without a separate presented-candidates field.
 
     Rows are written by services.assistance.operations and never updated or
     deleted on their own; they go away only with their session (CASCADE).
@@ -585,18 +571,16 @@ class AssistanceEvent(SQLModel, table=True):
             server_default=text("CURRENT_TIMESTAMP"),
         ),
     )
-    # Response rows: the step type the method produced. Request rows: the step
-    # the rater was answering (null on the opening start request, which has
-    # no prior step).
-    step_type: Optional[str] = Field(default=None, sa_column=Column(String(32), nullable=True))
-    direction: str = Field(sa_column=Column(String(16), nullable=False))
-    # Wall-clock duration of the method call; response rows only.
-    latency_ms: Optional[int] = Field(default=None, sa_column=Column(Integer, nullable=True))
-    status: str = Field(sa_column=Column(String(16), nullable=False))
-    payload: Optional[str] = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True),
-    )  # JSON snapshot: {"human_input"|"params"} on requests, {"payload","state",...} on responses
+    # The step type the call produced.
+    step_type: str = Field(sa_column=Column(String(32), nullable=False))
+    # Wall-clock duration of the method call.
+    latency_ms: int = Field(sa_column=Column(Integer, nullable=False))
+    # JSON: {"request": {...}, "response": {...}}. request holds the inputs
+    # ({"params", "retried_step_type"} on start, {"human_input", "step_type"}
+    # on advance); response holds the step's payload, state, is_terminal and,
+    # when set, failure_reason.
+    payload: str = Field(sa_column=Column(Text, nullable=False))
+    # Exception text or the method's failure_reason; null when the call succeeded.
     error: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
 
