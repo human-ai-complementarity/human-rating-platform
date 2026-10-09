@@ -1,6 +1,9 @@
 """Turn retries reconcile one step without racing provider work or stale owners."""
 
 import asyncio
+import json
+
+import pytest
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock
@@ -194,4 +197,85 @@ def test_unexpected_failure_is_logged_and_retry_reuses_the_failed_turn(
                 {"id": body["session_id"]},
             ).scalar_one()
             is None
+        )
+
+
+@pytest.mark.parametrize("same_input", [True, False])
+@pytest.mark.parametrize("send_turn", [True, False])
+def test_legacy_publication_cannot_be_overwritten(
+    client, monkeypatch, sync_engine, same_input, send_turn
+):
+    headers, question, body = setup_turn(client, monkeypatch)
+    if not send_turn:
+        body.pop("turn")
+    entered, release = threading.Event(), threading.Event()
+
+    async def delayed(*args, **kwargs):
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return InteractionStep(type=StepType.ASK_INPUT, payload={"owner": "new"})
+
+    monkeypatch.setattr(
+        "services.assistance.methods.human_as_a_tool.method.HumanAsAToolMethod.advance", delayed
+    )
+    with ThreadPoolExecutor() as pool:
+        pending = pool.submit(
+            client.post, "/api/raters/assistance/advance", headers=headers, json=body
+        )
+        try:
+            assert entered.wait(5)
+            # Model the old server's locked publication, which ignores the lease.
+            with sync_engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "UPDATE assistance_sessions SET turn=turn+1, payload=:payload WHERE id=:id"
+                    ),
+                    {"id": body["session_id"], "payload": json.dumps({"owner": "legacy"})},
+                )
+                conn.execute(
+                    text(
+                        "INSERT INTO assistance_events "
+                        "(assistance_session_id, step_type, latency_ms, payload) "
+                        "VALUES (:id, 'ask_input', 1, :payload)"
+                    ),
+                    {
+                        "id": body["session_id"],
+                        "payload": json.dumps(
+                            {
+                                "request": {
+                                    "human_input": body["human_input"]
+                                    if same_input
+                                    else "different"
+                                },
+                                "response": {"payload": {"owner": "legacy"}},
+                            }
+                        ),
+                    },
+                )
+        finally:
+            release.set()
+        result = pending.result(5)
+    assert result.status_code == (200 if same_input else 409), result.text
+    restored = client.post(
+        "/api/raters/assistance/start", headers=headers, json={"question_id": question["id"]}
+    ).json()
+    assert restored["turn"] == 2
+    assert restored["payload"] == {"owner": "legacy"}
+    if same_input:
+        assert result.json() == restored
+    with sync_engine.connect() as conn:
+        assert (
+            conn.execute(
+                text("SELECT advance_token FROM assistance_sessions WHERE id=:id"),
+                {"id": body["session_id"]},
+            ).scalar_one()
+            is None
+        )
+        assert (
+            conn.execute(
+                text("SELECT count(*) FROM assistance_events WHERE assistance_session_id=:id"),
+                {"id": body["session_id"]},
+            ).scalar_one()
+            == 2
         )

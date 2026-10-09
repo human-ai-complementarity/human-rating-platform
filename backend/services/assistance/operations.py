@@ -327,6 +327,7 @@ async def advance_assistance(
     session.advance_token = token
     session.advance_expires_at = now + timedelta(seconds=CLAIM_SECONDS)
     generation = rater.session_start
+    claimed_turn = session.turn
     params = load_json_column(session.params)
     state = load_json_column(session.state)
     method = get_method(session.method_name)
@@ -354,6 +355,18 @@ async def advance_assistance(
             raise HTTPException(401, "Rater session was reset")
         if session.advance_token != token or session.advance_expires_at <= datetime.now(UTC):
             raise HTTPException(409, "Assistance turn ownership expired. Retry shortly.")
+        # Older servers do not honor the lease while computing a turn.
+        # Reconcile their publication instead of overwriting it.
+        if session.turn != claimed_turn:
+            if (
+                session.turn == claimed_turn + 1
+                and await _last_human_input(session_id, db) == human_input
+            ):
+                session.advance_token = None
+                session.advance_expires_at = None
+                await db.commit()
+                return response(session)
+            raise HTTPException(409, "Assistance turn changed. Reload the current step.")
         _apply_step_to_session(session, step)
         _record_call(
             db,
