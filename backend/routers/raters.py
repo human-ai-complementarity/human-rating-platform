@@ -7,11 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
 from database import get_session
+from models import Rater
 from schemas import (
     QueueRequest,
     QueueSnapshot,
     PreparationRequest,
     AssistanceAdvanceRequest,
+    AssistanceObservation,
     AssistanceStartRequest,
     AssistanceStepResponse,
     QuestionResponse,
@@ -47,10 +49,10 @@ async def start_session(
         db=db,
     )
 
-    from models import Rater
-
-    stored = await db.get(Rater, result.rater_id)
-    result.queue_enabled = stored.queue_mode or experiment_id in settings.prefetch.experiment_ids
+    # Removal stops new enrollment, but sessions already using the queue must
+    # keep its retry/assignment contract until they finish.
+    existing = await db.get(Rater, result.rater_id)
+    result.queue_enabled = existing.queue_mode or settings.prefetch.enabled_for(experiment_id)
     return result
 
 
@@ -174,4 +176,17 @@ async def prepare_assistance(
         generation=body.generation,
         db=db,
         runner=request.app.state.preparation_runner,
+    )
+
+
+@router.post("/assistance/observation", status_code=202)
+async def observe_assistance(
+    body: AssistanceObservation,
+    session: RaterSession = Depends(require_rater_session),
+    db: AsyncSession = Depends(get_session),
+):
+    from services.assistance.operations import observe_assistance as observe
+
+    return await observe(
+        rater_id=session.rater_id, session_id=body.session_id, wait_ms=body.wait_ms, db=db
     )

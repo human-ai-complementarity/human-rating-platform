@@ -29,6 +29,7 @@ from services.queries import (
     load_json_column,
 )
 
+from .llm import provider_context
 from .base import InteractionStep, StepType
 from .registry import get_method
 from .events import _call_method, _record_call, _last_human_input
@@ -189,28 +190,35 @@ async def start_assistance(
                 params=params,
                 deadline_at=policy.hard_deadline(rater.session_start),
                 demanded=True,
+                system_prompt=experiment.system_prompt,
                 assignment_id=assignment.id if assignment else None,
                 assignment_generation=assignment.generation if assignment else None,
             )
             return _resume(await runner.wait(identifier))
 
-    call = await _call_method(
-        lambda: method.start(
-            question,
-            params,
-            parent_question_text=parent_question_text,
-            experiment_system_prompt=experiment.system_prompt,
-        ),
-        fallback=StepType.NONE,
-        log_message=(
-            "Assistance start failed with unrecoverable error; continuing without assistance"
-        ),
-        log_attributes={
-            "rater_id": rater_id,
-            "question_id": question_id,
-            "method": experiment.assistance_method,
-        },
-    )
+    with provider_context(
+        rater_id=rater_id,
+        question_id=question_id,
+        experiment_id=experiment.id,
+        method=experiment.assistance_method,
+    ):
+        call = await _call_method(
+            lambda: method.start(
+                question,
+                params,
+                parent_question_text=parent_question_text,
+                experiment_system_prompt=experiment.system_prompt,
+            ),
+            fallback=StepType.NONE,
+            log_message=(
+                "Assistance start failed with unrecoverable error; continuing without assistance"
+            ),
+            log_attributes={
+                "rater_id": rater_id,
+                "question_id": question_id,
+                "method": experiment.assistance_method,
+            },
+        )
     step = call.step
 
     if existing:
@@ -219,7 +227,10 @@ async def start_assistance(
         # start of a session has no prior step and gets a null here.
         retried_step_type: str | None = existing.step_type
         assistance_session.method_name = experiment.assistance_method
-        assistance_session.params = json.dumps(params) if params else None
+        assistance_session.params = optional_json(params)
+        assistance_session.context_snapshot = json.dumps(
+            {"system_prompt": experiment.system_prompt}
+        )
         _apply_step_to_session(assistance_session, step)
     else:
         retried_step_type = None
@@ -231,6 +242,7 @@ async def start_assistance(
             params=optional_json(params),
             **step_columns(step, datetime.now(UTC)),
             turn=1,
+            context_snapshot=json.dumps({"system_prompt": experiment.system_prompt}),
         )
         db.add(assistance_session)
     try:
@@ -332,15 +344,26 @@ async def advance_assistance(
     state = load_json_column(session.state)
     method = get_method(session.method_name)
     answered_step_type = session.step_type
-    system_prompt = experiment.system_prompt
+    system_prompt = (
+        load_json_column(session.context_snapshot).get("system_prompt")
+        if session.context_snapshot is not None
+        else experiment.system_prompt
+    )
     await db.commit()
     try:
 
         async def invoke():
-            async with asyncio.timeout(EXECUTION_SECONDS):
-                return await method.advance(
-                    state, human_input, params, experiment_system_prompt=system_prompt
-                )
+            with provider_context(
+                rater_id=rater_id,
+                question_id=session.question_id,
+                experiment_id=experiment.id,
+                session_id=session_id,
+                method=session.method_name,
+            ):
+                async with asyncio.timeout(EXECUTION_SECONDS):
+                    return await method.advance(
+                        state, human_input, params, experiment_system_prompt=system_prompt
+                    )
 
         call = await _call_method(
             invoke,
@@ -433,7 +456,31 @@ async def prepare_assistance(*, rater_id, assignment_id, generation, runner, db)
         params=params,
         deadline_at=policy.deadline(rater.session_start),
         demanded=False,
+        system_prompt=experiment.system_prompt,
         assignment_id=assignment.id,
         assignment_generation=generation,
+    )
+    return {"status": "accepted"}
+
+
+async def observe_assistance(*, rater_id: int, session_id: int, wait_ms: float, db: AsyncSession):
+    session = await _fetch_session_or_404(session_id, db)
+    if session.rater_id != rater_id:
+        raise HTTPException(404, "Assistance session not found")
+    logger.info(
+        "Assistance visible wait",
+        extra={
+            "attributes": {
+                "prefetch.event": "visible_wait",
+                "rater_id": rater_id,
+                "question_id": session.question_id,
+                "session_id": session.id,
+                "method": session.method_name,
+                "duration_ms": wait_ms,
+                "outcome": session.step_type,
+                "assistance_outcome": session.outcome,
+                "source": "browser",
+            }
+        },
     )
     return {"status": "accepted"}
