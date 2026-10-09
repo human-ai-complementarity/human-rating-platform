@@ -696,7 +696,7 @@ MIT
 
 ### Rater terms source
 
-Rater-facing consent (and debrief) statements are not part of this repository: consent wording is each deploying organisation's responsibility. The backend reads them at runtime from a **terms source** named by `TERMS__SOURCE_URL`, which is required in every environment: a private GCS prefix (`gs://<bucket>/rater-terms`, read as the platform's service account via `GOOGLE_APPLICATION_CREDENTIALS`, or keylessly through Workload Identity Federation with `TERMS__GCS_WIF_AUDIENCE`), a plain `https://` prefix, or a `file://` path relative to the backend directory. Never use a personal gcloud login for this. Layout:
+Rater-facing consent (and debrief) statements are not part of this repository: consent wording is each deploying organisation's responsibility. The backend reads them at runtime from a **terms source** named by `TERMS__SOURCE_URL`: a private GCS prefix (`gs://<bucket>/rater-terms`, read as the platform's service account via `GOOGLE_APPLICATION_CREDENTIALS`, or keylessly through Workload Identity Federation with `TERMS__GCS_WIF_AUDIENCE`), a plain `https://` prefix, or a `file://` path relative to the backend directory. Never use a personal gcloud login for this. Layout:
 
 ```
 manifest.json
@@ -704,4 +704,4 @@ consent/<bundle>/v<N>.md
 debrief/<bundle>/v<N>.md
 ```
 
-`manifest.json` names the **bundles** (for example `standard`, `sensitive`), says which version of each file is current, and which content-warning levels each bundle may serve; a bundle serving a warning must have a debrief. Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{content_warning_details}}`; anything else fails validation at read time. To change a statement, add a new version file and bump the manifest rather than editing a version in place. The reader lives in `backend/services/terms/`; the Render predeploy check fails when the source is unset.
+`manifest.json` names the **bundles** (for example `standard`, `sensitive`), says which version of each file is current, and which content-warning levels each bundle may serve; a bundle serving a warning must have a debrief. Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{content_warning_details}}`; anything else fails validation at read time. To change a statement, add a new version file and bump the manifest rather than editing a version in place. The reader lives in `backend/services/terms/`. With the source unset, raters are shown a placeholder statement saying consent has not been configured, and the Render predeploy check warns.

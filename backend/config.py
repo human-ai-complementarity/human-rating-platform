@@ -143,9 +143,8 @@ class TermsSettings(_StrictModel):
     # `http(s)://` prefix, or a `file://` path relative to the backend
     # directory. Read live when an admin configures or publishes an
     # experiment; whatever an experiment pins is archived in the database.
-    # Required: the platform deliberately ships no statement text of its own,
-    # so without a source every rater session start and every publish is
-    # refused with a clear message. Layout: services/terms/source.py.
+    # The platform deliberately ships no statement text of its own: unset, the
+    # consent screen shows a placeholder saying so. Layout: services/terms/source.py.
     source_url: str = ""
     # Keyless access to a gs:// source through Workload Identity Federation:
     # the host (Render's managed OIDC) writes a short-lived identity token to
