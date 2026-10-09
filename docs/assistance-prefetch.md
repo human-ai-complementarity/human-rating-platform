@@ -141,11 +141,25 @@ reservations. Preview reset deletes assignments and invalidates older signed
 session generations. Failed multi-turn SKIP results require an explicit skip
 mutation and cannot reselect the same question in that session.
 
-Set `prefetch.experiment_ids` (or `PREFETCH__EXPERIMENT_IDS` as a JSON array) to opt
-experiments in. The default is empty. Removing an experiment stops new speculative
-requests and limits further refills to one; existing active work and already
-reserved work can drain through the same protocol.
+Rollout uses one shared enrollment rule: `enable_all OR experiment_id in experiment_ids`.
+Settings are loaded at process startup; restart/redeploy after changing them.
 
+| `PREFETCH__ENABLE_ALL` | `PREFETCH__EXPERIMENT_IDS` | Enrollment |
+| --- | --- | --- |
+| `false` (default) | `[]` (default) | Disabled |
+| `false` | `[12,34]` | Listed experiments only |
+| `true` | Any list | All existing and future experiments |
+
+`PREFETCH__LOOKAHEAD_QUESTIONS` controls preparation depth (0–5, default 1).
+Zero permits queue-only evaluation without speculative provider work. Global
+activation still honors method eligibility, session deadlines, and worker limits.
+It does not change how methods without a preparation contract execute.
+
+To stop new enrollment and speculation everywhere, set `ENABLE_ALL=false` and
+clear `EXPERIMENT_IDS` (both with the `PREFETCH__` prefix). Turning off only the
+global switch returns to allowlist mode. Existing queue sessions can finish;
+previously reserved questions drain and in-flight provider calls may finish.
+These controls do not disable the foreground execution introduced in #119.
 
 ### Server-owned scheduling
 
@@ -179,8 +193,8 @@ retry the frozen input and turn counter. Submission conflicts offer an explicit
 refresh from saved progress. Explicit failed-step skipping remains a mutation;
 client-visible wait telemetry remains a separate best-effort observation.
 
-The server enrolls allowlisted experiments when serving questions. Removing an
-experiment stops new enrollment and speculative work; existing queue sessions
+The server enrolls experiments enabled globally or by allowlist when serving
+questions. Disabling an experiment stops new enrollment and speculative work; existing queue sessions
 drain at depth one. Old tabs can still submit their active question without the
 new identity fields. A supplied identity is always checked.
 
@@ -235,7 +249,7 @@ retention policy. Ratings and assistance sessions keep their existing retention.
    rebase/revalidate if the repository uses squash merges. Apply migrations before
    deploying API code, then deploy the frontend. Both old and new clients use the existing
    next-question flow; the server enables scheduling for opted-in experiments.
-2. Keep `prefetch.experiment_ids = []` initially. Confirm ordinary rating,
+2. Keep `prefetch.enable_all = false` and `prefetch.experiment_ids = []` initially. Confirm ordinary rating,
    Human-as-a-Tool advance, preview reset, and deadline/grace behavior. Establish
    browser/server wait and provider-call baselines for each method/model.
 3. Enable one internal or preview experiment with
@@ -250,7 +264,8 @@ retention policy. Ratings and assistance sessions keep their existing retention.
    changes to assignment/answer distributions. This stack does not assert measured
    production benefits or pick a universal acceptable cost threshold.
 5. To disable speculation while keeping new queue offers, set lookahead to zero.
-   To stop both new offers and speculation, empty the allowlist and restart processes.
+   To stop both new offers and speculation, set `enable_all=false`, empty the
+   allowlist, and restart processes.
    Do not roll the database backward or remove the queue endpoints while sessions remain live.
    Active assignments can finish, existing reserved work can drain, and subsequent
    refills use depth one. Already-issued provider requests may still finish.

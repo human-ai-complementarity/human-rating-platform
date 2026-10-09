@@ -52,7 +52,7 @@ async def start_session(
     # Removal stops new enrollment, but sessions already using the queue must
     # keep its retry/assignment contract until they finish.
     existing = await db.get(Rater, result.rater_id)
-    result.queue_enabled = existing.queue_mode or experiment_id in settings.prefetch.experiment_ids
+    result.queue_enabled = existing.queue_mode or settings.prefetch.enabled_for(experiment_id)
     return result
 
 
