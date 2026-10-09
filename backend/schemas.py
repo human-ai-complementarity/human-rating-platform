@@ -378,6 +378,12 @@ class RaterStartResponse(BaseModel):
     rater_session_token: str
     assistance_method: str = "none"
     assistance_instructions: Optional[str] = None
+    # The consent statement this rater must agree to, rendered with the
+    # study's placeholders filled, pre-rendered like the description.
+    consent_statement_html: str
+    # None until the rater agrees. The frontend shows the consent screen while
+    # this is None; the backend refuses questions until it is set.
+    consented_at: Optional[datetime] = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -387,6 +393,17 @@ class SessionStatusResponse(BaseModel):
     # plus the grace period while the session is live, then counts down alone.
     grace_seconds_remaining: int = 0
     questions_completed: int
+
+
+class ConsentResponse(BaseModel):
+    consented_at: datetime
+    # The session clock starts at consent, so the deadline moves and the
+    # token (which expires relative to session_start) is reissued. The client
+    # replaces its stored session and token with these.
+    session_start: datetime
+    session_end_time: datetime
+    session_grace_seconds: int
+    rater_session_token: str
 
 
 # Rating schemas

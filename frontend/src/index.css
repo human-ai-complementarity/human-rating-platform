@@ -581,3 +581,35 @@ button:disabled {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }
+
+/* Consent statement on the rater's first screen. Server-rendered HTML from
+   the Prolific-markdown converter (h1/h2, lists, bold), so the scale is set
+   here rather than inline. */
+.rater-consent-statement h1,
+.rater-consent-statement h2 {
+  font-family: var(--font-head);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 22px 0 8px;
+}
+.rater-consent-statement h1 {
+  font-size: 22px;
+}
+.rater-consent-statement h2 {
+  font-size: 18px;
+}
+.rater-consent-statement h1:first-child,
+.rater-consent-statement h2:first-child {
+  margin-top: 0;
+}
+.rater-consent-statement p {
+  margin: 0 0 12px;
+}
+.rater-consent-statement ul,
+.rater-consent-statement ol {
+  margin: 0 0 12px;
+  padding-left: 24px;
+}
+.rater-consent-statement li {
+  margin-bottom: 4px;
+}

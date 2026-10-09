@@ -417,6 +417,7 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
                     <th style={{ ...styles.th, ...styles.thCenter }}>Avg Time</th>
                     <th style={{ ...styles.th, ...styles.thCenter }}>Avg Confidence</th>
                     <th style={styles.th}>Session Start</th>
+                    <th style={styles.th}>Consent</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -430,6 +431,9 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
                       <td style={{ ...styles.td, ...styles.tdCenter }}>{r.avg_confidence.toFixed(1)}</td>
                       <td style={{ ...styles.td, fontSize: '12px', color: '#666' }}>
                         {r.session_start ? new Date(r.session_start).toLocaleString() : '-'}
+                      </td>
+                      <td style={{ ...styles.td, fontSize: '12px', color: '#666' }} title={r.consented_at ? new Date(r.consented_at).toLocaleString() : undefined}>
+                        {r.consent_version ?? '-'}
                       </td>
                     </tr>
                   ))}
