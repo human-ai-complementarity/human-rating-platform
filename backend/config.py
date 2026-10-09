@@ -138,6 +138,15 @@ class ProlificSettings(_StrictModel):
         return bool(self.api_token.strip())
 
 
+class SlackSettings(_StrictModel):
+    # Incoming webhook for admin alerts
+    webhook_url: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.webhook_url.strip())
+
+
 class LLMModels:
     CLAUDE_SONNET = "openrouter/anthropic/claude-sonnet-4-6"
     CLAUDE_HAIKU = "openrouter/anthropic/claude-haiku-4-5"
@@ -172,6 +181,7 @@ class Settings(BaseSettings):
     clerk: ClerkSettings = Field(default_factory=ClerkSettings)
     seeding: SeedingSettings = Field(default_factory=SeedingSettings)
     prolific: ProlificSettings = Field(default_factory=ProlificSettings)
+    slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 

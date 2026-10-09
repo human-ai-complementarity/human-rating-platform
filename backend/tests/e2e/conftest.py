@@ -64,7 +64,7 @@ def reset_database(sync_engine):
             text(
                 "TRUNCATE TABLE experiment_rounds, ratings, raters, questions, uploads, "
                 "experiments, api_keys, experiment_groups, datasets, "
-                "experiment_tags, tags RESTART IDENTITY CASCADE"
+                "experiment_tags, tags, forwarded_prolific_messages RESTART IDENTITY CASCADE"
             )
         )
 

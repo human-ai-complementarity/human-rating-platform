@@ -11,6 +11,7 @@ import asyncio
 import logging
 import secrets
 import string
+from datetime import UTC, datetime
 from typing import NamedTuple
 
 import httpx
@@ -377,6 +378,25 @@ async def get_workspace_balance(
         response = await client.get(f"/workspaces/{workspace_id}/balance/")
         _raise_for_status(response)
         return response.json()
+
+
+async def get_user_messages(
+    *,
+    settings: ProlificSettings,
+    created_after: datetime,
+    workspace_id: str | None = None,
+) -> list[dict]:
+    if not settings.enabled:
+        raise RuntimeError("get_messages called while Prolific is disabled")
+
+    params = {"created_after": created_after.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    if workspace_id:
+        params["workspace_id"] = workspace_id
+
+    async with _build_client(settings) as client:
+        response = await client.get("/messages/", params=params)
+        _raise_for_status(response)
+        return response.json()["results"]
 
 
 async def update_study(
