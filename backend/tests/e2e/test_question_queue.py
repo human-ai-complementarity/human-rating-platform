@@ -207,11 +207,15 @@ def test_preview_reset_rejects_old_token_and_clears_assignments(client, monkeypa
     from test_characterization import _rater_headers
 
     old = _rater_headers(response.json())
+    # The queue serves study content, so it sits behind the consent gate.
+    assert client.post("/api/raters/consent", headers=old).status_code == 200
     state = reserve(client, old)
     assert len(state["items"]) == 2
     new = client.post("/api/raters/start", params=params)
     assert new.status_code == 200
     assert client.post("/api/raters/queue", headers=old, json={}).status_code == 401
+    # A preview restart starts over, consent screen included.
+    assert client.post("/api/raters/consent", headers=_rater_headers(new.json())).status_code == 200
     state = reserve(client, _rater_headers(new.json()))
     assert len(state["items"]) == 2
     with sync_engine.connect() as conn:

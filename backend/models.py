@@ -808,3 +808,47 @@ class AssistancePreparation(SQLModel, table=True):
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
+
+
+class ConsentRecord(SQLModel, table=True):
+    """One rater's agreement to the consent statement, with the text as shown.
+
+    `rendered_text` is the statement after placeholders were filled, exactly
+    what the rater saw; `bundle`, `version` and `sha256` identify the source
+    file it came from. One record per rater: consent is asked once per
+    experiment.
+    """
+
+    __tablename__ = "consent_records"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    rater_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("raters.id", ondelete="CASCADE"),
+            nullable=False,
+            unique=True,
+        )
+    )
+    experiment_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("experiments.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    prolific_id: str = Field(sa_column=Column(String(64), nullable=False))
+    bundle: str = Field(sa_column=Column(String(64), nullable=False))
+    version: int = Field(sa_column=Column(Integer, nullable=False))
+    sha256: str = Field(sa_column=Column(String(64), nullable=False))
+    source_url: str = Field(sa_column=Column(Text, nullable=False))
+    rendered_text: str = Field(sa_column=Column(Text, nullable=False))
+    accepted_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    is_preview: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )

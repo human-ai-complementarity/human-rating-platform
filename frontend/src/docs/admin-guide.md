@@ -131,3 +131,7 @@ When you enable it, you pick a **confidence method**:
 The AI ranks the most likely answers and shows the rater that shortlist before they submit. One-shot, lightweight. Set the number of suggestions to show (capped by the number of MC options when applicable).
 
 The rater sees the suggestions in random order, with neither the rank nor the AI's confidence, so the model's ordering doesn't anchor their choice. The ranking is still recorded against each suggestion for analysis.
+
+## Rater consent
+
+Every rater agrees to the team's consent statement before seeing anything about the study, and their agreement is recorded with the exact text shown. The statement lives in the team's terms folder, not in the platform; **Preview as Participant** shows it exactly as raters see it, and a preview rerun asks for consent again. The analytics raters table and the ratings export show which statement version each rater agreed to and when; raters from before consent was recorded show a dash, which means "not recorded", not "declined".

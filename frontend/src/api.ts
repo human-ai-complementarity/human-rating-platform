@@ -9,6 +9,7 @@ import type {
   ApiKey,
   ApiKeyCreated,
   AssistanceStep,
+  ConsentResponse,
   ExperimentRound,
   ExperimentRoundUpdate,
   Dataset,
@@ -104,6 +105,7 @@ const routes = {
   },
   rater: {
     start: '/raters/start',
+    consent: '/raters/consent',
     nextQuestion: '/raters/next-question',
     question: (questionId: number) => `/raters/questions/${questionId}`,
     submit: '/raters/submit',
@@ -774,6 +776,13 @@ export const api = {
       method: 'POST',
       headers: { 'X-Rater-Session': sessionToken },
       json: data,
+    });
+  },
+
+  async recordConsent(sessionToken: string): Promise<ConsentResponse> {
+    return requestJson<ConsentResponse>(routes.rater.consent, {
+      method: 'POST',
+      headers: { 'X-Rater-Session': sessionToken },
     });
   },
 
