@@ -20,10 +20,14 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "assistance_preparations", sa.Column("context_snapshot", sa.Text(), nullable=True)
+    )
     op.add_column("assistance_sessions", sa.Column("context_snapshot", sa.Text(), nullable=True))
     op.add_column("assistance_sessions", sa.Column("outcome", sa.String(32), nullable=True))
 
 
 def downgrade() -> None:
+    op.drop_column("assistance_preparations", "context_snapshot")
     op.drop_column("assistance_sessions", "outcome")
     op.drop_column("assistance_sessions", "context_snapshot")
