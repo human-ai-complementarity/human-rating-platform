@@ -26,6 +26,8 @@ from fastapi import HTTPException
 
 from config import get_settings
 
+from .llm import model_prefixes
+
 # Role -> the LLMSettings attribute that backs it when nothing overrides.
 _ROLE_DEFAULTS: dict[str, str] = {
     "answer": "default_model",
@@ -56,7 +58,8 @@ def instrument_model_keys() -> tuple[str, ...]:
     return tuple(_override_key(role) for role in MODEL_ROLES if role in _OVERRIDE_ROLES)
 
 
-# OpenRouter is the only transport; `llm._parse_model` rejects anything else.
+# The example prefix in error messages; `llm.parse_model` accepts every
+# registered provider's.
 MODEL_PREFIX = "openrouter/"
 
 # `assistance_params` key holding the wave's per-method models, e.g.
@@ -151,22 +154,18 @@ def reject_role_models_key(values: Mapping[str, object], *, where: str) -> None:
 def validate_model_id(model: str, *, field: str) -> None:
     """Reject a model id the transport cannot parse, as a 400.
 
-    Worth failing early and loudly: `_parse_model` raises `ValueError`, and
-    both assistance methods swallow that into a `NONE` step. A typo would
-    otherwise mean every rater silently gets no assistance, producing a study
-    that looks completed and is indistinguishable from one where the model
-    legitimately had nothing to offer.
-
-    Catches malformed ids, not unreachable ones: OpenRouter accepts arbitrary
+    Catches malformed ids, not unreachable ones: the providers accept arbitrary
     model names, so `openrouter/anthropic/claude-sonnet-4-7` passes here and
     only fails when it is actually called.
     """
-    if not model.startswith(MODEL_PREFIX):
+    prefixes = model_prefixes()
+    if not any(model.startswith(prefix) and len(model) > len(prefix) for prefix in prefixes):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Invalid model {model!r} in {field}. Expected "
-                f"'{MODEL_PREFIX}<model-id>', e.g. "
+                f"'<provider>/<model-id>' with provider one of "
+                f"{', '.join(p.rstrip('/') for p in prefixes)}, e.g. "
                 f"'{MODEL_PREFIX}anthropic/claude-sonnet-4-6'."
             ),
         )
