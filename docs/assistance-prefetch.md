@@ -289,9 +289,13 @@ retain their response contract, but do not gain retry deduplication after commit
 
 
 Method authors can override `preparation_params` to resolve deployment defaults
-before snapshotting. Runtime identity also includes those effective parameters
-and the system prompt, even if a partial-artifact method omits them from its own
-preparation inputs. Started interactions retain their captured system prompt for
+before snapshotting. Methods must include all inputs that affect prepared work
+in their spec, including relevant effective parameters and prompts. The initial-step
+adapter already includes the complete preparation context. Runtime identity and
+flat spec storage remain compatible with the previous deployment, so rolling
+upgrades reuse existing jobs. A nullable preparation column stores the prompt
+snapshot without changing the spec format that older workers read.
+Started interactions published by upgraded workers retain their captured system prompt for
 later human-input turns, including an explicitly empty prompt. Sessions created
 before this snapshot field existed retain the legacy fallback while draining.
 Keep provider settings fixed during a study; changing deployment-wide timeouts,
@@ -313,7 +317,9 @@ returned to release the reservation.
   bounded claim expiry. Claim and publication use short transactions; provider
   work runs outside them. The existing execution/claim budgets also bound turns.
   Concurrent retries receive 409 while a turn runs. Retries matching the previous
-  turn and its exact input receive the current step. Expired owners cannot publish. A process
+  turn and its exact input receive the current step. Expired owners cannot publish. Publication also verifies the claimed turn, so an
+  older server that ignores claims cannot have its committed result overwritten.
+  Identical input reconciles to that result; conflicting input receives 409. A process
   crash can still cause a repeated provider call after expiry, not repeated
   publication. This is a narrowly scoped turn guard, not another job queue.
 - Keep uncertain human input frozen in the browser. An error must not re-enable
@@ -333,7 +339,8 @@ submission conflict navigation, and isolation of concurrent provider log context
 ## Failure attribution and rollout evidence
 
 `ratings.csv` appends `assistance_method` and `assistance_outcome`, joined to the
-existing unique assistance session for that participant/question. New sessions
+assistance session explicitly linked by the rating. An unlinked rating exports an
+empty method and an unknown outcome even if preparation created a matching session. New sessions
 persist `provided`, intentional `no_assistance`, `provider_error`,
 `invalid_response`, or runner/turn `execution_error`. Failure attribution stays
 private; the participant's step shape and fallback behavior are unchanged. It

@@ -798,6 +798,7 @@ class AssistancePreparation(SQLModel, table=True):
     method_name: str = Field(sa_column=Column(String(64), nullable=False))
     spec_json: str = Field(sa_column=Column(Text, nullable=False))
     params_json: str = Field(sa_column=Column(Text, nullable=False))
+    context_snapshot: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     status: str = Field(default="queued", sa_column=Column(String(16), nullable=False, index=True))
     demanded: bool = Field(default=False)
     artifact_json: Optional[str] = Field(default=None, sa_column=Column(Text))

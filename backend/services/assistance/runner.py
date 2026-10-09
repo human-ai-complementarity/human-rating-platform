@@ -48,10 +48,10 @@ def preparation_identity(
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _snapshot_prompt(encoded: str) -> str | None:
-    value = json.loads(encoded)
-    if "spec" in value:
-        return value.get("system_prompt")
+def _snapshot_prompt(row: AssistancePreparation) -> str | None:
+    if row.context_snapshot is not None:
+        return json.loads(row.context_snapshot).get("system_prompt")
+    value = json.loads(row.spec_json)
     # Drain initial-step jobs created by the previous stack layer/deployment.
     return json.loads(value.get("inputs_json", "{}")).get("experiment_system_prompt")
 
@@ -206,10 +206,7 @@ class PreparationRunner:
     ) -> int:
         identity = preparation_identity(rater_id, question_id, session_start, method_name, spec)
         identity = hashlib.sha256(
-            json.dumps(
-                [identity, assignment_id, assignment_generation, params, system_prompt],
-                sort_keys=True,
-            ).encode()
+            f"{identity}:{assignment_id}:{assignment_generation}".encode()
         ).hexdigest()
         now = datetime.now(UTC)
         async with self.database.session() as db:
@@ -221,7 +218,8 @@ class PreparationRunner:
                 question_id=question_id,
                 session_start=session_start,
                 method_name=method_name,
-                spec_json=json.dumps({"spec": asdict(spec), "system_prompt": system_prompt}),
+                spec_json=json.dumps(asdict(spec)),
+                context_snapshot=json.dumps({"system_prompt": system_prompt}),
                 params_json=json.dumps(params),
                 status="queued",
                 demanded=demanded,
@@ -447,8 +445,7 @@ class PreparationRunner:
         try:
             if not failed:
                 method = get_method(row.method_name)
-                encoded = json.loads(row.spec_json)
-                spec = PreparationSpec(**encoded.get("spec", encoded))
+                spec = PreparationSpec(**json.loads(row.spec_json))
                 with provider_context(
                     preparation_id=row.id,
                     rater_id=row.rater_id,
@@ -517,9 +514,7 @@ class PreparationRunner:
                         method_name=current.method_name,
                         params=optional_json(json.loads(current.params_json)),
                         turn=1,
-                        context_snapshot=json.dumps(
-                            {"system_prompt": _snapshot_prompt(current.spec_json)}
-                        ),
+                        context_snapshot=json.dumps({"system_prompt": _snapshot_prompt(current)}),
                         created_at=now,
                         **step_columns(step, now),
                     )
@@ -557,6 +552,7 @@ class PreparationRunner:
                     current.artifact_json = None
                     current.spec_json = "{}"
                     current.params_json = "{}"
+                    current.context_snapshot = None
                 else:
                     # A failed speculative result is terminal too. Demand uses
                     # this sentinel without paying for another provider attempt.

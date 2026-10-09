@@ -5,7 +5,7 @@ import io
 import logging
 from collections.abc import AsyncIterator
 
-from sqlalchemy import select, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -159,10 +159,7 @@ async def stream_export_csv_chunks(
         .outerjoin(rating_rank, Rating.id == rating_rank.c.rating_id)
         .outerjoin(
             AssistanceSession,
-            and_(
-                AssistanceSession.rater_id == Rating.rater_id,
-                AssistanceSession.question_id == Rating.question_id,
-            ),
+            AssistanceSession.id == Rating.assistance_session_id,
         )
         .where(Question.experiment_id == experiment_id)
         .order_by(Rating.id)
