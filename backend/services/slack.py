@@ -23,6 +23,6 @@ async def post_webhook_message(*, settings: SlackSettings, text: str) -> None:
 
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.post(settings.webhook_url, json={"text": text})
-    # Not `raise_for_status`: its message carries the URL, which is the credential.
+    # Not raise_for_status(): its message includes the webhook URL, which is a secret.
     if not response.is_success:
         raise SlackWebhookError(f"Slack webhook returned {response.status_code}")
