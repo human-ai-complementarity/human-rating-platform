@@ -353,7 +353,10 @@ def test_provider_events_link_preparation_and_human_turn(client, monkeypatch):
 
 
 @pytest.mark.parametrize("failure", [None, "provider_error", "invalid_response", "execution_error"])
-def test_failure_attribution_survives_cleanup_and_exports(client, monkeypatch, failure, caplog):
+@pytest.mark.parametrize("linked", [True, False])
+def test_failure_attribution_survives_cleanup_and_exports(
+    client, monkeypatch, failure, caplog, linked
+):
     import csv
     import io
 
@@ -388,6 +391,7 @@ def test_failure_attribution_survives_cleanup_and_exports(client, monkeypatch, f
             headers=headers,
             json={
                 "question_id": question["id"],
+                "assistance_session_id": response.json()["session_id"] if linked else None,
                 "answer": "Yes",
                 "confidence": 4,
                 "time_started": datetime.now(UTC).isoformat(),
@@ -408,8 +412,8 @@ def test_failure_attribution_survives_cleanup_and_exports(client, monkeypatch, f
     exported = client.get("/api/admin/experiments/1/export")
     assert exported.status_code == 200
     row = list(csv.DictReader(io.StringIO(exported.text)))[0]
-    assert row["assistance_method"] == "top_n"
-    assert row["assistance_outcome"] == (failure or "no_assistance")
+    assert row["assistance_method"] == ("top_n" if linked else "")
+    assert row["assistance_outcome"] == ((failure or "no_assistance") if linked else "unknown")
     completed = [
         record.attributes["assistance_outcome"]
         for record in caplog.records
@@ -417,3 +421,63 @@ def test_failure_attribution_survives_cleanup_and_exports(client, monkeypatch, f
         and record.attributes.get("outcome") == "complete"
     ]
     assert completed == [failure or "no_assistance"]
+
+
+@pytest.mark.parametrize("legacy_row", [True, False])
+def test_preparation_storage_is_compatible_across_deployments(client, monkeypatch, legacy_row):
+    import hashlib
+    import json
+
+    from services.assistance.runner import preparation_identity
+
+    session, _, question = setup_rater(client)
+
+    async def scenario():
+        runner = client.app.state.preparation_runner
+        await runner.close()
+        spec = PreparationSpec(
+            "initial_step", 1, json.dumps({"experiment_system_prompt": "Original"})
+        )
+        async with runner.database.session() as db:
+            rater = await db.get(Rater, session["rater_id"])
+            arguments = dict(
+                rater_id=rater.id,
+                question_id=question["id"],
+                session_start=rater.session_start,
+                method_name="top_n",
+                spec=spec,
+                params={},
+                system_prompt="Original",
+                deadline_at=datetime.now(UTC) + timedelta(minutes=5),
+                demanded=True,
+            )
+        identifier = await runner.ensure(**arguments)
+        async with runner.database.session() as db:
+            row = await db.get(AssistancePreparation, identifier)
+            old_identity = preparation_identity(
+                rater.id, question["id"], rater.session_start, "top_n", spec
+            )
+            assert row.identity == hashlib.sha256(f"{old_identity}:None:None".encode()).hexdigest()
+            # This is the exact parser used by the previous deployment.
+            assert PreparationSpec(**json.loads(row.spec_json)) == spec
+            if legacy_row:
+                row.context_snapshot = None
+                await db.commit()
+        assert await runner.ensure(**arguments) == identifier
+        method = AsyncMock()
+        method.prepare.return_value = {"prepared": True}
+        method.consume_preparation.return_value = InteractionStep(
+            type=StepType.ASK_INPUT, payload={"owner": "original"}
+        )
+        monkeypatch.setattr("services.assistance.runner.get_method", lambda _: method)
+        await runner._execute(await runner._claim(foreground_only=True))
+        await runner._execute(await runner._claim(foreground_only=True))
+        method.prepare.assert_awaited_once_with(spec)
+        async with runner.database.session() as db:
+            published = (await db.execute(select(AssistanceSession))).scalar_one()
+            assert json.loads(published.context_snapshot) == {"system_prompt": "Original"}
+            row = await db.get(AssistancePreparation, identifier)
+            assert row.status == "complete"
+            assert row.context_snapshot is None
+
+    client.portal.call(scenario)
