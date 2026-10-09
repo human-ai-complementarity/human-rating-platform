@@ -37,7 +37,7 @@ from .validators import validate_rater_marked_active, validate_rater_session_not
 
 
 def enabled(experiment_id: int) -> bool:
-    return experiment_id in get_settings().prefetch.experiment_ids
+    return get_settings().prefetch.enabled_for(experiment_id)
 
 
 def speculation_enabled(experiment_id: int) -> bool:
@@ -250,8 +250,8 @@ async def queue_action(*, rater_id, body: QueueRequest, db, serve=False):
     validate_rater_marked_active(rater)
     await validate_rater_session_not_over(rater, db, policy)
     # This request negotiates client support. A queue-enabled session may have
-    # waited on its intro screen while the allowlist changed; let it enter at
-    # depth one. The allowlist controls offers at /start and speculative work.
+    # waited on its intro screen while rollout settings changed; let it enter at
+    # depth one. The shared rollout policy controls enrollment and speculative work.
     entering_queue = not rater.queue_mode
     rater.queue_mode = True
     now = datetime.now(UTC)

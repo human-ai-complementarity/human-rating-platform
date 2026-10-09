@@ -159,11 +159,16 @@ class LLMSettings(_StrictModel):
 
 
 class PrefetchSettings(_StrictModel):
+    enable_all: bool = False
     worker_count: int = Field(default=8, ge=2, le=64)
     # Empty by default. Existing queue sessions remain drainable after removal.
     experiment_ids: list[int] = Field(default_factory=list)
     # Number ahead of the active question. Zero enables queue-only comparison.
     lookahead_questions: int = Field(default=1, ge=0, le=5)
+
+    def enabled_for(self, experiment_id: int) -> bool:
+        """Enroll globally or by allowlist; lookahead separately controls speculation."""
+        return self.enable_all or experiment_id in self.experiment_ids
 
 
 class Settings(BaseSettings):

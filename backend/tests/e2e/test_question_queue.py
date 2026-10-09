@@ -224,10 +224,17 @@ def test_preview_reset_rejects_old_token_and_clears_assignments(client, monkeypa
         )
 
 
-def test_kill_switch_preserves_active_submission_and_rejects_new_speculation(client, monkeypatch):
+@pytest.mark.parametrize("global_enabled", [False, True])
+def test_kill_switch_preserves_active_submission_and_rejects_new_speculation(
+    client, monkeypatch, global_enabled
+):
     _, headers, _ = enable(client, monkeypatch)
+    if global_enabled:
+        monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [])
+        monkeypatch.setattr(get_settings().prefetch, "enable_all", True)
     state = reserve(client, headers)
     head, tail = state["items"]
+    monkeypatch.setattr(get_settings().prefetch, "enable_all", False)
     monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [])
     assert not reserve(client, headers)["prefetch_enabled"]
     assert (
@@ -390,16 +397,19 @@ def test_configurable_lookahead_is_bounded_and_refills(client, monkeypatch, look
     assert all(item["question"]["id"] != head["question"]["id"] for item in refilled["items"])
 
 
-def test_queue_rollout_is_opt_in_and_existing_sessions_drain(client, monkeypatch):
+@pytest.mark.parametrize("global_enabled", [False, True])
+def test_queue_rollout_is_opt_in_and_existing_sessions_drain(client, monkeypatch, global_enabled):
     from test_characterization import _start_session
 
     session, headers, _ = setup_rater(client)
     assert not session["queue_enabled"]
-    monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [1])
+    monkeypatch.setattr(get_settings().prefetch, "enable_all", global_enabled)
+    monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [] if global_enabled else [1])
     assert _start_session(client, 1)["queue_enabled"]
     reserve(client, headers)
     delayed = _start_session(client, 1, "DELAYED_ON_INTRO")
     assert delayed["queue_enabled"]
+    monkeypatch.setattr(get_settings().prefetch, "enable_all", False)
     monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [])
     assert _start_session(client, 1)["queue_enabled"]
     assert not _start_session(client, 1, "NEW_PARTICIPANT")["queue_enabled"]
@@ -455,8 +465,14 @@ def test_old_instance_assignment_survives_migration_gap(
     assert response.status_code == 200, response.text
 
 
-def test_next_question_owns_activation_and_preparation(client, monkeypatch, sync_engine):
+@pytest.mark.parametrize("global_enabled", [False, True])
+def test_next_question_owns_activation_and_preparation(
+    client, monkeypatch, sync_engine, global_enabled
+):
     session, headers, question = enable(client, monkeypatch)
+    if global_enabled:
+        monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [])
+        monkeypatch.setattr(get_settings().prefetch, "enable_all", True)
     start = AsyncMock(return_value=InteractionStep(type=StepType.DISPLAY, is_terminal=True))
     monkeypatch.setattr("services.assistance.methods.top_n.TopNAssistance.start", start)
 
