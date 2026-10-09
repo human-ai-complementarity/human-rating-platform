@@ -153,6 +153,7 @@ class LLMSettings(_StrictModel):
     decomposition_model: str = LLMModels.GEMINI_3_FLASH_PREVIEW
     confidence_model: str = LLMModels.GEMINI_FLASH_LITE
     openrouter_api_key: str = ""
+    openai_api_key: str = ""
     max_tokens: int = 4096
     request_timeout: int = 60
     max_retries: int = 2

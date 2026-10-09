@@ -1,7 +1,7 @@
 """Validation for the model an assistance call runs on.
 
-OpenRouter is the only transport, and `llm._parse_model` rejects anything
-without its prefix. Catching that early matters more than it looks: the
+`llm.parse_model` rejects an id without a known provider prefix. Catching
+that early matters more than it looks: the
 exception it raises is swallowed by every assistance method into a
 `StepType.NONE` step, so a malformed id does not fail loudly — it produces a
 study where every rater silently got no assistance, indistinguishable
@@ -14,7 +14,9 @@ from typing import Literal
 
 from fastapi import HTTPException
 
-# The prefix `llm._parse_model` requires.
+from .llm import model_prefixes
+
+# The example prefix in error messages.
 MODEL_PREFIX = "openrouter/"
 
 # `assistance_params` key holding the wave's per-method models, e.g.
@@ -66,16 +68,18 @@ def reject_removed_model_key(values: dict, *, where: str, hint: str = "") -> Non
 def validate_model_id(model: str, *, field: str) -> None:
     """Reject a model id the transport cannot parse, as a 400.
 
-    Catches malformed ids, not unreachable ones: OpenRouter accepts arbitrary
+    Catches malformed ids, not unreachable ones: the providers accept arbitrary
     model names, so `openrouter/anthropic/claude-sonnet-4-7` passes here and
     only fails when it is actually called.
     """
-    if not model.startswith(MODEL_PREFIX):
+    prefixes = model_prefixes()
+    if not any(model.startswith(prefix) and len(model) > len(prefix) for prefix in prefixes):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Invalid model {model!r} in {field}. Expected "
-                f"'{MODEL_PREFIX}<model-id>', e.g. "
+                f"'<provider>/<model-id>' with provider one of "
+                f"{', '.join(p.rstrip('/') for p in prefixes)}, e.g. "
                 f"'{MODEL_PREFIX}anthropic/claude-sonnet-4-6'."
             ),
         )

@@ -35,7 +35,7 @@ from models import Question
 
 from ..base import InteractionStep, StepType
 from ..preparation import InitialStepPreparation, QuestionSnapshot
-from ..llm import complete
+from ..llm import NoChoicesError, complete
 from ..model_resolution import resolve_model
 
 logger = logging.getLogger(__name__)
@@ -213,7 +213,9 @@ async def _complete_with_schema(
             response_format=response_format,
             temperature=0,
         )
-    except openai.APIStatusError as exc:
+    except (openai.APIStatusError, NoChoicesError) as exc:
+        # OpenRouter reports "no endpoint supports these parameters" as a 200
+        # with an error body, which `complete` raises as NoChoicesError.
         if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
             raise
         logger.warning(
