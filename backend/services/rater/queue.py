@@ -113,6 +113,11 @@ async def snapshot(rater, experiment, assignments, db):
                 activated=assignment.activated_at is not None,
                 question=build_question_response(
                     question, is_markdown=experiment.is_markdown, parent_question_text=parent
+                ).model_copy(
+                    update={
+                        "assignment_id": assignment.id,
+                        "assignment_generation": assignment.generation,
+                    }
                 ),
             )
         )
@@ -231,7 +236,7 @@ async def replace_completed_head(rater, experiment, selected, assignments, polic
     return replacement
 
 
-async def queue_action(*, rater_id, body: QueueRequest, db):
+async def queue_action(*, rater_id, body: QueueRequest, db, serve=False):
     rater = await lock_rater(rater_id, db)
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
     policy = resolve_session_policy(experiment)
@@ -240,9 +245,16 @@ async def queue_action(*, rater_id, body: QueueRequest, db):
     # This request negotiates client support. A queue-enabled session may have
     # waited on its intro screen while the allowlist changed; let it enter at
     # depth one. The allowlist controls offers at /start and speculative work.
+    entering_queue = not rater.queue_mode
     rater.queue_mode = True
     now = datetime.now(UTC)
     assignments = await current_assignments(rater_id, db)
+    # Old instances can insert reservations after the migration backfill.
+    # These were already displayed; only queue-created tails need activation.
+    if entering_queue:
+        for assignment in assignments:
+            if assignment.activated_at is None:
+                assignment.activated_at = assignment.assigned_at
     # Legacy assignments were already displayed; keep only the newest one.
     active = [a for a in assignments if a.activated_at is not None]
     for a in assignments[:]:
@@ -269,7 +281,12 @@ async def queue_action(*, rater_id, body: QueueRequest, db):
             body.action == "activate" and selected is not None and selected.activated_at is not None
         )
         if not already_active and (
-            body.revision != rater.queue_revision or selected is None or selected != assignments[0]
+            (
+                body.revision != rater.queue_revision
+                and not (body.action == "skip" and body.revision is None)
+            )
+            or selected is None
+            or selected != assignments[0]
         ):
             result = await snapshot(rater, experiment, assignments, db)
             await db.commit()
@@ -303,69 +320,80 @@ async def queue_action(*, rater_id, body: QueueRequest, db):
             assignments.remove(selected)
             rater.queue_revision += 1
 
-    if body.action == "reserve" and now <= policy.deadline(rater.session_start):
-        if body.pinned_question_id is not None:
-            if not rater.is_preview:
-                raise HTTPException(403, "Only preview sessions can open a specific question")
-            # Pins are initial navigation, never a replacement for active work.
-            if assignments and assignments[0].question_id != body.pinned_question_id:
-                raise HTTPException(409, "Finish the active question before opening a pin")
-        depth = 1 + get_settings().prefetch.lookahead_questions if enabled(experiment.id) else 1
-        excluded = await fetch_rated_question_ids(rater_id, db)
-        excluded.extend(await skipped_question_ids(rater, db))
-        parents = await fetch_in_progress_parent_ids(rater_id, db)
-        for assignment in assignments:
-            q = await fetch_question_or_404(assignment.question_id, db)
-            if q.parent_question_id:
-                parents.add(q.parent_question_id)
-        while len(assignments) < depth:
-            candidates = await fetch_eligible_questions_with_counts(
-                experiment_id=experiment.id,
-                rated_question_ids=excluded + [a.question_id for a in assignments],
-                rater_id=rater_id,
-                now=now,
-                db=db,
-            )
-            if body.pinned_question_id is not None and not assignments:
-                selected = next(
-                    (q for q, _, _ in candidates if q.id == body.pinned_question_id), None
+    # Serve atomically: fill, recheck coverage and activate, then replenish any
+    # successor promoted by replacement. No browser revision round trip needed.
+    for serving_pass in range(2 if serve else 1):
+        if body.action == "reserve" and now <= policy.deadline(rater.session_start):
+            if body.pinned_question_id is not None:
+                if not rater.is_preview:
+                    raise HTTPException(403, "Only preview sessions can open a specific question")
+                # Pins are initial navigation, never a replacement for active work.
+                if assignments and assignments[0].question_id != body.pinned_question_id:
+                    raise HTTPException(409, "Finish the active question before opening a pin")
+            depth = 1 + get_settings().prefetch.lookahead_questions if enabled(experiment.id) else 1
+            excluded = await fetch_rated_question_ids(rater_id, db)
+            excluded.extend(await skipped_question_ids(rater, db))
+            parents = await fetch_in_progress_parent_ids(rater_id, db)
+            for assignment in assignments:
+                q = await fetch_question_or_404(assignment.question_id, db)
+                if q.parent_question_id:
+                    parents.add(q.parent_question_id)
+            while len(assignments) < depth:
+                candidates = await fetch_eligible_questions_with_counts(
+                    experiment_id=experiment.id,
+                    rated_question_ids=excluded + [a.question_id for a in assignments],
+                    rater_id=rater_id,
+                    now=now,
+                    db=db,
                 )
+                if body.pinned_question_id is not None and not assignments:
+                    selected = next(
+                        (q for q, _, _ in candidates if q.id == body.pinned_question_id), None
+                    )
+                    if selected is None:
+                        raise HTTPException(404, "Question is not available in this experiment")
+                else:
+                    groups = build_question_selection_groups(
+                        eligible_questions=candidates,
+                        target_ratings_per_question=experiment.num_ratings_per_question,
+                    )
+                    selected = build_selected_question(
+                        open_questions=groups[0],
+                        backfill_questions=groups[1],
+                        done_questions=groups[2],
+                        in_progress_parent_ids=parents,
+                    )
                 if selected is None:
-                    raise HTTPException(404, "Question is not available in this experiment")
-            else:
-                groups = build_question_selection_groups(
-                    eligible_questions=candidates,
-                    target_ratings_per_question=experiment.num_ratings_per_question,
-                )
-                selected = build_selected_question(
-                    open_questions=groups[0],
-                    backfill_questions=groups[1],
-                    done_questions=groups[2],
-                    in_progress_parent_ids=parents,
-                )
-            if selected is None:
-                break
-            method = get_method(experiment.assistance_method)
-            params = method.preparation_params(json.loads(experiment.assistance_params or "{}"))
-            parent = (
-                await fetch_parent_question_text(selected.parent_question_id, db)
-                if selected.parent_question_id
-                else None
-            )
-            context = PreparationContext(
-                QuestionSnapshot.capture(selected),
-                json.dumps(params),
-                parent,
-                experiment.system_prompt,
-            )
-            if method.plan_preparation(context) is None:
-                depth = 1
-                if assignments:
                     break
-            assignment = await reserve_question(rater, selected.id, policy, now, db)
-            assignments.append(assignment)
-            if selected.parent_question_id:
-                parents.add(selected.parent_question_id)
+                method = get_method(experiment.assistance_method)
+                params = method.preparation_params(json.loads(experiment.assistance_params or "{}"))
+                parent = (
+                    await fetch_parent_question_text(selected.parent_question_id, db)
+                    if selected.parent_question_id
+                    else None
+                )
+                context = PreparationContext(
+                    QuestionSnapshot.capture(selected),
+                    json.dumps(params),
+                    parent,
+                    experiment.system_prompt,
+                )
+                if method.plan_preparation(context) is None:
+                    depth = 1
+                    if assignments:
+                        break
+                assignment = await reserve_question(rater, selected.id, policy, now, db)
+                assignments.append(assignment)
+                if selected.parent_question_id:
+                    parents.add(selected.parent_question_id)
+                rater.queue_revision += 1
+        if serve and serving_pass == 0 and assignments and assignments[0].activated_at is None:
+            if now > policy.deadline(rater.session_start):
+                raise HTTPException(403, "Session expired")
+            selected = await replace_completed_head(
+                rater, experiment, assignments[0], assignments, policy, now, db
+            )
+            selected.activated_at = now
             rater.queue_revision += 1
     result = await snapshot(rater, experiment, assignments, db)
     await db.commit()
@@ -388,9 +416,14 @@ async def require_assignment(
         assignment is None
         or (identifier is not None and assignment.id != identifier)
         or (generation is not None and assignment.generation != generation)
-        or (active and assignment.activated_at is None)
+        or (active and rater.queue_mode and assignment.activated_at is None)
     ):
         raise HTTPException(409, "Question is not the active assignment")
+    if active and not rater.queue_mode and assignment.activated_at is None:
+        # A legacy server already displayed this reservation. Persist the repair
+        # before durable execution checks the assignment in its own transaction.
+        assignment.activated_at = assignment.assigned_at
+        await db.flush()
     if (
         not active
         and assignment.activated_at is None
@@ -398,3 +431,47 @@ async def require_assignment(
     ):
         raise HTTPException(409, "Reservation expired")
     return assignment
+
+
+async def serve_question(*, rater_id, db, pinned_question_id=None):
+    state = await queue_action(
+        rater_id=rater_id,
+        body=QueueRequest(pinned_question_id=pinned_question_id),
+        db=db,
+        serve=True,
+    )
+    if not state.items:
+        return None
+    head = state.items[0]
+    return head.question.model_copy(
+        update={
+            "assignment_id": head.assignment_id,
+            "assignment_generation": head.generation,
+        }
+    )
+
+
+async def prepare_successors(*, rater_id, runner, db):
+    """Persist speculative demand after serving, without awaiting provider work."""
+    from services.assistance.operations import prepare_assistance
+
+    rater = await db.get(Rater, rater_id)
+    if not rater.queue_mode or not speculation_enabled(rater.experiment_id):
+        return
+    assignments = await current_assignments(rater_id, db)
+    pending = [(a.id, a.generation) for a in assignments if a.activated_at is None]
+    await db.commit()
+    for identifier, generation in pending:
+        try:
+            await prepare_assistance(
+                rater_id=rater_id,
+                assignment_id=identifier,
+                generation=generation,
+                runner=runner,
+                db=db,
+            )
+        except HTTPException as exc:
+            await db.rollback()
+            if exc.status_code not in (401, 403, 404, 409):
+                raise
+            # Concurrent end/reset/activation can invalidate a successor.

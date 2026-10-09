@@ -331,26 +331,10 @@ async def get_next_question(
     db: AsyncSession,
 ) -> Optional[QuestionResponse]:
     rater = await fetch_rater_or_404(rater_id, db)
-    if rater.queue_mode:
-        from .queue import queue_action
-        from schemas import QueueRequest
+    from .queue import enabled, serve_question
 
-        state = await queue_action(rater_id=rater_id, body=QueueRequest(), db=db)
-        if not state.items:
-            return None
-        item = state.items[0]
-        if not item.activated:
-            state = await queue_action(
-                rater_id=rater_id,
-                body=QueueRequest(
-                    action="activate",
-                    revision=state.revision,
-                    assignment_id=item.assignment_id,
-                    generation=item.generation,
-                ),
-                db=db,
-            )
-        return state.items[0].question
+    if rater.queue_mode or enabled(rater.experiment_id):
+        return await serve_question(rater_id=rater_id, db=db)
     experiment = await fetch_experiment_or_404(rater.experiment_id, db)
 
     policy = resolve_session_policy(experiment)
@@ -469,6 +453,11 @@ async def get_question_by_id(
             status_code=403, detail="Only preview sessions can open a specific question"
         )
 
+    from .queue import enabled, serve_question
+
+    if rater.queue_mode or enabled(rater.experiment_id):
+        return await serve_question(rater_id=rater_id, pinned_question_id=question_id, db=db)
+
     question = await fetch_question_or_404(question_id, db)
     validate_question_belongs_to_rater_experiment(
         question_experiment_id=question.experiment_id,
@@ -496,8 +485,8 @@ async def submit_rating(
         from .queue import lock_rater, require_assignment
 
         rater = await lock_rater(rater_id, db)
-        if payload.assignment_id is None or payload.assignment_generation is None:
-            raise HTTPException(409, "Submission requires the active assignment")
+        if (payload.assignment_id is None) != (payload.assignment_generation is None):
+            raise HTTPException(409, "Incomplete assignment identity")
         previous = await fetch_existing_rating(
             rater_id=rater_id, question_id=payload.question_id, db=db
         )
@@ -507,8 +496,11 @@ async def submit_rating(
             )
             if (
                 assignment is not None
-                and assignment.id == payload.assignment_id
-                and assignment.generation == payload.assignment_generation
+                and (payload.assignment_id is None or assignment.id == payload.assignment_id)
+                and (
+                    payload.assignment_generation is None
+                    or assignment.generation == payload.assignment_generation
+                )
                 and previous.answer == payload.answer
                 and previous.confidence == payload.confidence
                 and previous.time_started == _normalize_to_utc_aware(payload.time_started)

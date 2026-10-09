@@ -56,23 +56,38 @@ async def start_session(
 
 @router.get("/next-question", response_model=Optional[QuestionResponse])
 async def get_next_question(
+    request: Request,
     session: RaterSession = Depends(require_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
-    return await rater.get_next_question(rater_id=session.rater_id, db=db)
+    question = await rater.get_next_question(rater_id=session.rater_id, db=db)
+    if question is not None:
+        from services.rater.queue import prepare_successors
+
+        await prepare_successors(
+            rater_id=session.rater_id, runner=request.app.state.preparation_runner, db=db
+        )
+    return question
 
 
 @router.get("/questions/{question_id}", response_model=QuestionResponse)
 async def get_question(
+    request: Request,
     question_id: int,
     session: RaterSession = Depends(require_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
-    return await rater.get_question_by_id(
+    question = await rater.get_question_by_id(
         rater_id=session.rater_id,
         question_id=question_id,
         db=db,
     )
+    from services.rater.queue import prepare_successors
+
+    await prepare_successors(
+        rater_id=session.rater_id, runner=request.app.state.preparation_runner, db=db
+    )
+    return question
 
 
 @router.post("/submit", response_model=RatingResponse)

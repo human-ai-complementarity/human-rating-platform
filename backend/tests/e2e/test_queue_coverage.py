@@ -203,3 +203,32 @@ def test_completed_parent_group_does_not_hide_unfinished_work(client, monkeypatc
     response = activate(client, headers, state, head)
     assert response.status_code == 200, response.text
     assert response.json()["items"][0]["question"]["id"] == alternative
+
+
+def test_server_serving_replaces_completed_head_and_restores_lookahead(
+    client, monkeypatch, sync_engine
+):
+    session, headers, _, head = pending_head(client, monkeypatch)
+    replacement = add_question(sync_engine)
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO questions (experiment_id, question_id, question_text, question_type) VALUES (1, 'another', 'Another unfinished question', 'MC')"
+            )
+        )
+    add_coverage(sync_engine, head["question"]["id"])
+    start = AsyncMock(return_value=InteractionStep(type=StepType.DISPLAY, is_terminal=True))
+    monkeypatch.setattr("services.assistance.methods.top_n.TopNAssistance.start", start)
+    response = client.get("/api/raters/next-question", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["id"] != head["question"]["id"]
+    with sync_engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                "SELECT question_id, activated_at IS NOT NULL FROM question_assignments WHERE rater_id=:id AND completed_at IS NULL"
+            ),
+            {"id": session["rater_id"]},
+        ).all()
+    assert len(rows) == 2
+    assert sum(active for _, active in rows) == 1
+    assert replacement in [question_id for question_id, _ in rows]

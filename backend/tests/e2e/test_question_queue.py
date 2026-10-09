@@ -16,6 +16,12 @@ from test_preparation_runner import setup_rater
 
 
 def enable(client, monkeypatch):
+    # Serving now starts speculative work itself. Keep these queue tests fully
+    # local even when they do not explicitly exercise provider execution.
+    monkeypatch.setattr(
+        "services.assistance.methods.top_n.TopNAssistance.start",
+        AsyncMock(return_value=InteractionStep(type=StepType.DISPLAY, is_terminal=True)),
+    )
     session, headers, question = setup_rater(client)
     monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [1])
     return session, headers, question
@@ -393,3 +399,81 @@ def test_queue_rollout_is_opt_in_and_existing_sessions_drain(client, monkeypatch
     state = reserve(client, _rater_headers(delayed))
     assert len(state["items"]) == 1
     assert not state["prefetch_enabled"]
+
+
+@pytest.mark.parametrize("queue_enabled", [False, True])
+def test_old_instance_assignment_survives_migration_gap(
+    client, monkeypatch, sync_engine, queue_enabled
+):
+    session, headers, question = setup_rater(client)
+    if queue_enabled:
+        monkeypatch.setattr(get_settings().prefetch, "experiment_ids", [1])
+    start = AsyncMock(return_value=InteractionStep(type=StepType.DISPLAY, is_terminal=True))
+    monkeypatch.setattr("services.assistance.methods.top_n.TopNAssistance.start", start)
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE question_assignments SET activated_at=NULL WHERE rater_id=:id"),
+            {"id": session["rater_id"]},
+        )
+    # A tab already showing this question may request assistance before reload.
+    response = client.post(
+        "/api/raters/assistance/start", headers=headers, json={"question_id": question["id"]}
+    )
+    assert response.status_code == 200, response.text
+    reloaded = client.get("/api/raters/next-question", headers=headers)
+    assert reloaded.status_code == 200
+    assert reloaded.json()["id"] == question["id"]
+    assert (
+        client.post(
+            "/api/raters/assistance/start", headers=headers, json={"question_id": question["id"]}
+        ).status_code
+        == 200
+    )
+    # Old tabs do not send assignment identity, even if another tab enables the queue.
+    response = client.post(
+        "/api/raters/submit",
+        headers=headers,
+        json={
+            "question_id": question["id"],
+            "answer": "Yes",
+            "confidence": 4,
+            "time_started": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_next_question_owns_activation_and_preparation(client, monkeypatch, sync_engine):
+    session, headers, question = enable(client, monkeypatch)
+    start = AsyncMock(return_value=InteractionStep(type=StepType.DISPLAY, is_terminal=True))
+    monkeypatch.setattr("services.assistance.methods.top_n.TopNAssistance.start", start)
+
+    def fetch():
+        response = client.get("/api/raters/next-question", headers=headers)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _: fetch(), range(2)))
+    assert responses[0] == responses[1]
+    assert responses[0]["id"] == question["id"]
+    assert responses[0]["assignment_id"] is not None
+    with sync_engine.connect() as conn:
+        assert (
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM question_assignments WHERE rater_id=:id AND completed_at IS NULL AND activated_at IS NOT NULL"
+                ),
+                {"id": session["rater_id"]},
+            ).scalar_one()
+            == 1
+        )
+        assert (
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM assistance_preparations WHERE rater_id=:id AND NOT demanded"
+                ),
+                {"id": session["rater_id"]},
+            ).scalar_one()
+            == 1
+        )

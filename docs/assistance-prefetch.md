@@ -105,3 +105,22 @@ Set `prefetch.experiment_ids` (or `PREFETCH__EXPERIMENT_IDS` as a JSON array) to
 experiments in. The default is empty. Removing an experiment stops new speculative
 requests and limits further refills to one; existing active work and already
 reserved work can drain through the same protocol.
+
+
+### Server-owned scheduling
+
+`/next-question` reserves, rechecks coverage, and activates the current question
+under the existing assignment lock. It then persists preparation demand for
+successors before returning, without waiting for provider computation. Preview
+pins use the same serving path. A second fill after activation replenishes any
+successor promoted by the coverage check.
+
+Question responses carry assignment ID and generation for exact submission
+retries. The browser does not reserve, activate, or prepare successors. Explicit
+skip and client-visible wait telemetry remain separate actions. Legacy clients
+may omit assignment identity; the server still requires their question to match
+an active assignment once the session enters queue mode.
+
+Legacy reservations inserted after the migration backfill are valid before
+queue enrollment. Enrollment marks those already-served reservations active,
+preventing assistance from getting stuck after a rolling deployment.
