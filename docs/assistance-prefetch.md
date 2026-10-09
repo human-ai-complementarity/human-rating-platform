@@ -5,7 +5,7 @@ This stack adds preparation in five reviewable stages:
 1. Optional method contract and first-step adapter (this change).
 2. Durable, fenced execution with bounded in-process workers.
 3. Server-owned active question and one reserved successor.
-4. A frontend queue owner that activates before display.
+4. A frontend assistance owner using server-selected questions.
 5. Measurement, disabled-by-default rollout, and operating guidance.
 
 ## Extending a method
@@ -83,12 +83,32 @@ The default is a starting limit, not a measured production capacity guarantee.
 
 ## Authoritative queue
 
-`POST /raters/queue` reserves at most two questions: one active question and one
-successor. Activation is an explicit revision-checked mutation. The existing
+`GET /raters/next-question` serves one current question and reserves up to `k` successors.
+Set `prefetch.lookahead_questions` (or `PREFETCH__LOOKAHEAD_QUESTIONS`) to `k`,
+from 0 to 5, default 1. The bound limits assignment hoarding and speculative cost;
+raise it only with measurements. Zero gives a queue-only baseline. Shrinking `k`
+stops refills beyond the new bound; already reserved work drains without discarding
+paid results. Speculation stops immediately at zero, subject to in-flight calls. Serving activates the selected head in the same transaction as selection. The existing
 experiment assignment lock serializes selection; a rater-row lock serializes
 queue mutation, submission, reset, and end. Selection retains the existing
 coverage tiers and includes the active question's parent when choosing a sibling.
 Preview reservations do not count toward real participant coverage.
+
+Before first activation, a non-preview question is replaced only if its submitted,
+non-preview ratings have reached the target and another eligible question remains
+underfilled. The existing reservation-aware selector chooses among unfinished
+questions, preserving parent continuity within those candidates. A queued
+replacement retains its reservation and prepared work; otherwise the queue reserves
+it normally. Releasing the old head cancels its preparation and fences late results.
+The next-question response is authoritative: the browser displays and demands
+only the returned question.
+
+Smaller coverage differences, preview navigation, and already activated questions
+do not trigger replacement. If no eligible unfinished work remains, the existing
+completed-question policy stays in effect. This is a serving-time snapshot, not a
+guarantee against another participant submitting immediately afterward. It trades
+occasional unused preparation for better completion coverage without a new queue,
+selection algorithm, or schema change.
 
 New queue submissions carry assignment ID and generation. An exact retry returns
 the existing rating; a conflicting answer returns 409. The old submission
