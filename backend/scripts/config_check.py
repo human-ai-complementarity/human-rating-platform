@@ -129,13 +129,13 @@ class RenderValidator(ProviderValidator):
             result.add_warning("APP__CORS_ORIGINS includes '*' — overly permissive for production.")
 
     def check_terms_source_set(self, settings: Settings, result: ValidationResult) -> None:
-        # The platform ships no consent statements; without a source no rater
-        # session can start and no round can publish.
+        # The platform ships no consent statements; without a source raters
+        # are shown a placeholder, which is never what production wants.
         source = settings.terms.source_url.strip()
         if not source:
-            result.add_error(
-                "TERMS__SOURCE_URL is not set: rater consent statements must come from an "
-                "external terms source (gs:// or https://)."
+            result.add_warning(
+                "TERMS__SOURCE_URL is not set: raters will see a placeholder consent "
+                "statement. Point it at the team's terms source (gs:// or https://)."
             )
         elif source.startswith("file://"):
             result.add_warning(
