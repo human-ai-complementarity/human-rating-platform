@@ -67,6 +67,20 @@ class _DegradesOnStart(AssistanceMethod):
         )
 
 
+class _DegradesWithDetail(AssistanceMethod):
+    """Caught a provider rejection and kept what the provider said."""
+
+    async def start(
+        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+    ):
+        return InteractionStep(
+            type=StepType.NONE,
+            is_terminal=True,
+            failure_reason="provider_error",
+            failure_detail="BadRequestError: Unsupported parameter: 'temperature'",
+        )
+
+
 class _RaisesOnAdvance(_TwoTurn):
     async def advance(self, state, human_input, params, *, experiment_system_prompt=None):
         raise RuntimeError("mid-session failure")
@@ -139,6 +153,7 @@ _METHODS = {
     "test_two_turn": _TwoTurn,
     "test_raises_on_start": _RaisesOnStart,
     "test_degrades_on_start": _DegradesOnStart,
+    "test_degrades_with_detail": _DegradesWithDetail,
     "test_raises_on_advance": _RaisesOnAdvance,
     "test_times_out_on_advance": _TimesOutOnAdvance,
 }
@@ -328,6 +343,21 @@ def test_method_reported_failure_is_logged_as_error(client: TestClient, sync_eng
 
     (event,) = _events(sync_engine, started.json()["session_id"])
     assert event["error"] == "provider_error"
+    assert event["payload"]["response"]["failure_reason"] == "provider_error"
+
+
+def test_what_the_provider_said_is_logged_with_the_failure(client: TestClient, sync_engine):
+    """A rejected parameter is readable in the event log, not only the server log."""
+    headers, question_id = _setup(client, "test_degrades_with_detail")
+
+    started = client.post(
+        "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
+    )
+    assert started.json()["type"] == "none"
+    assert "failure_detail" not in started.json()["payload"]
+
+    (event,) = _events(sync_engine, started.json()["session_id"])
+    assert event["error"] == "provider_error: BadRequestError: Unsupported parameter: 'temperature'"
     assert event["payload"]["response"]["failure_reason"] == "provider_error"
 
 

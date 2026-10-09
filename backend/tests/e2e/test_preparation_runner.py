@@ -26,7 +26,16 @@ def setup_rater(client):
         f"/api/admin/experiments/{experiment['id']}",
         json={
             "assistance_method": "top_n",
-            "assistance_params": {"assistance_models": {"top_n": "openrouter/test"}},
+            "assistance_params": {
+                "assistance_models": {
+                    "top_n": {
+                        "model": "openrouter/test",
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": 0,
+                    }
+                }
+            },
         },
     )
     assert response.status_code == 200

@@ -52,8 +52,11 @@ async def _call_method(
         )
     latency_ms = _elapsed_ms(started)
     # A set failure_reason means the method caught its own failure and
-    # returned a degraded step.
-    return _MethodCall(step, latency_ms, step.failure_reason)
+    # returned a degraded step; the detail is what the provider said.
+    error = step.failure_reason
+    if error and step.failure_detail:
+        error = f"{error}: {step.failure_detail}"
+    return _MethodCall(step, latency_ms, error)
 
 
 def _elapsed_ms(started: float) -> int:

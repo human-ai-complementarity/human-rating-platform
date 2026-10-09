@@ -141,7 +141,19 @@ async def test_real_top_n_preparation_preserves_question_and_context(monkeypatch
     monkeypatch.setattr("services.assistance.methods.top_n.complete", complete)
     snapshot = replace(
         context(),
-        params_json='{"assistance_models": {"top_n": "openrouter/preparation-test"}, "n": 1}',
+        params_json=json.dumps(
+            {
+                "assistance_models": {
+                    "top_n": {
+                        "model": "openrouter/preparation-test",
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": 0,
+                    }
+                },
+                "n": 1,
+            }
+        ),
     )
     method = get_method("top_n")
     spec = method.plan_preparation(snapshot)
@@ -189,7 +201,14 @@ async def test_real_human_as_a_tool_preparation_preserves_question_and_context(m
         context(),
         params_json=json.dumps(
             {
-                "assistance_models": {"human_as_a_tool": "openrouter/decomposition-test"},
+                "assistance_models": {
+                    "human_as_a_tool": {
+                        "model": "openrouter/decomposition-test",
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": None,
+                    }
+                },
                 "confidence_model": "openrouter/confidence-test",
             }
         ),

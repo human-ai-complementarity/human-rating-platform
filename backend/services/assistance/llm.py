@@ -55,18 +55,12 @@ TEXT_VERBOSITIES = ("low", "medium", "high")
 
 
 @dataclass(frozen=True)
-class RequestOptions:
-    """Provider-neutral knobs on one completion. None means "do not send"."""
-
-    response_format: dict | None = None
-    temperature: float | None = None
-    reasoning_effort: str | None = None
-    text_verbosity: str | None = None
-
-
-@dataclass(frozen=True)
 class Provider:
-    """One transport: where to send, which key to use, how to spell the options."""
+    """One transport: where to send, which key to use, how to spell the options.
+
+    `request` builds the chat-completions kwargs. Every option is None for
+    "do not send"; the provider-neutral names are spelled its way.
+    """
 
     name: str
     base_url: str | None
@@ -81,41 +75,45 @@ class Provider:
         return key
 
     def request(
-        self, model_id: str, messages: list[Message], settings: LLMSettings, options: RequestOptions
+        self,
+        model_id: str,
+        messages: list[Message],
+        settings: LLMSettings,
+        *,
+        response_format: dict | None,
+        temperature: float | None,
+        reasoning_effort: str | None,
+        text_verbosity: str | None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
 
 class _OpenRouter(Provider):
-    def request(
-        self, model_id: str, messages: list[Message], settings: LLMSettings, options: RequestOptions
-    ) -> dict[str, Any]:
+    def request(self, model_id, messages, settings, **options) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": model_id,
             "messages": messages,
             "max_tokens": settings.max_tokens,
         }
-        if options.response_format is not None:
-            kwargs["response_format"] = options.response_format
-        if options.temperature is not None:
-            kwargs["temperature"] = options.temperature
+        if options["response_format"] is not None:
+            kwargs["response_format"] = options["response_format"]
+        if options["temperature"] is not None:
+            kwargs["temperature"] = options["temperature"]
         # OpenRouter's default is to drop a parameter the routed endpoint does
         # not support, so a declared temperature or effort could silently not
         # run. `require_parameters` makes it refuse instead, the way OpenAI
         # does, so both transports fail the same way on the same declaration.
         extra: dict[str, Any] = {"provider": {"require_parameters": True}}
-        if options.reasoning_effort is not None:
-            extra["reasoning"] = {"effort": options.reasoning_effort}
-        if options.text_verbosity is not None:
-            extra["verbosity"] = options.text_verbosity
+        if options["reasoning_effort"] is not None:
+            extra["reasoning"] = {"effort": options["reasoning_effort"]}
+        if options["text_verbosity"] is not None:
+            extra["verbosity"] = options["text_verbosity"]
         kwargs["extra_body"] = extra
         return kwargs
 
 
 class _OpenAI(Provider):
-    def request(
-        self, model_id: str, messages: list[Message], settings: LLMSettings, options: RequestOptions
-    ) -> dict[str, Any]:
+    def request(self, model_id, messages, settings, **options) -> dict[str, Any]:
         # `max_tokens` is refused by OpenAI's reasoning models; the renamed
         # field is accepted by every chat model.
         kwargs: dict[str, Any] = {
@@ -123,14 +121,14 @@ class _OpenAI(Provider):
             "messages": messages,
             "max_completion_tokens": settings.max_tokens,
         }
-        if options.response_format is not None:
-            kwargs["response_format"] = options.response_format
-        if options.temperature is not None:
-            kwargs["temperature"] = options.temperature
-        if options.reasoning_effort is not None:
-            kwargs["reasoning_effort"] = options.reasoning_effort
-        if options.text_verbosity is not None:
-            kwargs["verbosity"] = options.text_verbosity
+        if options["response_format"] is not None:
+            kwargs["response_format"] = options["response_format"]
+        if options["temperature"] is not None:
+            kwargs["temperature"] = options["temperature"]
+        if options["reasoning_effort"] is not None:
+            kwargs["reasoning_effort"] = options["reasoning_effort"]
+        if options["text_verbosity"] is not None:
+            kwargs["verbosity"] = options["text_verbosity"]
         return kwargs
 
 
@@ -224,13 +222,15 @@ async def complete(
         settings.request_timeout,
         settings.max_retries,
     )
-    options = RequestOptions(
+    kwargs = provider.request(
+        model_id,
+        messages,
+        settings,
         response_format=response_format,
         temperature=temperature,
         reasoning_effort=reasoning_effort,
         text_verbosity=text_verbosity,
     )
-    kwargs = provider.request(model_id, messages, settings, options)
     async with provider_slot():
         response = await client.chat.completions.create(**kwargs)
     if not response.choices:

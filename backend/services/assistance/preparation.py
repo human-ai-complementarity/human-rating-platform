@@ -68,6 +68,7 @@ class InitialStepArtifact(BaseModel):
     state: dict = Field(default_factory=dict)
     is_terminal: bool
     failure_reason: FailureReason | None = None
+    failure_detail: str | None = None
 
 
 class InitialStepPreparation(AssistanceMethod):

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Literal
 
 from models import Question, StepType
 
+from .model_resolution import AssistanceModel
+
 if TYPE_CHECKING:
     from .preparation import PreparationContext, PreparationSpec, QuestionSnapshot
 
@@ -36,6 +38,10 @@ class InteractionStep:
     is_terminal: bool = False
     # Research attribution only; never sent in the participant payload.
     failure_reason: FailureReason | None = None
+    # What the provider said when failure_reason is "provider_error", so a
+    # rejected parameter is readable in the event log rather than only in
+    # the server log. Never sent in the participant payload.
+    failure_detail: str | None = None
 
     @property
     def outcome(self) -> str:
@@ -59,10 +65,10 @@ class AssistanceMethod(ABC):
     rater_instructions: str = ""
 
     @classmethod
-    def default_model(cls) -> str | None:
-        """The model this method runs on without an `assistance_models` entry.
-
-        None for a method that calls no model.
+    def default_assistance_model(cls) -> AssistanceModel | None:
+        """What this method runs on without an `assistance_models` entry: the
+        platform model and the options it is sent with. None for a method that
+        calls no model.
         """
         return None
 

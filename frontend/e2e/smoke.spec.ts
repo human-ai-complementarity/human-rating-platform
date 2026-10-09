@@ -15,7 +15,16 @@ type ExperimentRecord = {
   archived_at: string | null;
   is_markdown: boolean;
   assistance_method: string;
-  resolved_models?: Record<string, { model: string; source: 'assistance_models' | 'default' }>;
+  resolved_models?: Record<
+    string,
+    {
+      model: string;
+      reasoning_effort: string | null;
+      text_verbosity: string | null;
+      temperature: number | null;
+      source: 'assistance_models' | 'default';
+    }
+  >;
   needs_attention: boolean;
   attention_reason: string | null;
   spend_minor_units: number;
@@ -1529,8 +1538,20 @@ test('opening an archived experiment resolves via the per-id fetch', async ({ pa
 test('the assistance config shows the model each method would run on', async ({ page }) => {
   const state = createMockState();
   const resolved_models = {
-    top_n: { model: 'openrouter/test/top-n-entry', source: 'assistance_models' as const },
-    human_as_a_tool: { model: 'openrouter/test/platform-default', source: 'default' as const },
+    top_n: {
+      model: 'openai/test/top-n-entry',
+      reasoning_effort: 'low',
+      text_verbosity: 'low',
+      temperature: null,
+      source: 'assistance_models' as const,
+    },
+    human_as_a_tool: {
+      model: 'openrouter/test/platform-default',
+      reasoning_effort: null,
+      text_verbosity: null,
+      temperature: 0.7,
+      source: 'default' as const,
+    },
   };
   state.experiments = [
     buildExperiment(state, { id: 1, assistance_method: 'top_n', resolved_models }),
@@ -1552,13 +1573,19 @@ test('the assistance config shows the model each method would run on', async ({ 
   await page.goto('/admin/experiments/1');
   await page.getByTestId('tab-assistance').click();
   await expect(page.getByTestId('resolved-model-top_n')).toHaveText(
-    'Model: openrouter/test/top-n-entry · from assistance_models',
+    'Model: openai/test/top-n-entry · from assistance_models',
+  );
+  await expect(page.getByTestId('resolved-model-options-top_n')).toHaveText(
+    'reasoning effort: low · verbosity: low · temperature: not sent',
   );
 
   await page.goto('/admin/experiments/2');
   await page.getByTestId('tab-assistance').click();
   await expect(page.getByTestId('resolved-model-human_as_a_tool')).toHaveText(
     'Model: openrouter/test/platform-default · platform default',
+  );
+  await expect(page.getByTestId('resolved-model-options-human_as_a_tool')).toHaveText(
+    'reasoning effort: not sent · verbosity: not sent · temperature: 0.7',
   );
   await expect(page.getByTestId('resolved-model-top_n')).toHaveCount(0);
 });

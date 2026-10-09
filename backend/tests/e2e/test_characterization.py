@@ -4681,7 +4681,14 @@ def test_update_experiment_lock_compares_merged_assistance_params(
             "assistance_method": "top_n",
             "assistance_params": {
                 "n": 3,
-                "assistance_models": {"top_n": "openrouter/openai/gpt-4o"},
+                "assistance_models": {
+                    "top_n": {
+                        "model": "openrouter/openai/gpt-4o",
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": 0,
+                    }
+                },
             },
         },
     ).json()

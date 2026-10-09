@@ -2198,7 +2198,17 @@ function MetadataPanel({
 
 // ── Rater assistance panel ───────────────────────────────────────────────
 
-// The model a method would run on, as the backend resolved it.
+// The request options a resolved model is called with; "not sent" for null.
+function resolvedOptionsText(resolved: ResolvedModel): string {
+  const show = (value: string | number | null) => (value === null ? 'not sent' : String(value));
+  return [
+    `reasoning effort: ${show(resolved.reasoning_effort)}`,
+    `verbosity: ${show(resolved.text_verbosity)}`,
+    `temperature: ${show(resolved.temperature)}`,
+  ].join(' · ');
+}
+
+// The model a method would run on, and with what, as the backend resolved it.
 function ResolvedModelLine({
   method,
   resolved,
@@ -2208,14 +2218,16 @@ function ResolvedModelLine({
 }) {
   if (!resolved) return null;
   return (
-    <div
-      data-testid={`resolved-model-${method}`}
-      style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}
-    >
-      Model:{' '}
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{resolved.model}</span>
-      {' · '}
-      {resolved.source === 'assistance_models' ? 'from assistance_models' : 'platform default'}
+    <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
+      <div data-testid={`resolved-model-${method}`}>
+        Model:{' '}
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>
+          {resolved.model}
+        </span>
+        {' · '}
+        {resolved.source === 'assistance_models' ? 'from assistance_models' : 'platform default'}
+      </div>
+      <div data-testid={`resolved-model-options-${method}`}>{resolvedOptionsText(resolved)}</div>
     </div>
   );
 }
