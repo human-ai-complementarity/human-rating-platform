@@ -331,7 +331,7 @@ function RaterView() {
   useEffect(() => {
     if (!(sessionExpired || allDone)) return;
     clear();
-    if (session?.queue_enabled && sessionToken) void api.endSession(sessionToken).catch(() => {});
+    if (sessionToken) void api.endSession(sessionToken).catch(() => {});
     const completionUrl = session?.completion_url;
 
     // Clear persisted session once we're done or expired (always)
@@ -343,7 +343,7 @@ function RaterView() {
       window.location.href = completionUrl;
     }, 3000);
     return () => clearTimeout(timer);
-  }, [sessionExpired, allDone, session?.completion_url, session?.queue_enabled, sessionToken, clearStoredSession, clear]);
+  }, [sessionExpired, allDone, session?.completion_url, sessionToken, clearStoredSession, clear]);
 
   const afterSubmitted = async () => {
     setQuestionsCompleted(prev => prev + 1);
@@ -396,10 +396,10 @@ function RaterView() {
 
   // Queue skips are explicit server mutations; legacy sessions can answer without assistance.
   useEffect(() => {
-    if (assistanceStep?.type === 'skip' && sessionToken && session?.queue_enabled) {
+    if (assistanceStep?.type === 'skip' && sessionToken && question?.assignment_id != null) {
       void skip(sessionToken).then(() => loadNextQuestion(sessionToken)).catch(err => setError(err instanceof Error ? err.message : 'Could not skip question'));
     }
-  }, [assistanceStep?.type, sessionToken, session?.queue_enabled, skip, loadNextQuestion]);
+  }, [assistanceStep?.type, sessionToken, question?.assignment_id, skip, loadNextQuestion]);
 
   const hasAssistance = session?.assistance_method && session.assistance_method !== 'none';
   const assistanceBlocksRating = Boolean(

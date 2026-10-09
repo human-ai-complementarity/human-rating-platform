@@ -1,7 +1,7 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 
 const url = '/rate?experiment_id=1&PROLIFIC_PID=pid&STUDY_ID=study&SESSION_ID=session';
-const question = (id: number) => ({ id, question_text: `Question ${id}`, question_type: 'MC', options: 'Yes|No', is_markdown: false });
+const question = (id: number) => ({ id, question_text: `Question ${id}`, question_type: 'MC', options: 'Yes|No', is_markdown: false, assignment_id: id, assignment_generation: 1 });
 const item = (id: number, activated = false) => ({ assignment_id: id, generation: 1, activated, question: question(id) });
 
 async function mockQueue(page: Page, method = 'top_n', intro = false) {
@@ -9,49 +9,44 @@ async function mockQueue(page: Page, method = 'top_n', intro = false) {
     revision: 1, items: [item(1), item(2)], starts: [] as number[], prepares: [] as number[],
     submissions: [] as Record<string, unknown>[], actions: [] as string[],
     activationGate: null as Promise<void> | null, loseSubmit: false,
-    replaceOnActivate: false,
+    replaceOnActivate: false, skipInitial: false,
     startFailures: [] as number[], sessionEndTime: '2099-01-01T00:00:00Z', graceSeconds: 300,
     assistanceGate: null as Promise<void> | null,
     conflictActivation: false, advanced: false, loseAdvance: false, advanceCalls: 0,
     advanceBodies: [] as Record<string, unknown>[], turnPending: false, conflictSubmit: false,
   };
   const json = (route: Route, value: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
-  const snapshot = () => ({ session_generation: '2026-09-29T00:00:00+00:00', revision: state.revision, phase: 'active', prefetch_enabled: true, items: state.items });
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/raters/start')) return json(route, {
       rater_id: 1, session_start: '2026-09-29T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds,
       experiment_name: 'Prefetch study', experiment_description_html: intro ? '<p>Read these study instructions.</p>' : null,
-      assistance_method: method, assistance_instructions: null, queue_enabled: true, rater_session_token: 'token', completion_url: null,
+      assistance_method: method, assistance_instructions: null, queue_enabled: false, rater_session_token: 'token', completion_url: null,
     });
     if (path.endsWith('/raters/session-status')) return json(route, { is_active: true, questions_completed: state.submissions.length, time_remaining_seconds: 3600, grace_seconds_remaining: 3900 });
-    if (path.endsWith('/raters/queue')) {
-      const body = route.request().postDataJSON();
-      state.actions.push(body.action);
-      if (body.action === 'activate') {
-        if (state.conflictActivation) {
-          state.conflictActivation = false;
-          state.items.shift();
-          state.revision += 1;
-          return json(route, { detail: 'Queue changed' }, 409);
-        }
-        if (state.activationGate) await state.activationGate;
-        if (state.replaceOnActivate) {
-          state.items[0] = item(3);
-          state.replaceOnActivate = false;
-        }
-        state.items[0].activated = true;
-        state.revision += 1;
-      }
-      return json(route, snapshot());
+    if (path.endsWith('/raters/next-question')) {
+      state.actions.push('next-question');
+      if (state.activationGate) await state.activationGate;
+      if (state.conflictActivation) { state.conflictActivation = false; state.items.shift(); }
+      if (state.replaceOnActivate) { state.items[0] = item(3); state.replaceOnActivate = false; }
+      if (!state.items.length) return json(route, null);
+      state.items[0].activated = true;
+      return json(route, state.items[0].question);
     }
-    if (path.endsWith('/assistance/prepare')) {
-      state.prepares.push(route.request().postDataJSON().assignment_id);
-      return json(route, { status: 'accepted' }, 202);
+    if (path.endsWith('/raters/queue') && route.request().postDataJSON().action === 'skip') {
+      const body = route.request().postDataJSON();
+      state.actions.push('skip');
+      state.items = state.items.filter(item => item.assignment_id !== body.assignment_id);
+      return json(route, {});
+    }
+    if (path.endsWith('/raters/queue') || path.endsWith('/assistance/prepare')) {
+      state.prepares.push(1);
+      return json(route, { detail: 'Browser must not schedule work' }, 400);
     }
     if (path.endsWith('/assistance/start')) {
       const id = route.request().postDataJSON().question_id;
       state.starts.push(id);
+      if (state.skipInitial && id === 1) return json(route, { session_id: id, turn: 1, type: 'skip', is_terminal: true, payload: {} });
       const failure = state.startFailures.shift();
       if (failure === -1) return route.abort('failed');
       if (failure) return json(route, { detail: 'Assistance is still preparing; retry the same question' }, failure);
@@ -92,17 +87,17 @@ async function mockQueue(page: Page, method = 'top_n', intro = false) {
   return state;
 }
 
-test('activation precedes display and preparation is invisible', async ({ page }) => {
+test('one next-question request precedes display without browser scheduling', async ({ page }) => {
   const state = await mockQueue(page);
   let release!: () => void;
   state.activationGate = new Promise<void>(resolve => { release = resolve; });
   await page.goto(url);
-  await expect.poll(() => state.actions).toContain('activate');
+  await expect.poll(() => state.actions).toContain('next-question');
   await expect(page.getByText('Question 1', { exact: true })).toHaveCount(0);
   expect(state.starts).toEqual([]);
   release();
   await expect(page.getByText('Prepared guidance')).toBeVisible();
-  await expect.poll(() => state.prepares).toEqual([2]);
+  expect(state.prepares).toEqual([]);
   await expect(page.getByText('Question 2', { exact: true })).toHaveCount(0);
   expect(state.starts).toEqual([1]);
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
@@ -127,11 +122,11 @@ test('lost submission response retries the exact answer before advancing', async
   expect(state.submissions[0]).toEqual(state.submissions[1]);
 });
 
-test('Human-as-a-Tool waits for real input while preparing the successor', async ({ page }) => {
+test('Human-as-a-Tool still waits for real input', async ({ page }) => {
   const state = await mockQueue(page, 'human_as_a_tool');
   await page.goto(url);
   await expect(page.getByText('Check the evidence')).toBeVisible();
-  await expect.poll(() => state.prepares).toEqual([2]);
+  expect(state.prepares).toEqual([]);
   await page.getByPlaceholder('Your answer...').fill('Evidence checked');
   await page.getByRole('button', { name: /send|continue|submit/i }).last().click();
   await expect(page.getByText('Analysis complete')).toBeVisible();
@@ -149,11 +144,11 @@ test('no preparation or reservation runs before intro acknowledgment', async ({ 
   expect(state.actions).toEqual([]);
   await page.getByRole('button', { name: /begin|start|continue/i }).click();
   await expect(page.getByText('Prepared guidance')).toBeVisible();
-  await expect.poll(() => state.prepares).toEqual([2]);
+  expect(state.prepares).toEqual([]);
 });
 
 
-test('a stale activation reconciles before displaying another tabs completed question', async ({ page }) => {
+test('the browser displays the server-selected question after another tab advances', async ({ page }) => {
   const state = await mockQueue(page);
   state.conflictActivation = true;
   await page.goto(url);
@@ -209,12 +204,12 @@ test('submission conflict offers explicit recovery to the authoritative question
 });
 
 
-test('early arrival waits for the queued result and prepares every reserved successor once', async ({ page }) => {
+test('early arrival waits for assistance without scheduling successors', async ({ page }) => {
   const state = await mockQueue(page);
   state.items = [item(1), item(2), item(3), item(4)];
   await page.goto(url);
   await expect(page.getByText('Prepared guidance')).toBeVisible();
-  await expect.poll(() => state.prepares).toEqual([2, 3, 4]);
+  expect(state.prepares).toEqual([]);
   let release!: () => void;
   state.assistanceGate = new Promise<void>(resolve => { release = resolve; });
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
@@ -223,19 +218,19 @@ test('early arrival waits for the queued result and prepares every reserved succ
   await expect(page.getByText('Preparing guidance, please wait…')).toBeVisible();
   await expect(page.getByText('Prepared guidance')).toHaveCount(0);
   expect(state.starts).toEqual([1, 2]);
-  expect(state.prepares).toEqual([2, 3, 4]);
+  expect(state.prepares).toEqual([]);
   release();
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   expect(state.starts).toEqual([1, 2]);
-  expect(state.prepares).toEqual([2, 3, 4]);
+  expect(state.prepares).toEqual([]);
 });
 
 
-test('activation replacement displays and demands only the returned question', async ({ page }) => {
+test('serving-time replacement displays and demands only the returned question', async ({ page }) => {
   const state = await mockQueue(page);
   await page.goto(url);
   await expect(page.getByText('Prepared guidance')).toBeVisible();
-  await expect.poll(() => state.prepares).toEqual([2]);
+  expect(state.prepares).toEqual([]);
   state.replaceOnActivate = true;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
   await page.getByRole('button', { name: /submit/i }).click();
@@ -258,7 +253,7 @@ test('transient start failures retry the same question without leaving loading',
   }
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   expect(state.starts).toEqual([1, 1, 1, 1, 1]);
-  expect(state.prepares).toEqual([2]);
+  expect(state.prepares).toEqual([]);
 });
 
 test('automatic start retries stop after six requests and allow explicit retry', async ({ page }) => {
@@ -303,4 +298,15 @@ test('session expiry cancels scheduled assistance retries', async ({ page }) => 
   await page.clock.runFor(30000);
   expect(state.starts).toHaveLength(requestsAtExpiry);
   await expect(page.getByRole('button', { name: 'Retry assistance' })).toHaveCount(0);
+});
+
+
+test('failed-step skip uses the served assignment even for a restored legacy session', async ({ page }) => {
+  const state = await mockQueue(page);
+  state.skipInitial = true;
+  await page.goto(url);
+  await expect(page.getByText('Question 2', { exact: true })).toBeVisible();
+  await expect(page.getByText('Prepared guidance')).toBeVisible();
+  expect(state.actions).toEqual(['next-question', 'skip', 'next-question']);
+  expect(state.prepares).toEqual([]);
 });

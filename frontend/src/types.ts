@@ -111,6 +111,8 @@ export type StudyLabel =
 export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate';
 
 export interface Question {
+  assignment_id?: number | null;
+  assignment_generation?: number | null;
   id: number;
   question_text: string;
   options: string | null;
@@ -154,7 +156,6 @@ export interface UploadResponse {
 }
 
 export interface Session {
-  queue_enabled?: boolean;
   rater_id: number;
   session_start: string;
   session_end_time: string;
@@ -380,26 +381,4 @@ export interface ApiKey {
 // Returned only by create/regenerate: the full secret, shown to the user once.
 export interface ApiKeyCreated extends ApiKey {
   plaintext_key: string;
-}
-
-
-export interface QueueItem {
-  assignment_id: number;
-  generation: number;
-  activated: boolean;
-  question: Question;
-}
-export interface QueueSnapshot {
-  session_generation: string;
-  revision: number;
-  phase: 'active' | 'grace' | 'ended';
-  prefetch_enabled: boolean;
-  items: QueueItem[];
-}
-export interface QueueRequest {
-  action: 'reserve' | 'activate' | 'skip';
-  revision?: number;
-  assignment_id?: number;
-  generation?: number;
-  pinned_question_id?: number;
 }

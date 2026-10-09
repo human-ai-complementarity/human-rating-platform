@@ -9,8 +9,6 @@ import type {
   ApiKey,
   ApiKeyCreated,
   AssistanceStep,
-  QueueSnapshot,
-  QueueRequest,
   ExperimentRound,
   ExperimentRoundUpdate,
   Dataset,
@@ -114,7 +112,6 @@ const routes = {
     endSession: '/raters/end-session',
     assistanceStart: '/raters/assistance/start',
     queue: '/raters/queue',
-    assistancePrepare: '/raters/assistance/prepare',
     assistanceAdvance: '/raters/assistance/advance',
   },
 } as const;
@@ -800,16 +797,10 @@ export const api = {
     });
   },
 
-  async questionQueue(sessionToken: string, data: QueueRequest): Promise<QueueSnapshot> {
-    return requestJson<QueueSnapshot>(routes.rater.queue, {
-      method: 'POST', headers: { 'X-Rater-Session': sessionToken }, json: data,
-    });
-  },
-
-  async prepareAssistance(sessionToken: string, assignmentId: number, generation: number): Promise<void> {
-    await requestJson(routes.rater.assistancePrepare, {
+  async skipQuestion(sessionToken: string, assignmentId: number, generation: number): Promise<void> {
+    await requestJson(routes.rater.queue, {
       method: 'POST', headers: { 'X-Rater-Session': sessionToken },
-      json: { assignment_id: assignmentId, generation },
+      json: { action: 'skip', assignment_id: assignmentId, generation },
     });
   },
 

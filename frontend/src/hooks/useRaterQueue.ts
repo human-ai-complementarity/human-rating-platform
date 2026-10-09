@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../api';
-import type { AssistanceStep, Question, QueueSnapshot, RatingSubmit, Session } from '../types';
+import type { AssistanceStep, Question, RatingSubmit, Session } from '../types';
 
 type Answers = Record<number, { answer: string; confidence: number }>;
 export interface AssistanceResource {
@@ -28,7 +28,7 @@ function retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Owns queue identity, first-step loading, and acceptance of async results. */
+/** Owns the displayed question, assistance loading, and retry identities. */
 export function useRaterQueue() {
   const [resource, setResource] = useState(empty);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
@@ -37,12 +37,8 @@ export function useRaterQueue() {
   const session = useRef<Session | null>(null);
   const epoch = useRef(0);
   const assistanceRequest = useRef<AbortController | null>(null);
-  const queue = useRef<QueueSnapshot | null>(null);
   const current = useRef<Question | null>(null);
   const currentStep = useRef<AssistanceStep | null>(null);
-  const refill = useRef<Promise<QueueSnapshot> | null>(null);
-  const refillAgain = useRef(false);
-  const prepared = useRef(new Set<string>());
   const frozenSubmit = useRef<RatingSubmit | null>(null);
   const submitting = useRef(false);
   const advancing = useRef(false);
@@ -52,11 +48,8 @@ export function useRaterQueue() {
     epoch.current += 1;
     assistanceRequest.current?.abort();
     session.current = value;
-    queue.current = null;
     current.current = null;
     currentStep.current = null;
-    refill.current = null;
-    prepared.current.clear();
     frozenSubmit.current = null;
     frozenAdvance.current = null;
     setSubmissionConflict(false);
@@ -73,26 +66,6 @@ export function useRaterQueue() {
     setResource(empty);
   }, []);
   useEffect(() => () => { epoch.current += 1; assistanceRequest.current?.abort(); }, []);
-
-  const reserve = useCallback((token: string, pin: number | null = null) => {
-    refillAgain.current = true;
-    if (refill.current) return refill.current;
-    const generation = epoch.current;
-    const pending = (async () => {
-      let latest: QueueSnapshot;
-      do {
-        refillAgain.current = false;
-        latest = await api.questionQueue(token, { action: 'reserve', ...(pin === null ? {} : { pinned_question_id: pin }) });
-        if (generation !== epoch.current) throw new Error('Session changed');
-        if (queue.current && latest.session_generation !== queue.current.session_generation) throw new Error('Session changed');
-        if (!queue.current || latest.revision >= queue.current.revision) queue.current = latest;
-      } while (refillAgain.current);
-      return queue.current!;
-    })();
-    refill.current = pending;
-    void pending.finally(() => { if (refill.current === pending) refill.current = null; }).catch(() => {});
-    return pending;
-  }, []);
 
   const loadAssistance = useCallback(async () => {
     const s = session.current;
@@ -130,57 +103,19 @@ export function useRaterQueue() {
   const load = useCallback(async (token: string, pin: number | null) => {
     const generation = ++epoch.current;
     assistanceRequest.current?.abort();
-    // A refill from the previous visible question may finish later. Demand is
-    // retained by reserve's loop; no old callback can publish a visible step.
-    if (refill.current) {
-      await refill.current.catch(() => {});
-      refill.current = null;
-    }
-    if (generation !== epoch.current) return undefined;
     currentStep.current = null;
     current.current = null;
     frozenAdvance.current = null;
     setSubmissionError(null);
     setSubmissionConflict(false);
     setResource(empty);
-    let question: Question | null;
-    if (session.current?.queue_enabled) {
-      let state = await reserve(token, pin);
-      for (let attempt = 0; state.items[0] && !state.items[0].activated; attempt += 1) {
-        if (attempt >= 3) throw new Error('The question changed in another tab. Please retry.');
-        const head = state.items[0];
-        try {
-          state = await api.questionQueue(token, { action: 'activate', revision: state.revision, assignment_id: head.assignment_id, generation: head.generation });
-          if (generation !== epoch.current) return undefined;
-          if (!queue.current || state.revision >= queue.current.revision) queue.current = state;
-          state = queue.current;
-        } catch (error) {
-          if (!(error instanceof ApiError) || error.status !== 409) throw error;
-          state = await reserve(token);
-        }
-      }
-      question = state.items[0]?.question ?? null;
-    } else {
-      question = pin === null ? await api.getNextQuestion(token) : await api.getQuestion(token, pin);
-    }
+    const question = pin === null ? await api.getNextQuestion(token) : await api.getQuestion(token, pin);
     if (generation !== epoch.current) return undefined;
     current.current = question;
     setResource({ ...empty, question, loading: Boolean(question && session.current?.assistance_method && session.current.assistance_method !== 'none') });
     void loadAssistance();
-    const state = queue.current;
-    if (state?.prefetch_enabled && state.phase === 'active') {
-      for (const item of state.items.filter(item => !item.activated)) {
-        const key = `${item.assignment_id}:${item.generation}`;
-        if (!prepared.current.has(key)) {
-          prepared.current.add(key);
-          void api.prepareAssistance(token, item.assignment_id, item.generation).catch(() => {
-            if (generation === epoch.current) prepared.current.delete(key);
-          });
-        }
-      }
-    }
     return question;
-  }, [reserve, loadAssistance]);
+  }, [loadAssistance]);
 
   const advance = useCallback(async (answers: Answers) => {
     const step = currentStep.current;
@@ -213,8 +148,8 @@ export function useRaterQueue() {
     if (!session.current || submitting.current) throw new Error('Submission already in progress');
     submitting.current = true;
     const generation = epoch.current;
-    const head = queue.current?.items.find(item => item.activated);
-    const body = frozenSubmit.current ?? { ...payload, ...(head ? { assignment_id: head.assignment_id, assignment_generation: head.generation } : {}) };
+    const question = current.current;
+    const body = frozenSubmit.current ?? { ...payload, ...(question?.assignment_id != null ? { assignment_id: question.assignment_id, assignment_generation: question.assignment_generation! } : {}) };
     frozenSubmit.current = body;
     setSubmissionError(null);
     setSubmissionPending(true);
@@ -240,10 +175,9 @@ export function useRaterQueue() {
   }, [submit]);
 
   const skip = useCallback(async (token: string) => {
-    const state = queue.current;
-    const head = state?.items[0];
-    if (session.current?.queue_enabled && state && head) {
-      queue.current = await api.questionQueue(token, { action: 'skip', revision: state.revision, assignment_id: head.assignment_id, generation: head.generation });
+    const question = current.current;
+    if (question?.assignment_id != null && question.assignment_generation != null) {
+      await api.skipQuestion(token, question.assignment_id, question.assignment_generation);
     }
   }, []);
 
