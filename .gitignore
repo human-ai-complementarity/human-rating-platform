@@ -32,3 +32,6 @@ artifacts/
 .claude/*
 !.claude/settings.json
 !.claude/skills/
+
+# Local credentials (service-account keys etc.); never committed
+backend/secrets/
