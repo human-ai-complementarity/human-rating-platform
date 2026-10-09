@@ -275,13 +275,19 @@ async def test_provider_slots_leave_capacity_for_foreground_fanout():
     assert counts["max_speculative"] == 4
 
 
-def test_speculation_is_disabled_without_an_explicit_allowlist(monkeypatch):
+def test_prefetch_rollout_environment_settings(monkeypatch):
     from config import Settings
 
+    monkeypatch.delenv("PREFETCH__ENABLE_ALL", raising=False)
     monkeypatch.delenv("PREFETCH__EXPERIMENT_IDS", raising=False)
-    assert Settings(app_secret_key="test").prefetch.experiment_ids == []
+    assert not Settings(app_secret_key="test").prefetch.enabled_for(123)
     monkeypatch.setenv("PREFETCH__EXPERIMENT_IDS", "[123]")
     assert Settings(app_secret_key="test").prefetch.experiment_ids == [123]
+    monkeypatch.setenv("PREFETCH__ENABLE_ALL", "true")
+    assert Settings(app_secret_key="test").prefetch.enabled_for(456)
+    monkeypatch.setenv("PREFETCH__ENABLE_ALL", "false")
+    assert not Settings(app_secret_key="test").prefetch.enabled_for(456)
+    assert Settings(app_secret_key="test").prefetch.enabled_for(123)
 
 
 @pytest.mark.parametrize("depth", [-1, 6])
@@ -319,3 +325,28 @@ def test_preparation_captures_per_method_model_before_defaults_change(
     assert "model" not in captured
     source["assistance_models"][method_name] = "openrouter/later-edit"
     assert captured["assistance_models"][method_name] == expected
+
+
+@pytest.mark.parametrize(
+    "global_enabled,ids,expected",
+    [
+        (False, [], False),
+        (False, [123], True),
+        (False, [456], False),
+        (True, [], True),
+        (True, [456], True),
+    ],
+)
+@pytest.mark.parametrize("lookahead", [0, 1])
+def test_prefetch_policy_separates_enrollment_from_speculation(
+    monkeypatch, global_enabled, ids, expected, lookahead
+):
+    from config import PrefetchSettings
+    from services.rater import queue
+
+    settings = PrefetchSettings(
+        enable_all=global_enabled, experiment_ids=ids, lookahead_questions=lookahead
+    )
+    monkeypatch.setattr(queue.get_settings(), "prefetch", settings)
+    assert queue.enabled(123) == expected
+    assert queue.speculation_enabled(123) == (expected and lookahead > 0)
