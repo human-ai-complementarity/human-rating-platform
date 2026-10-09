@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from models import (
     ROUND_TERMINAL_STATUSES,
+    ContentWarning,
     Experiment,
     ExperimentRound,
     ExperimentStatus,
@@ -34,6 +35,7 @@ from .prolific import (
     ProlificAPIError,
     ProlificPricing,
     build_completion_url,
+    build_content_warning_fields,
     build_exclusion_filters,
     build_external_study_url,
     build_screener_filters,
@@ -51,6 +53,7 @@ from .prolific import (
 from services.participant_groups import ensure_participant_group_and_commit
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
+from services.terms import PendingPin, apply_terms_pin, prepare_terms_pin
 from session_policy import SessionPolicy, resolve_session_policy
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
@@ -158,6 +161,40 @@ def with_session_note(description: str, policy: SessionPolicy) -> str:
     body = (description or "").rstrip()
     note = build_session_note(policy)
     return f"{body}\n\n{note}" if body else note
+
+
+def with_content_warning(description: str, experiment: Experiment) -> str:
+    """Prepend the content warning Prolific requires in the description of a
+    study with sensitive or explicit content. No-op for ordinary studies, so
+    their payload is unchanged."""
+    if experiment.content_warning == ContentWarning.NONE.value:
+        return description
+    details = (experiment.content_warning_details or "").strip()
+    warning = (
+        f"**Content warning:** {details}"
+        if details
+        else f"**Content warning:** this study contains {experiment.content_warning} content."
+    )
+    body = (description or "").lstrip()
+    return f"{warning}\n\n{body}" if body else warning
+
+
+def build_prolific_description(experiment: Experiment, description: str) -> str:
+    """The HTML Prolific receives: the content warning first (if any), the
+    researcher's text, then the time-limit note."""
+    return to_prolific_html(
+        with_content_warning(
+            with_session_note(description, resolve_session_policy(experiment)), experiment
+        )
+    )
+
+
+def effective_screeners(experiment: Experiment, screeners: list[str]) -> list[str]:
+    """A study with a content warning always carries Prolific's harmful-content
+    prescreener, whatever the admin ticked."""
+    if experiment.content_warning == ContentWarning.NONE.value or "harmful_content" in screeners:
+        return list(screeners)
+    return [*screeners, "harmful_content"]
 
 
 def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
@@ -568,9 +605,7 @@ async def _create_prolific_study_for_round(
         settings=settings.prolific,
         name=_build_round_study_name(experiment.name, round_number),
         internal_name=_build_round_internal_name(experiment.internal_name, round_number),
-        description=to_prolific_html(
-            with_session_note(description, resolve_session_policy(experiment))
-        ),
+        description=build_prolific_description(experiment, description),
         external_study_url=external_study_url,
         estimated_completion_time=estimated_completion_time,
         reward=reward,
@@ -578,8 +613,10 @@ async def _create_prolific_study_for_round(
         completion_code=completion_code,
         device_compatibility=device_compatibility,
         study_label=study_label,
-        screeners=screeners,
+        screeners=effective_screeners(experiment, screeners),
         excluded_participant_group_ids=excluded_participant_group_ids,
+        content_warning=experiment.content_warning,
+        content_warning_details=experiment.content_warning_details,
     )
 
 
@@ -895,22 +932,39 @@ async def _refresh_study_description(
     round_: ExperimentRound,
     experiment_id: int,
     round_id: int,
+    db: AsyncSession,
 ) -> None:
-    """Resend the description so its time-limit note matches the live policy.
+    """Resend the listing fields that derive from experiment config, so they
+    match what the experiment says at the moment it goes live: the
+    description's time-limit note and content warning, Prolific's warning
+    fields, and the filters (which carry the forced prescreener).
 
     Fatal on failure, deliberately: publishing a listing that promises raters a
     different amount of time than they will get is worse than not publishing.
     The admin can retry once Prolific is reachable.
     """
+    # Warning fields and filters are resent unconditionally: a study created
+    # with a warning and downgraded to none before publish must lose the
+    # warning and the forced prescreener on Prolific too.
+    fields: dict = {
+        "description": build_prolific_description(experiment, round_.description),
+        **build_content_warning_fields(
+            experiment.content_warning, experiment.content_warning_details, clear_when_none=True
+        ),
+    }
+    blocklist_group_ids = await _build_round_blocklist_group_ids(
+        experiment,
+        _parse_excluded_experiment_ids(round_.excluded_experiment_ids),
+        db,
+    )
+    fields["filters"] = build_screener_filters(
+        effective_screeners(experiment, _parse_screeners(round_.screeners))
+    ) + build_exclusion_filters(blocklist_group_ids)
     try:
         await update_study(
             settings=settings.prolific,
             study_id=round_.prolific_study_id,
-            fields={
-                "description": to_prolific_html(
-                    with_session_note(round_.description, resolve_session_policy(experiment))
-                )
-            },
+            fields=fields,
         )
     except Exception as exc:
         logger.error(
@@ -963,13 +1017,20 @@ async def publish_experiment_round(
     # cannot have changed and a round's own description edits already went out
     # with the note applied, so the resend would be byte-identical — and every
     # extra Prolific call is another way for a publish to fail.
+    pending_pin: PendingPin | None = None
     if not is_locked(experiment):
+        # Read and check the consent (and debrief) versions this publish will
+        # pin, so an unreadable source refuses the publish before anything
+        # goes out to Prolific. The pin itself is written only once the study
+        # is live, with the status flip below.
+        pending_pin = await prepare_terms_pin(experiment, db)
         await _refresh_study_description(
             settings=settings,
             experiment=experiment,
             round_=round_,
             experiment_id=experiment_id,
             round_id=round_id,
+            db=db,
         )
 
     try:
@@ -1017,7 +1078,10 @@ async def publish_experiment_round(
     # First published round transitions the experiment out of DRAFT and freezes
     # its config — participants may start rating any moment. Applies uniformly
     # to pilot and main rounds; the pilot IS the first "we're live" study.
-    # Idempotent: LAUNCH stays LAUNCH on subsequent publishes.
+    # Idempotent: LAUNCH stays LAUNCH on subsequent publishes. The terms pin
+    # lands in the same transaction so every rater of this experiment sees
+    # the versions it went live with.
+    await apply_terms_pin(experiment, pending_pin, db)
     if experiment.status == ExperimentStatus.DRAFT:
         experiment.status = ExperimentStatus.LAUNCH
     await db.commit()
@@ -1122,9 +1186,7 @@ async def update_experiment_round(
     if payload.description is not None:
         # Convert markdown to Prolific's HTML subset on the wire, but keep
         # the raw markdown in our DB so editors see what they typed.
-        prolific_fields["description"] = to_prolific_html(
-            with_session_note(payload.description, resolve_session_policy(experiment))
-        )
+        prolific_fields["description"] = build_prolific_description(experiment, payload.description)
     if payload.study_label is not None:
         prolific_fields["study_labels"] = [payload.study_label]
     # `filters` on Prolific is a full replacement, so we always rebuild the
@@ -1161,9 +1223,9 @@ async def update_experiment_round(
             excluded_ids,
             db,
         )
-        prolific_fields["filters"] = build_screener_filters(screeners) + build_exclusion_filters(
-            blocklist_group_ids
-        )
+        prolific_fields["filters"] = build_screener_filters(
+            effective_screeners(experiment, screeners)
+        ) + build_exclusion_filters(blocklist_group_ids)
 
     try:
         await update_study(

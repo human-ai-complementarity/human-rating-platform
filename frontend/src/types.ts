@@ -26,6 +26,14 @@ export interface Experiment {
   system_prompt: string | null;
   human_prompt_prefix: string | null;
   human_prompt_suffix: string | null;
+  // Rater terms: Prolific's content-warning level, its details, and which
+  // bundle of consent/debrief statements applies. The refs name the archived
+  // versions pinned at first publish ("standard v2"); null while DRAFT.
+  content_warning: ContentWarning;
+  content_warning_details: string | null;
+  terms_bundle: string;
+  consent_statement_ref: string | null;
+  debrief_statement_ref: string | null;
   is_markdown: boolean;
   prolific_pool: string | null;
   status: ExperimentStatus;
@@ -108,7 +116,34 @@ export type StudyLabel =
   | 'interview'
   | 'other';
 
-export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate';
+export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate' | 'harmful_content';
+
+// Mirrors Prolific's `content_warnings` values, plus none.
+export type ContentWarning = 'none' | 'sensitive' | 'explicit';
+
+// One entry of the terms manifest, as read live from the terms source.
+export interface TermsBundle {
+  key: string;
+  label: string;
+  content_warnings: ContentWarning[];
+  consent_version: number;
+  debrief_version: number | null;
+}
+
+export interface TermsStatus {
+  source_url: string;
+  ok: boolean;
+  error: string | null;
+  bundles: TermsBundle[];
+}
+
+export interface TermsPreview {
+  pinned: boolean;
+  consent_ref: string;
+  consent_html: string;
+  debrief_ref: string | null;
+  debrief_html: string | null;
+}
 
 export interface Question {
   id: number;
@@ -176,6 +211,10 @@ export interface Session {
   // Shown until `consented_at` is set.
   consent_statement_html: string;
   consented_at: string | null;
+  content_warning: ContentWarning;
+  // Only studies with a content warning have a debrief; when present the
+  // completion screen shows it and the redirect to Prolific is manual.
+  debrief_html: string | null;
 }
 
 export interface ConsentResponse {

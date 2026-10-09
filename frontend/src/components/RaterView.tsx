@@ -6,6 +6,7 @@ import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
 import RaterConsent from './RaterConsent';
+import RaterDebrief from './RaterDebrief';
 import type { Session, Question, AssistanceStep } from '../types';
 import { minutesBetween } from '../time';
 
@@ -52,7 +53,10 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     // no statement to show, so it is re-fetched via /start (which resumes the
     // same rater) rather than restored.
     typeof value.consent_statement_html === 'string' &&
-    (value.consented_at === null || typeof value.consented_at === 'string')
+    (value.consented_at === null || typeof value.consented_at === 'string') &&
+    (value.debrief_html === null ||
+      value.debrief_html === undefined ||
+      typeof value.debrief_html === 'string')
   );
 }
 
@@ -76,6 +80,8 @@ function parseStoredSession(raw: string): StoredSession | null {
       rater_session_token: token,
       experiment_description_html: sessionPayload.experiment_description_html ?? null,
       assistance_instructions: sessionPayload.assistance_instructions ?? null,
+      content_warning: sessionPayload.content_warning ?? 'none',
+      debrief_html: sessionPayload.debrief_html ?? null,
     };
 
     return {
@@ -394,12 +400,16 @@ function RaterView() {
     clearStoredSession();
 
     if (!completionUrl) return;
+    // A study with a debrief (content warning) must not bounce the rater past
+    // it: Prolific requires the debrief before the completion code. The
+    // debrief screen carries the link instead.
+    if (session?.debrief_html) return;
 
     const timer = setTimeout(() => {
       window.location.href = completionUrl;
     }, 3000);
     return () => clearTimeout(timer);
-  }, [sessionExpired, allDone, session?.completion_url, clearStoredSession]);
+  }, [sessionExpired, allDone, session?.completion_url, session?.debrief_html, clearStoredSession]);
 
   const handleSubmit = async (answer: string, confidence: number, timeStarted: string) => {
     if (!session || !question || !sessionToken) return;
@@ -613,6 +623,17 @@ function RaterView() {
   if (sessionExpired || allDone) {
     const completionUrl = session?.completion_url;
 
+    if (session?.debrief_html) {
+      return (
+        <div style={{ ...styles.container, maxWidth: '720px' }}>
+          <RaterDebrief
+            statementHtml={session.debrief_html}
+            completionUrl={completionUrl ?? null}
+            questionsCompleted={questionsCompleted}
+          />
+        </div>
+      );
+    }
 
     return (
       <div style={styles.container}>

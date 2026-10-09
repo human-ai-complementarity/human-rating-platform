@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import ConsentRecord
+from services.terms import statement_ref
 from .mappers import build_analytics_payload, build_empty_analytics_payload
 from .queries import (
     fetch_experiment_or_404,
@@ -31,7 +32,7 @@ async def fetch_consents_by_rater(
         )
     ).all()
     return {
-        rater_id: (f"{bundle} v{version}", accepted_at)
+        rater_id: (statement_ref(bundle, version), accepted_at)
         for rater_id, bundle, version, accepted_at in rows
     }
 

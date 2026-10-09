@@ -37,6 +37,7 @@ def _to_public_experiment(experiment: ExperimentResponse) -> V1ExperimentRespons
         question_count=experiment.question_count,
         rating_count=experiment.rating_count,
         archived_at=experiment.archived_at,
+        content_warning=experiment.content_warning,
         assistance_method=experiment.assistance_method,
         description=experiment.description,
     )

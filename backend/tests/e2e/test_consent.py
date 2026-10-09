@@ -10,64 +10,20 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from config import get_settings
 
+from terms_helpers import write_terms_source
+
 _CSV_ROWS = (
     "question_id,question_text,gt_answer,options,question_type\nq1,Is this useful?,Yes,Yes|No,MC\n"
 )
-
-# Deliberately not a consent statement: just enough structure for the tests.
-_DUMMY_CONSENT = """\
-## Purpose of the study
-
-TEST TEXT, not a consent statement. The study is **{{study_name}}**.
-
-## What you will do
-
-You have {{session_length}}. Everything you submit is kept.
-
-## Consent
-
-By clicking **I agree** below, you confirm that you are taking part in a test.
-"""
-
-
-def write_terms_source(root: Path, *, consent_version: int = 1, body: str = _DUMMY_CONSENT) -> None:
-    """Lay out a minimal terms source with one standard bundle."""
-    (root / "consent" / "standard").mkdir(parents=True, exist_ok=True)
-    (root / "consent" / "standard" / f"v{consent_version}.md").write_text(body, encoding="utf-8")
-    manifest = {
-        "schema": 1,
-        "bundles": {
-            "standard": {
-                "label": "Standard",
-                "content_warnings": ["none"],
-                "consent": consent_version,
-            }
-        },
-    }
-    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-
-
-@pytest.fixture
-def terms_source(tmp_path: Path):
-    """A runtime-generated terms source, wired in as TERMS__SOURCE_URL."""
-    root = tmp_path / "terms"
-    write_terms_source(root)
-    settings = get_settings()
-    original = settings.terms.source_url
-    settings.terms.source_url = f"file://{root}"
-    yield root
-    settings.terms.source_url = original
 
 
 def _create_experiment(client: TestClient) -> int:

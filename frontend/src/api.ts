@@ -10,7 +10,10 @@ import type {
   ApiKeyCreated,
   AssistanceStep,
   ConsentResponse,
+  ContentWarning,
   ExperimentRound,
+  TermsPreview,
+  TermsStatus,
   ExperimentRoundUpdate,
   Dataset,
   Experiment,
@@ -102,6 +105,9 @@ const routes = {
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/publish`,
     prolificRoundClose: (experimentId: number, roundId: number) =>
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/close`,
+    terms: '/admin/terms',
+    experimentTermsPreview: (experimentId: number) =>
+      `/admin/experiments/${experimentId}/terms/preview`,
   },
   rater: {
     start: '/raters/start',
@@ -565,6 +571,10 @@ export const api = {
       system_prompt?: string;
       human_prompt_prefix?: string;
       human_prompt_suffix?: string;
+      // Rater terms. Undefined means "leave unchanged"; locked after publish.
+      content_warning?: ContentWarning;
+      content_warning_details?: string;
+      terms_bundle?: string;
       is_markdown?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
@@ -777,6 +787,20 @@ export const api = {
       headers: { 'X-Rater-Session': sessionToken },
       json: data,
     });
+  },
+
+  async getTermsStatus(): Promise<TermsStatus> {
+    return requestJson<TermsStatus>(routes.admin.terms);
+  },
+
+  // `selection` previews settings as chosen in the form, saved or not; the
+  // backend ignores it once the experiment has pinned its versions.
+  async getTermsPreview(
+    experimentId: number,
+    selection?: { terms_bundle: string; content_warning: ContentWarning; content_warning_details: string },
+  ): Promise<TermsPreview> {
+    const query = selection ? `?${new URLSearchParams(selection).toString()}` : '';
+    return requestJson<TermsPreview>(`${routes.admin.experimentTermsPreview(experimentId)}${query}`);
   },
 
   async recordConsent(sessionToken: string): Promise<ConsentResponse> {

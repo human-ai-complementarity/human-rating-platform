@@ -135,3 +135,9 @@ The rater sees the suggestions in random order, with neither the rank nor the AI
 ## Rater consent
 
 Every rater agrees to the team's consent statement before seeing anything about the study, and their agreement is recorded with the exact text shown. The statement lives in the team's terms folder, not in the platform; **Preview as Participant** shows it exactly as raters see it, and a preview rerun asks for consent again. The analytics raters table and the ratings export show which statement version each rater agreed to and when; raters from before consent was recorded show a dash, which means "not recorded", not "declined".
+
+## Sensitive content
+
+If a study shows disturbing material, open **Consent and content** on the instructions step, set the content warning (**Sensitive** or **Explicit**) and describe what raters will see. The matching consent and debrief statements are picked for you; a choice only appears if the team has published more than one set for that warning level. Prolific shows the warning on the study page and only recruits participants who have opted in to harmful content; raters see the details in the consent statement and get a debrief screen at the end instead of an automatic redirect. **Preview consent** and **Preview debrief** show exactly what raters will read.
+
+Publishing the first round pins the statement versions for that experiment and locks this section. If the team publishes a new statement version later, running studies keep the version they started with; new experiments pick up the new one.
