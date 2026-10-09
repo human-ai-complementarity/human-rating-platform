@@ -485,13 +485,13 @@ def test_events_go_with_their_session(client: TestClient, sync_engine):
 
 def test_concurrent_duplicate_advances_apply_once(client: TestClient, sync_engine):
     """Two overlapping advances answering the same turn: the method runs once, both
-    callers get the same next step, and the log has one row for it."""
+    callers can retrieve the same next step after an in-flight 409, and the log has one row for it."""
     headers, question_id = _setup(client, "test_slow_advance")
     started = client.post(
         "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
     ).json()
 
-    def _advance() -> dict:
+    def _advance():
         response = client.post(
             "/api/raters/assistance/advance",
             json={
@@ -501,11 +501,16 @@ def test_concurrent_duplicate_advances_apply_once(client: TestClient, sync_engin
             },
             headers=headers,
         )
-        assert response.status_code == 200, response.text
-        return response.json()
+        assert response.status_code in (200, 409), response.text
+        return response
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        a, b = list(pool.map(lambda _: _advance(), range(2)))
+        responses = list(pool.map(lambda _: _advance(), range(2)))
+    # Claims release the transaction during provider work. The overlapping
+    # request receives 409 and safely replays after the owner commits.
+    responses = [_advance() if response.status_code == 409 else response for response in responses]
+    assert all(response.status_code == 200 for response in responses)
+    a, b = [response.json() for response in responses]
 
     assert a == b
     assert a["type"] == "ask_input"
