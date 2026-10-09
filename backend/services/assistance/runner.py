@@ -21,7 +21,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from config import get_settings
 from database import Database
-from models import AssistancePreparation, AssistanceSession, Rater
+from models import AssistancePreparation, AssistanceSession, Rater, QuestionAssignment
 
 from .events import _MethodCall, _record_call
 from .base import InteractionStep, StepType
@@ -174,12 +174,19 @@ class PreparationRunner:
         params: dict,
         deadline_at: datetime,
         demanded: bool,
+        assignment_id: int | None = None,
+        assignment_generation: int | None = None,
     ) -> int:
         identity = preparation_identity(rater_id, question_id, session_start, method_name, spec)
+        identity = hashlib.sha256(
+            f"{identity}:{assignment_id}:{assignment_generation}".encode()
+        ).hexdigest()
         now = datetime.now(UTC)
         async with self.database.session() as db:
             values = dict(
                 identity=identity,
+                assignment_id=assignment_id,
+                assignment_generation=assignment_generation,
                 rater_id=rater_id,
                 question_id=question_id,
                 session_start=session_start,
@@ -206,6 +213,8 @@ class PreparationRunner:
                 )
             ).scalar_one()
             if demanded:
+                if row.status == "cancelled":
+                    row.status = "ready" if row.artifact_json is not None else "queued"
                 row.demanded = True
                 row.deadline_at = deadline_at
             await db.commit()
@@ -299,7 +308,7 @@ class PreparationRunner:
             if row is None:
                 return None
             rater = await db.get(Rater, row.rater_id)
-            if not self._valid(row, rater, now):
+            if not self._valid(row, rater, now) or not await self._assignment_valid(row, db, now):
                 row.status = "cancelled"
                 await db.commit()
                 # Invalid rows are not an empty queue. Keep draining without
@@ -324,6 +333,24 @@ class PreparationRunner:
             and rater.session_start == row.session_start
             and now < row.deadline_at
         )
+
+    @staticmethod
+    async def _assignment_valid(row, db, now):
+        if row.assignment_id is None:
+            return True
+        assignment = await db.get(QuestionAssignment, row.assignment_id)
+        if (
+            assignment is None
+            or assignment.generation != row.assignment_generation
+            or assignment.completed_at is not None
+        ):
+            return False
+        if row.demanded:
+            return assignment.activated_at is not None
+        from services.rater.queue import speculation_enabled
+
+        rater = await db.get(Rater, row.rater_id)
+        return assignment.expires_at > now and speculation_enabled(rater.experiment_id)
 
     async def _execute(self, row: AssistancePreparation):
         await self._execute_claim(row)
@@ -381,7 +408,9 @@ class PreparationRunner:
             if current.claim_expires_at <= now:
                 return  # Leave expired work recoverable by a new owner.
             current.execution_ms += elapsed_ms
-            if not self._valid(current, rater, now):
+            if not self._valid(current, rater, now) or not await self._assignment_valid(
+                current, db, now
+            ):
                 current.status = "cancelled"
             elif artifact is not None:
                 current.artifact_json = artifact
