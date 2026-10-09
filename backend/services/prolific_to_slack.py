@@ -118,6 +118,8 @@ async def run_forwarding_tick(session_factory: SessionFactory, settings: Setting
         async with session_factory() as session:
             await _forward_new_messages(session, settings)
             cutoff = datetime.now(UTC) - timedelta(hours=DEDUP_ROW_RETENTION_HOURS)
+
+            # Clean up old rows, this table is just for de-duping
             await session.execute(
                 delete(ForwardedProlificMessage).where(
                     ForwardedProlificMessage.forwarded_at < cutoff
@@ -129,7 +131,7 @@ async def run_forwarding_tick(session_factory: SessionFactory, settings: Setting
 
 
 async def run_forwarding_loop(session_factory: SessionFactory, settings: Settings) -> None:
-    """Poll forever; cancel the task to stop."""
+    """Poll and forward messages every POLL_INTERVAL_SECONDS."""
     await asyncio.sleep(random.uniform(0, POLL_JITTER_SECONDS))
     while True:
         await run_forwarding_tick(session_factory, settings)
