@@ -64,8 +64,8 @@ const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   human_prompt_prefix: 'Question prefix (shown above)',
   human_prompt_suffix: 'Question suffix (shown below)',
   prolific_pool: 'Prolific participant pool',
-  'assistance_models.top_n': 'Top-N model',
-  'assistance_models.human_as_a_tool': 'Human-as-a-Tool model',
+  'assistance_models.top_n': 'Top-N model entry',
+  'assistance_models.human_as_a_tool': 'Human-as-a-Tool model entry',
 };
 
 // A key with no label (a method added since) shows as itself.

@@ -34,7 +34,7 @@ import openai
 from config import LLMSettings, get_settings
 from models import Question
 
-from ..base import InteractionStep, StepType
+from ..base import InteractionStep, StepType, exception_text
 from ..preparation import InitialStepPreparation, QuestionSnapshot
 from ..llm import NoChoicesError, complete
 from ..model_resolution import AssistanceModel, resolve_assistance_model
@@ -45,15 +45,17 @@ _DEFAULT_TOP_N = 3
 _MAX_TOP_N = 10
 _OPTION_LABEL_PATTERN = re.compile(r"(?:^|[,\r\n])\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+")
 _SCHEMA_REJECT_STATUS_CODES = (400, 404, 422)
-# Per-process json_schema verdicts, and the per-model lock that settles them.
-# A model is "rejected" once its provider refused the schema and the
+# Per-process json_schema verdicts, and the per-entry lock that settles them.
+# An entry is "rejected" once its provider refused the schema and the
 # unconstrained retry worked, "accepted" once a schema call came back 200.
-# Until one of those holds, exactly one coroutine probes the model and the
+# Keyed by the whole entry, not the model: with `require_parameters` the
+# endpoints OpenRouter may route to depend on the declared options too.
+# Until one of those holds, exactly one coroutine probes the entry and the
 # rest wait on its lock, so a wave start costs one rejection, not one per
 # concurrent rater.
-_SCHEMA_REJECTED_MODELS: set[str] = set()
-_SCHEMA_ACCEPTED_MODELS: set[str] = set()
-_SCHEMA_PROBE_LOCKS: dict[str, asyncio.Lock] = {}
+_SCHEMA_REJECTED_MODELS: set[AssistanceModel] = set()
+_SCHEMA_ACCEPTED_MODELS: set[AssistanceModel] = set()
+_SCHEMA_PROBE_LOCKS: dict[AssistanceModel, asyncio.Lock] = {}
 
 _SYSTEM_PROMPT = """\
 You help human raters answer evaluation questions. Rank the most likely answers
@@ -190,12 +192,12 @@ def _none_step(parse_status: str) -> InteractionStep:
     )
 
 
-def _schema_probe_lock(model: str) -> asyncio.Lock:
-    return _SCHEMA_PROBE_LOCKS.setdefault(model, asyncio.Lock())
+def _schema_probe_lock(entry: AssistanceModel) -> asyncio.Lock:
+    return _SCHEMA_PROBE_LOCKS.setdefault(entry, asyncio.Lock())
 
 
-def _schema_verdict_settled(model: str) -> bool:
-    return model in _SCHEMA_REJECTED_MODELS or model in _SCHEMA_ACCEPTED_MODELS
+def _schema_verdict_settled(entry: AssistanceModel) -> bool:
+    return entry in _SCHEMA_REJECTED_MODELS or entry in _SCHEMA_ACCEPTED_MODELS
 
 
 async def _complete_with_schema(
@@ -206,7 +208,6 @@ async def _complete_with_schema(
     response_format: dict[str, Any],
 ) -> str:
     """Send the schema, falling back to an unconstrained retry if it is refused."""
-    model = entry.model
     try:
         raw = await complete(
             messages,
@@ -221,12 +222,12 @@ async def _complete_with_schema(
             raise
         logger.warning(
             "Top-N json_schema rejected by the provider; retrying without response_format",
-            extra={"attributes": {"model": model, "status_code": exc.status_code}},
+            extra={"attributes": {"model": entry.model, "status_code": exc.status_code}},
         )
         raw = await complete(messages, settings=settings, **entry.to_dict())
-        _SCHEMA_REJECTED_MODELS.add(model)
+        _SCHEMA_REJECTED_MODELS.add(entry)
         return raw
-    _SCHEMA_ACCEPTED_MODELS.add(model)
+    _SCHEMA_ACCEPTED_MODELS.add(entry)
     return raw
 
 
@@ -255,19 +256,18 @@ async def _complete_with_schema_fallback(
     path. An accepted model still retries unconstrained if a later request is
     routed to an endpoint that refuses the schema.
     """
-    model = entry.model
     while True:
-        if model in _SCHEMA_REJECTED_MODELS:
+        if entry in _SCHEMA_REJECTED_MODELS:
             return await complete(messages, settings=settings, **entry.to_dict())
-        if model in _SCHEMA_ACCEPTED_MODELS:
+        if entry in _SCHEMA_ACCEPTED_MODELS:
             return await _complete_with_schema(
                 messages, entry=entry, settings=settings, response_format=response_format
             )
 
-        async with _schema_probe_lock(model):
+        async with _schema_probe_lock(entry):
             # A probe we queued behind may have settled the verdict already; if
             # it did, fall out of the lock and re-dispatch without holding it.
-            if not _schema_verdict_settled(model):
+            if not _schema_verdict_settled(entry):
                 return await _complete_with_schema(
                     messages, entry=entry, settings=settings, response_format=response_format
                 )
@@ -427,7 +427,7 @@ class TopNAssistance(InitialStepPreparation):
                 type=StepType.NONE,
                 is_terminal=True,
                 failure_reason="provider_error",
-                failure_detail=f"{type(exc).__name__}: {exc}",
+                failure_detail=exception_text(exc),
             )
 
         try:

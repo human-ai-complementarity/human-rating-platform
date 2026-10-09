@@ -28,9 +28,6 @@ from fastapi import HTTPException
 
 from .llm import REASONING_EFFORTS, TEXT_VERBOSITIES, model_prefixes
 
-# The example prefix in error messages.
-MODEL_PREFIX = "openrouter/"
-
 # `assistance_params` key holding the wave's per-method entries.
 ASSISTANCE_MODELS_KEY = "assistance_models"
 
@@ -41,7 +38,7 @@ REMOVED_MODEL_KEY = "model"
 ENTRY_KEYS = ("model", "reasoning_effort", "text_verbosity", "temperature")
 
 EXAMPLE_ENTRY = (
-    f'{{"model": "{MODEL_PREFIX}anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
+    '{"model": "openrouter/anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
     '"text_verbosity": null, "temperature": 0}'
 )
 

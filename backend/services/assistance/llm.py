@@ -62,7 +62,6 @@ class Provider:
     "do not send"; the provider-neutral names are spelled its way.
     """
 
-    name: str
     base_url: str | None
     # Attribute on LLMSettings holding the key, and the env var that sets it.
     key_setting: str
@@ -134,13 +133,11 @@ class _OpenAI(Provider):
 
 PROVIDERS: dict[str, Provider] = {
     "openrouter": _OpenRouter(
-        name="openrouter",
         base_url="https://openrouter.ai/api/v1",
         key_setting="openrouter_api_key",
         env_var="LLM__OPENROUTER_API_KEY",
     ),
     "openai": _OpenAI(
-        name="openai",
         base_url=None,
         key_setting="openai_api_key",
         env_var="LLM__OPENAI_API_KEY",
@@ -168,7 +165,7 @@ class NoChoicesError(RuntimeError):
 
 @functools.lru_cache(maxsize=8)
 def _get_client(
-    provider: str, api_key: str, base_url: str | None, timeout: int, max_retries: int
+    api_key: str, base_url: str | None, timeout: int, max_retries: int
 ) -> openai.AsyncOpenAI:
     return openai.AsyncOpenAI(
         api_key=api_key,
@@ -216,7 +213,6 @@ async def complete(
     """
     provider, model_id = parse_model(model or settings.default_model)
     client = _get_client(
-        provider.name,
         provider.api_key(settings),
         provider.base_url,
         settings.request_timeout,

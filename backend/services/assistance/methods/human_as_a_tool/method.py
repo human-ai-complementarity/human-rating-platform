@@ -28,7 +28,7 @@ import openai
 from config import get_settings
 from models import Question
 
-from ...base import InteractionStep, StepType
+from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
 from ...model_resolution import AssistanceModel, resolve_assistance_model
 from ...confidence import (
@@ -131,7 +131,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 type=StepType.NONE,
                 is_terminal=True,
                 failure_reason="provider_error",
-                failure_detail=f"{type(exc).__name__}: {exc}",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -227,7 +227,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 type=StepType.NONE,
                 is_terminal=True,
                 failure_reason="provider_error",
-                failure_detail=f"{type(exc).__name__}: {exc}",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(

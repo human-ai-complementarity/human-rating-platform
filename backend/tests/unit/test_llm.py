@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from config import LLMSettings
-from services.assistance.llm import NoChoicesError, complete, model_prefixes, parse_model
+from services.assistance.llm import (
+    PROVIDERS,
+    NoChoicesError,
+    complete,
+    model_prefixes,
+    parse_model,
+)
 
 _MESSAGES = [{"role": "user", "content": "hi"}]
 
@@ -46,9 +52,9 @@ def test_parse_model_rejects_an_unknown_or_empty_prefix(model):
 
 def test_parse_model_keeps_the_rest_of_the_id_intact():
     provider, model_id = parse_model("openrouter/openai/gpt-4o")
-    assert (provider.name, model_id) == ("openrouter", "openai/gpt-4o")
+    assert (provider, model_id) == (PROVIDERS["openrouter"], "openai/gpt-4o")
     provider, model_id = parse_model("openai/gpt-4o")
-    assert (provider.name, model_id) == ("openai", "gpt-4o")
+    assert (provider, model_id) == (PROVIDERS["openai"], "gpt-4o")
 
 
 @pytest.mark.asyncio
@@ -61,7 +67,6 @@ async def test_openrouter_sends_what_it_always_has_plus_require_parameters():
         response_format={"type": "json_object"},
     )
     assert sent["client"] == (
-        "openrouter",
         "sk-or-test",
         "https://openrouter.ai/api/v1",
         60,
@@ -98,7 +103,7 @@ async def test_openai_uses_its_own_key_and_parameter_names():
         text_verbosity="low",
         response_format={"type": "json_object"},
     )
-    assert sent["client"] == ("openai", "sk-oai-test", None, 60, 2)
+    assert sent["client"] == ("sk-oai-test", None, 60, 2)
     assert sent["model"] == "gpt-5.6-luna"
     assert sent["max_completion_tokens"] == 4096
     assert sent["reasoning_effort"] == "low"

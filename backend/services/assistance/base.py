@@ -49,6 +49,17 @@ class InteractionStep:
             "no_assistance" if self.type == StepType.NONE else "provided"
         )
 
+    def error_text(self) -> str | None:
+        """What the event log records for a degraded step; None when it succeeded."""
+        if self.failure_reason and self.failure_detail:
+            return f"{self.failure_reason}: {self.failure_detail}"
+        return self.failure_reason
+
+
+def exception_text(exc: BaseException) -> str:
+    """The one spelling of an exception in the event log and in `failure_detail`."""
+    return f"{type(exc).__name__}: {exc}"
+
 
 class AssistanceMethod(ABC):
     """Interface every assistance method must implement.
