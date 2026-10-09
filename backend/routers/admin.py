@@ -30,11 +30,15 @@ from schemas import (
     PlatformStatus,
     ProlificPricingResponse,
     RecommendationResponse,
+    TermsPreviewResponse,
+    TermsStatusResponse,
 )
 from models import ApiKey
 from services import admin as admin_service
 from services import api_keys as api_key_service
+from services import terms as terms_service
 from services.admin.prolific import get_cached_workspace_currency
+from services.admin.queries import fetch_experiment_or_404
 from auth import AdminSession, require_admin, get_admin_manager
 from services.authn import verify_clerk_token_and_get_email
 
@@ -157,6 +161,26 @@ async def get_experiment(
     db: AsyncSession = Depends(get_session),
 ):
     return await admin_service.get_experiment(experiment_id=experiment_id, db=db)
+
+
+@secure_router.get("/terms", response_model=TermsStatusResponse)
+async def get_terms_status():
+    """Live read of the rater-terms manifest: the bundles an experiment can
+    pick, with their current versions, or why the source could not be read."""
+    return await terms_service.get_terms_status()
+
+
+@secure_router.get(
+    "/experiments/{experiment_id}/terms/preview", response_model=TermsPreviewResponse
+)
+async def preview_experiment_terms(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """The consent (and debrief) this experiment's raters see, placeholders
+    filled: archived once published, live from the source before that."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    return await terms_service.terms_preview(experiment, db)
 
 
 @secure_router.get("/tags", response_model=list[TagResponse])

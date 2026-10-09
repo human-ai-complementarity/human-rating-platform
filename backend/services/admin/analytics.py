@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from models import ConsentRecord, TermsStatement
+from services.terms import statement_ref
 from .mappers import build_analytics_payload, build_empty_analytics_payload
 from .queries import (
     fetch_experiment_or_404,
@@ -11,6 +15,28 @@ from .queries import (
     fetch_timed_out_rater_count,
     fetch_total_questions_for_experiment,
 )
+
+
+async def fetch_consents_by_rater(
+    experiment_id: int, db: AsyncSession
+) -> dict[int, tuple[str, datetime]]:
+    """rater_id -> (statement ref, accepted_at) for every consent in the experiment."""
+    rows = (
+        await db.execute(
+            select(
+                ConsentRecord.rater_id,
+                TermsStatement.bundle,
+                TermsStatement.version,
+                ConsentRecord.accepted_at,
+            )
+            .join(TermsStatement, TermsStatement.id == ConsentRecord.statement_id)
+            .where(ConsentRecord.experiment_id == experiment_id)
+        )
+    ).all()
+    return {
+        rater_id: (statement_ref(bundle, version), accepted_at)
+        for rater_id, bundle, version, accepted_at in rows
+    }
 
 
 async def get_experiment_analytics(
@@ -38,4 +64,5 @@ async def get_experiment_analytics(
         total_questions=total_questions,
         ratings=ratings,
         timed_out_raters=timed_out_raters,
+        consents=await fetch_consents_by_rater(experiment_id, db),
     )

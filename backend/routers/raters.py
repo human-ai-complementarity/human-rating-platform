@@ -11,6 +11,7 @@ from schemas import (
     AssistanceAdvanceRequest,
     AssistanceStartRequest,
     AssistanceStepResponse,
+    ConsentResponse,
     QuestionResponse,
     RaterStartResponse,
     RatingResponse,
@@ -19,7 +20,7 @@ from schemas import (
 )
 from services import assistance, rater
 
-from .deps import RaterSession, require_rater_session
+from .deps import RaterSession, require_consented_rater_session, require_rater_session
 
 router = APIRouter(prefix="/raters", tags=["raters"])
 
@@ -45,9 +46,17 @@ async def start_session(
     )
 
 
+@router.post("/consent", response_model=ConsentResponse)
+async def record_consent(
+    session: RaterSession = Depends(require_rater_session),
+    db: AsyncSession = Depends(get_session),
+):
+    return await rater.record_consent(rater_id=session.rater_id, db=db)
+
+
 @router.get("/next-question", response_model=Optional[QuestionResponse])
 async def get_next_question(
-    session: RaterSession = Depends(require_rater_session),
+    session: RaterSession = Depends(require_consented_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
     return await rater.get_next_question(rater_id=session.rater_id, db=db)
@@ -56,7 +65,7 @@ async def get_next_question(
 @router.get("/questions/{question_id}", response_model=QuestionResponse)
 async def get_question(
     question_id: int,
-    session: RaterSession = Depends(require_rater_session),
+    session: RaterSession = Depends(require_consented_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
     return await rater.get_question_by_id(
@@ -69,7 +78,7 @@ async def get_question(
 @router.post("/submit", response_model=RatingResponse)
 async def submit_rating(
     rating: RatingSubmit,
-    session: RaterSession = Depends(require_rater_session),
+    session: RaterSession = Depends(require_consented_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
     return await rater.submit_rating(payload=rating, rater_id=session.rater_id, db=db)
@@ -94,7 +103,7 @@ async def end_session(
 @router.post("/assistance/start", response_model=AssistanceStepResponse)
 async def start_assistance(
     body: AssistanceStartRequest,
-    session: RaterSession = Depends(require_rater_session),
+    session: RaterSession = Depends(require_consented_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
     return await assistance.start_assistance(
@@ -107,7 +116,7 @@ async def start_assistance(
 @router.post("/assistance/advance", response_model=AssistanceStepResponse)
 async def advance_assistance(
     body: AssistanceAdvanceRequest,
-    session: RaterSession = Depends(require_rater_session),
+    session: RaterSession = Depends(require_consented_rater_session),
     db: AsyncSession = Depends(get_session),
 ):
     return await assistance.advance_assistance(

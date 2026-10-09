@@ -3,7 +3,7 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from models import ExperimentStatus, ProlificStudyStatus, StepType
+from models import ContentWarning, ExperimentStatus, ProlificStudyStatus, StepType
 from session_policy import (
     DEFAULT_SESSION_DURATION_MINUTES,
     MAX_SESSION_DURATION_MINUTES,
@@ -26,7 +26,7 @@ StudyLabel = Literal[
 
 # Pre-screener filter keys we apply to Prolific studies. Concrete filter IDs
 # and thresholds live in services.admin.prolific.SCREENER_FILTERS.
-Screener = Literal["ai_taskers", "fact_checkers", "approval_rate"]
+Screener = Literal["ai_taskers", "fact_checkers", "approval_rate", "harmful_content"]
 
 
 # Prolific schemas
@@ -219,6 +219,13 @@ class ExperimentResponse(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
+    # Rater terms. The refs name the archived versions pinned at first
+    # publish ("standard v2"); None while the experiment is still DRAFT.
+    content_warning: ContentWarning = ContentWarning.NONE
+    content_warning_details: Optional[str] = None
+    terms_bundle: str = "standard"
+    consent_statement_ref: Optional[str] = None
+    debrief_statement_ref: Optional[str] = None
     is_markdown: bool = False
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
@@ -270,6 +277,10 @@ class ExperimentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
+    # Rater terms. None means "leave unchanged". Locked after the first publish.
+    content_warning: Optional[ContentWarning] = None
+    content_warning_details: Optional[str] = None
+    terms_bundle: Optional[str] = Field(default=None, max_length=64)
     is_markdown: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # None means "leave unchanged". Locked once the experiment leaves DRAFT:
@@ -322,6 +333,17 @@ class RaterStartResponse(BaseModel):
     rater_session_token: str
     assistance_method: str = "none"
     assistance_instructions: Optional[str] = None
+    # The consent statement this rater must agree to, rendered with the
+    # study's placeholders filled, pre-rendered like the description.
+    consent_statement_html: str
+    # None until the rater agrees. The frontend shows the consent screen while
+    # this is None; the backend refuses questions until it is set.
+    consented_at: Optional[datetime] = None
+    # Prolific's content-warning level for this study ("none" for most).
+    content_warning: str = "none"
+    # Debrief shown on the completion screen. Only studies with a content
+    # warning have one; when present the completion redirect is manual.
+    debrief_html: Optional[str] = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -331,6 +353,38 @@ class SessionStatusResponse(BaseModel):
     # plus the grace period while the session is live, then counts down alone.
     grace_seconds_remaining: int = 0
     questions_completed: int
+
+
+class ConsentResponse(BaseModel):
+    consented_at: datetime
+
+
+# Rater terms (admin)
+class TermsBundleInfo(BaseModel):
+    key: str
+    label: str
+    content_warnings: list[str]
+    consent_version: int
+    debrief_version: Optional[int] = None
+
+
+class TermsStatusResponse(BaseModel):
+    """A live read of the terms manifest, for the experiment page's bundle select."""
+
+    source_url: str
+    ok: bool
+    error: Optional[str] = None
+    bundles: list[TermsBundleInfo] = Field(default_factory=list)
+
+
+class TermsPreviewResponse(BaseModel):
+    """What this experiment's raters see, rendered with its placeholders."""
+
+    pinned: bool
+    consent_ref: str
+    consent_html: str
+    debrief_ref: Optional[str] = None
+    debrief_html: Optional[str] = None
 
 
 # Rating schemas
@@ -463,6 +517,7 @@ class V1ExperimentResponse(BaseModel):
     question_count: int
     rating_count: int
     archived_at: Optional[datetime] = None
+    content_warning: ContentWarning = ContentWarning.NONE
     assistance_method: str = "none"
     description: Optional[str] = None
 

@@ -44,6 +44,8 @@ services:
       PYTHONPATH: /app/backend
       UV_PROJECT_ENVIRONMENT: /uv-env
       ADMIN_AUTH_ENABLED: "${ADMIN_AUTH_ENABLED:-false}"
+      # Dummy statements for the suite; the platform ships none of its own.
+      TERMS__SOURCE_URL: file://tests/fixtures/rater_terms
     volumes:
       - ./:/app
       - uv_project_env:/uv-env

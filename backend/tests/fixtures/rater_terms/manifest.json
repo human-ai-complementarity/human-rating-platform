@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "bundles": {
+    "standard": { "label": "Standard", "content_warnings": ["none"], "consent": 1 },
+    "sensitive": { "label": "Sensitive content", "content_warnings": ["sensitive"], "consent": 1, "debrief": 1 },
+    "explicit": { "label": "Explicit content", "content_warnings": ["explicit"], "consent": 1, "debrief": 1 }
+  }
+}

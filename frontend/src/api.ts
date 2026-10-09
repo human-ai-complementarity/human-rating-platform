@@ -9,7 +9,11 @@ import type {
   ApiKey,
   ApiKeyCreated,
   AssistanceStep,
+  ConsentResponse,
+  ContentWarning,
   ExperimentRound,
+  TermsPreview,
+  TermsStatus,
   ExperimentRoundUpdate,
   Dataset,
   Experiment,
@@ -101,9 +105,13 @@ const routes = {
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/publish`,
     prolificRoundClose: (experimentId: number, roundId: number) =>
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/close`,
+    terms: '/admin/terms',
+    experimentTermsPreview: (experimentId: number) =>
+      `/admin/experiments/${experimentId}/terms/preview`,
   },
   rater: {
     start: '/raters/start',
+    consent: '/raters/consent',
     nextQuestion: '/raters/next-question',
     question: (questionId: number) => `/raters/questions/${questionId}`,
     submit: '/raters/submit',
@@ -563,6 +571,10 @@ export const api = {
       system_prompt?: string;
       human_prompt_prefix?: string;
       human_prompt_suffix?: string;
+      // Rater terms. Undefined means "leave unchanged"; locked after publish.
+      content_warning?: ContentWarning;
+      content_warning_details?: string;
+      terms_bundle?: string;
       is_markdown?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
@@ -774,6 +786,21 @@ export const api = {
       method: 'POST',
       headers: { 'X-Rater-Session': sessionToken },
       json: data,
+    });
+  },
+
+  async getTermsStatus(): Promise<TermsStatus> {
+    return requestJson<TermsStatus>(routes.admin.terms);
+  },
+
+  async getTermsPreview(experimentId: number): Promise<TermsPreview> {
+    return requestJson<TermsPreview>(routes.admin.experimentTermsPreview(experimentId));
+  },
+
+  async recordConsent(sessionToken: string): Promise<ConsentResponse> {
+    return requestJson<ConsentResponse>(routes.rater.consent, {
+      method: 'POST',
+      headers: { 'X-Rater-Session': sessionToken },
     });
   },
 

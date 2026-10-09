@@ -34,7 +34,7 @@ def test_require_rater_session_rejects_mismatched_experiment_id(
     # Mock DB lookup to return a rater bound to a different experiment (eid=123)
     async def _fake_fetch_rater_or_404(rater_id: int, db: object):  # pragma: no cover - simple stub
         assert rater_id == 1
-        return SimpleNamespace(experiment_id=123)
+        return SimpleNamespace(experiment_id=123, consented_at=None)
 
     monkeypatch.setattr("routers.deps.fetch_rater_or_404", _fake_fetch_rater_or_404)
 

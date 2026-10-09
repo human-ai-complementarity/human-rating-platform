@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import ExperimentRound, Question, QuestionAssignment, Rating, Rater
+from models import ConsentRecord, ExperimentRound, Question, QuestionAssignment, Rating, Rater
 from services.queries import (  # noqa: F401 — re-exported for backwards compat
     fetch_experiment_or_404,
     fetch_parent_question_text,
@@ -239,6 +239,12 @@ async def fetch_assignment_for_question(
                 QuestionAssignment.question_id == question_id,
             )
         )
+    ).scalar_one_or_none()
+
+
+async def fetch_consent_record(rater_id: int, db: AsyncSession) -> ConsentRecord | None:
+    return (
+        await db.execute(select(ConsentRecord).where(ConsentRecord.rater_id == rater_id))
     ).scalar_one_or_none()
 
 

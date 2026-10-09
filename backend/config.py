@@ -137,6 +137,28 @@ class ProlificSettings(_StrictModel):
         return bool(self.api_token.strip())
 
 
+class TermsSettings(_StrictModel):
+    # Where rater consent and debrief statements live: `gs://bucket/prefix`
+    # (a private bucket, read with Application Default Credentials), an
+    # `http(s)://` prefix, or a `file://` path relative to the backend
+    # directory. Read live when an admin configures or publishes an
+    # experiment; whatever an experiment pins is archived in the database.
+    # Required: the platform deliberately ships no statement text of its own,
+    # so without a source every rater session start and every publish is
+    # refused with a clear message. Layout: services/terms/source.py.
+    source_url: str = ""
+    # Keyless access to a gs:// source through Workload Identity Federation:
+    # the host (Render's managed OIDC) writes a short-lived identity token to
+    # a file, and the platform exchanges it for Google credentials. Set the
+    # provider's audience ("//iam.googleapis.com/projects/<n>/locations/global/
+    # workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
+    # token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
+    # account, when given, is impersonated so the bucket grant stays on it.
+    gcs_wif_audience: str = ""
+    gcs_wif_token_file: str = ""
+    gcs_impersonate_service_account: str = ""
+
+
 class LLMModels:
     CLAUDE_SONNET = "openrouter/anthropic/claude-sonnet-4-6"
     CLAUDE_HAIKU = "openrouter/anthropic/claude-haiku-4-5"
@@ -167,6 +189,7 @@ class Settings(BaseSettings):
     clerk: ClerkSettings = Field(default_factory=ClerkSettings)
     seeding: SeedingSettings = Field(default_factory=SeedingSettings)
     prolific: ProlificSettings = Field(default_factory=ProlificSettings)
+    terms: TermsSettings = Field(default_factory=TermsSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)

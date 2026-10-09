@@ -4,6 +4,7 @@ import { api, UploadAbortedError } from '../api';
 import { buildRaterPreviewUrl } from '../raterPreview';
 import StatusLabel from './StatusLabel';
 import type {
+  ContentWarning,
   DatasetMetaField,
   Experiment,
   ExperimentRound,
@@ -17,6 +18,7 @@ import type {
   UploadMetaKey,
 } from '../types';
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
+import { EthicsPanel } from './experiment-detail/EthicsPanel';
 import {
   StepperTabs,
   type StepDef,
@@ -1228,6 +1230,7 @@ function ExperimentDetail({
             savingMeta={savingMeta}
             isLocked={isLocked}
             lockedHint={lockedHint}
+            onRefresh={onRefresh}
             onBack={() => setTab('questions')}
             onNext={() => setTab('assistance')}
           />
@@ -1987,6 +1990,7 @@ function MetadataPanel({
   savingMeta,
   isLocked,
   lockedHint,
+  onRefresh,
   onBack,
   onNext,
 }: {
@@ -2000,6 +2004,7 @@ function MetadataPanel({
   savingMeta: boolean;
   isLocked: boolean;
   lockedHint: string;
+  onRefresh: () => void;
   onBack: () => void;
   onNext: () => void;
 }) {
@@ -2183,6 +2188,13 @@ function MetadataPanel({
           </div>
         );
       })}
+
+      <EthicsPanel
+        experiment={experiment}
+        isLocked={isLocked}
+        lockedHint={lockedHint}
+        onSaved={onRefresh}
+      />
 
       <StepNav
         stepIndex={2}
@@ -3473,15 +3485,22 @@ function ScreenerCheckboxes({
   value,
   onChange,
   testIdPrefix,
+  contentWarning = 'none',
 }: {
   value: Screener[];
   onChange: (next: Screener[]) => void;
   testIdPrefix: string;
+  // A study with a content warning always carries the harmful-content
+  // prescreener; the backend adds it regardless, so the box is shown ticked
+  // and locked rather than pretending it is optional.
+  contentWarning?: ContentWarning;
 }) {
+  const forced: Screener[] = contentWarning !== 'none' ? ['harmful_content'] : [];
   const items: [Screener, string, string][] = [
     ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
     ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
     ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
+    ['harmful_content', 'Comfortable with harmful content', "Prolific's Harmful Content prescreener; required for studies with a content warning."],
   ];
   return (
     <div
@@ -3496,7 +3515,8 @@ function ScreenerCheckboxes({
       }}
     >
       {items.map(([key, label, hint]) => {
-        const checked = value.includes(key);
+        const isForced = forced.includes(key);
+        const checked = isForced || value.includes(key);
         return (
           <label
             key={key}
@@ -3506,6 +3526,7 @@ function ScreenerCheckboxes({
               type="checkbox"
               data-testid={`${testIdPrefix}-${key}`}
               checked={checked}
+              disabled={isForced}
               onChange={(e) => {
                 const next = e.target.checked
                   ? Array.from(new Set([...value, key]))

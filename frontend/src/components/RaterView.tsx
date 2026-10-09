@@ -5,6 +5,8 @@ import Timer from './Timer';
 import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
+import RaterConsent from './RaterConsent';
+import RaterDebrief from './RaterDebrief';
 import type { Session, Question, AssistanceStep } from '../types';
 import { minutesBetween } from '../time';
 
@@ -46,7 +48,15 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     (value.rater_session_token === undefined || typeof value.rater_session_token === 'string') &&
     (value.assistance_instructions === null ||
       value.assistance_instructions === undefined ||
-      typeof value.assistance_instructions === 'string')
+      typeof value.assistance_instructions === 'string') &&
+    // Required, not optional: a session stored before the consent step has
+    // no statement to show, so it is re-fetched via /start (which resumes the
+    // same rater) rather than restored.
+    typeof value.consent_statement_html === 'string' &&
+    (value.consented_at === null || typeof value.consented_at === 'string') &&
+    (value.debrief_html === null ||
+      value.debrief_html === undefined ||
+      typeof value.debrief_html === 'string')
   );
 }
 
@@ -70,6 +80,8 @@ function parseStoredSession(raw: string): StoredSession | null {
       rater_session_token: token,
       experiment_description_html: sessionPayload.experiment_description_html ?? null,
       assistance_instructions: sessionPayload.assistance_instructions ?? null,
+      content_warning: sessionPayload.content_warning ?? 'none',
+      debrief_html: sessionPayload.debrief_html ?? null,
     };
 
     return {
@@ -133,6 +145,11 @@ function RaterView() {
   const [assistanceSessionId, setAssistanceSessionId] = useState<number | null>(null);
   const [assistanceStep, setAssistanceStep] = useState<AssistanceStep | null>(null);
   const [showIntro, setShowIntro] = useState(false);
+  // Consent comes before everything else, the intro included. Driven by
+  // `session.consented_at`; the backend refuses questions until it is set.
+  const [showConsent, setShowConsent] = useState(false);
+  const [consentSubmitting, setConsentSubmitting] = useState(false);
+  const [consentError, setConsentError] = useState<string | null>(null);
 
   const experimentId = searchParams.get('experiment_id');
   const prolificId = searchParams.get('PROLIFIC_PID');
@@ -240,6 +257,15 @@ function RaterView() {
   const restoreStoredSession = useCallback(async (storedSession: StoredSession) => {
     setSession(storedSession.session);
     setSessionToken(storedSession.token);
+
+    // Reloaded on the consent screen: pick up there. Fetching a question now
+    // would only be refused.
+    if (!storedSession.session.consented_at) {
+      setShowConsent(true);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -280,7 +306,10 @@ function RaterView() {
       setSessionToken(nextSession.rater_session_token);
       const needsIntro = hasIntroContent(nextSession);
       persistSession(nextSession, !needsIntro);
-      if (needsIntro) {
+      if (!nextSession.consented_at) {
+        setShowConsent(true);
+        setLoading(false);
+      } else if (needsIntro) {
         setShowIntro(true);
         setLoading(false);
       } else {
@@ -291,6 +320,29 @@ function RaterView() {
       setLoading(false);
     }
   }, [isPreview, persistSession, loadNextQuestion]);
+
+  const handleConsentAgree = useCallback(async () => {
+    if (!session || !sessionToken) return;
+    setConsentError(null);
+    setConsentSubmitting(true);
+    try {
+      const { consented_at } = await api.recordConsent(sessionToken);
+      const consented: Session = { ...session, consented_at };
+      const needsIntro = hasIntroContent(consented);
+      setSession(consented);
+      persistSession(consented, !needsIntro);
+      setShowConsent(false);
+      if (needsIntro) {
+        setShowIntro(true);
+      } else {
+        await loadNextQuestion(sessionToken);
+      }
+    } catch (err) {
+      setConsentError(err instanceof Error ? err.message : 'Could not record your consent.');
+    } finally {
+      setConsentSubmitting(false);
+    }
+  }, [session, sessionToken, persistSession, loadNextQuestion]);
 
   const handleIntroContinue = useCallback(() => {
     if (!sessionToken) return;
@@ -348,12 +400,16 @@ function RaterView() {
     clearStoredSession();
 
     if (!completionUrl) return;
+    // A study with a debrief (content warning) must not bounce the rater past
+    // it: Prolific requires the debrief before the completion code. The
+    // debrief screen carries the link instead.
+    if (session?.debrief_html) return;
 
     const timer = setTimeout(() => {
       window.location.href = completionUrl;
     }, 3000);
     return () => clearTimeout(timer);
-  }, [sessionExpired, allDone, session?.completion_url, clearStoredSession]);
+  }, [sessionExpired, allDone, session?.completion_url, session?.debrief_html, clearStoredSession]);
 
   const handleSubmit = async (answer: string, confidence: number, timeStarted: string) => {
     if (!session || !question || !sessionToken) return;
@@ -567,6 +623,18 @@ function RaterView() {
   if (sessionExpired || allDone) {
     const completionUrl = session?.completion_url;
 
+    if (session?.debrief_html) {
+      return (
+        <div style={{ ...styles.container, maxWidth: '720px' }}>
+          <RaterDebrief
+            statementHtml={session.debrief_html}
+            completionUrl={completionUrl ?? null}
+            questionsCompleted={questionsCompleted}
+          />
+        </div>
+      );
+    }
+
     return (
       <div style={styles.container}>
         <div style={styles.completionCard}>
@@ -606,6 +674,25 @@ function RaterView() {
         <div style={styles.loadingCard}>
           Loading...
         </div>
+      </div>
+    );
+  }
+
+  if (showConsent) {
+    return (
+      <div style={{ ...styles.container, maxWidth: '720px' }}>
+        {isPreview && (
+          <div style={previewBannerStyle}>
+            Preview mode — ratings submitted here are real and will appear in your data.
+          </div>
+        )}
+        <RaterConsent
+          experimentName={session.experiment_name}
+          statementHtml={session.consent_statement_html}
+          submitting={consentSubmitting}
+          error={consentError}
+          onAgree={() => void handleConsentAgree()}
+        />
       </div>
     );
   }

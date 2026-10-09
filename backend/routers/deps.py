@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
 from database import get_session
-from services.rater.queries import fetch_rater_or_404
+from services.rater.queries import fetch_consent_record, fetch_rater_or_404
 from services.rater.session_token import verify_rater_session_token
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,9 @@ class RaterSession:
     experiment_id: int
     issued_at: int
     expires_at: int
+    # Whether the rater has agreed to the consent statement. Read from the
+    # rater row, not the token, so it cannot be forged or go stale.
+    consented: bool = False
 
 
 async def require_rater_session(
@@ -54,4 +57,18 @@ async def require_rater_session(
         experiment_id=data["experiment_id"],
         issued_at=data["issued_at"],
         expires_at=data["expires_at"],
+        consented=(await fetch_consent_record(rater.id, db)) is not None,
     )
+
+
+async def require_consented_rater_session(
+    session: RaterSession = Depends(require_rater_session),
+) -> RaterSession:
+    """A rater session whose owner has agreed to the consent statement.
+
+    Everything that serves or accepts study content hangs off this, so the
+    consent screen cannot be skipped by calling the API directly.
+    """
+    if not session.consented:
+        raise HTTPException(status_code=403, detail="Consent required")
+    return session

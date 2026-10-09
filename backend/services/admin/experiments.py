@@ -42,6 +42,7 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
+from services.terms import check_bundle_choice, fetch_terms_refs, validate_terms_config
 from .waves import normalize_wave_token
 from .queries import (
     fetch_experiment_or_404,
@@ -294,12 +295,22 @@ async def _build_experiment_responses(
         db,
     )
     tags_by_experiment = await fetch_tag_names_by_experiment(experiment_ids, db)
+    terms_refs = await fetch_terms_refs(
+        {
+            statement_id
+            for experiment, _, _ in rows
+            for statement_id in (experiment.consent_statement_id, experiment.debrief_statement_id)
+        },
+        db,
+    )
 
     return [
         build_experiment_response(
             experiment,
             question_count=int(question_count or 0),
             rating_count=int(rating_count or 0),
+            consent_statement_ref=terms_refs.get(experiment.consent_statement_id),
+            debrief_statement_ref=terms_refs.get(experiment.debrief_statement_id),
             dataset_filenames=filenames_by_experiment.get(experiment.id, []),
             attention_reason=compute_attention_reason(
                 status=experiment.status,
@@ -335,6 +346,7 @@ _LOCKED_META_FIELDS = (
     "system_prompt",
     "human_prompt_prefix",
     "human_prompt_suffix",
+    "content_warning_details",
     "prolific_pool",
 )
 
@@ -409,6 +421,9 @@ async def duplicate_experiment(
         system_prompt=source.system_prompt,
         human_prompt_prefix=source.human_prompt_prefix,
         human_prompt_suffix=source.human_prompt_suffix,
+        content_warning=source.content_warning,
+        content_warning_details=source.content_warning_details,
+        terms_bundle=source.terms_bundle,
         is_markdown=source.is_markdown,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
@@ -538,6 +553,15 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
             continue
         if proposed != getattr(experiment, field_name):
             changes.append(field_name)
+    # Rater terms lock with the rest: the consent version is pinned at first
+    # publish, and the content warning went out on the Prolific listing.
+    if (
+        payload.content_warning is not None
+        and payload.content_warning.value != experiment.content_warning
+    ):
+        changes.append("content_warning")
+    if payload.terms_bundle is not None and payload.terms_bundle.strip() != experiment.terms_bundle:
+        changes.append("terms_bundle")
     if "group_id" in payload.model_fields_set and payload.group_id != experiment.group_id:
         changes.append("group_id")
     return changes
@@ -612,6 +636,16 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
         _check_model_id(value, f"{field}.{method}")
 
 
+async def _terms_ref_kwargs(experiment: Experiment, db: AsyncSession) -> dict[str, str | None]:
+    refs = await fetch_terms_refs(
+        {experiment.consent_statement_id, experiment.debrief_statement_id}, db
+    )
+    return {
+        "consent_statement_ref": refs.get(experiment.consent_statement_id),
+        "debrief_statement_ref": refs.get(experiment.debrief_statement_id),
+    }
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -671,6 +705,19 @@ async def update_experiment(
         if value is not None:
             setattr(experiment, field_name, value)
 
+    terms_touched = False
+    if payload.content_warning is not None:
+        experiment.content_warning = payload.content_warning.value
+        terms_touched = True
+    if payload.terms_bundle is not None:
+        experiment.terms_bundle = payload.terms_bundle.strip() or "standard"
+        terms_touched = True
+    if payload.content_warning_details is not None:
+        terms_touched = True
+    if terms_touched:
+        validate_terms_config(experiment)
+        await check_bundle_choice(experiment)
+
     if "group_id" in payload.model_fields_set:
         if payload.group_id is not None:
             await fetch_group_or_404(payload.group_id, db)
@@ -692,6 +739,7 @@ async def update_experiment(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=tag_names,
+        **(await _terms_ref_kwargs(experiment, db)),
     )
 
 
@@ -719,6 +767,7 @@ async def finish_experiment(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=await fetch_tag_names_for_experiment(experiment_id, db),
+        **(await _terms_ref_kwargs(experiment, db)),
     )
 
 
@@ -748,6 +797,7 @@ async def _set_archived(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=await fetch_tag_names_for_experiment(experiment_id, db),
+        **(await _terms_ref_kwargs(experiment, db)),
     )
 
 

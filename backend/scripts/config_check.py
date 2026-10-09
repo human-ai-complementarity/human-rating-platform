@@ -128,6 +128,21 @@ class RenderValidator(ProviderValidator):
         if "*" in settings.app.cors_origins:
             result.add_warning("APP__CORS_ORIGINS includes '*' — overly permissive for production.")
 
+    def check_terms_source_set(self, settings: Settings, result: ValidationResult) -> None:
+        # The platform ships no consent statements; without a source no rater
+        # session can start and no round can publish.
+        source = settings.terms.source_url.strip()
+        if not source:
+            result.add_error(
+                "TERMS__SOURCE_URL is not set: rater consent statements must come from an "
+                "external terms source (gs:// or https://)."
+            )
+        elif source.startswith("file://"):
+            result.add_warning(
+                "TERMS__SOURCE_URL is a file:// path; on Render that is a folder inside the "
+                "deployed image. Use the team's bucket (gs://) for production."
+            )
+
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 

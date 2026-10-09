@@ -63,6 +63,14 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 The **first** upload that declares a value populates the experiment. Later uploads that declare the same key with a *different* value are flagged in the Dataset Metadata section but never overwrite saved values. To change a saved value, edit it directly in the admin form.
 
+### Consent, content warnings and debrief
+
+Every rater agrees to a consent statement before seeing anything about the study, and their agreement is recorded with the exact text shown. The statements live in the team's terms folder (versioned there, not editable in the app); the **Consent and content** section on the Instructions tab picks which **bundle** applies and shows the current version.
+
+If raters may see disturbing material, set the **Content warning** to Sensitive or Explicit and describe it in the details field. That does four things: Prolific shows the warning on the study page and only offers it to participants who opted in to harmful content (the prescreener is added for you), the warning is added to the top of the study description, the consent statement switches to the bundle written for it with your details merged in, and a debrief screen with support resources is shown at the end instead of the automatic redirect.
+
+Use **Preview consent** and **Preview debrief** to read exactly what raters will see. Publishing the first round pins the statement versions for this experiment; after that the section is read-only and shows what was pinned.
+
 ### Always preview
 
 Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect.

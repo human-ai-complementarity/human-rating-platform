@@ -5,6 +5,7 @@ from datetime import datetime
 from models import Question
 from schemas import QuestionResponse, RaterStartResponse
 from services.prolific_markdown import to_prolific_html
+from services.terms import RaterTerms
 from session_policy import SessionPolicy
 
 
@@ -34,6 +35,9 @@ def build_rater_start_response(
     completion_url: str | None,
     rater_session_token: str,
     policy: SessionPolicy,
+    terms: RaterTerms,
+    consented_at: datetime | None,
+    content_warning: str,
     assistance_method: str = "none",
     assistance_instructions: str | None = None,
 ) -> RaterStartResponse:
@@ -57,4 +61,8 @@ def build_rater_start_response(
         rater_session_token=rater_session_token,
         assistance_method=assistance_method,
         assistance_instructions=assistance_instructions,
+        consent_statement_html=terms.consent_html,
+        consented_at=consented_at,
+        content_warning=content_warning,
+        debrief_html=terms.debrief_html,
     )

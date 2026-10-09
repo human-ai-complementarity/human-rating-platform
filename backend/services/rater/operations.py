@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
     AssistanceSession,
+    ConsentRecord,
     ExperimentRound,
     ProlificStudyStatus,
     QuestionAssignment,
@@ -18,6 +19,7 @@ from models import (
 )
 from config import Settings, get_settings
 from schemas import (
+    ConsentResponse,
     QuestionResponse,
     RaterStartResponse,
     RatingResponse,
@@ -28,6 +30,7 @@ from services.admin.prolific import ProlificAPIError, add_participant_to_group, 
 from services.assistance import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
 from services.queries import fetch_remaining_rating_actions
+from services.terms import statement_for_consent, terms_for_rater
 from session_policy import SessionPolicy, resolve_session_policy
 from .mappers import (
     build_question_response,
@@ -36,6 +39,7 @@ from .mappers import (
 from .session_token import issue_rater_session_token
 from .queries import (
     fetch_assignment_for_question,
+    fetch_consent_record,
     fetch_eligible_questions_with_counts,
     fetch_existing_rater_for_experiment,
     fetch_existing_rating,
@@ -92,6 +96,10 @@ async def start_session(
     description_for_intro = round_description or experiment.description
 
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
+    # Read before anything is written: an unpinned experiment reads the terms
+    # source live, and if that fails the rater gets a clear 503 instead of a
+    # half-created session.
+    terms = await terms_for_rater(experiment, db)
     policy = resolve_session_policy(experiment)
 
     existing_rater = await fetch_existing_rater_for_experiment(
@@ -120,6 +128,11 @@ async def start_session(
             # preview idle past the deadline once would otherwise keep counting
             # towards "ran out of time" through every clean run afterwards.
             existing_rater.timed_out = False
+            # A preview is for seeing what raters see, and the consent screen
+            # is the first thing they see.
+            previous_consent = await fetch_consent_record(existing_rater.id, db)
+            if previous_consent is not None:
+                await db.delete(previous_consent)
             await db.commit()
             await db.refresh(existing_rater)
             logger.info(
@@ -148,10 +161,14 @@ async def start_session(
                 completion_url=experiment.prolific_completion_url,
                 rater_session_token=token,
                 policy=policy,
+                terms=terms,
+                consented_at=None,
+                content_warning=experiment.content_warning,
                 assistance_method=experiment.assistance_method,
                 assistance_instructions=assistance_instructions,
             )
         validate_existing_rater_can_resume(existing_rater, policy)
+        existing_consent = await fetch_consent_record(existing_rater.id, db)
         token = issue_rater_session_token(
             settings,
             rater_id=existing_rater.id,
@@ -169,6 +186,9 @@ async def start_session(
             completion_url=experiment.prolific_completion_url,
             rater_session_token=token,
             policy=policy,
+            terms=terms,
+            consented_at=existing_consent.accepted_at if existing_consent else None,
+            content_warning=experiment.content_warning,
             assistance_method=experiment.assistance_method,
             assistance_instructions=assistance_instructions,
         )
@@ -252,9 +272,49 @@ async def start_session(
         completion_url=experiment.prolific_completion_url,
         rater_session_token=token,
         policy=policy,
+        terms=terms,
+        consented_at=None,
+        content_warning=experiment.content_warning,
         assistance_method=experiment.assistance_method,
         assistance_instructions=assistance_instructions,
     )
+
+
+async def record_consent(*, rater_id: int, db: AsyncSession) -> ConsentResponse:
+    """Record that the rater agreed to the experiment's consent statement.
+
+    Stores the statement version and the rendered text exactly as shown.
+    Idempotent: a second call (a double click, a reload that replays it)
+    keeps the original record rather than re-stamping.
+    """
+    rater = await fetch_rater_or_404(rater_id, db)
+    record = await fetch_consent_record(rater.id, db)
+    if record is None:
+        experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+        statement, rendered_text = await statement_for_consent(experiment, db)
+        record = ConsentRecord(
+            rater_id=rater.id,
+            experiment_id=rater.experiment_id,
+            prolific_id=rater.prolific_id,
+            statement_id=statement.id,
+            rendered_text=rendered_text,
+            accepted_at=datetime.now(UTC),
+            is_preview=rater.is_preview,
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        logger.info(
+            "Rater consented",
+            extra={
+                "attributes": {
+                    "rater_id": rater.id,
+                    "experiment_id": rater.experiment_id,
+                    "statement": f"{statement.bundle} v{statement.version}",
+                }
+            },
+        )
+    return ConsentResponse(consented_at=record.accepted_at)
 
 
 # Namespace for pg_advisory_xact_lock so this feature's locks can't collide

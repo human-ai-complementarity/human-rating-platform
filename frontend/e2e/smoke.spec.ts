@@ -25,6 +25,22 @@ type ExperimentRecord = {
   group_dataset_name: string | null;
   wave: string | null;
   tags: string[];
+  content_warning: 'none' | 'sensitive' | 'explicit';
+  content_warning_details: string | null;
+  terms_bundle: string;
+  consent_statement_ref: string | null;
+  debrief_statement_ref: string | null;
+};
+
+const MOCK_TERMS_STATUS = {
+  source_url: 'file://rater_terms',
+  ok: true,
+  error: null,
+  bundles: [
+    { key: 'standard', label: 'Standard', content_warnings: ['none'], consent_version: 1, debrief_version: null },
+    { key: 'sensitive', label: 'Sensitive content', content_warnings: ['sensitive'], consent_version: 1, debrief_version: 1 },
+    { key: 'explicit', label: 'Explicit content', content_warnings: ['explicit'], consent_version: 1, debrief_version: 1 },
+  ],
 };
 
 type DatasetRecord = {
@@ -86,7 +102,26 @@ type RaterSessionRecord = {
   experiment_description_html?: string | null;
   completion_url: string | null;
   rater_session_token: string;
+  // Omitted: the mock serves a stub statement with consent not yet given, so
+  // every rater flow goes through the consent screen the way real ones do.
+  consent_statement_html?: string;
+  consented_at?: string | null;
+  content_warning?: 'none' | 'sensitive' | 'explicit';
+  debrief_html?: string | null;
 };
+
+const MOCK_CONSENT_HTML = '<h2>Purpose of the study</h2><p>Mock consent statement.</p>';
+
+// Ticks the box and agrees on the consent screen, the first thing every rater
+// sees. Waits for the screen to be gone so the caller can go straight to
+// asserting on whatever comes next (intro or first question).
+async function agreeToConsent(page: Page) {
+  const screen = page.getByTestId('consent-screen');
+  await expect(screen).toBeVisible();
+  await screen.getByRole('checkbox').check();
+  await screen.getByRole('button', { name: 'I agree' }).click();
+  await expect(screen).toHaveCount(0);
+}
 
 type RaterAnalyticsRecord = {
   prolific_id: string;
@@ -136,6 +171,8 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  consentSessionTokens: string[];
+  experimentPatches: Record<string, unknown>[];
   pinnedQuestionRequests: number[];
   submittedRatings: Record<string, unknown>[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
@@ -173,6 +210,11 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     group_dataset_name: null,
     wave: null,
     tags: [],
+    content_warning: 'none',
+    content_warning_details: null,
+    terms_bundle: 'standard',
+    consent_statement_ref: null,
+    debrief_statement_ref: null,
     ...partial,
   };
 }
@@ -206,6 +248,8 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    consentSessionTokens: [],
+    experimentPatches: [],
     pinnedQuestionRequests: [],
     submittedRatings: [],
     sessionsByExperimentId: {},
@@ -453,6 +497,46 @@ async function installApiMocks(
       return;
     }
 
+    if (experimentByIdMatch && method === 'PATCH') {
+      const experimentId = Number(experimentByIdMatch[1]);
+      const experiment = state.experiments.find((item) => item.id === experimentId);
+      if (!experiment) {
+        await fulfillJson(route, 404, { detail: 'Experiment not found' });
+        return;
+      }
+      const body = request.postDataJSON() as Record<string, unknown>;
+      state.experimentPatches.push(body);
+      // Mirrors the backend: only fields present in the body change.
+      for (const key of ['content_warning', 'content_warning_details', 'terms_bundle'] as const) {
+        if (body[key] !== undefined) {
+          (experiment as Record<string, unknown>)[key] = body[key];
+        }
+      }
+      await fulfillJson(route, 200, experiment);
+      return;
+    }
+
+    if (pathname === '/api/admin/terms' && method === 'GET') {
+      await fulfillJson(route, 200, MOCK_TERMS_STATUS);
+      return;
+    }
+
+    const termsPreviewMatch = pathname.match(/^\/api\/admin\/experiments\/(\d+)\/terms\/preview$/);
+    if (termsPreviewMatch && method === 'GET') {
+      const experiment = state.experiments.find(
+        (item) => item.id === Number(termsPreviewMatch[1]),
+      );
+      const warned = experiment && experiment.content_warning !== 'none';
+      await fulfillJson(route, 200, {
+        pinned: experiment?.consent_statement_ref !== null,
+        consent_ref: `${experiment?.terms_bundle ?? 'standard'} v1`,
+        consent_html: `<h2>Preview consent</h2><p>${experiment?.content_warning_details ?? 'No warning.'}</p>`,
+        debrief_ref: warned ? `${experiment?.terms_bundle} v1` : null,
+        debrief_html: warned ? '<h2>Preview debrief</h2><p>Continue to Prolific.</p>' : null,
+      });
+      return;
+    }
+
     if (pathname.endsWith('/upload') && method === 'POST') {
       const experimentId = extractExperimentId(url);
       const upload = {
@@ -626,8 +710,18 @@ async function installApiMocks(
           rater_session_token: `token-exp-${experimentId || 'default'}`,
         };
       await fulfillJson(route, 200, {
+        consent_statement_html: MOCK_CONSENT_HTML,
+        consented_at: null,
+        content_warning: 'none',
+        debrief_html: null,
         ...session,
       });
+      return;
+    }
+
+    if (pathname === '/api/raters/consent' && method === 'POST') {
+      state.consentSessionTokens.push(request.headers()['x-rater-session'] || '');
+      await fulfillJson(route, 200, { consented_at: '2026-03-09T00:02:30Z' });
       return;
     }
 
@@ -791,6 +885,7 @@ test('the rater intro states the session length before they commit', async ({ pa
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const expectations = page.getByTestId('session-expectations');
   await expect(expectations).toBeVisible();
@@ -995,6 +1090,7 @@ test('preview participant link opens /rate with preview mode and starts one prev
   await expect(popup).toHaveURL(/preview=true/);
   await expect(popup.getByText('Preview mode')).toBeVisible();
   await expect(popup.getByText('Preview Experiment')).toBeVisible();
+  await agreeToConsent(popup);
   await expect(popup.getByText('Is this workflow ready for release?')).toBeVisible();
   await expect.poll(() => state.previewStartRequests.length).toBe(1);
   await expect(state.previewStartRequests[0]).toContain('preview=true');
@@ -1041,6 +1137,7 @@ test('the question in hand survives the deadline and can still be submitted', as
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
 
@@ -1111,6 +1208,7 @@ test('a long parent question moves the document behind the link, not into the ca
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const documentLink = page.getByRole('link', { name: 'Open document in new tab' });
   await expect(documentLink).toBeVisible();
@@ -1145,6 +1243,7 @@ test('a short parent question stays inline in the context box', async ({ page })
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.getByText('Context', { exact: true })).toBeVisible();
   await expect(page.getByText(preamble)).toBeVisible();
@@ -1166,6 +1265,7 @@ test('a --- QUESTION --- delimiter in question text is not treated as a document
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
   await expect(page.getByText('Document line one')).toBeVisible();
@@ -1199,6 +1299,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.locator('pre code')).toContainText('def f(n):');
   await expect(page.getByText('```python')).toHaveCount(0);
@@ -1242,6 +1343,7 @@ test('the markdown flag also applies to the long-context document window', async
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const popupPromise = context.waitForEvent('page');
   await page.getByRole('link', { name: 'Open document in new tab' }).click();
@@ -1272,6 +1374,7 @@ test('an MC question with no options submits the typed free-text answer', async 
   });
 
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const answer = page.getByPlaceholder('Type your answer here...');
   await expect(answer).toBeVisible();
@@ -1360,6 +1463,7 @@ test('rater ignores a stored session from another experiment and starts a fresh 
 
   await installApiMocks(page, state);
   await page.goto('/rate?experiment_id=2&PROLIFIC_PID=pid-2&STUDY_ID=study-2&SESSION_ID=session-2');
+  await agreeToConsent(page);
 
   await expect(page.getByRole('heading', { name: 'Fresh Experiment' })).toBeVisible();
   await expect(page.getByText('Fresh experiment question')).toBeVisible();
@@ -1766,6 +1870,7 @@ test.describe('analytics raters tab', () => {
     // Following it opens the rater view on that exact question, not whatever
     // next-question would have served.
     await page.goto(href as string);
+    await agreeToConsent(page);
     await expect(page.getByText('Pinned question 742')).toBeVisible();
     expect(state.pinnedQuestionRequests).toEqual([742]);
     expect(state.nextQuestionSessionTokens).toEqual([]);
@@ -2149,4 +2254,124 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 
   await expect(page.getByRole('heading', { name: 'Tagged draft' })).toBeVisible();
   expect(state.experiments[0].tags).toEqual(['needs-review', 'client-x']);
+});
+
+// ── Rater terms: content warnings, consent bundles, debrief ──────────────
+
+test('a study with a content warning ends on the debrief and never auto-redirects', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Sensitive Experiment',
+      question_count: 1,
+      content_warning: 'sensitive',
+      content_warning_details: 'Some passages describe violence.',
+      terms_bundle: 'sensitive',
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=SENS1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.sessionsByExperimentId[1] = {
+    rater_id: 901,
+    session_start: '2026-03-09T00:05:00Z',
+    session_end_time: '2099-03-09T01:05:00Z',
+    experiment_name: 'Sensitive Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=SENS1234',
+    rater_session_token: 'token-sensitive',
+    content_warning: 'sensitive',
+    consent_statement_html:
+      '<h2>Content warning</h2><p>Some passages describe violence.</p><p>Mock consent.</p>',
+    debrief_html: '<h2>Thank you</h2><p>If any of this was difficult, talk to someone.</p>',
+  };
+  state.questionsBySessionToken['token-sensitive'] = {
+    id: 801,
+    question_id: 'sens-q',
+    question_text: 'Is this passage disturbing?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+
+  // The warning is part of the consent text itself.
+  await expect(page.getByTestId('consent-screen')).toContainText('Some passages describe violence.');
+  await agreeToConsent(page);
+
+  await expect(page.getByText('Is this passage disturbing?')).toBeVisible();
+  // No more questions after this one, so the session completes on submit.
+  state.questionsBySessionToken['token-sensitive'] = {} as RaterQuestionRecord;
+  await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: /submit/i }).click();
+
+  const debrief = page.getByTestId('debrief-screen');
+  await expect(debrief).toBeVisible();
+  await expect(debrief).toContainText('If any of this was difficult');
+  await expect(page.getByTestId('debrief-continue')).toHaveAttribute(
+    'href',
+    'https://app.prolific.com/submissions/complete?cc=SENS1234',
+  );
+  // The ordinary completion card redirects after 3 seconds; the debrief must not.
+  await page.waitForTimeout(3500);
+  await expect(page).toHaveURL(/\/rate\?/);
+  await expect(debrief).toBeVisible();
+});
+
+test('the consent section saves the warning, details and bundle, and previews the statement', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Ethics Experiment', question_count: 2 })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  const warning = page.getByTestId('ethics-content-warning');
+  await expect(warning).toHaveValue('none');
+  // The bundle list comes live from the terms manifest.
+  await expect(page.getByTestId('ethics-bundle')).toHaveValue('standard');
+  await expect(page.getByTestId('ethics-details')).toHaveCount(0);
+
+  await warning.selectOption('sensitive');
+  // Switching the warning moves to a bundle that serves it, and the details
+  // field appears and is required before saving.
+  await expect(page.getByTestId('ethics-bundle')).toHaveValue('sensitive');
+  await expect(page.getByTestId('ethics-save')).toBeDisabled();
+  await page.getByTestId('ethics-details').fill('Some passages describe violence.');
+  await page.getByTestId('ethics-save').click();
+
+  await expect(page.getByText('Consent settings saved.')).toBeVisible();
+  expect(state.experimentPatches).toHaveLength(1);
+  expect(state.experimentPatches[0]).toMatchObject({
+    content_warning: 'sensitive',
+    content_warning_details: 'Some passages describe violence.',
+    terms_bundle: 'sensitive',
+  });
+
+  await page.getByTestId('ethics-preview-consent').click();
+  const dialog = page.getByTestId('ethics-preview-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('Preview consent');
+  await expect(dialog).toContainText('Some passages describe violence.');
+  await expect(dialog).toContainText('sensitive v1');
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).toHaveCount(0);
+
+  await page.getByTestId('ethics-preview-debrief').click();
+  await expect(page.getByTestId('ethics-preview-dialog')).toContainText('Preview debrief');
 });

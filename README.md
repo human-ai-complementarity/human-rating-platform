@@ -681,6 +681,24 @@ Auth and session flow:
 
 The study description sent to Prolific is the researcher's markdown plus a generated time‑limit note (`with_session_note` in `services/admin/rounds.py`). It is appended on the way out, so editing a round's description cannot drop it, and the raw markdown stays in our DB unpolluted. The rater intro screen states the same thing in its own block and does **not** render the note twice — it reads the description straight from the DB rather than from the Prolific payload.
 
+### Rater terms: consent, content warnings, debrief
+
+Every rater agrees to an informed-consent statement before they see anything about a study, and the agreement is recorded in `consent_records` with the exact text shown and which statement version it came from. Study content endpoints refuse with 403 until then, so the screen cannot be skipped by calling the API directly.
+
+The statements are not code, and this repository deliberately contains none: consent wording is each deploying organisation's responsibility, not the platform's. They are Markdown files in a **terms source** the team owns, pointed at by `TERMS__SOURCE_URL`, which is required in every environment: a private GCS prefix in production (`gs://<bucket>/rater-terms`, read with the platform's own Google credentials), a plain `https://` prefix, or a `file://` path (relative to the backend directory) for a folder outside the repo. With it unset, rater sessions cannot start and rounds cannot publish, with a message saying so. The test suite uses obviously-dummy fixtures under `backend/tests/fixtures/rater_terms/`, which also document the layout. For `gs://` the backend authenticates as the platform's service account, `human-rating-platform@complementarities-gcs.iam.gserviceaccount.com`, defined in the team's Terraform repo (`human-ai-complementarity/cloud`) with `roles/storage.objectViewer` scoped to the `rater-terms/` prefix. Render cannot federate with GCP, so it holds that account's key: created by `terraform apply` (the org's key-creation block is lifted for the apply and re-enabled after; see that repo's README), stored on the Render API service as a secret file, with `GOOGLE_APPLICATION_CREDENTIALS` pointing at it. The same file in `backend/secrets/` (git-ignored) makes a local run read the bucket too. Never use a personal gcloud login for this. Hosts that can present an OIDC identity token (Render Pro's managed OIDC, for instance) can go keyless instead via `TERMS__GCS_WIF_AUDIENCE` and `TERMS__GCS_IMPERSONATE_SERVICE_ACCOUNT`. Layout:
+
+```
+manifest.json
+consent/<bundle>/v<N>.md
+debrief/<bundle>/v<N>.md
+```
+
+`manifest.json` names the **bundles** (`standard`, `sensitive`, `explicit` in the example), says which version of each file is current, and which content-warning levels each bundle may serve. Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{content_warning_details}}`. To change a statement, add a new version file and bump the manifest; never edit a version in place (publishing refuses a version whose content changed).
+
+The platform reads the source live when an admin opens an experiment's **Consent and content** section or publishes a round, and archives a copy into `terms_statements` at the first publish, pinning `consent_statement_id`/`debrief_statement_id` on the experiment. From then on that experiment's raters are served the archived copy and never depend on the source being reachable. Preview raters of an unpublished experiment read live.
+
+An experiment with `content_warning` set to `sensitive` or `explicit` (requires `content_warning_details`) gets the treatment Prolific's [sensitive-content rules](https://researcher-help.prolific.com/en/articles/445152-how-do-i-run-a-study-with-sensitive-or-disturbing-content) ask for: the warning and details go out as Prolific's `content_warnings` fields, the warning is prepended to the study description, the `harmful-content` prescreener is always added, the matching bundle is required, and a debrief screen with a manual "Continue to Prolific" button replaces the automatic completion redirect. The rater CSV export and analytics raters tab carry each rater's consent version and time.
+
 Operational note: all of a session's clocks — deadline, grace window, token TTL and the per‑question reservation — are derived from one duration in `backend/session_policy.py`, so they cannot drift apart.
 
 ---
