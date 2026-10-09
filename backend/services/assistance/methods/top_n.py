@@ -9,10 +9,7 @@ shows neither the rank nor the model's confidence, so the rater sees the
 shortlist without the model's ordering anchoring their choice. Each candidate
 still carries its `rank`, persisted with the session payload for analysis.
 The payload also records `parse_status` (`clean` / `unparseable` /
-`no_candidates`) on the step the rater saw. A NONE session is retried on the
-next visit and its row overwritten, so the field is durable only in the
-session's `assistance_events` response row and in the structured warning log
-(`parse_status`, question, model).
+`no_candidates`) on the persisted step, including terminal NONE results.
 Unparseable JSON — a comparison token, a truncated wrapper, anything the
 decoder rejects — fails closed rather than salvaging a biased subset.
 
@@ -354,6 +351,15 @@ class TopNAssistance(InitialStepPreparation):
     @classmethod
     def default_model(cls) -> str:
         return get_settings().llm.default_model
+
+    def preparation_params(self, params: dict) -> dict:
+        return {
+            **params,
+            "assistance_models": {
+                **(params.get("assistance_models") or {}),
+                "top_n": resolve_model(params, "top_n", self.default_model()),
+            },
+        }
 
     async def start(
         self,

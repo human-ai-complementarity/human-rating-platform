@@ -102,6 +102,16 @@ async def start_session(
 
     if existing_rater:
         if existing_rater.is_preview:
+            # Serialize reset with durable assistance publication before reading
+            # or deleting sessions. Refresh the row after any lock wait.
+            existing_rater = (
+                await db.execute(
+                    select(Rater)
+                    .where(Rater.id == existing_rater.id)
+                    .execution_options(populate_existing=True)
+                    .with_for_update()
+                )
+            ).scalar_one()
             # Reset preview rater so they can run through the flow again from scratch
             for rating in (
                 await db.execute(select(Rating).where(Rating.rater_id == existing_rater.id))

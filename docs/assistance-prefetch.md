@@ -32,5 +32,51 @@ concurrency. Methods do not choose shared cache keys. Snapshots deliberately
 exclude ground truth and upload metadata. Private artifacts and method state
 must never be returned as queue metadata.
 
-No background work is scheduled by the contract alone. Existing foreground
-behavior remains unchanged at this stage.
+The adapter preserves method logic. This runtime changes foreground execution:
+eligible initial assistance uses the worker pool even before speculative prefetch
+is enabled, and retries reuse durable results, including terminal NONE steps.
+
+## Durable execution
+
+The API lifespan owns eight workers by default, configurable from 2 to 64 with
+`prefetch.worker_count` / `PREFETCH__WORKER_COUNT`. One takes only foreground demand;
+others prefer foreground demand before speculative work. PostgreSQL owns claims
+across processes. A claim lasts 195 seconds; computation has a 180-second budget.
+A crashed claim can be recovered after expiry, at most twice per stage. A fresh
+owner token fences every publication. This is not exactly-once provider billing:
+a provider may finish work after its caller times out.
+
+Preparation produces a private artifact. Consumption runs only after foreground
+demand and has its own claim, so a partial-artifact method can do foreground
+composition without racing duplicate starts. The existing assistance-session
+uniqueness constraint remains the final publication guard. Terminal NONE results
+are reused. Method defaults are resolved before taking the input snapshot.
+
+All workers use independent, short-lived database sessions. Waiting HTTP requests
+release their transaction. Shutdown cancels local tasks; durable claims recover
+after expiry. Provider calls share an eight-slot per-process limit; speculation
+uses at most four. Limits multiply with the number of API processes.
+
+The feature does not yet reserve or speculatively execute future questions.
+
+Input identity includes rater, question, session start, method name, preparation
+version and serialized inputs. A method cannot accidentally share work between
+questions by omitting a question identifier from its own inputs. Session reset
+and end are checked again under a rater-row lock before publication.
+
+
+Startup requires LISTEN to subscribe within 10 seconds. `/api/health` returns 503
+while the listener is disconnected or a runner task has stopped. Waiting requests
+fail with a retryable 503 when their listener disconnects; reconnect reestablishes
+LISTEN before new waits read durable state. No database polling fallback is added.
+
+Graceful shutdown cancels and awaits local workers, then spends at most five seconds
+releasing only their still-owned claims. Prepared artifacts and attempt counts are
+retained. Another process can resume immediately; hard crashes or failed cleanup
+still use lease expiry. Cancellation does not guarantee that a provider avoided billing.
+
+Provider-slot waits count against the 180-second execution budget; time waiting
+unclaimed in the durable queue does not. Raising workers does not raise the shared
+eight-provider-call limit (four speculative). Validate expected arrival bursts
+before deployment, and inspect assistance waits and timeouts during the first study.
+The default is a starting limit, not a measured production capacity guarantee.

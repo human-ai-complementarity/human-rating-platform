@@ -754,3 +754,41 @@ class ApiKey(SQLModel, table=True):
         default=None,
         sa_column=Column(String(255), nullable=True),
     )
+
+
+class AssistancePreparation(SQLModel, table=True):
+    """Private work for one rater and immutable input snapshot.
+
+    Claim expiry bounds crash recovery. Publication also checks owner_token,
+    so an expired worker cannot overwrite its replacement's result.
+    """
+
+    __tablename__ = "assistance_preparations"
+    __table_args__ = (UniqueConstraint("identity", name="uq_preparation_identity"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    identity: str = Field(sa_column=Column(String(64), nullable=False))
+    rater_id: int = Field(foreign_key="raters.id", ondelete="CASCADE", index=True)
+    question_id: int = Field(foreign_key="questions.id", ondelete="CASCADE")
+    session_start: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    method_name: str = Field(sa_column=Column(String(64), nullable=False))
+    spec_json: str = Field(sa_column=Column(Text, nullable=False))
+    params_json: str = Field(sa_column=Column(Text, nullable=False))
+    status: str = Field(default="queued", sa_column=Column(String(16), nullable=False, index=True))
+    demanded: bool = Field(default=False)
+    artifact_json: Optional[str] = Field(default=None, sa_column=Column(Text))
+    owner_token: Optional[str] = Field(default=None, sa_column=Column(String(32)))
+    claim_expires_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
+    deadline_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    execution_ms: int = Field(default=0)
+    attempts: int = Field(default=0)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )

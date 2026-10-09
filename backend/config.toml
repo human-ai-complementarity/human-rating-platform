@@ -24,3 +24,7 @@ prolific_completion_url = ""
 mode = "disabled"
 api_token = ""
 base_url = "https://api.prolific.com/api/v1"
+
+[prefetch]
+# One worker is reserved for foreground demand. Limits are per API process.
+worker_count = 8
