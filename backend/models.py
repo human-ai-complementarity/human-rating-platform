@@ -808,3 +808,23 @@ class AssistancePreparation(SQLModel, table=True):
         default_factory=lambda: datetime.now(UTC),
         sa_column=Column(DateTime(timezone=True), nullable=False),
     )
+
+
+class ForwardedProlificMessage(SQLModel, table=True):
+    """Dedup ledger for Prolific messages forwarded to Slack.
+
+    Ephemeral, not a record: a row exists only so each message is posted once,
+    and is deleted after the retention window.
+    """
+
+    __tablename__ = "forwarded_prolific_messages"
+
+    prolific_message_id: str = Field(sa_column=Column(String(128), primary_key=True))
+    forwarded_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
