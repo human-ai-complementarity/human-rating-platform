@@ -171,9 +171,19 @@ class Settings(BaseSettings):
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)
+    # Break-glass only. Admin access is normally decided by the access_roster
+    # table, which ops/access-sync pushes from the team Google Group. Emails
+    # listed here are admitted as admins even when absent from the roster, so
+    # a broken sync cannot lock everyone out. Empty in normal operation.
     admin_allowlist: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
-        description="Comma-separated list of allowlisted admin emails.",
+        description="Break-glass admin emails admitted alongside the synced roster.",
+    )
+    # Shared secret the roster sync presents (Authorization: Bearer) when it
+    # replaces access_roster. Empty => the push endpoint is disabled.
+    access_sync_secret: str = Field(
+        default="",
+        description="Bearer secret for PUT /api/admin/access-roster.",
     )
     # Bearer keys for the programmatic /api/v1 read API (CLI / inference
     # pipelines). Comma-separated or JSON array so keys can be rotated by

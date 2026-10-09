@@ -120,7 +120,7 @@ def test_non_allowlisted_email_is_denied_and_cookie_not_set(
         )
 
         assert response.status_code == 403
-        assert response.json()["message"] == "Email is not allowlisted"
+        assert response.json()["message"] == "Email is not in the team roster"
         cookie_name = get_settings().hrp_session_cookie
         assert cookie_name not in client.cookies
 

@@ -78,14 +78,25 @@ This project uses Clerk for frontend identity and a backend HTTP‑only cookie f
 - Frontend usage:
   - Retrieve token with `useAuth().getToken({ template: 'admin' })` and send `Authorization: Bearer <token>` to `/api/admin/auth/login`.
 
-### Allowlist
+### Who gets in: the team roster
 
-- Controlled by env var `ADMIN_ALLOWLIST` (comma‑separated or JSON array of emails).
-- If your email isn’t in the allowlist, admin login returns 403 and the UI shows a friendly explanation.
+Access is decided by the team Google Group. The Apps Script in
+[ops/access-sync/](ops/access-sync/) reads the group every few minutes and
+pushes its members to `PUT /api/admin/access-roster`, authenticated by the
+shared `ACCESS_SYNC_SECRET`. The backend keeps them in the `access_roster`
+table and checks it at login and on every `/api/admin/*` request, so removal
+from the group takes effect at the next sync. Group Owners and Managers are
+`admin`, everyone else `member`; the role is recorded for later gating and
+both can use the admin surface today. The Team tab shows the current list.
+
+`ADMIN_ALLOWLIST` is break-glass only: emails there are admitted as admins
+even if the roster is empty or stale. Leave it unset in production; set it
+locally so you can sign in before running a sync.
 
 ```bash
-# Admin allowlist + session cookie
-ADMIN_ALLOWLIST=alice@example.com,bob@example.com
+# Admin access + session cookie
+ACCESS_SYNC_SECRET=<shared with the Apps Script>
+ADMIN_ALLOWLIST=you@example.com            # local dev / break-glass only
 APP_SECRET_KEY=please-change-me-to-a-long-random-string
 HRP_SESSION_COOKIE=hrp_session
 HRP_SESSION_MAX_AGE=604800
@@ -109,7 +120,7 @@ Backend (Render Web Service):
 
 - `DATABASE__URL=postgresql://<user>:<pass>@<host>:5432/<db>` (Render Postgres internal URL)
 - `APP__CORS_ORIGINS=["https://platform.complementarities.org"]`
-- `ADMIN_ALLOWLIST=alice@example.com,bob@example.com`
+- `ACCESS_SYNC_SECRET=<long-random-string, same value in the Apps Script>`
 - `APP_SECRET_KEY=<long-random-string>`
 - `COOKIE_SECURE=true`
 
@@ -168,7 +179,7 @@ logging to `frontend/vite.log`.
 - **API docs (Swagger):** http://localhost:8000/docs
 - **Health check:** http://localhost:8000/api/health
 
-Sign in with a Clerk account whose email appears in `ADMIN_ALLOWLIST`. The admin panel at `/admin` becomes available and the backend issues an HTTP‑only session cookie that authorizes `/api/admin/*` endpoints. Signing out clears this cookie.
+Sign in with a Clerk account whose email is in the synced team roster, or in `ADMIN_ALLOWLIST` for local dev. The admin panel at `/admin` becomes available and the backend issues an HTTP‑only session cookie that authorizes `/api/admin/*` endpoints. Signing out clears this cookie.
 
 ---
 

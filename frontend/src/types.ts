@@ -378,3 +378,11 @@ export interface ApiKey {
 export interface ApiKeyCreated extends ApiKey {
   plaintext_key: string;
 }
+
+// One person from the team Google Group, as last synced. Read-only here;
+// the group is the place to change it.
+export interface AccessRosterEntry {
+  email: string;
+  role: 'admin' | 'member';
+  synced_at: string;
+}

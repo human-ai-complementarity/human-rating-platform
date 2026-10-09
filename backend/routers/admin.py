@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +10,8 @@ from config import get_settings
 from database import get_session
 from models import ExperimentStatus
 from schemas import (
+    AccessRosterEntryResponse,
+    AccessRosterPush,
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyResponse,
@@ -31,11 +35,12 @@ from schemas import (
     ProlificPricingResponse,
     RecommendationResponse,
 )
-from models import ApiKey
+from models import AccessRole, ApiKey
+from services import access_roster as access_roster_service
 from services import admin as admin_service
 from services import api_keys as api_key_service
 from services.admin.prolific import get_cached_workspace_currency
-from auth import AdminSession, require_admin, get_admin_manager
+from auth import AdminSession, require_admin, get_admin_manager, _extract_bearer_token
 from services.authn import verify_clerk_token_and_get_email
 
 # Public admin router (for auth endpoints)
@@ -72,15 +77,60 @@ async def get_clerk_email_from_request(request: Request) -> str:
 async def admin_login(
     email: str = Depends(get_clerk_email_from_request),
     manager=Depends(get_admin_manager),
+    db: AsyncSession = Depends(get_session),
 ):
     settings = get_settings()
-    allow = {e.strip().lower() for e in settings.admin_allowlist}
-    if email.strip().lower() not in allow:
-        return JSONResponse(status_code=403, content={"message": "Email is not allowlisted"})
+    role = await access_roster_service.role_for(email, settings, db)
+    if role is None:
+        return JSONResponse(status_code=403, content={"message": "Email is not in the team roster"})
 
-    resp = JSONResponse({"ok": True})
+    resp = JSONResponse({"ok": True, "role": role.value})
     manager.set_cookie(resp, email.strip())
     return resp
+
+
+# ── Team roster (pushed from the Google Group by ops/access-sync) ─────────────
+
+
+@router.put("/access-roster")
+async def replace_access_roster(
+    payload: AccessRosterPush,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+):
+    """Replace the roster with the group's current members.
+
+    Authenticated by the shared ``ACCESS_SYNC_SECRET`` rather than an admin
+    session, because the caller is the sync job, not a person. The whole
+    list is replaced atomically; an empty list is refused so a misfiring
+    sync cannot remove everyone.
+    """
+    settings = get_settings()
+    secret = settings.access_sync_secret.strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="Access sync is not configured")
+    token = _extract_bearer_token(request)
+    if not hmac.compare_digest(token, secret):
+        raise HTTPException(status_code=401, detail="Invalid sync secret")
+
+    entries = [(m.email, AccessRole(m.role)) for m in payload.members]
+    try:
+        count = await access_roster_service.replace_roster(entries, db)
+    except access_roster_service.EmptyRosterError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    admins = sum(1 for _, role in entries if role == AccessRole.ADMIN)
+    return {"ok": True, "count": count, "admins": admins}
+
+
+@secure_router.get("/access-roster", response_model=list[AccessRosterEntryResponse])
+async def list_access_roster(db: AsyncSession = Depends(get_session)):
+    entries = await access_roster_service.list_roster(db)
+    return [
+        AccessRosterEntryResponse(
+            email=e.email, role=AccessRole(e.role).value, synced_at=e.synced_at
+        )
+        for e in entries
+    ]
 
 
 @router.post("/auth/logout")

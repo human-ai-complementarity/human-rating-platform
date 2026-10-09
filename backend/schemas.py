@@ -553,3 +553,21 @@ class ApiKeyResponse(BaseModel):
 class ApiKeyCreated(ApiKeyResponse):
     # The full secret, returned exactly once (create or regenerate).
     plaintext_key: str
+
+
+# --- Team roster (pushed from the Google Group by ops/access-sync) ------------
+class AccessRosterMember(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    email: str = Field(min_length=3, max_length=320)
+    role: Literal["admin", "member"]
+
+
+class AccessRosterPush(BaseModel):
+    # The whole group, every time. The table is replaced, not merged.
+    members: list[AccessRosterMember]
+
+
+class AccessRosterEntryResponse(BaseModel):
+    email: str
+    role: Literal["admin", "member"]
+    synced_at: datetime

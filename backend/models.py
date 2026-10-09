@@ -754,3 +754,34 @@ class ApiKey(SQLModel, table=True):
         default=None,
         sa_column=Column(String(255), nullable=True),
     )
+
+
+class AccessRole(str, Enum):
+    """What a person may do on the admin surface. Mirrors their Google Group role."""
+
+    ADMIN = "admin"  # group Owner or Manager
+    MEMBER = "member"  # group Member
+
+
+class AccessRosterEntry(SQLModel, table=True):
+    """One person from the team Google Group, as last pushed by ops/access-sync.
+
+    The table is a copy of the group, replaced wholesale on every sync and
+    never edited by hand. Being present is what grants admin-surface access;
+    ``role`` is recorded so features can later be gated by it.
+    """
+
+    __tablename__ = "access_roster"
+
+    email: str = Field(sa_column=Column(String(320), primary_key=True))  # lower-cased
+    # Stored as AccessRole.value; loads back as a plain str. Callers that want
+    # the enum go through services.access_roster.
+    role: str = Field(sa_column=Column(String(16), nullable=False))
+    synced_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )

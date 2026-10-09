@@ -37,10 +37,19 @@ def _sign(secret: str, payload: str) -> str:
 
 
 class AdminSession:
-    def __init__(self, email: str, issued_at: int, expires_at: int | None = None):
+    def __init__(
+        self,
+        email: str,
+        issued_at: int,
+        expires_at: int | None = None,
+        role: str = "admin",
+    ):
         self.email = email
         self.issued_at = issued_at
         self.expires_at = expires_at
+        # From the synced team roster at request time, not from the cookie, so
+        # a role change in the Google Group applies without a new sign-in.
+        self.role = role
 
 
 class AdminSessionManager:
@@ -174,7 +183,15 @@ async def require_admin(
     request: Request,
     settings: Settings = Depends(get_settings),
     manager: AdminSessionManager = Depends(get_admin_manager),
+    db: AsyncSession = Depends(get_session),
 ) -> AdminSession:
+    """Authorise the admin surface.
+
+    The cookie proves who the caller is; the synced team roster decides
+    whether they still have access. Re-checked on every request so that
+    removal from the Google Group takes effect at the next sync, not at
+    cookie expiry.
+    """
     # Allow bypass in test/dev when explicitly disabled
     if not settings.admin_auth_enabled:
         return AdminSession(email="dev@local", issued_at=0)
@@ -183,9 +200,13 @@ async def require_admin(
     if not session:
         raise HTTPException(status_code=403, detail="Admin session required")
 
-    email = session.email.lower().strip()
-    allow = {e.strip().lower() for e in settings.admin_allowlist}
-    if not email or email not in allow:
-        raise HTTPException(status_code=403, detail="Not allowlisted for admin access")
+    # Deferred import: services.access_roster pulls in models, and auth.py is
+    # imported early by main; importing at module load would risk a cycle.
+    from services.access_roster import role_for
 
+    role = await role_for(session.email, settings, db)
+    if role is None:
+        raise HTTPException(status_code=403, detail="Not in the team roster")
+
+    session.role = role.value
     return session

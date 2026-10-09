@@ -5,6 +5,7 @@ import RaterView from './components/RaterView';
 import AdminView from './components/AdminView';
 import AdminDocs from './components/AdminDocs';
 import ApiKeysPage from './components/ApiKeysPage';
+import TeamPage from './components/TeamPage';
 import ExperimentDetailPage from './components/ExperimentDetailPage';
 import AnalyticsPage from './components/AnalyticsPage';
 import LoginPage from './components/LoginPage';
@@ -81,6 +82,21 @@ function App() {
         }
       />
       <Route
+        path="/admin/team"
+        element={
+          <>
+            <SignedIn>
+              <AdminPage>
+                <TeamPage />
+              </AdminPage>
+            </SignedIn>
+            <SignedOut>
+              <LoginPage />
+            </SignedOut>
+          </>
+        }
+      />
+      <Route
         path="/admin/experiments/:experimentId"
         element={
           <>
@@ -146,13 +162,10 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
         if ((resp as any).ok === true) {
           setState('ok');
         } else {
-          const msg = (resp as any)?.message || 'Access denied';
-          if (msg.toLowerCase().includes('forbidden') || msg.toLowerCase().includes('allowlist')) {
-            setState('forbidden');
-            setMessage(msg);
-          } else {
-            setState('ok');
-          }
+          // Any non-ok answer from login means the backend refused this
+          // email, whatever the wording.
+          setState('forbidden');
+          setMessage((resp as any)?.message || 'Access denied');
         }
       } catch (err: any) {
         if (cancelled) return;
@@ -184,8 +197,8 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
     return (
       <AdminShell>
         <InfoCard
-          title="You don't have admin access."
-          body="Please contact Juliana, Andrew, or Sander to have your email added to the allowlist."
+          title="You don't have access yet."
+          body="Access comes from the team Google Group. Ask a group owner to add the email you signed in with, then reload; it takes effect within a few minutes."
         />
       </AdminShell>
     );
@@ -210,7 +223,8 @@ function AdminShell({ children }: { children: React.ReactNode }) {
   // (list + experiment detail) belongs to the "Experiments" tab.
   const isDocs = pathname.startsWith('/admin/docs');
   const isApiKeys = pathname.startsWith('/admin/api-keys');
-  const isExperiments = pathname.startsWith('/admin') && !isDocs && !isApiKeys;
+  const isTeam = pathname.startsWith('/admin/team');
+  const isExperiments = pathname.startsWith('/admin') && !isDocs && !isApiKeys && !isTeam;
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--page-bg)' }}>
@@ -252,6 +266,7 @@ function AdminShell({ children }: { children: React.ReactNode }) {
         </button>
         <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
         <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
+        <NavTab active={isTeam} onClick={() => navigate('/admin/team')} label="Team" />
         <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
           <UserButton afterSignOutUrl="/" />

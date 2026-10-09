@@ -5,6 +5,7 @@
 // Non-empty = cross-origin {origin}/api (e.g. Render deployment).
 
 import type {
+  AccessRosterEntry,
   Analytics,
   ApiKey,
   ApiKeyCreated,
@@ -88,6 +89,7 @@ const routes = {
     datasets: '/admin/datasets',
     experimentGroups: '/admin/experiment-groups',
     tags: '/admin/tags',
+    accessRoster: '/admin/access-roster',
     apiKeys: '/admin/api-keys',
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
@@ -437,6 +439,10 @@ export const api = {
     return requestJson<{ ok: boolean } | MessageResponse>(routes.admin.authLogout, {
       method: 'POST',
     });
+  },
+
+  async listAccessRoster(): Promise<AccessRosterEntry[]> {
+    return requestJson<AccessRosterEntry[]>(routes.admin.accessRoster);
   },
 
   async createExperiment(data: ExperimentCreate): Promise<Experiment> {
