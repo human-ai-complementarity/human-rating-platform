@@ -193,9 +193,13 @@ class ExperimentCreate(BaseModel):
 
 
 class ResolvedModel(BaseModel):
-    """The model an assisted method would run on, from `resolve_model`."""
+    """What an assisted method would run on and with, from `resolve_assistance_model`."""
 
     model: str
+    # Request options; null means the option is not sent.
+    reasoning_effort: Optional[str] = None
+    text_verbosity: Optional[str] = None
+    temperature: Optional[float] = None
     # "assistance_models": the experiment's own entry. "default": the platform's.
     source: Literal["assistance_models", "default"]
 

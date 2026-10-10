@@ -90,7 +90,7 @@ What is expected to evolve:
 from __future__ import annotations
 
 from .base import AssistanceMethod
-from .model_resolution import ModelSource, resolve_model_and_source
+from .model_resolution import AssistanceModel, ModelSource, resolve_assistance_model_and_source
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
@@ -114,8 +114,8 @@ def get_method(name: str) -> AssistanceMethod:
     return cls()
 
 
-def _default_models() -> dict[str, str]:
-    defaults = {name: cls.default_model() for name, cls in sorted(_REGISTRY.items())}
+def _default_models() -> dict[str, AssistanceModel]:
+    defaults = {name: cls.default_assistance_model() for name, cls in sorted(_REGISTRY.items())}
     return {name: model for name, model in defaults.items() if model is not None}
 
 
@@ -124,10 +124,10 @@ def assisted_methods() -> list[str]:
     return list(_default_models())
 
 
-def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
-    """Per assisted method, the model it would run on under `params`, and its source."""
+def resolved_models(params: dict) -> dict[str, tuple[AssistanceModel, ModelSource]]:
+    """Per assisted method, what it would run on under `params`, and its source."""
     return {
-        name: resolve_model_and_source(params, name, default)
+        name: resolve_assistance_model_and_source(params, name, default)
         for name, default in _default_models().items()
     }
 

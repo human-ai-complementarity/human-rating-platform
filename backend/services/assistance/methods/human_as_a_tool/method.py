@@ -6,8 +6,9 @@ the threshold) to the human. It repeats this for up to max_rounds rounds,
 incorporating human answers each time, before synthesising a final answer.
 
 assistance_params:
-    assistance_models:    {"human_as_a_tool": LLM for decomposition}
-                          (default: settings.llm.decomposition_model)
+    assistance_models:    {"human_as_a_tool": {"model": LLM for decomposition, ...request options}}
+                          (default: settings.llm.decomposition_model with no options sent;
+                          see `model_resolution.AssistanceModel`)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
     confidence_model:     LLM for confidence scoring (default: settings.llm.confidence_model)
     clustering_model:     LLM for semantic clustering, sampling method only (default: same as confidence_model)
@@ -27,9 +28,9 @@ import openai
 from config import get_settings
 from models import Question
 
-from ...base import InteractionStep, StepType
+from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
-from ...model_resolution import resolve_model
+from ...model_resolution import AssistanceModel, resolve_assistance_model
 from ...confidence import (
     ConfidenceEstimator,
     LLMConfidenceEstimator,
@@ -60,7 +61,9 @@ class HumanAsAToolMethod(InitialStepPreparation):
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                "human_as_a_tool": resolve_model(params, "human_as_a_tool", self.default_model()),
+                "human_as_a_tool": resolve_assistance_model(
+                    params, "human_as_a_tool", self.default_assistance_model()
+                ).to_dict(),
             },
             "confidence_model": params.get("confidence_model") or settings.confidence_model,
         }
@@ -70,8 +73,9 @@ class HumanAsAToolMethod(InitialStepPreparation):
         self._estimator = confidence_estimator
 
     @classmethod
-    def default_model(cls) -> str:
-        return get_settings().llm.decomposition_model
+    def default_assistance_model(cls) -> AssistanceModel:
+        # Decomposition has always run on the provider's defaults: nothing sent.
+        return AssistanceModel(model=get_settings().llm.decomposition_model)
 
     async def start(
         self,
@@ -81,7 +85,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         parent_question_text: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        model = resolve_model(params, "human_as_a_tool", self.default_model())
+        model = resolve_assistance_model(params, "human_as_a_tool", self.default_assistance_model())
         max_rounds = int(params.get("max_rounds", 5))
         max_subtasks = int(params.get("max_subtasks", 5))
         confidence_threshold = int(params.get("confidence_threshold", _CONFIDENCE_THRESHOLD))
@@ -121,10 +125,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 )
 
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("human_as_a_tool start() failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -145,7 +152,8 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 "confidence_threshold": confidence_threshold,
                 "subtasks": subtasks,
                 "history": [],
-                "model": model,
+                # Pinned for the session: a PATCH mid-session changes nothing.
+                "model": model.to_dict(),
             },
         )
 
@@ -157,7 +165,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
         *,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        model = state.get("model") or resolve_model(params, "human_as_a_tool", self.default_model())
+        default = self.default_assistance_model()
+        pinned = state.get("model")
+        model = (
+            AssistanceModel.from_entry(pinned, default)
+            if pinned
+            else resolve_assistance_model(params, "human_as_a_tool", default)
+        )
 
         try:
             raw_input: dict = json.loads(human_input)
@@ -207,10 +221,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 )
 
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("human_as_a_tool advance() failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -231,7 +248,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 "confidence_threshold": confidence_threshold,
                 "subtasks": subtasks,
                 "history": history,
-                "model": model,
+                "model": model.to_dict(),
             },
         )
 

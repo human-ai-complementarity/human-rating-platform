@@ -64,8 +64,8 @@ const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   human_prompt_prefix: 'Question prefix (shown above)',
   human_prompt_suffix: 'Question suffix (shown below)',
   prolific_pool: 'Prolific participant pool',
-  'assistance_models.top_n': 'Top-N model',
-  'assistance_models.human_as_a_tool': 'Human-as-a-Tool model',
+  'assistance_models.top_n': 'Top-N model entry',
+  'assistance_models.human_as_a_tool': 'Human-as-a-Tool model entry',
 };
 
 // A key with no label (a method added since) shows as itself.
@@ -2198,7 +2198,17 @@ function MetadataPanel({
 
 // ── Rater assistance panel ───────────────────────────────────────────────
 
-// The model a method would run on, as the backend resolved it.
+// The request options a resolved model is called with; "not sent" for null.
+function resolvedOptionsText(resolved: ResolvedModel): string {
+  const show = (value: string | number | null) => (value === null ? 'not sent' : String(value));
+  return [
+    `reasoning effort: ${show(resolved.reasoning_effort)}`,
+    `verbosity: ${show(resolved.text_verbosity)}`,
+    `temperature: ${show(resolved.temperature)}`,
+  ].join(' · ');
+}
+
+// The model a method would run on, and with what, as the backend resolved it.
 function ResolvedModelLine({
   method,
   resolved,
@@ -2208,14 +2218,16 @@ function ResolvedModelLine({
 }) {
   if (!resolved) return null;
   return (
-    <div
-      data-testid={`resolved-model-${method}`}
-      style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}
-    >
-      Model:{' '}
-      <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>{resolved.model}</span>
-      {' · '}
-      {resolved.source === 'assistance_models' ? 'from assistance_models' : 'platform default'}
+    <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.55 }}>
+      <div data-testid={`resolved-model-${method}`}>
+        Model:{' '}
+        <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--ink)' }}>
+          {resolved.model}
+        </span>
+        {' · '}
+        {resolved.source === 'assistance_models' ? 'from assistance_models' : 'platform default'}
+      </div>
+      <div data-testid={`resolved-model-options-${method}`}>{resolvedOptionsText(resolved)}</div>
     </div>
   );
 }

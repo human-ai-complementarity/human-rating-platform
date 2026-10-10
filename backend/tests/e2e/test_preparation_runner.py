@@ -26,7 +26,16 @@ def setup_rater(client):
         f"/api/admin/experiments/{experiment['id']}",
         json={
             "assistance_method": "top_n",
-            "assistance_params": {"assistance_models": {"top_n": "openrouter/test"}},
+            "assistance_params": {
+                "assistance_models": {
+                    "top_n": {
+                        "model": "openrouter/test",
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": 0,
+                    }
+                }
+            },
         },
     )
     assert response.status_code == 200
@@ -142,9 +151,9 @@ def test_reset_invalidates_an_inflight_result(client, monkeypatch):
     client.portal.call(scenario)
 
 
-@pytest.mark.parametrize("fails", [False, True])
+@pytest.mark.parametrize("outcome", ["succeeds", "raises", "degrades"])
 def test_prepared_start_records_one_event_and_preserves_failed_result(
-    client, monkeypatch, sync_engine, fails
+    client, monkeypatch, sync_engine, outcome
 ):
     from test_assistance_events import _events
 
@@ -152,8 +161,16 @@ def test_prepared_start_records_one_event_and_preserves_failed_result(
 
     async def prepare(*args, **kwargs):
         await asyncio.sleep(0.02)
-        if fails:
+        if outcome == "raises":
             raise RuntimeError("controlled preparation failure")
+        if outcome == "degrades":
+            # The method caught a provider rejection and kept what it said.
+            return InteractionStep(
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail="NoChoicesError: No endpoints found",
+            )
         return InteractionStep(type=StepType.DISPLAY, payload={"candidates": []}, is_terminal=True)
 
     start = AsyncMock(side_effect=prepare)
@@ -173,7 +190,11 @@ def test_prepared_start_records_one_event_and_preserves_failed_result(
     assert event["payload"]["response"]["payload"] == first.json()["payload"]
     assert event["payload"]["request"]["retried_step_type"] is None
     assert event["latency_ms"] >= 20
-    if fails:
-        assert event["error"] == "RuntimeError: controlled preparation failure"
-    else:
-        assert event["error"] is None
+    assert (
+        event["error"]
+        == {
+            "succeeds": None,
+            "raises": "RuntimeError: controlled preparation failure",
+            "degrades": "provider_error: NoChoicesError: No endpoints found",
+        }[outcome]
+    )

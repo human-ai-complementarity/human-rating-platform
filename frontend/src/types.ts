@@ -1,9 +1,23 @@
 export type ExperimentStatus = 'DRAFT' | 'LAUNCH' | 'FINISHED';
 
-// `assistance_models`: the experiment's own entry; `default`: the platform's.
+// What an assisted method runs on and with. Each option is sent when not
+// null. `assistance_models`: the experiment's own entry; `default`: the
+// platform's.
 export interface ResolvedModel {
   model: string;
+  reasoning_effort: string | null;
+  text_verbosity: string | null;
+  temperature: number | null;
   source: 'assistance_models' | 'default';
+}
+
+// One method's entry in `assistance_params.assistance_models`, as an upload
+// declares it. Every key is required; null means the option is not sent.
+export interface AssistanceModelEntry {
+  model: string;
+  reasoning_effort: string | null;
+  text_verbosity: string | null;
+  temperature: number | null;
 }
 
 export interface Experiment {
@@ -95,9 +109,10 @@ export const UPLOAD_META_KEYS = [
   'assistance_models.human_as_a_tool',
 ] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
-// What an upload declared; `assistance_models` maps method to model.
+// What an upload declared; `assistance_models` maps method to an entry. Rows
+// uploaded before entries carried options hold a bare model id.
 export type DatasetMeta = Partial<Record<DatasetMetaField, string>> & {
-  assistance_models?: Record<string, string>;
+  assistance_models?: Record<string, AssistanceModelEntry | string>;
 };
 
 export type StudyLabel =

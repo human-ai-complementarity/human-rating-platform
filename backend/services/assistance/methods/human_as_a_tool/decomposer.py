@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from config import LLMSettings, get_settings
 
 from ...llm import complete
+from ...model_resolution import AssistanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -221,7 +222,7 @@ class SubtaskDecomposer:
         question_text: str,
         options: str,
         max_subtasks: int,
-        model: str | None = None,
+        model: AssistanceModel,
         experiment_system_prompt: str | None = None,
     ) -> DecompositionResult:
         settings = get_settings()
@@ -233,8 +234,8 @@ class SubtaskDecomposer:
 
         raw = await complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
-            model=model,
             settings=settings.llm,
+            **model.to_dict(),
         )
 
         parsed = _parse_response(raw, "start")
@@ -258,7 +259,7 @@ class SubtaskDecomposer:
         history: list[dict],
         iteration: int,
         max_rounds: int,
-        model: str | None = None,
+        model: AssistanceModel,
         experiment_system_prompt: str | None = None,
     ) -> DecompositionResult:
         settings = get_settings()
@@ -278,8 +279,8 @@ class SubtaskDecomposer:
 
         raw = await complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
-            model=model,
             settings=settings.llm,
+            **model.to_dict(),
         )
 
         parsed = _parse_response(raw, "advance")
@@ -329,7 +330,7 @@ class SubtaskDecomposer:
         question_text: str,
         options: str,
         history: list[dict],
-        model: str,
+        model: AssistanceModel,
         llm_settings: LLMSettings,
         experiment_system_prompt: str | None = None,
     ) -> dict:
@@ -345,8 +346,8 @@ class SubtaskDecomposer:
                 },
                 {"role": "user", "content": user_msg},
             ],
-            model=model,
             settings=llm_settings,
+            **model.to_dict(),
         )
         result = _parse_response(raw, "fallback_synthesis")
         if not result or not result.get("answer"):

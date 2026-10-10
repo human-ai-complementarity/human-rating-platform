@@ -51,8 +51,8 @@ def build_experiment_response(
         assistance_method=experiment.assistance_method,
         assistance_params=params,
         resolved_models={
-            method: ResolvedModel(model=model, source=source)
-            for method, (model, source) in resolved.items()
+            method: ResolvedModel(**entry.to_dict(), source=source)
+            for method, (entry, source) in resolved.items()
         },
         description=experiment.description,
         system_prompt=experiment.system_prompt,

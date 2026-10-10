@@ -24,7 +24,7 @@ from database import Database
 from models import AssistancePreparation, AssistanceSession, Rater, QuestionAssignment
 
 from .events import _MethodCall, _record_call
-from .base import InteractionStep, StepType
+from .base import InteractionStep, StepType, exception_text
 from .llm import speculative_call
 from .preparation import PreparationSpec
 from .registry import get_method
@@ -374,7 +374,7 @@ class PreparationRunner:
                     else:
                         step = await method.consume_preparation(spec, json.loads(row.artifact_json))
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
+            error = exception_text(exc)
             failed = True
             logger.exception(
                 "Assistance preparation failed",
@@ -453,7 +453,7 @@ class PreparationRunner:
                                 step,
                                 current.execution_ms,
                                 error
-                                or step.failure_reason
+                                or step.error_text()
                                 or ("Execution attempts exhausted" if failed else None),
                             ),
                         )
