@@ -18,17 +18,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import Dataset
 from schemas import DatasetCreate, DatasetResponse, DatasetUpdate
 from services.queries import fetch_dataset_or_404
+from .dataset_card import (
+    CARD_FIELDS,
+    card_values_from_row,
+    dataset_readiness,
+    write_card_values,
+)
 from .groups import assert_waves_unused_except, dataset_has_groups
 from .waves import normalize_waves
 
 
 def _to_response(dataset: Dataset) -> DatasetResponse:
+    readiness = dataset_readiness(dataset)
     return DatasetResponse(
         id=dataset.id,
         name=dataset.name,
         waves=json.loads(dataset.waves),
         created_at=dataset.created_at,
+        launch_ready=readiness.launch_ready,
+        missing_for_launch=readiness.missing_for_launch,
+        complete=readiness.complete,
+        missing_for_complete=readiness.missing_for_complete,
+        **card_values_from_row(dataset),
     )
+
+
+def _payload_card_values(payload: DatasetCreate | DatasetUpdate) -> dict[str, object]:
+    """Card fields the request actually sent.
+
+    Keyed off `model_fields_set` rather than "is not None" so an explicit
+    `null` clears a card field, while omitting it leaves the stored value
+    alone — the same partial-PATCH contract the rest of this module uses.
+    """
+    return {
+        field: getattr(payload, field) for field in CARD_FIELDS if field in payload.model_fields_set
+    }
 
 
 def _conflict(name: str) -> HTTPException:
@@ -66,6 +90,7 @@ async def _commit_name_change(dataset: Dataset, db: AsyncSession) -> None:
 async def create_dataset(payload: DatasetCreate, db: AsyncSession) -> DatasetResponse:
     await _check_name_available(payload.name, db)
     dataset = Dataset(name=payload.name, waves=json.dumps(normalize_waves(payload.waves)))
+    write_card_values(dataset, _payload_card_values(payload))
     await _commit_name_change(dataset, db)
     return _to_response(dataset)
 
@@ -91,6 +116,7 @@ async def update_dataset(
         waves = normalize_waves(payload.waves)
         await assert_waves_unused_except(dataset_id, waves, db)
         dataset.waves = json.dumps(waves)
+    write_card_values(dataset, _payload_card_values(payload))
 
     await _commit_name_change(dataset, db)
     return _to_response(dataset)
