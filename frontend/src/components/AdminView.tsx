@@ -1089,6 +1089,24 @@ function ExperimentRow({
               {exp.internal_name || exp.name}
             </span>
             <StatusLabel status={exp.status} size="sm" />
+            {exp.content_warning !== 'none' && (
+              <span
+                data-testid={`experiment-content-warning-${exp.content_warning}`}
+                title={exp.content_warning_details ?? undefined}
+                style={{
+                  borderRadius: 999,
+                  padding: '2px 9px',
+                  border: '1px solid var(--warn, #b45309)',
+                  color: 'var(--warn, #b45309)',
+                  font: '600 10.5px var(--font-mono)',
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {exp.content_warning}
+              </span>
+            )}
             {showMethod && (
               <span
                 data-testid={`experiment-method-${method}`}

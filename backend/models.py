@@ -59,6 +59,14 @@ ROUND_TERMINAL_STATUSES = frozenset(
 )
 
 
+class ContentWarning(str, Enum):
+    """Prolific's content-warning levels, plus none. Stored as its value."""
+
+    NONE = "none"
+    SENSITIVE = "sensitive"
+    EXPLICIT = "explicit"
+
+
 class ExperimentStatus(str, Enum):
     """Experiment lifecycle states.
 
@@ -131,6 +139,35 @@ class Experiment(SQLModel, table=True):
     # the system message append handled via `system_prompt`.
     human_prompt_prefix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     human_prompt_suffix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Rater terms. `content_warning` mirrors Prolific's `content_warnings`
+    # enum; when it is not "none" the details are required, sent to Prolific,
+    # prepended to the study description, and merged into the consent text.
+    # `terms_bundle` picks the consent/debrief bundle from the terms source
+    # (see services/terms). The two ids pin the archived statement versions
+    # from the first publish on, so every rater in a study saw the same text.
+    content_warning: str = Field(
+        default="none",
+        sa_column=Column(String(16), nullable=False, server_default=text("'none'")),
+    )
+    content_warning_details: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    terms_bundle: str = Field(
+        default="standard",
+        sa_column=Column(String(64), nullable=False, server_default=text("'standard'")),
+    )
+    consent_statement_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("terms_statements.id", ondelete="RESTRICT"), nullable=True
+        ),
+    )
+    debrief_statement_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("terms_statements.id", ondelete="RESTRICT"), nullable=True
+        ),
+    )
     # Render question text and context as Markdown on the rater card.
     is_markdown: bool = Field(
         default=False,
@@ -851,4 +888,37 @@ class ConsentRecord(SQLModel, table=True):
     is_preview: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+
+
+class TermsStatement(SQLModel, table=True):
+    """An archived copy of one consent or debrief statement version.
+
+    Rows are written when an experiment pins its terms (first publish), never
+    edited, and never deleted while an experiment references them. The source
+    of truth for *current* text is the terms source (see services/terms); this
+    table exists so a published experiment keeps serving the exact version it
+    went live with, whatever happens at the source afterwards.
+    """
+
+    __tablename__ = "terms_statements"
+    __table_args__ = (
+        UniqueConstraint("bundle", "kind", "version", name="uq_terms_statement_version"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    bundle: str = Field(sa_column=Column(String(64), nullable=False))
+    # "consent" or "debrief".
+    kind: str = Field(sa_column=Column(String(16), nullable=False))
+    version: int = Field(sa_column=Column(Integer, nullable=False))
+    body_markdown: str = Field(sa_column=Column(Text, nullable=False))
+    sha256: str = Field(sa_column=Column(String(64), nullable=False))
+    source_url: str = Field(sa_column=Column(Text, nullable=False))
+    imported_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
     )

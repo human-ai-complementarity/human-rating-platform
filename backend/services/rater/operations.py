@@ -98,7 +98,7 @@ async def start_session(
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
     # Read before anything is written: the terms source is read live, and if
     # that fails the rater gets a clear 503 instead of a half-created session.
-    terms = await terms_for_rater(experiment)
+    terms = await terms_for_rater(experiment, db)
     policy = resolve_session_policy(experiment)
 
     existing_rater = await fetch_existing_rater_for_experiment(
@@ -195,6 +195,7 @@ async def start_session(
             policy=policy,
             terms=terms,
             consented_at=existing_consent.accepted_at if existing_consent else None,
+            experiment_content_warning=experiment.content_warning,
             assistance_method=experiment.assistance_method,
             assistance_instructions=assistance_instructions,
         )
@@ -280,6 +281,7 @@ async def start_session(
         policy=policy,
         terms=terms,
         consented_at=None,
+        experiment_content_warning=experiment.content_warning,
         assistance_method=experiment.assistance_method,
         assistance_instructions=assistance_instructions,
     )
@@ -296,15 +298,15 @@ async def record_consent(*, rater_id: int, db: AsyncSession) -> ConsentResponse:
     record = await fetch_consent_record(rater.id, db)
     if record is None:
         experiment = await fetch_experiment_or_404(rater.experiment_id, db)
-        terms = await terms_for_rater(experiment)
+        terms = await terms_for_rater(experiment, db)
         record = ConsentRecord(
             rater_id=rater.id,
             experiment_id=rater.experiment_id,
             prolific_id=rater.prolific_id,
-            bundle=terms.bundle,
-            version=terms.version,
-            sha256=terms.sha256,
-            source_url=terms.source_url,
+            bundle=terms.consent.bundle,
+            version=terms.consent.version,
+            sha256=terms.consent.sha256,
+            source_url=terms.consent.source_url,
             rendered_text=terms.consent_markdown,
             accepted_at=datetime.now(UTC),
             is_preview=rater.is_preview,
@@ -318,7 +320,7 @@ async def record_consent(*, rater_id: int, db: AsyncSession) -> ConsentResponse:
                 "attributes": {
                     "rater_id": rater.id,
                     "experiment_id": rater.experiment_id,
-                    "statement": f"{terms.bundle} v{terms.version}",
+                    "statement": terms.consent.ref,
                 }
             },
         )

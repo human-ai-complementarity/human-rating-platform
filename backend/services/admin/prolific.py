@@ -35,6 +35,10 @@ CURRENCY_SYMBOLS: dict[str, str] = {
 # Filter catalogue: GET https://api.prolific.com/api/v1/filters/
 # Docs: https://docs.prolific.com/docs/api-docs/public/#tag/Filters
 SCREENER_FILTERS: dict[str, dict] = {
+    # Prolific's Harmful Content prescreener ("0" = "Yes": comfortable viewing
+    # such content). Required for any study with a content warning; see
+    # https://researcher-help.prolific.com/en/articles/445152
+    "harmful_content": {"filter_id": "harmful-content", "selected_values": ["0"]},
     # Qualified AI taskers pool (select filter; "0" = "Qualified AI taskers").
     "ai_taskers": {"filter_id": "ai-taskers", "selected_values": ["0"]},
     # Fact Checkers group (select filter; "0" = "Fact Checkers"). Expert network
@@ -47,6 +51,31 @@ SCREENER_FILTERS: dict[str, dict] = {
         "selected_range": {"lower": 80, "upper": 100},
     },
 }
+
+
+def build_content_warning_fields(
+    content_warning: str | None,
+    content_warning_details: str | None,
+    *,
+    clear_when_none: bool = False,
+) -> dict:
+    """Prolific's `content_warnings` / `content_warning_details` study fields.
+
+    Empty when the study has no warning, so an ordinary study's create payload
+    is byte-identical to before content warnings existed. `clear_when_none`
+    instead sends the fields emptied (`content_warnings` is a non-nullable
+    list, the details are nullable), for an update that must remove a warning
+    the study was created with.
+    """
+    if not content_warning or content_warning == "none":
+        if clear_when_none:
+            return {"content_warnings": [], "content_warning_details": None}
+        return {}
+    fields: dict = {"content_warnings": [content_warning]}
+    details = (content_warning_details or "").strip()
+    if details:
+        fields["content_warning_details"] = details
+    return fields
 
 
 def build_screener_filters(screeners: list[str] | None) -> list[dict]:
@@ -159,6 +188,8 @@ async def create_study(
     study_label: str | None = None,
     screeners: list[str] | None = None,
     excluded_participant_group_ids: list[str] | None = None,
+    content_warning: str | None = None,
+    content_warning_details: str | None = None,
 ) -> dict[str, str]:
     if not settings.enabled:
         raise RuntimeError("create_study called while Prolific is disabled")
@@ -184,6 +215,7 @@ async def create_study(
         payload["internal_name"] = internal_name
     if study_label:
         payload["study_labels"] = [study_label]
+    payload.update(build_content_warning_fields(content_warning, content_warning_details))
     filters = build_screener_filters(screeners) + build_exclusion_filters(
         excluded_participant_group_ids
     )

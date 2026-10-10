@@ -35,6 +35,8 @@ def build_experiment_response(
     spend_minor_units: int = 0,
     group: GroupSnapshot | None = None,
     tags: list[str] | None = None,
+    consent_statement_ref: str | None = None,
+    debrief_statement_ref: str | None = None,
 ) -> ExperimentResponse:
     params = json.loads(experiment.assistance_params) if experiment.assistance_params else None
     resolved = resolved_models(params if isinstance(params, dict) else {})
@@ -58,6 +60,11 @@ def build_experiment_response(
         system_prompt=experiment.system_prompt,
         human_prompt_prefix=experiment.human_prompt_prefix,
         human_prompt_suffix=experiment.human_prompt_suffix,
+        content_warning=experiment.content_warning,
+        content_warning_details=experiment.content_warning_details,
+        terms_bundle=experiment.terms_bundle,
+        consent_statement_ref=consent_statement_ref,
+        debrief_statement_ref=debrief_statement_ref,
         is_markdown=experiment.is_markdown,
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,

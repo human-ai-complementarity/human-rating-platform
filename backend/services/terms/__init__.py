@@ -1,7 +1,24 @@
 from __future__ import annotations
 
 from .render import KNOWN_PLACEHOLDERS, find_placeholders, format_session_length, render_markdown
-from .service import DEFAULT_BUNDLE, RaterTerms, terms_for_rater
+from .service import (
+    DEFAULT_BUNDLE,
+    PLACEHOLDER_BUNDLE,
+    RaterTerms,
+    StatementText,
+    archive_statement,
+    check_bundle_choice,
+    fetch_terms_refs,
+    get_terms_status,
+    PendingPin,
+    apply_terms_pin,
+    prepare_terms_pin,
+    resolve_terms,
+    statement_ref,
+    terms_for_rater,
+    terms_preview,
+    validate_terms_config,
+)
 from .source import (
     KIND_CONSENT,
     KIND_DEBRIEF,
@@ -17,6 +34,19 @@ from .source import (
 
 __all__ = [
     "DEFAULT_BUNDLE",
+    "PLACEHOLDER_BUNDLE",
+    "StatementText",
+    "archive_statement",
+    "check_bundle_choice",
+    "fetch_terms_refs",
+    "get_terms_status",
+    "PendingPin",
+    "apply_terms_pin",
+    "prepare_terms_pin",
+    "resolve_terms",
+    "statement_ref",
+    "terms_preview",
+    "validate_terms_config",
     "KNOWN_PLACEHOLDERS",
     "KIND_CONSENT",
     "KIND_DEBRIEF",
