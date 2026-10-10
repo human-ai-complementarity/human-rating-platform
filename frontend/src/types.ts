@@ -172,6 +172,14 @@ export interface Session {
   rater_session_token: string;
   assistance_method: string;
   assistance_instructions: string | null;
+  // Pre-rendered consent statement with the study's placeholders filled.
+  // Shown until `consented_at` is set.
+  consent_statement_html: string;
+  consented_at: string | null;
+}
+
+export interface ConsentResponse {
+  consented_at: string;
 }
 
 export interface RatingSubmit {
@@ -260,6 +268,10 @@ export interface RaterAnalytics {
   study_id: string | null;
   session_start: string | null;
   timed_out: boolean;
+  // "standard v1" and when they agreed; null for raters from before consent
+  // was recorded.
+  consent_version: string | null;
+  consented_at: string | null;
   num_ratings: number;
   total_response_time_seconds: number;
   avg_response_time_seconds: number;

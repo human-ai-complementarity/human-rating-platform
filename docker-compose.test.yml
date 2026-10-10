@@ -19,6 +19,10 @@ services:
     env_file:
       - backend/.env
     environment:
+      # Never inherit a developer's terms source or key from backend/.env: the
+      # suite asserts the unset-source placeholder and generates its own files.
+      TERMS__SOURCE_URL: ""
+      GOOGLE_APPLICATION_CREDENTIALS: ""
       APP_SECRET_KEY: "${APP_SECRET_KEY:-test-secret}"
       DATABASE__URL: postgresql://postgres:postgres@db:5432/human_rating_platform
       PYTHONPATH: /app/backend
@@ -39,6 +43,10 @@ services:
     env_file:
       - backend/.env
     environment:
+      # Never inherit a developer's terms source or key from backend/.env: the
+      # suite asserts the unset-source placeholder and generates its own files.
+      TERMS__SOURCE_URL: ""
+      GOOGLE_APPLICATION_CREDENTIALS: ""
       APP_SECRET_KEY: "${APP_SECRET_KEY:-test-secret}"
       DATABASE__URL: postgresql://postgres:postgres@db:5432/human_rating_platform
       PYTHONPATH: /app/backend

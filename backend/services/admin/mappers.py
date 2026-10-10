@@ -129,7 +129,9 @@ def build_question_stats_bucket(question: Question) -> dict[str, Any]:
     }
 
 
-def build_rater_stats_bucket(rater: Rater) -> dict[str, Any]:
+def build_rater_stats_bucket(
+    rater: Rater, consent: tuple[str, datetime] | None = None
+) -> dict[str, Any]:
     return {
         "prolific_id": rater.prolific_id,
         "study_id": rater.study_id,
@@ -137,6 +139,10 @@ def build_rater_stats_bucket(rater: Rater) -> dict[str, Any]:
         "session_end": isoformat_utc(rater.session_end),
         "is_active": rater.is_active,
         "timed_out": rater.timed_out,
+        # None on raters from before consent was recorded: "not recorded",
+        # never "declined".
+        "consent_version": consent[0] if consent else None,
+        "consented_at": isoformat_utc(consent[1]) if consent else None,
         "num_ratings": 0,
         "response_times": [],
         "confidences": [],
@@ -177,6 +183,8 @@ def build_rater_analytics_item(stats: dict[str, Any]) -> dict[str, Any]:
         "session_end": stats["session_end"],
         "is_active": stats["is_active"],
         "timed_out": stats["timed_out"],
+        "consent_version": stats["consent_version"],
+        "consented_at": stats["consented_at"],
         "num_ratings": stats["num_ratings"],
         "total_response_time_seconds": round(total_time, 2),
         "avg_response_time_seconds": round(
@@ -193,7 +201,9 @@ def build_analytics_payload(
     total_questions: int,
     ratings: list[tuple[Rating, Question, Rater]],
     timed_out_raters: int = 0,
+    consents: dict[int, tuple[str, datetime]] | None = None,
 ) -> dict[str, Any]:
+    consents = consents or {}
     response_times: list[float] = []
     confidences: list[int] = []
     question_stats: dict[str, dict[str, Any]] = {}
@@ -215,7 +225,7 @@ def build_analytics_payload(
         # We group by prolific_id so one participant appears once even if they submit many rows.
         r_id = rater.prolific_id
         if r_id not in rater_stats:
-            rater_stats[r_id] = build_rater_stats_bucket(rater)
+            rater_stats[r_id] = build_rater_stats_bucket(rater, consents.get(rater.id))
         rater_stats[r_id]["num_ratings"] += 1
         rater_stats[r_id]["response_times"].append(response_time)
         rater_stats[r_id]["confidences"].append(rating.confidence)
