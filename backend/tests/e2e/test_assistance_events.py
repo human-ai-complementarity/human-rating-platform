@@ -354,7 +354,7 @@ def test_what_the_provider_said_is_logged_with_the_failure(client: TestClient, s
         "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
     )
     assert started.json()["type"] == "none"
-    assert "failure_detail" not in started.json()["payload"]
+    assert "failure_detail" not in started.json()
 
     (event,) = _events(sync_engine, started.json()["session_id"])
     assert event["error"] == "provider_error: BadRequestError: Unsupported parameter: 'temperature'"

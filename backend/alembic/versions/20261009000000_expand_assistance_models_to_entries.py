@@ -120,5 +120,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # The old code reads a string per method; an object would fail every call.
+    # Run this before rolling the code back: the old code reads a string per
+    # method, and an object fails every call. Lossy: declared options are
+    # dropped (an upgrade afterwards gets the defaults again, not what was
+    # declared), and an `openai/` id is kept although the old code rejects it.
     collapse_all(op.get_bind())

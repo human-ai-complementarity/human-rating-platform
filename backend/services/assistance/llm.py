@@ -59,13 +59,16 @@ class Provider:
     """One transport: where to send, which key to use, how to spell the options.
 
     `request` builds the chat-completions kwargs. Every option is None for
-    "do not send"; the provider-neutral names are spelled its way.
+    "do not send"; the provider-neutral names are spelled its way by
+    `reasoning_kwargs`.
     """
 
     base_url: str | None
     # Attribute on LLMSettings holding the key, and the env var that sets it.
     key_setting: str
     env_var: str
+    # The output cap's name: OpenAI's reasoning models refuse `max_tokens`.
+    max_tokens_key: str
 
     def api_key(self, settings: LLMSettings) -> str:
         key = getattr(settings, self.key_setting)
@@ -84,50 +87,43 @@ class Provider:
         reasoning_effort: str | None,
         text_verbosity: str | None,
     ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            self.max_tokens_key: settings.max_tokens,
+        }
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        kwargs.update(self.reasoning_kwargs(reasoning_effort, text_verbosity))
+        return kwargs
+
+    def reasoning_kwargs(self, effort: str | None, verbosity: str | None) -> dict[str, Any]:
         raise NotImplementedError
 
 
 class _OpenRouter(Provider):
-    def request(self, model_id, messages, settings, **options) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {
-            "model": model_id,
-            "messages": messages,
-            "max_tokens": settings.max_tokens,
-        }
-        if options["response_format"] is not None:
-            kwargs["response_format"] = options["response_format"]
-        if options["temperature"] is not None:
-            kwargs["temperature"] = options["temperature"]
+    def reasoning_kwargs(self, effort: str | None, verbosity: str | None) -> dict[str, Any]:
         # OpenRouter's default is to drop a parameter the routed endpoint does
         # not support, so a declared temperature or effort could silently not
         # run. `require_parameters` makes it refuse instead, the way OpenAI
         # does, so both transports fail the same way on the same declaration.
         extra: dict[str, Any] = {"provider": {"require_parameters": True}}
-        if options["reasoning_effort"] is not None:
-            extra["reasoning"] = {"effort": options["reasoning_effort"]}
-        if options["text_verbosity"] is not None:
-            extra["verbosity"] = options["text_verbosity"]
-        kwargs["extra_body"] = extra
-        return kwargs
+        if effort is not None:
+            extra["reasoning"] = {"effort": effort}
+        if verbosity is not None:
+            extra["verbosity"] = verbosity
+        return {"extra_body": extra}
 
 
 class _OpenAI(Provider):
-    def request(self, model_id, messages, settings, **options) -> dict[str, Any]:
-        # `max_tokens` is refused by OpenAI's reasoning models; the renamed
-        # field is accepted by every chat model.
-        kwargs: dict[str, Any] = {
-            "model": model_id,
-            "messages": messages,
-            "max_completion_tokens": settings.max_tokens,
-        }
-        if options["response_format"] is not None:
-            kwargs["response_format"] = options["response_format"]
-        if options["temperature"] is not None:
-            kwargs["temperature"] = options["temperature"]
-        if options["reasoning_effort"] is not None:
-            kwargs["reasoning_effort"] = options["reasoning_effort"]
-        if options["text_verbosity"] is not None:
-            kwargs["verbosity"] = options["text_verbosity"]
+    def reasoning_kwargs(self, effort: str | None, verbosity: str | None) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {}
+        if effort is not None:
+            kwargs["reasoning_effort"] = effort
+        if verbosity is not None:
+            kwargs["verbosity"] = verbosity
         return kwargs
 
 
@@ -136,18 +132,15 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://openrouter.ai/api/v1",
         key_setting="openrouter_api_key",
         env_var="LLM__OPENROUTER_API_KEY",
+        max_tokens_key="max_tokens",
     ),
     "openai": _OpenAI(
         base_url=None,
         key_setting="openai_api_key",
         env_var="LLM__OPENAI_API_KEY",
+        max_tokens_key="max_completion_tokens",
     ),
 }
-
-
-def model_prefixes() -> tuple[str, ...]:
-    """The prefixes a model id may start with, e.g. ("openrouter/", "openai/")."""
-    return tuple(f"{name}/" for name in PROVIDERS)
 
 
 class NoChoicesError(RuntimeError):

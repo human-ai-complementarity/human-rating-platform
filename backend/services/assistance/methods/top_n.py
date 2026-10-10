@@ -221,7 +221,7 @@ async def _complete_with_schema(
         if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
             raise
         logger.warning(
-            "Top-N json_schema rejected by the provider; retrying without response_format",
+            "Top-N request rejected by the provider; retrying without response_format",
             extra={"attributes": {"model": entry.model, "status_code": exc.status_code}},
         )
         raw = await complete(messages, settings=settings, **entry.to_dict())

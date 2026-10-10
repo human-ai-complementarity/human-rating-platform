@@ -7,13 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from config import LLMSettings
-from services.assistance.llm import (
-    PROVIDERS,
-    NoChoicesError,
-    complete,
-    model_prefixes,
-    parse_model,
-)
+from services.assistance.llm import PROVIDERS, NoChoicesError, complete, parse_model
 
 _MESSAGES = [{"role": "user", "content": "hi"}]
 
@@ -36,10 +30,6 @@ async def _call(client: MagicMock, **kwargs) -> dict:
     with patch("services.assistance.llm._get_client", return_value=client) as get_client:
         await complete(_MESSAGES, settings=kwargs.pop("settings", _settings()), **kwargs)
     return {"client": get_client.call_args.args, **client.chat.completions.create.call_args.kwargs}
-
-
-def test_the_prefixes_name_every_provider():
-    assert model_prefixes() == ("openrouter/", "openai/")
 
 
 @pytest.mark.parametrize(

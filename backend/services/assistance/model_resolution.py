@@ -21,12 +21,12 @@ the model had nothing to offer.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal
 
 from fastapi import HTTPException
 
-from .llm import REASONING_EFFORTS, TEXT_VERBOSITIES, model_prefixes
+from .llm import REASONING_EFFORTS, TEXT_VERBOSITIES, parse_model
 
 # `assistance_params` key holding the wave's per-method entries.
 ASSISTANCE_MODELS_KEY = "assistance_models"
@@ -66,9 +66,8 @@ class AssistanceModel:
         with then; an object missing a key gets that key's default.
         """
         if isinstance(entry, str):
-            return cls(model=entry, **{k: getattr(default, k) for k in ENTRY_KEYS[1:]})
-        values = {k: entry.get(k, getattr(default, k)) for k in ENTRY_KEYS}
-        return cls(**values)
+            return replace(default, model=entry)
+        return cls(**{k: entry.get(k, getattr(default, k)) for k in ENTRY_KEYS})
 
 
 # Where a resolved model came from: the experiment's map, or the method default.
@@ -146,16 +145,12 @@ def validate_model_entry(value: Any, *, field: str) -> None:
     unknown = sorted(set(value) - set(ENTRY_KEYS))
     if unknown:
         raise _reject(field, f"unknown key(s) {', '.join(unknown)}.")
-    model = value["model"]
-    prefixes = model_prefixes()
-    if not isinstance(model, str) or not any(
-        model.startswith(prefix) and len(model) > len(prefix) for prefix in prefixes
-    ):
-        raise _reject(
-            field,
-            f"'model' must be '<provider>/<model-id>' with provider one of "
-            f"{', '.join(p.rstrip('/') for p in prefixes)}.",
-        )
+    if not isinstance(value["model"], str):
+        raise _reject(field, "'model' must be a string.")
+    try:
+        parse_model(value["model"])
+    except ValueError as exc:
+        raise _reject(field, str(exc)) from exc
     _validate_choice(value["reasoning_effort"], REASONING_EFFORTS, field, "reasoning_effort")
     _validate_choice(value["text_verbosity"], TEXT_VERBOSITIES, field, "text_verbosity")
     temperature = value["temperature"]
