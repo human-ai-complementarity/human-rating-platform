@@ -16,9 +16,8 @@ services:
   migrate:
     image: ghcr.io/astral-sh/uv:0.9.28-python3.11-bookworm-slim
     working_dir: /app/backend
-    env_file:
-      - backend/.env
     environment:
+      ENV_FILE: .env.test
       APP_SECRET_KEY: "${APP_SECRET_KEY:-test-secret}"
       DATABASE__URL: postgresql://postgres:postgres@db:5432/human_rating_platform
       PYTHONPATH: /app/backend
@@ -36,9 +35,8 @@ services:
   test:
     image: ghcr.io/astral-sh/uv:0.9.28-python3.11-bookworm-slim
     working_dir: /app/backend
-    env_file:
-      - backend/.env
     environment:
+      ENV_FILE: .env.test
       APP_SECRET_KEY: "${APP_SECRET_KEY:-test-secret}"
       DATABASE__URL: postgresql://postgres:postgres@db:5432/human_rating_platform
       PYTHONPATH: /app/backend
