@@ -14,7 +14,7 @@ All columns are nullable — a card is filled in over time, and an unfinished
 card is legal (it just cannot launch a study).
 
 Revision ID: 20261007010000
-Revises: 20261007000000
+Revises: 20260929055545
 Create Date: 2026-10-07 01:00:00.000000
 
 """
@@ -27,7 +27,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "20261007010000"
-down_revision: Union[str, Sequence[str], None] = "20261007000000"
+down_revision: Union[str, Sequence[str], None] = "20260929055545"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
