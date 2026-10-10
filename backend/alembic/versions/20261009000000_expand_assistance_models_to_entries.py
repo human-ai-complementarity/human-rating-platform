@@ -1,7 +1,7 @@
 """Expand each assistance_models value from a model id into an entry object.
 
 Revision ID: 20261009000000
-Revises: 20260929054644
+Revises: 20260929055545
 Create Date: 2026-10-09 00:00:00.000000
 
 An entry used to be the model id alone; the request options were hardcoded
@@ -27,7 +27,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection
 
 revision: str = "20261009000000"
-down_revision: Union[str, Sequence[str], None] = "20260929054644"
+down_revision: Union[str, Sequence[str], None] = "20260929055545"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
