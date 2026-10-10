@@ -171,3 +171,33 @@ def test_omitted_card_field_is_unchanged_while_explicit_null_clears(client: Test
 
     client.patch(f"/api/admin/datasets/{created['id']}", json={"study_blurb": None})
     assert client.get(f"/api/admin/datasets/{created['id']}").json()["study_blurb"] is None
+
+
+def test_bad_name_templates_are_refused_when_the_card_is_saved(client: TestClient) -> None:
+    """The render rules apply on save, not first at experiment create."""
+    resp = client.post(
+        "/api/admin/datasets",
+        json={"name": "templated", "internal_study_name": "{dataset} {waves}"},
+    )
+    assert resp.status_code == 400
+    assert "internal_study_name" in resp.json()["detail"]
+    assert client.get("/api/admin/datasets").json() == []
+
+    created = _create(client, "templated")
+    for body, field in (
+        # The public name may only use {dataset}: raters read it.
+        ({"external_study_name": "{dataset} {method}"}, "external_study_name"),
+        ({"internal_study_name": "{dataset} - Round 1"}, "internal_study_name"),
+    ):
+        resp = client.patch(f"/api/admin/datasets/{created['id']}", json=body)
+        assert resp.status_code == 400, body
+        assert field in resp.json()["detail"]
+    stored = client.get(f"/api/admin/datasets/{created['id']}").json()
+    assert stored["external_study_name"] is None
+    assert stored["internal_study_name"] is None
+
+    ok = client.patch(
+        f"/api/admin/datasets/{created['id']}",
+        json={"external_study_name": "{dataset}", "internal_study_name": "{dataset} {wave}"},
+    )
+    assert ok.status_code == 200, ok.text
