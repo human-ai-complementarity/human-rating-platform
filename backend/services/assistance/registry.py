@@ -90,7 +90,12 @@ What is expected to evolve:
 from __future__ import annotations
 
 from .base import AssistanceMethod
-from .model_resolution import ModelSource, resolve_model_and_source
+from .model_resolution import (
+    RESOLVED_MODEL_KEY,
+    ModelSource,
+    resolve_model,
+    resolve_model_and_source,
+)
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
@@ -130,6 +135,22 @@ def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
         name: resolve_model_and_source(params, name, default)
         for name, default in _default_models().items()
     }
+
+
+def record_resolved_model(name: str, params: dict | None) -> dict:
+    """A session's params snapshot: `params` plus the model method `name` ran
+    on, as `resolved_model`.
+
+    Shared by the foreground start and the preparation runner, the two places
+    a session row is created. Reads the class attribute without instantiating
+    the method; an unknown or model-free method records nothing extra.
+    """
+    recorded = dict(params) if params else {}
+    cls = _REGISTRY.get(name)
+    role = cls.primary_model_role if cls is not None else None
+    if role is not None:
+        recorded[RESOLVED_MODEL_KEY] = resolve_model(recorded, name, role)
+    return recorded
 
 
 def register(name: str, cls: type[AssistanceMethod]) -> None:

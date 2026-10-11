@@ -73,6 +73,10 @@ class AssistanceMethod(ABC):
         """
         return role_default(cls.primary_model_role) if cls.primary_model_role else None
 
+    def preparation_params(self, params: dict) -> dict:
+        """Resolve method defaults before taking a durable input snapshot."""
+        return dict(params)
+
     def plan_preparation(self, context: PreparationContext) -> PreparationSpec | None:
         """Declare optional work safe to compute before the question is displayed.
 
