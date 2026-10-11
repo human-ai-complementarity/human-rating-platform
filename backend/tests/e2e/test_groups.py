@@ -2,13 +2,17 @@
 
 Covers wave auto-fill / validation against the dataset set, unique
 (dataset × wave) and per-dataset name, lock-after-launch, list filters,
-duplicate copying group_id, and RESTRICT deletes.
+duplicate copying group_id (and warning when its wave isn't current), and
+RESTRICT deletes.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+
+from config import get_settings
 
 
 def _dataset(client: TestClient, name: str, waves: list[str]) -> dict:
@@ -290,6 +294,80 @@ def test_duplicate_copies_group(client: TestClient) -> None:
     assert dup.json()["group_id"] == group["id"]
     assert dup.json()["wave"] == "fall25"
     assert dup.json()["status"] == "DRAFT"
+
+
+def _duplicate(client: TestClient, experiment_id: int) -> dict:
+    resp = client.post(f"/api/admin/experiments/{experiment_id}/duplicate")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+@pytest.fixture
+def current_wave(monkeypatch: pytest.MonkeyPatch):
+    """Pin the current wave so these tests outlive the next wave being added."""
+
+    def _pin(wave: str) -> None:
+        monkeypatch.setattr(get_settings().waves, "current", wave)
+
+    _pin("fall26")
+    return _pin
+
+
+def test_duplicate_in_current_wave_group_has_no_warning(client: TestClient, current_wave) -> None:
+    dataset = _dataset(client, "medqa", ["fall26"])
+    group = _group(client, "MedQA Fall 26", dataset["id"])
+    source = _experiment(client, "main", group["id"])
+
+    assert _duplicate(client, source["id"])["wave_warning"] is None
+
+
+def test_duplicate_in_older_wave_group_warns_and_keeps_the_group(
+    client: TestClient, current_wave
+) -> None:
+    dataset = _dataset(client, "medqa", ["sp26"])
+    group = _group(client, "MedQA Spring", dataset["id"])
+    source = _experiment(client, "main", group["id"])
+
+    dup = _duplicate(client, source["id"])
+
+    # The copy still lands in the source's group; the warning is advisory.
+    assert dup["group_id"] == group["id"]
+    assert dup["wave"] == "sp26"
+    warning = dup["wave_warning"]
+    assert warning["group_wave"] == "sp26"
+    assert warning["current_wave"] == "fall26"
+    assert "MedQA Spring" in warning["message"]
+    assert "move it to a fall26 group before launch" in warning["message"]
+
+
+def test_duplicate_of_ungrouped_experiment_has_no_warning(client: TestClient, current_wave) -> None:
+    source = _experiment(client, "scratch")
+
+    dup = _duplicate(client, source["id"])
+
+    assert dup["group_id"] is None
+    assert dup["wave_warning"] is None
+
+
+def test_current_wave_setting_decides_which_groups_warn(
+    client: TestClient, current_wave, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = _dataset(client, "medqa", ["sp26", "fall26"])
+    spring = _experiment(client, "spring", _group(client, "Spring", dataset["id"], "sp26")["id"])
+    fall = _experiment(client, "fall", _group(client, "Fall", dataset["id"], "fall26")["id"])
+
+    # Normalized like any other wave token.
+    current_wave(" SP26 ")
+
+    assert _duplicate(client, spring["id"])["wave_warning"] is None
+    warning = _duplicate(client, fall["id"])["wave_warning"]
+    assert warning["group_wave"] == "fall26"
+    assert warning["current_wave"] == "sp26"
+
+    # The UI reads the same value to flag DRAFT experiments later on.
+    monkeypatch.setattr(get_settings().prolific, "api_token", "")
+    status = client.get("/api/admin/platform-status").json()
+    assert status["current_wave"] == "sp26"
 
 
 def test_unknown_group_on_create_is_404(client: TestClient) -> None:

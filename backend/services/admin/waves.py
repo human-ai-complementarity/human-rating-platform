@@ -1,4 +1,4 @@
-"""Wave-token normalization.
+"""Wave tokens: normalization, the known waves, and the current one.
 
 Dataset membership lists and group attribution waves must compare as the
 same token. One helper so strip/lowercase cannot drift across write and
@@ -7,6 +7,13 @@ a datasets ↔ groups cycle.
 """
 
 from __future__ import annotations
+
+from config import Settings, get_settings
+
+# Every wave the platform knows, oldest first. Append new waves at the end:
+# the last one is the current wave unless `WAVES__CURRENT` says otherwise.
+# The catalog backfill also matches these tokens in experiment names.
+KNOWN_WAVES: tuple[str, ...] = ("fall25", "sp26", "sum26", "fall26")
 
 
 def normalize_wave_token(wave: str) -> str:
@@ -24,3 +31,9 @@ def normalize_waves(waves: list[str]) -> list[str]:
             seen.add(token)
             result.append(token)
     return result
+
+
+def current_wave(settings: Settings | None = None) -> str:
+    """The wave collections are being run for now: the setting, else the newest known."""
+    configured = normalize_wave_token((settings or get_settings()).waves.current)
+    return configured or KNOWN_WAVES[-1]
