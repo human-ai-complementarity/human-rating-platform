@@ -12,12 +12,36 @@ If no model is passed, settings.llm.default_model is used.
 from __future__ import annotations
 
 import functools
+import asyncio
+from contextvars import ContextVar
+from weakref import WeakKeyDictionary
+from contextlib import asynccontextmanager
 
 import openai
 
 from config import LLMSettings
 
 Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": "..."}
+
+# Shared by foreground calls and preparation fan-out on the same event loop.
+# Speculation uses at most half the slots, leaving capacity for visible work.
+speculative_call: ContextVar[bool] = ContextVar("speculative_call", default=False)
+_call_limits: WeakKeyDictionary = WeakKeyDictionary()
+
+
+@asynccontextmanager
+async def provider_slot():
+    loop = asyncio.get_running_loop()
+    if loop not in _call_limits:
+        _call_limits[loop] = (asyncio.Semaphore(8), asyncio.Semaphore(4))
+    total, speculative = _call_limits[loop]
+    if speculative_call.get():
+        async with speculative, total:
+            yield
+    else:
+        async with total:
+            yield
+
 
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -77,7 +101,8 @@ async def complete(
         kwargs["response_format"] = response_format
     if temperature is not None:
         kwargs["temperature"] = temperature
-    response = await client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
+    async with provider_slot():
+        response = await client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
     if not response.choices:
         # OpenRouter sometimes returns HTTP 200 with an error body and no
         # choices; indexing [0] would 500 the rater's assistance fetch.
