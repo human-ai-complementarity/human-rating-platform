@@ -305,12 +305,14 @@ async function installApiMocks(
     currencyCode?: string | null;
     currencySymbol?: string | null;
     spendMinorUnits?: number;
+    currentWave?: string;
   } = {}
 ) {
   const prolificEnabled = options.prolificEnabled ?? true;
   const currencyCode = options.currencyCode ?? null;
   const currencySymbol = options.currencySymbol ?? null;
   const spendMinorUnits = options.spendMinorUnits ?? 0;
+  const currentWave = options.currentWave ?? 'fall26';
 
   await page.context().route('**/api/**', async (route) => {
     const request = route.request();
@@ -336,6 +338,7 @@ async function installApiMocks(
         // Prolific's real rates for a GBP academic workspace: a third on top of
         // rewards, plus VAT on that fee.
         pricing: { fees_percentage: 0.333333, vat_percentage: 0.2, fees_per_submission: 0 },
+        current_wave: currentWave,
       });
       return;
     }
@@ -498,6 +501,48 @@ async function installApiMocks(
         is_complete: false,
       };
       await fulfillJson(route, 200, experiment);
+      return;
+    }
+
+    const duplicateMatch = pathname.match(/^\/api\/admin\/experiments\/(\d+)\/duplicate$/);
+    if (duplicateMatch && method === 'POST') {
+      const source = state.experiments.find((item) => item.id === Number(duplicateMatch[1]));
+      if (!source) {
+        await fulfillJson(route, 404, { detail: 'Experiment not found' });
+        return;
+      }
+      // Mirrors duplicate_experiment: a DRAFT copy in the source's group, with
+      // a warning when that group's wave is not the current one.
+      const copy = buildExperiment(state, {
+        name: `${source.name} COPY`,
+        group_id: source.group_id,
+        group_name: source.group_name,
+        group_dataset_id: source.group_dataset_id,
+        group_dataset_name: source.group_dataset_name,
+        wave: source.wave,
+      });
+      state.experiments = [...state.experiments, copy];
+      state.uploads[copy.id] = [];
+      state.rounds[copy.id] = [];
+      state.recommendations[copy.id] = {
+        avg_time_per_question_seconds: 0,
+        remaining_rating_actions: 0,
+        total_hours_remaining: 0,
+        recommended_places: 0,
+        is_complete: false,
+      };
+      const waveWarning =
+        copy.wave !== null && copy.wave !== currentWave
+          ? {
+              group_wave: copy.wave,
+              current_wave: currentWave,
+              message:
+                `Copied into ${copy.group_name} (wave ${copy.wave}), but the current wave is ` +
+                `${currentWave}. If this copy is for ${currentWave}, move it to a ` +
+                `${currentWave} group before launch.`,
+            }
+          : null;
+      await fulfillJson(route, 200, { ...copy, wave_warning: waveWarning });
       return;
     }
 
@@ -2014,6 +2059,87 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
 
   await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
   expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
+});
+
+test('duplicating into an older wave group warns on the copy', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [{ id: 1, name: 'medqa', waves: ['sp26'], created_at: '2026-03-09T00:00:00Z' }];
+  state.groups = [
+    {
+      id: 1,
+      name: 'MedQA Spring',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'sp26',
+      experiment_count: 1,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+  state.experiments = [
+    buildExperiment(state, {
+      name: 'MedQA none',
+      status: 'FINISHED',
+      group_id: 1,
+      group_name: 'MedQA Spring',
+      group_dataset_id: 1,
+      group_dataset_name: 'medqa',
+      wave: 'sp26',
+    }),
+  ];
+
+  await installApiMocks(page, state, { currentWave: 'fall26' });
+  await page.goto('/admin');
+
+  await page.getByRole('button', { name: 'Actions for MedQA none' }).click();
+  await page.getByTestId('row-action-duplicate').click();
+
+  await expect(page).toHaveURL(/\/admin\/experiments\/2$/);
+  const warning = page.getByTestId('duplicate-wave-warning');
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText('MedQA Spring (wave sp26)');
+  await expect(warning).toContainText('the current wave is fall26');
+  await expect(warning).toContainText('move it to a fall26 group before launch');
+  // The loud warning replaces the small notice rather than doubling it.
+  await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+});
+
+test('a DRAFT in an older wave group keeps a small wave notice', async ({ page }) => {
+  const state = createMockState();
+  const inGroup = (id: number, name: string, wave: string) => ({
+    group_id: id,
+    group_name: name,
+    group_dataset_id: 1,
+    group_dataset_name: 'medqa',
+    wave,
+  });
+  state.experiments = [
+    buildExperiment(state, { name: 'Spring draft', ...inGroup(1, 'MedQA Spring', 'sp26') }),
+    buildExperiment(state, { name: 'Fall draft', ...inGroup(2, 'MedQA Fall', 'fall26') }),
+    buildExperiment(state, {
+      name: 'Spring launched',
+      status: 'LAUNCH',
+      ...inGroup(1, 'MedQA Spring', 'sp26'),
+    }),
+  ];
+  // Prolific off: these pages need no round or recommendation mocks.
+  await installApiMocks(page, state, { currentWave: 'fall26', prolificEnabled: false });
+
+  await page.goto('/admin/experiments/1');
+  const notice = page.getByTestId('draft-wave-notice');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('MedQA Spring is a sp26 group');
+  await expect(notice).toContainText('the current wave is fall26');
+  await expect(page.getByTestId('duplicate-wave-warning')).toHaveCount(0);
+
+  // Current-wave drafts and launched experiments get no notice. Waiting on
+  // platform status first keeps the absence check from passing too early.
+  for (const id of [2, 3]) {
+    const statusLoaded = page.waitForResponse('**/api/admin/platform-status');
+    await page.goto(`/admin/experiments/${id}`);
+    await statusLoaded;
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+  }
 });
 
 test('group picker keyboard: type-ahead commits the match, not "No group"', async ({ page }) => {

@@ -59,6 +59,23 @@ export interface Experiment {
   launch_blocker_fixes: string[];
 }
 
+// A group whose wave is not the platform's current one.
+export interface WaveWarning {
+  group_wave: string;
+  current_wave: string;
+  message: string;
+}
+
+export interface ExperimentDuplicate extends Experiment {
+  // Set when the copy kept a group from a wave other than the current one.
+  wave_warning: WaveWarning | null;
+}
+
+// Router state the list hands the copy's detail page after a duplicate.
+export interface DuplicateNavState {
+  waveWarning: WaveWarning | null;
+}
+
 export interface Tag {
   name: string;
   usage_count: number;
@@ -322,6 +339,8 @@ export interface PlatformStatus {
   // Null when Prolific is disabled or the rates could not be fetched; cost
   // estimates then fall back to showing the reward subtotal alone.
   pricing: ProlificPricing | null;
+  // The wave collections are being run for now.
+  current_wave: string;
 }
 
 export interface ExperimentCreate {

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type {
   Dataset,
+  DuplicateNavState,
   Experiment,
   ExperimentCreate,
   ExperimentGroup,
@@ -268,7 +269,8 @@ function AdminView() {
     setDuplicating(true);
     try {
       const copy = await api.duplicateExperiment(exp.id);
-      navigate(`/admin/experiments/${copy.id}`);
+      const state: DuplicateNavState = { waveWarning: copy.wave_warning };
+      navigate(`/admin/experiments/${copy.id}`, { state });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {

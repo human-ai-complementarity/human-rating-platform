@@ -15,6 +15,7 @@ import type {
   DatasetCardFields,
   Experiment,
   ExperimentCreate,
+  ExperimentDuplicate,
   ExperimentGroup,
   Tag,
   ExperimentStats,
@@ -609,8 +610,8 @@ export const api = {
     });
   },
 
-  async duplicateExperiment(experimentId: number): Promise<Experiment> {
-    return requestJson<Experiment>(routes.admin.duplicateExperiment(experimentId), {
+  async duplicateExperiment(experimentId: number): Promise<ExperimentDuplicate> {
+    return requestJson<ExperimentDuplicate>(routes.admin.duplicateExperiment(experimentId), {
       method: 'POST',
     });
   },
