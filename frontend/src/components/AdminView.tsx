@@ -2164,8 +2164,8 @@ function CreatePanel({
             </div>
             {datasetMode === 'existing' && selectedDataset && datasetWaves.length === 0 && (
               <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 16 }}>
-                This dataset has no waves yet. Create a new dataset (or add waves via the API)
-                before opening a group.
+                This dataset has no waves yet, so it can't hold a group. Pick another dataset or
+                create a new one with its waves.
               </div>
             )}
           </div>

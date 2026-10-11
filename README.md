@@ -276,7 +276,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under. If unset, Prolific uses the API user's `current_project_id`, which can land studies in the wrong workspace on multi-workspace accounts. The project's workspace and currency are derived automatically.
 - `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
-- `WAVES__CURRENT` — the wave collections are being run for now, e.g. `fall26` (default: the newest wave in `KNOWN_WAVES`, `backend/services/admin/waves.py`). Duplicating into a group from another wave, or a DRAFT experiment sitting in one, gets a warning.
+- `WAVES__CURRENT` — the wave collections are being run for now, e.g. `fall26` (default: the newest wave in `KNOWN_WAVES`, `backend/services/admin/waves.py`). Duplicating into a group from another wave, or a DRAFT experiment sitting in one, gets a warning with a one-click move to the dataset's current-wave group (created on confirm if missing).
 
 Top‑level convenience envs (not nested):
 

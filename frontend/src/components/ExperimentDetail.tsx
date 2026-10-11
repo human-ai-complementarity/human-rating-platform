@@ -20,6 +20,7 @@ import type {
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
+import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import {
   StepperTabs,
   type StepDef,
@@ -1029,6 +1030,15 @@ function ExperimentDetail({
     currentWave !== null &&
     experiment.wave !== currentWave;
 
+  const handleGroupMoved = async (message: string) => {
+    setError(null);
+    showSuccess(message);
+    await onRefresh();
+    // The duplicate's warning was about the group it has now left.
+    if (duplicateWaveWarning) navigate(location.pathname, { replace: true, state: null });
+  };
+  const moveCallbacks = { onMoved: handleGroupMoved, onError: setError };
+
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="admin-page">
@@ -1125,6 +1135,7 @@ function ExperimentDetail({
               </>
             )}
           </div>
+          <GroupControl experiment={experiment} currentWave={currentWave} {...moveCallbacks} />
           {showDraftWaveNotice && (
             <div
               data-testid="draft-wave-notice"
@@ -1146,7 +1157,8 @@ function ExperimentDetail({
               <span>
                 {experiment.group_name ?? 'Its group'} is a {experiment.wave} group, but the
                 current wave is {currentWave}. If this is for {currentWave}, move it to a{' '}
-                {currentWave} group before launch.
+                {currentWave} group before launch.{' '}
+                <MoveToWaveButton experiment={experiment} wave={currentWave} {...moveCallbacks} />
               </span>
             </div>
           )}
@@ -1204,6 +1216,13 @@ function ExperimentDetail({
         <div data-testid="duplicate-wave-warning" style={{ marginBottom: 20 }}>
           <Banner tone="warn">
             <strong>Check this copy's wave.</strong> {duplicateWaveWarning.message}
+            <div style={{ marginTop: 8 }}>
+              <MoveToWaveButton
+                experiment={experiment}
+                wave={duplicateWaveWarning.current_wave}
+                {...moveCallbacks}
+              />
+            </div>
           </Banner>
         </div>
       )}
