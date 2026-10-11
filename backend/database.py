@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 
 from typing import Any
 
+import asyncpg
+
 from fastapi import Request
 from sqlalchemy import event
 from sqlalchemy.engine import Engine
@@ -119,6 +121,15 @@ class Database:
         await self._engine.dispose()
         self._engine = None
         self._session_maker = None
+
+    @asynccontextmanager
+    async def notification_connection(self):
+        """Dedicated session: LISTEN cannot use a transaction-pooled connection."""
+        connection = await asyncpg.connect(self._settings.sync_database_url, timeout=10)
+        try:
+            yield connection
+        finally:
+            await connection.close(timeout=5)
 
     @asynccontextmanager
     async def session(self) -> AsyncIterator[AsyncSession]:
