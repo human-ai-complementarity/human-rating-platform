@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
+from config import get_settings
 from services.assistance.base import InteractionStep, StepType
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 
@@ -356,12 +357,13 @@ def test_the_session_records_a_model_resolved_from_the_map(
     assert _session_params(sync_engine) == {**params, "resolved_model": _MAP_TOP_N}
 
 
-def test_a_retried_session_still_records_the_model_and_logs_what_went_in(
+def test_a_failed_session_still_records_the_model_and_logs_what_went_in(
     client: TestClient, sync_engine, monkeypatch
 ):
-    """A failed start leaves a NONE session that the next start retries on the
-    same row. The retry keeps the `resolved_model` record, while each event
-    logs the params start() was actually given, without it."""
+    """A failed start leaves a NONE session. It was prepared, so the next
+    start resumes it rather than retrying (#119). The session keeps the
+    `resolved_model` record, while its event logs the params start() was
+    actually given, without it."""
     monkeypatch.setattr(
         "services.assistance.methods.top_n._complete_with_schema_fallback",
         AsyncMock(side_effect=RuntimeError("no LLM in tests")),
@@ -382,10 +384,7 @@ def test_a_retried_session_still_records_the_model_and_logs_what_went_in(
     with sync_engine.connect() as conn:
         events = conn.execute(text("SELECT payload FROM assistance_events ORDER BY id")).scalars()
         requests = [json.loads(payload)["request"] for payload in events]
-    assert requests == [
-        {"params": params, "retried_step_type": None},
-        {"params": params, "retried_step_type": "none"},
-    ]
+    assert requests == [{"params": params, "retried_step_type": None}]
 
 
 def test_advance_gets_a_snapshot_without_the_removed_model_key(
@@ -416,7 +415,12 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
     )
     assert resp.status_code == 200, resp.text
 
-    snapshot = {**params, "resolved_model": _MAP_HAAT}
+    # The prepared snapshot also pins the confidence model (#119).
+    snapshot = {
+        **params,
+        "confidence_model": get_settings().llm.confidence_model,
+        "resolved_model": _MAP_HAAT,
+    }
     assert advance.call_args.args[2] == snapshot
     assert _session_params(sync_engine) == snapshot
 
