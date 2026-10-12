@@ -29,7 +29,7 @@ from services.queries import (
 )
 
 from .base import InteractionStep, StepType
-from .registry import get_method, record_resolved_model
+from .registry import get_method, record_role_models
 from .events import _call_method, _record_call, _last_human_input
 from .session_values import optional_json, step_columns
 from .preparation import PreparationContext, QuestionSnapshot
@@ -227,13 +227,13 @@ async def start_assistance(
     )
     step = call.step
 
-    # Snapshot the *resolved* model alongside the params so the session records
-    # what actually ran, whether from `assistance_models` or settings.
-    # Provenance the export can join against. advance() gets this snapshot
-    # back as its params, so the record must not use the removed `model` key.
-    # The event's request keeps the params start() was actually given. A
-    # prepared session records it the same way, in the runner.
-    recorded_params = record_resolved_model(experiment.assistance_method, params)
+    # Snapshot, per role the method calls, the *resolved* model alongside the
+    # params, whether it came from `assistance_models`, an override or
+    # settings: provenance the export can join against. advance() gets this
+    # snapshot back as its params, so the record must not use the removed
+    # `model` key. The event's request keeps the params start() was actually
+    # given. A prepared session records the same map, in the runner.
+    recorded_params = record_role_models(experiment.assistance_method, params)
 
     if existing:
         assistance_session = existing

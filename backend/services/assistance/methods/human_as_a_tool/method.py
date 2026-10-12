@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Mapping
 
 import openai
 
@@ -36,7 +37,6 @@ from ...confidence import (
     SamplingConfidenceEstimator,
     SelfConsistencyConfidenceEstimator,
 )
-from ...model_resolution import resolve_model
 from .decomposer import SubtaskDecomposer
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ _EVIDENCE_EMPTY_CONFIDENCE_PENALTY = 20
 
 
 class HumanAsAToolMethod(InitialStepPreparation):
+    method_key = "human_as_a_tool"
     primary_model_role = "decomposition"
 
     rater_instructions = (
@@ -57,14 +58,22 @@ class HumanAsAToolMethod(InitialStepPreparation):
         "adjust before submitting."
     )
 
+    @classmethod
+    def model_roles(cls, params: Mapping[str, object]) -> tuple[str, ...]:
+        """Decomposition and confidence; clustering only for the sampling
+        estimator, the one that clusters."""
+        roles = (cls.primary_model_role, "confidence")
+        return (*roles, "clustering") if _confidence_method(params) == "sampling" else roles
+
     def preparation_params(self, params: dict) -> dict:
+        models = self.role_models(params)
         return {
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                "human_as_a_tool": resolve_model(params, "human_as_a_tool", "decomposition"),
+                self.method_key: models[self.primary_model_role],
             },
-            "confidence_model": resolve_model(params, "human_as_a_tool", "confidence"),
+            "confidence_model": models["confidence"],
         }
 
     def __init__(self, confidence_estimator: ConfidenceEstimator | None = None) -> None:
@@ -79,7 +88,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         parent_question_text: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
-        model = resolve_model(params, "human_as_a_tool", "decomposition")
+        model = self.role_models(params)[self.primary_model_role]
         max_rounds = int(params.get("max_rounds", 5))
         max_subtasks = int(params.get("max_subtasks", 5))
         confidence_threshold = int(params.get("confidence_threshold", _CONFIDENCE_THRESHOLD))
@@ -157,7 +166,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
     ) -> InteractionStep:
         # `state` first: the model is pinned at session start so a multi-turn
         # interaction cannot switch models mid-flight.
-        model = state.get("model") or resolve_model(params, "human_as_a_tool", "decomposition")
+        model = state.get("model") or self.role_models(params)[self.primary_model_role]
 
         try:
             raw_input: dict = json.loads(human_input)
@@ -238,12 +247,15 @@ class HumanAsAToolMethod(InitialStepPreparation):
     def _get_estimator(self, params: dict) -> ConfidenceEstimator:
         if self._estimator is not None:
             return self._estimator
-        method = params.get("confidence_method", "self_report")
-        confidence_model = resolve_model(params, "human_as_a_tool", "confidence")
+        method = _confidence_method(params)
+        # The map the session records: a role `model_roles` omits is a
+        # KeyError here, not a model that runs unrecorded.
+        models = self.role_models(params)
+        confidence_model = models["confidence"]
         if method == "sampling":
             estimator: ConfidenceEstimator = SamplingConfidenceEstimator(
                 sampling_model=confidence_model,
-                clustering_model=resolve_model(params, "human_as_a_tool", "clustering"),
+                clustering_model=models["clustering"],
                 num_samples=int(params.get("num_samples", 5)),
             )
         elif method == "self_consistency":
@@ -265,6 +277,10 @@ class HumanAsAToolMethod(InitialStepPreparation):
             {**st, "confidence": _apply_evidence_penalty(st, int(score))}
             for st, score in zip(subtasks, scores)
         ]
+
+
+def _confidence_method(params: Mapping[str, object]) -> object:
+    return params.get("confidence_method", "self_report")
 
 
 def _apply_evidence_penalty(subtask: dict, raw_score: int) -> int:
