@@ -6,13 +6,14 @@ the threshold) to the human. It repeats this for up to max_rounds rounds,
 incorporating human answers each time, before synthesising a final answer.
 
 assistance_params:
-    assistance_models:    {"human_as_a_tool": LLM for decomposition}
-                          (default: settings.llm.decomposition_model)
+    assistance_models:    {"human_as_a_tool": LLM for every call: decomposition,
+                          confidence scoring and clustering (#148)}
+                          (default per call: settings.llm.decomposition_model;
+                          settings.llm.confidence_model for confidence and clustering)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
-    confidence_model:     LLM for confidence scoring. Does not inherit
-                          `assistance_models` today; see #148
-                          (default: settings.llm.confidence_model)
-    clustering_model:     LLM for semantic clustering, sampling method only (default: same as confidence_model)
+    confidence_model:     Override: LLM for confidence scoring (default: the map entry)
+    clustering_model:     Override: LLM for semantic clustering, sampling method only
+                          (default: the confidence model)
     num_samples:          Samples per subtask, sampling method only (default: 5)
     max_rounds:           Maximum delegation rounds before forced synthesis (default: 5)
     max_subtasks:         Max subtasks to identify per round (default: 5)
@@ -66,6 +67,8 @@ class HumanAsAToolMethod(InitialStepPreparation):
         return (*roles, "clustering") if _confidence_method(params) == "sampling" else roles
 
     def preparation_params(self, params: dict) -> dict:
+        # Pins confidence too: unpinned, a defaulted confidence model would
+        # follow the newly pinned entry. Clustering follows confidence.
         models = self.role_models(params)
         return {
             **params,

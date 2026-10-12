@@ -49,9 +49,18 @@ def test_role_default_applies_when_nothing_is_pinned():
     assert resolve_model({}, "human_as_a_tool", "clustering") == llm.confidence_model
 
 
-def test_each_method_resolves_its_own_entry():
-    assert resolve_model(_MAP, "top_n", "answer") == _TOP_N
-    assert resolve_model(_MAP, "human_as_a_tool", "decomposition") == _HAAT
+@pytest.mark.parametrize(
+    ("method", "role", "expected"),
+    [
+        ("top_n", "answer", _TOP_N),
+        ("human_as_a_tool", "decomposition", _HAAT),
+        ("human_as_a_tool", "confidence", _HAAT),
+        ("human_as_a_tool", "clustering", _HAAT),
+    ],
+)
+def test_every_role_resolves_its_methods_entry(method, role, expected):
+    """#148: confidence and clustering run the model under test too."""
+    assert resolve_model_and_source(_MAP, method, role) == (expected, "assistance_models")
 
 
 @pytest.mark.parametrize(
@@ -126,12 +135,16 @@ def test_an_instrument_override_reports_its_source():
     assert resolve_model_and_source({}, "human_as_a_tool", "clustering") == default
 
 
-def test_the_instrument_takes_its_own_overrides():
+def test_an_override_beats_the_map():
     params = {**_MAP, "confidence_model": _CONFIDENCE}
+    assert resolve_model(params, "human_as_a_tool", "decomposition") == _HAAT
     assert resolve_model(params, "human_as_a_tool", "confidence") == _CONFIDENCE
     assert resolve_model(params, "human_as_a_tool", "clustering") == _CONFIDENCE
     with_clustering = {**params, "clustering_model": _CLUSTERING}
     assert resolve_model(with_clustering, "human_as_a_tool", "clustering") == _CLUSTERING
+    only_clustering = {**_MAP, "clustering_model": _CLUSTERING}
+    assert resolve_model(only_clustering, "human_as_a_tool", "confidence") == _HAAT
+    assert resolve_model(only_clustering, "human_as_a_tool", "clustering") == _CLUSTERING
 
 
 @pytest.mark.parametrize(
@@ -145,27 +158,31 @@ def test_the_model_under_test_has_no_role_override(method, role):
 
 
 @pytest.mark.parametrize("role", ["confidence", "clustering"])
-def test_the_instrument_does_not_inherit_the_map(role):
-    """Pins current behaviour: confidence and clustering keep their own models.
-    Whether confidence should follow the model under test is open in #148."""
-    params = {"assistance_models": {"human_as_a_tool": _HAAT}}
+def test_another_methods_entry_is_not_inherited(role):
+    params = {"assistance_models": {"top_n": _TOP_N}}
     assert resolve_model(params, "human_as_a_tool", role) == get_settings().llm.confidence_model
 
 
-def test_today_the_instrument_roles_have_the_override_keys():
+def test_the_overrides_keep_their_keys_on_the_map():
+    """Inheriting the map did not retire the escape hatch, or its validation."""
     assert instrument_model_keys() == ("confidence_model", "clustering_model")
 
 
-def test_moving_confidence_onto_the_map_is_one_edit(monkeypatch):
-    """If #148 makes confidence inherit, adding it to the inheriting set is
-    enough: its key stops being an override, and clustering still follows it."""
-    inheriting = frozenset({"answer", "decomposition", "confidence"})
-    monkeypatch.setattr(model_resolution, "_INHERITING_ROLES", inheriting)
+def test_giving_a_role_an_override_is_one_edit(monkeypatch):
+    """The keys are derived from the override roles: adding one adds its key."""
+    overrides = frozenset({"decomposition", "confidence", "clustering"})
+    monkeypatch.setattr(model_resolution, "_OVERRIDE_ROLES", overrides)
 
-    assert instrument_model_keys() == ("clustering_model",)
-    params = {**_MAP, "confidence_model": _CONFIDENCE}
-    assert resolve_model(params, "human_as_a_tool", "confidence") == _HAAT
-    assert resolve_model(params, "human_as_a_tool", "clustering") == _HAAT
+    assert instrument_model_keys() == (
+        "decomposition_model",
+        "confidence_model",
+        "clustering_model",
+    )
+    params = {**_MAP, "decomposition_model": _SESSION}
+    assert resolve_model_and_source(params, "human_as_a_tool", "decomposition") == (
+        _SESSION,
+        "override",
+    )
 
 
 @pytest.mark.parametrize("bad", ["gpt-4o", "anthropic/claude-sonnet-4-6", ""])
@@ -221,13 +238,19 @@ async def test_human_as_a_tool_advance_prefers_the_session_model(state_model, ex
     assert method._decomposer.advance.call_args.kwargs["model"] == expected
 
 
-def test_human_as_a_tool_estimator_ignores_the_map():
-    params = {**_MAP, "confidence_method": "sampling"}
+@pytest.mark.parametrize(
+    ("confidence_method", "attrs"),
+    [
+        ("self_report", ("_model",)),
+        ("self_consistency", ("_sampling_model",)),
+        ("sampling", ("_sampling_model", "_clustering_model")),
+    ],
+)
+def test_human_as_a_tool_estimator_runs_on_the_map(confidence_method, attrs):
+    params = {**_MAP, "confidence_method": confidence_method}
     estimator = HumanAsAToolMethod()._get_estimator(params)
 
-    confidence_model = get_settings().llm.confidence_model
-    assert estimator._sampling_model == confidence_model
-    assert estimator._clustering_model == confidence_model
+    assert {attr: getattr(estimator, attr) for attr in attrs} == dict.fromkeys(attrs, _HAAT)
 
 
 _INSTRUMENT = {"confidence_model": _CONFIDENCE, "clustering_model": _CLUSTERING}
@@ -253,6 +276,7 @@ _INSTRUMENT = {"confidence_model": _CONFIDENCE, "clustering_model": _CLUSTERING}
 def test_human_as_a_tool_estimator_uses_the_instrument_overrides(
     overrides, confidence_method, expected
 ):
+    """The overrides still beat the map."""
     params = {**_MAP, "confidence_method": confidence_method, **overrides}
     estimator = HumanAsAToolMethod()._get_estimator(params)
 
@@ -267,6 +291,12 @@ _HAAT_ROLES = {"decomposition": _HAAT, "confidence": _CONFIDENCE}
     [
         ("none", _MAP, None),
         ("top_n", _MAP, {"answer": _TOP_N}),
+        ("human_as_a_tool", _MAP, {"decomposition": _HAAT, "confidence": _HAAT}),
+        (
+            "human_as_a_tool",
+            {**_MAP, "confidence_method": "sampling"},
+            dict.fromkeys(("decomposition", "confidence", "clustering"), _HAAT),
+        ),
         ("human_as_a_tool", {**_MAP, **_INSTRUMENT}, _HAAT_ROLES),
         (
             "human_as_a_tool",
@@ -296,9 +326,10 @@ def test_a_role_models_key_in_the_params_is_never_recorded(name, expected):
     assert record_role_models(name, stale).get("role_models") == expected
 
 
+@pytest.mark.parametrize("overrides", [{}, _INSTRUMENT], ids=["map", "overrides"])
 @pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])
-def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_method):
-    params = {**_MAP, **_INSTRUMENT, "confidence_method": confidence_method}
+def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_method, overrides):
+    params = {**_MAP, **overrides, "confidence_method": confidence_method}
     estimator = HumanAsAToolMethod()._get_estimator(params)
 
     ran = {"confidence": getattr(estimator, "_model", None) or estimator._sampling_model}
@@ -306,6 +337,28 @@ def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_me
         ran["clustering"] = estimator._clustering_model
     recorded = record_role_models("human_as_a_tool", params)["role_models"]
     assert recorded == {"decomposition": _HAAT, **ran}
+
+
+@pytest.mark.parametrize(
+    ("name", "params"),
+    [
+        ("top_n", {}),
+        ("top_n", _MAP),
+        ("human_as_a_tool", {}),
+        ("human_as_a_tool", _MAP),
+        ("human_as_a_tool", {"confidence_method": "sampling"}),
+        ("human_as_a_tool", {**_MAP, "confidence_method": "sampling"}),
+        ("human_as_a_tool", {**_MAP, "confidence_model": _CONFIDENCE}),
+        ("human_as_a_tool", {"clustering_model": _CLUSTERING, "confidence_method": "sampling"}),
+        ("human_as_a_tool", {**_MAP, **_INSTRUMENT, "confidence_method": "sampling"}),
+    ],
+)
+def test_preparation_pins_the_models_the_foreground_would_run(name, params):
+    """A prepared session runs on `preparation_params`, a foreground one on the
+    params as stored: every role resolves the same either way. Without a map
+    entry, pinning one must not pull confidence off its own default."""
+    cls = registry._REGISTRY[name]
+    assert cls.role_models(get_method(name).preparation_params(params)) == cls.role_models(params)
 
 
 @pytest.mark.asyncio

@@ -135,7 +135,11 @@ def assisted_methods() -> list[str]:
 
 def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
     """Per assisted method, the model its primary role would run on under
-    `params`, and its source, resolved the same way as the call itself."""
+    `params`, and its source, resolved the same way as the call itself.
+
+    Primary roles only: a map entry runs the other roles too, unless
+    overridden (#148). Each session's `role_models` records them all.
+    """
     return {
         name: resolve_model_and_source(params, cls.method_key, cls.primary_model_role)
         for name, cls in _assisted()

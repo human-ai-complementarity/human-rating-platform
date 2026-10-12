@@ -366,11 +366,12 @@ def test_create_and_patch_reject_the_session_record_key(client: TestClient):
     assert client.get(url).json()["assistance_params"] == {"n": 3}
 
 
-def test_a_role_moved_off_the_map_is_validated_with_no_other_edit(client: TestClient, monkeypatch):
-    """The override keys are derived from the roles, so a role that stops
-    inheriting `assistance_models` (#148 may move one) has its key checked."""
+def test_a_role_given_an_override_is_validated_with_no_other_edit(client: TestClient, monkeypatch):
+    """The override keys are derived from the override roles, so a role given
+    one has its key checked."""
     monkeypatch.setattr(
-        "services.assistance.model_resolution._INHERITING_ROLES", frozenset({"answer"})
+        "services.assistance.model_resolution._OVERRIDE_ROLES",
+        frozenset({"decomposition", "confidence", "clustering"}),
     )
     resp = client.post(
         "/api/admin/experiments",
@@ -488,12 +489,11 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
     )
     assert resp.status_code == 200, resp.text
 
-    # The prepared snapshot also pins the confidence model (#119).
-    confidence = get_settings().llm.confidence_model
+    # The prepared snapshot also pins the confidence model (#119): the map's (#148).
     snapshot = {
         **params,
-        "confidence_model": confidence,
-        "role_models": {"decomposition": _MAP_HAAT, "confidence": confidence},
+        "confidence_model": _MAP_HAAT,
+        "role_models": {"decomposition": _MAP_HAAT, "confidence": _MAP_HAAT},
     }
     assert advance.call_args.args[2] == snapshot
     assert _session_params(sync_engine) == snapshot
@@ -509,8 +509,19 @@ _MAP_CONFIDENCE = "openrouter/test/confidence-override"
         (
             "human_as_a_tool",
             {"assistance_models": {"human_as_a_tool": _MAP_HAAT}},
-            # None: the settings default.
-            {"decomposition": _MAP_HAAT, "confidence": None},
+            {"decomposition": _MAP_HAAT, "confidence": _MAP_HAAT},
+        ),
+        (
+            "human_as_a_tool",
+            {"assistance_models": {"human_as_a_tool": _MAP_HAAT}, "confidence_method": "sampling"},
+            dict.fromkeys(("decomposition", "confidence", "clustering"), _MAP_HAAT),
+        ),
+        (
+            # No entry: each role's settings default. Preparation pins one for
+            # decomposition, which confidence must not then follow.
+            "human_as_a_tool",
+            {"confidence_method": "sampling"},
+            dict.fromkeys(("decomposition", "confidence", "clustering")),
         ),
         (
             "human_as_a_tool",
@@ -562,8 +573,15 @@ def test_prepared_and_foreground_sessions_record_the_same_role_models(
         assert resp.status_code == 200, resp.text
 
     assert paths == [runner_module.__name__, operations.__name__]
-    default = get_settings().llm.confidence_model
-    expected = {role: model or default for role, model in role_models.items()}
+    llm = get_settings().llm
+    # None: the role's settings default; clustering's is confidence's.
+    defaults = {
+        "answer": llm.default_model,
+        "decomposition": llm.decomposition_model,
+        "confidence": llm.confidence_model,
+        "clustering": llm.confidence_model,
+    }
+    expected = {role: model or defaults[role] for role, model in role_models.items()}
     with sync_engine.connect() as conn:
         rows = conn.execute(text("SELECT params FROM assistance_sessions ORDER BY id")).scalars()
         recorded = [json.loads(row)["role_models"] for row in rows]

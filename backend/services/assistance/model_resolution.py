@@ -1,18 +1,17 @@
-"""Which model each assistance call runs on (#95, #96).
+"""Which model each assistance call runs on (#95, #96, #148).
 
 One resolver instead of an ad-hoc `params.get(...) or settings.llm.<x>` chain
 repeated at four call sites, so the precedence cannot drift.
 
-Answer and decomposition run the model *under test*: the method's entry in
-`assistance_params["assistance_models"]` (the wave's model, pinned by the
-question upload's `dataset_meta`), else the platform default for that role in
-`LLMSettings`.
+Every role a method calls a model for runs the model *under test* (#148): the
+method's entry in `assistance_params["assistance_models"]` (the wave's model,
+pinned by the question upload's `dataset_meta`), else the platform default for
+that role in `LLMSettings`.
 
-Confidence and clustering do not inherit the map today: each takes its own
-override (`confidence_model`, `clustering_model`), else the default.
-Clustering's default is whatever confidence resolves to. This records current
-behaviour, not a settled choice: whether confidence should follow the model
-under test is open in #148.
+Confidence and clustering keep an override (`confidence_model`,
+`clustering_model`) that beats the map: an escape hatch for running them on
+another model. Clustering follows confidence, override included, unless it has
+its own.
 
 Nothing here knows about datasets or waves: the wave's models are pinned once,
 when the pipeline's export is uploaded, and land in `assistance_params`.
@@ -40,9 +39,10 @@ _ROLE_FALLBACKS: dict[str, str] = {"clustering": "confidence"}
 # Every role an assistance method can call a model for.
 MODEL_ROLES: tuple[str, ...] = (*_ROLE_DEFAULTS, *_ROLE_FALLBACKS)
 
-# Roles that run the model *under test*, and so take `pinned_model`.
-# Confidence and clustering keep their own models for now (see #148).
-_INHERITING_ROLES = frozenset({"answer", "decomposition"})
+# Roles with a `<role>_model` override that beats `assistance_models`. The
+# primary roles have none: a second key for the model under test would be one
+# more place a model could hide from validation.
+_OVERRIDE_ROLES = frozenset({"confidence", "clustering"})
 
 
 def _override_key(role: str) -> str:
@@ -50,13 +50,11 @@ def _override_key(role: str) -> str:
 
 
 def instrument_model_keys() -> tuple[str, ...]:
-    """The `<role>_model` overrides, one per role that does not inherit
-    `assistance_models` (the inheriting roles have none: the map sets them).
+    """The `<role>_model` overrides, one per role in `_OVERRIDE_ROLES`.
 
-    Derived, so a new instrument role, or one moved between the sets (#148),
-    is validated with no edit here.
+    Derived, so a role given an override is validated with no edit here.
     """
-    return tuple(_override_key(role) for role in MODEL_ROLES if role not in _INHERITING_ROLES)
+    return tuple(_override_key(role) for role in MODEL_ROLES if role in _OVERRIDE_ROLES)
 
 
 # OpenRouter is the only transport; `llm._parse_model` rejects anything else.
@@ -76,8 +74,8 @@ REMOVED_MODEL_KEY = "model"
 ROLE_MODELS_KEY = "role_models"
 
 
-# Where a resolved model came from: the experiment's map (inheriting roles),
-# the role's own `<role>_model` key (the others), or the platform default.
+# Where a resolved model came from: the experiment's map, the role's own
+# `<role>_model` override, or the platform default.
 ModelSource = Literal["assistance_models", "override", "default"]
 
 
@@ -102,17 +100,17 @@ def resolve_model_and_source(
     The one resolution path: the calls themselves (via `resolve_model`) and
     the admin display (`registry.resolved_models`) both come through here.
     """
-    if role in _INHERITING_ROLES:
-        pinned = pinned_model(params, method)
-        if pinned:
-            return pinned, "assistance_models"
-    else:
+    if role in _OVERRIDE_ROLES:
         override = params.get(_override_key(role))
         if override:
             return str(override), "override"
+    # Before the map, so a fallback role follows its target's override too.
     fallback = _ROLE_FALLBACKS.get(role)
     if fallback is not None:
         return resolve_model_and_source(params, method, fallback)
+    pinned = pinned_model(params, method)
+    if pinned:
+        return pinned, "assistance_models"
     return role_default(role), "default"
 
 
