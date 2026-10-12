@@ -10,7 +10,8 @@ in that suffix — it is already handled — and must leave room for it.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from itertools import count
 
 from fastapi import HTTPException
 
@@ -111,19 +112,14 @@ def check_card_templates(values: Mapping[str, object]) -> None:
             check_template(template, field=field, allowed=allowed)
 
 
-def disambiguate(name: str, taken: set[str]) -> str:
-    """Append " (2)", " (3)" ... until `name` is unused.
+def numbered_variants(name: str) -> Iterator[str]:
+    """`name`, then "name (2)", "name (3)" ..., each trimmed so it still fits.
 
-    `experiments.name` has no unique constraint, so two arms of the same group
-    rendered from one template would otherwise be byte-identical and
-    indistinguishable in Prolific's study list.
+    Researchers tell studies apart by internal name (the admin list and
+    Prolific show it), so two arms whose internal template renders the same
+    take the first variant not already in use.
     """
-    if name not in taken:
-        return name
-    n = 2
-    while True:
+    yield name
+    for n in count(2):
         suffix = f" ({n})"
-        candidate = name[: TEMPLATE_MAX_LENGTH - len(suffix)].rstrip() + suffix
-        if candidate not in taken:
-            return candidate
-        n += 1
+        yield name[: TEMPLATE_MAX_LENGTH - len(suffix)].rstrip() + suffix
