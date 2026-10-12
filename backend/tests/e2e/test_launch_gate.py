@@ -375,11 +375,13 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
 
     target = _ready_in_group(client, fall25, "Target")
     _upload_one_question(client, target["id"])
+    # Each carries its internal name, which the admin UI shows over the public one.
     expected = [
-        {"id": same_wave["id"], "name": "Same wave"},
-        {"id": other_wave["id"], "name": "Other wave"},
-        {"id": never_ran["id"], "name": "Never ran"},
+        {"id": exp["id"], "name": exp["name"], "internal_name": exp["internal_name"]}
+        for exp in (same_wave, other_wave, never_ran)
     ]
+    assert [ref["name"] for ref in expected] == ["Same wave", "Other wave", "Never ran"]
+    assert all(ref["internal_name"] for ref in expected)
     preview = client.get(f"/api/admin/experiments/{target['id']}/launch/preview")
     assert preview.status_code == 200, preview.text
     assert preview.json() == {"excluded_experiments": expected}
