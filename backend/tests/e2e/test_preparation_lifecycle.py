@@ -1,6 +1,7 @@
 """Real claims and computation across runner failure/recovery boundaries."""
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 
+from config import get_settings
 from models import AssistancePreparation, Rater
 from services.assistance.base import InteractionStep, StepType
 from services.assistance.llm import provider_slot
@@ -239,8 +241,10 @@ def test_foreground_burst_uses_eight_workers_and_bounded_provider_fanout(client,
         assert peak_jobs == 8
         assert peak_calls == 8
         assert total_calls == 96
+        # Empty params stay empty apart from the models the session records.
+        recorded = json.dumps({"role_models": {"answer": get_settings().llm.default_model}})
         assert all(
-            result.params is None and result.payload is None and result.state is None
+            result.params == recorded and result.payload is None and result.state is None
             for result in results
         )
 

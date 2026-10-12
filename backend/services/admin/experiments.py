@@ -41,7 +41,9 @@ from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     RELOAD_HINT,
+    instrument_model_keys,
     reject_removed_model_key,
+    reject_role_models_key,
     validate_model_id,
 )
 from services.assistance.registry import assisted_methods, get_method
@@ -182,10 +184,12 @@ async def create_experiment(
     # The models are not inherited here. They are the wave's, and the wave's
     # copy lives in the pipeline — it reaches us stamped into the export's
     # `dataset_meta` and is pinned by the upload. Only an explicit payload
-    # `assistance_models` pins one at create.
+    # `assistance_models` pins one at create; it is validated because a bad id
+    # degrades to silent no-assistance rather than to an error.
     assistance_params = dict(payload.assistance_params or {}) or None
     if assistance_params:
         reject_removed_model_key(assistance_params, where="assistance_params", hint=RELOAD_HINT)
+        reject_role_models_key(assistance_params, where="assistance_params")
         _validate_changed_models({}, assistance_params)
 
     db_experiment = Experiment(
@@ -701,7 +705,13 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
     no-assistance step (or a 500 for a non-string). Only values this request
     changes are checked: the admin UI re-sends the stored params on every save,
     so a legacy value it merely restates must not block an unrelated edit.
+    Covers every instrument role's override and `assistance_models`.
     """
+    for key in instrument_model_keys():
+        value = merged.get(key)
+        if value not in (None, "") and value != stored.get(key):
+            _check_model_id(value, f"assistance_params.{key}")
+
     models = merged.get(ASSISTANCE_MODELS_KEY)
     if models is None or models == stored.get(ASSISTANCE_MODELS_KEY):
         return
@@ -742,6 +752,7 @@ async def update_experiment(
         reject_removed_model_key(
             payload.assistance_params, where="assistance_params", hint=RELOAD_HINT
         )
+        reject_role_models_key(payload.assistance_params, where="assistance_params")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
 

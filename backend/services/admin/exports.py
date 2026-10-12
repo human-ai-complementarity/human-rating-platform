@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 #
 # question_id strings are not unique within an experiment, so the join key
 # across the two files is the numeric row id (questions.id), not the string.
+#
+# Per Joshua on #96: "lets not duplicate data where possible… just attach the
+# experiment ID or session id associated with the rating". The session carries
+# the method and its resolved models, so one id is enough to load either later.
 EXPORT_COLUMNS = [
     "rating_id",
     "question_id",
@@ -39,6 +43,7 @@ EXPORT_COLUMNS = [
     "time_submitted",
     "response_time_seconds",
     "counts_toward_target",
+    "assistance_session_id",
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
@@ -106,6 +111,13 @@ def _build_export_row(
         rating.time_submitted.isoformat(),
         round(response_time, 2),
         counts_toward_target,
+        # Blank when the rating had no assistance. Join to assistance_sessions
+        # for the method (`method_name`) and `role_models` in its `params`:
+        # per role, the model that role is set to call, not one known to have
+        # answered; a session may end before calling a role at all. It is
+        # recorded on failed sessions too (`step_type` NONE, e.g. a
+        # provider_error), so filter on `step_type`.
+        rating.assistance_session_id or "",
     ]
 
 

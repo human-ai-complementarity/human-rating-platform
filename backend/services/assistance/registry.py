@@ -12,14 +12,24 @@ test different approaches and compare their effect on rating quality.
 2. Define a class that extends AssistanceMethod and implements start():
 
     class HintMethod(AssistanceMethod):
+        method_key = "hint"
+        primary_model_role = "answer"
         rater_instructions = (
             "For each question, an AI-generated hint will be shown alongside "
             "the question to help you reason through it."
         )
 
         async def start(self, question: Question, params: dict) -> InteractionStep:
-            hint = await generate_hint(question.question_text, params)
+            model = self.role_models(params)[self.primary_model_role]
+            hint = await generate_hint(question.question_text, model)
             return InteractionStep(type=StepType.DISPLAY, payload={"hint": hint}, is_terminal=True)
+
+   ``method_key`` is the name experiments select the method by, and keys its
+   ``assistance_models`` entry. ``primary_model_role`` is the
+   ``model_resolution`` role its rater-facing call runs on; leave it None for
+   a method that calls no model. Take models from ``role_models`` (override
+   ``model_roles`` if the method calls more than its primary role), never
+   literals, so what runs is what the session records.
 
    ``rater_instructions`` is a short plain-text description of how the method
    works from the rater's perspective, shown on the intro screen before they
@@ -27,10 +37,10 @@ test different approaches and compare their effect on rating quality.
    experience — leave as the empty string only if the method is invisible to
    the rater (e.g. NoAssistance).
 
-3. Register it here:
+3. Register it here, keyed by its ``method_key``:
 
     from .methods.hint import HintMethod
-    _REGISTRY["hint"] = HintMethod
+    _REGISTRY = {cls.method_key: cls for cls in (..., HintMethod)}
 
 4. Configure an experiment to use it by setting assistance_method="hint" on
    ExperimentCreate (and optionally assistance_params for method-specific config).
@@ -90,15 +100,15 @@ What is expected to evolve:
 from __future__ import annotations
 
 from .base import AssistanceMethod
-from .model_resolution import ModelSource, resolve_model_and_source
+from .model_resolution import ROLE_MODELS_KEY, ModelSource, resolve_model_and_source
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
 
+# Keyed by each class's own `method_key`, so the name an experiment selects a
+# method by is the one it resolves its models under.
 _REGISTRY: dict[str, type[AssistanceMethod]] = {
-    "none": NoAssistance,
-    "human_as_a_tool": HumanAsAToolMethod,
-    "top_n": TopNAssistance,
+    cls.method_key: cls for cls in (NoAssistance, HumanAsAToolMethod, TopNAssistance)
 }
 
 
@@ -114,22 +124,41 @@ def get_method(name: str) -> AssistanceMethod:
     return cls()
 
 
-def _default_models() -> dict[str, str]:
-    defaults = {name: cls.default_model() for name, cls in sorted(_REGISTRY.items())}
-    return {name: model for name, model in defaults.items() if model is not None}
+def _assisted() -> list[tuple[str, type[AssistanceMethod]]]:
+    return [(name, cls) for name, cls in sorted(_REGISTRY.items()) if cls.primary_model_role]
 
 
 def assisted_methods() -> list[str]:
-    """Registered methods that run on a model: those with a default model."""
-    return list(_default_models())
+    """Registered methods that run on a model: those with a primary model role."""
+    return [name for name, _ in _assisted()]
 
 
 def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
-    """Per assisted method, the model it would run on under `params`, and its source."""
+    """Per assisted method, the model its primary role would run on under
+    `params`, and its source, resolved the same way as the call itself."""
     return {
-        name: resolve_model_and_source(params, name, default)
-        for name, default in _default_models().items()
+        name: resolve_model_and_source(params, cls.method_key, cls.primary_model_role)
+        for name, cls in _assisted()
     }
+
+
+def record_role_models(name: str, params: dict | None) -> dict:
+    """A session's params snapshot: `params` plus, as `role_models`, the model
+    each role method `name` calls is called on (`AssistanceMethod.role_models`).
+
+    Shared by the foreground start and the preparation runner, the two places
+    a session row is created, so both record the same map. Reads the class
+    without instantiating it; an unknown or model-free method records none.
+    """
+    recorded = dict(params) if params else {}
+    # Create/PATCH reject the key; drop any that reached the row another way,
+    # so a model-free method never records a model.
+    recorded.pop(ROLE_MODELS_KEY, None)
+    cls = _REGISTRY.get(name)
+    models = cls.role_models(recorded) if cls is not None else {}
+    if models:
+        recorded[ROLE_MODELS_KEY] = models
+    return recorded
 
 
 def register(name: str, cls: type[AssistanceMethod]) -> None:
