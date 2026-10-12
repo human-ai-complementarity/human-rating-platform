@@ -35,8 +35,6 @@ def _to_response(dataset: Dataset) -> DatasetResponse:
         name=dataset.name,
         waves=json.loads(dataset.waves),
         created_at=dataset.created_at,
-        launch_ready=readiness.launch_ready,
-        missing_for_launch=readiness.missing_for_launch,
         complete=readiness.complete,
         missing_for_complete=readiness.missing_for_complete,
         **card_values_from_row(dataset),

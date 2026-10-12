@@ -5,11 +5,11 @@ editing the dataset (`POST`/`PATCH /admin/datasets`). Nothing seeds it: the
 vendored roster in `dataset_catalog.py` is a frozen backfill of names and
 waves, not a card sync.
 
-`None` means "not declared", which readiness treats as a gap. Readiness has
-two levels: a *launchable* card declares how its studies are named and
-described; a *complete* one also carries the economics, the estimated
-completion time and reward. Those stay optional at onboarding, since the
-pilot form asks for them anyway.
+`None` means "not declared", which readiness treats as a gap. A card is
+*complete* once it declares how its studies are named and described and
+carries their economics, the estimated completion time and reward. That is
+the card's only readiness: whether a study can launch is decided on the
+experiment, not here.
 
 Deliberately absent, and why:
 
@@ -50,27 +50,20 @@ CARD_FIELDS: tuple[str, ...] = tuple(DatasetCardFields.model_fields)
 # NULL means undeclared; '[]' is a real declaration of "none".
 _JSON_CARD_FIELDS = ("screeners",)
 
-# Mandatory before a *study* launches: a dataset missing any of these is not
-# launchable. Per Joshua on #96 none of this is needed for headroom analysis —
-# an unfinished card still uploads and analyses.
+# What a *complete* card declares. Per Joshua on #96 none of this is needed
+# for headroom analysis — an unfinished card still uploads and analyses.
 #
 # Only fields this card owns can be required *of it*. The rater instructions
 # and the prompt prefix/suffix are equally mandatory before a launch, but they
 # arrive with the upload, so the gate that asks for them reads the experiment
 # row instead.
-LAUNCH_REQUIRED_FIELDS: tuple[str, ...] = (
+COMPLETE_REQUIRED_FIELDS: tuple[str, ...] = (
     "external_study_name",
     "internal_study_name",
     # The Prolific-facing blurb. Mandatory per Joshua on #96: "for the
     # per-ExperimentRound description, this can be a mandatory field".
     "study_blurb",
-)
-
-# What a *complete* card adds on top: the study's economics. Optional at
-# onboarding, since the pilot form asks for them anyway. But a dataset is
-# not complete until both are on its card.
-COMPLETE_REQUIRED_FIELDS: tuple[str, ...] = (
-    *LAUNCH_REQUIRED_FIELDS,
+    # The study's economics.
     "estimated_completion_time",
     "reward",
 )
@@ -92,18 +85,9 @@ def missing_fields(values: Mapping[str, object], required: tuple[str, ...]) -> l
 
 @dataclass(frozen=True)
 class CardReadiness:
-    """How far a card is filled in: launchable, then complete.
+    """Whether a card is complete, and what it lacks if not."""
 
-    `missing_for_complete` lists everything a complete card still lacks, so it
-    always includes `missing_for_launch`.
-    """
-
-    missing_for_launch: list[str]
     missing_for_complete: list[str]
-
-    @property
-    def launch_ready(self) -> bool:
-        return not self.missing_for_launch
 
     @property
     def complete(self) -> bool:
@@ -112,10 +96,7 @@ class CardReadiness:
 
 def card_readiness(values: Mapping[str, object]) -> CardReadiness:
     """Readiness of card values given in card vocabulary."""
-    return CardReadiness(
-        missing_for_launch=missing_fields(values, LAUNCH_REQUIRED_FIELDS),
-        missing_for_complete=missing_fields(values, COMPLETE_REQUIRED_FIELDS),
-    )
+    return CardReadiness(missing_for_complete=missing_fields(values, COMPLETE_REQUIRED_FIELDS))
 
 
 def _card_column(name: str) -> str:

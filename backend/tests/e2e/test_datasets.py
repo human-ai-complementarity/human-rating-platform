@@ -99,19 +99,18 @@ def test_delete_removes_dataset(client: TestClient) -> None:
     assert client.delete(f"/api/admin/datasets/{created['id']}").status_code == 404
 
 
-def test_card_fields_round_trip_and_drive_launch_readiness(client: TestClient) -> None:
-    """A hand-created dataset can be made launchable, then complete, without a deploy.
+def test_card_fields_round_trip_and_drive_readiness(client: TestClient) -> None:
+    """A hand-created dataset's card can be completed without a deploy.
 
     This is why the card lives in columns rather than in a file shipped with
     the code: the vendored roster in `dataset_catalog.py` carries names and
     waves only, and a `POST /admin/datasets` row is not in it at all, so a
-    read-through design would leave such rows permanently un-launchable.
+    read-through design would leave such rows permanently incomplete.
     """
     created = _create(client, "hand-made", ["fall25"])
-    assert created["launch_ready"] is False
     assert created["complete"] is False
-    assert "study_blurb" in created["missing_for_launch"]
-    assert "reward" not in created["missing_for_launch"]
+    assert "launch_ready" not in created
+    assert "study_blurb" in created["missing_for_complete"]
     assert "reward" in created["missing_for_complete"]
     assert created["study_blurb"] is None
 
@@ -125,9 +124,7 @@ def test_card_fields_round_trip_and_drive_launch_readiness(client: TestClient) -
     )
     assert filled.status_code == 200, filled.text
     body = filled.json()
-    assert body["launch_ready"] is True
-    assert body["missing_for_launch"] == []
-    # Economics are optional at onboarding, but the card isn't complete without them.
+    # The card isn't complete without its economics.
     assert body["complete"] is False
     assert body["missing_for_complete"] == ["estimated_completion_time", "reward"]
     assert body["name"] == "hand-made"  # untouched by a card-only PATCH

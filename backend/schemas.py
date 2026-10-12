@@ -485,7 +485,7 @@ class DatasetCardFields(BaseModel):
 
     Shared by create / update / response so the three cannot drift. Every
     field is optional — a card is filled in over time, and an unfinished one
-    is still legal (it just isn't launchable). On PATCH an omitted field is
+    is still legal (it just isn't complete). On PATCH an omitted field is
     left unchanged and an explicit `null` clears it.
 
     Scope is how a *study* on the dataset is run. The dataset's own
@@ -526,14 +526,10 @@ class DatasetResponse(DatasetCardFields):
     name: str
     waves: list[str] = Field(default_factory=list)
     created_at: datetime
-    # Two levels of card readiness. Neither is needed to create, upload to,
-    # or analyse a dataset. `launch_ready`: every field in
-    # `LAUNCH_REQUIRED_FIELDS` is declared. `complete`: launch-ready and the
-    # economics (estimated_completion_time, reward) are on the card too.
-    # Each `missing_for_*` lists what that level still lacks, so
-    # `missing_for_complete` includes `missing_for_launch`.
-    launch_ready: bool = False
-    missing_for_launch: list[str] = Field(default_factory=list)
+    # Card readiness: `complete` once every field in `COMPLETE_REQUIRED_FIELDS`
+    # is declared; `missing_for_complete` lists the rest. Not needed to
+    # create, upload to, or analyse a dataset, and not a launch signal:
+    # whether a study can launch is decided on the experiment.
     complete: bool = False
     missing_for_complete: list[str] = Field(default_factory=list)
 
