@@ -2455,7 +2455,8 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   );
 
   state.launchError = null;
-  // A sibling added since the panel loaded is named in the confirm.
+  // A card edit and a sibling added since the panel loaded reach the confirm.
+  state.datasets[0] = { ...state.datasets[0], estimated_completion_time: 25, reward: 1000 };
   state.launchExcluded = [
     ...state.launchExcluded,
     { id: 11, name: 'Passage rating', internal_name: 'passages fall25 decomp' },
@@ -2470,7 +2471,7 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
 
   await expect(page.getByTestId('study-rounds-list')).toBeVisible();
   expect(confirmMessage).toBe(
-    'Create a pilot draft from the passages card: 30 min, £9.00 per participant?\n' +
+    'Create a pilot draft from the passages card: 25 min, £10.00 per participant?\n' +
       'It excludes participants of: passages fall24 control, Passages fall25 top_n, ' +
       'passages fall25 decomp.\n' +
       'You can still edit the draft before publishing.',
