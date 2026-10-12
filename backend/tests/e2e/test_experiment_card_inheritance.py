@@ -38,9 +38,11 @@ _EXPORT_META = {
 }
 
 
-def _carded_group(client: TestClient, name: str = "medqa", wave: str = "fall25") -> dict:
+def _carded_group(
+    client: TestClient, name: str = "medqa", wave: str = "fall25", **card: object
+) -> dict:
     dataset = client.post(
-        "/api/admin/datasets", json={"name": name, "waves": [wave], **_CARD}
+        "/api/admin/datasets", json={"name": name, "waves": [wave], **_CARD, **card}
     ).json()
     group = client.post(
         "/api/admin/experiment-groups",
@@ -120,14 +122,44 @@ def test_a_nameless_create_without_a_card_template_is_a_clean_400(client: TestCl
     assert "external_study_name" in resp.json()["detail"]
 
 
-def test_identical_renders_are_disambiguated(client: TestClient):
+def test_identical_internal_renders_are_numbered(client: TestClient):
+    """Researchers tell studies apart by internal name, so that is the one
+    numbered; the public name stays the card's fixed text for every arm."""
+    group = _carded_group(client, internal_study_name="{dataset} {wave}")
+    # A public name equal to the candidate does not count; only internal names do.
+    _create(client, name="medqa fall25")
+    exps = [
+        _create(client, group_id=group["id"], assistance_method=method)
+        for method in ("none", "top_n", "none")
+    ]
+
+    assert [e["name"] for e in exps] == ["Passage comprehension rating"] * 3
+    assert [e["internal_name"] for e in exps] == [
+        "medqa fall25",
+        "medqa fall25 (2)",
+        "medqa fall25 (3)",
+    ]
+
+    # A typed internal name is kept as is.
+    typed = _create(client, name="x", internal_name="medqa fall25", group_id=group["id"])
+    assert typed["internal_name"] == "medqa fall25"
+
+
+def test_numbering_continues_past_the_first_batch_of_candidates(client: TestClient):
+    group = _carded_group(client, internal_study_name="{dataset}")
+    taken = ["medqa"] + [f"medqa ({n})" for n in range(2, 26)]
+    for internal_name in taken:
+        _create(client, name="x", internal_name=internal_name)
+
+    exp = _create(client, group_id=group["id"])
+    assert exp["internal_name"] == "medqa (26)"
+
+
+def test_internal_names_differing_on_the_arm_are_not_numbered(client: TestClient):
     group = _carded_group(client)
     first = _create(client, group_id=group["id"], assistance_method="none")
     second = _create(client, group_id=group["id"], assistance_method="top_n")
 
-    assert first["name"] == "Passage comprehension rating"
-    assert second["name"] == "Passage comprehension rating (2)"
-    # Internal names differ on the arm, so they need no disambiguation.
     assert first["internal_name"] == "medqa fall25 none"
     assert second["internal_name"] == "medqa fall25 top_n"
 
