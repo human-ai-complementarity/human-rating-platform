@@ -77,6 +77,8 @@ class OneClickLaunchRequest(BaseModel):
 class ExperimentRef(BaseModel):
     id: int
     name: str
+    # The admin UI shows `internal_name || name`; public names can be generic.
+    internal_name: Optional[str] = None
 
 
 class OneClickLaunchPreview(BaseModel):
@@ -281,6 +283,8 @@ class ExperimentResponse(BaseModel):
     # ready. Not needed to upload or analyse — only to launch.
     launch_ready: bool = True
     launch_blockers: list[str] = Field(default_factory=list)
+    # How to fix each blocker, one per blocker in the same order.
+    launch_blocker_fixes: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

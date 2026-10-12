@@ -200,6 +200,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     // its own test below.
     launch_ready: true,
     launch_blockers: [],
+    launch_blocker_fixes: [],
     ...partial,
   };
 }
@@ -2196,6 +2197,12 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 
 
 test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
+  // Served by the API (status.py), one per blocker; the page renders them as given.
+  const fixes = [
+    'Rater instructions: set them under Instructions & prompts.',
+    'Internal study name: set it with the pencil by its title.',
+    'Assistance model: PATCH assistance_params.assistance_models.<method>.',
+  ];
   const state = createMockState();
   state.experiments = [
     buildExperiment(state, {
@@ -2203,12 +2210,8 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
       name: 'Unfinished Experiment',
       question_count: 2,
       launch_ready: false,
-      launch_blockers: [
-        'rater instructions',
-        'prompt prefix',
-        'internal study name',
-        'assistance model',
-      ],
+      launch_blockers: ['rater instructions', 'internal study name', 'assistance model'],
+      launch_blocker_fixes: fixes,
     }),
   ];
   state.nextExperimentId = 2;
@@ -2229,20 +2232,14 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
 
   // The same list the API would reject the launch with, shown before the
   // admin fills in the whole form.
-  await expect(page.getByTestId('launch-blockers')).toContainText('rater instructions');
-  await expect(page.getByTestId('launch-blockers')).toContainText('prompt prefix');
-  // Each blocker gets the fix for where its value comes from: the text from
-  // the upload (editable here), the internal name from the card only at create.
-  await expect(page.getByTestId('launch-blockers')).toContainText(
-    'If the upload lacked them, edit them under Instructions & prompts.',
+  const banner = page.getByTestId('launch-blockers');
+  await expect(banner).toContainText(
+    'missing rater instructions, internal study name, assistance model.',
   );
-  await expect(page.getByTestId('launch-blockers')).toContainText(
-    'Internal study name: the dataset card fills it only when an experiment is created.',
-  );
-  // The model has no field: the export carries a per-method map, and a PATCH can set an entry.
-  await expect(page.getByTestId('launch-blockers')).toContainText(
-    'PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>.',
-  );
+  // Each fix as the API served it, with no copy of its own.
+  for (const fix of fixes) {
+    await expect(banner).toContainText(fix);
+  }
   await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
 });
 
