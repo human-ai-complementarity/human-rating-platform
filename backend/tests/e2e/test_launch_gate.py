@@ -577,14 +577,22 @@ def test_one_click_needs_the_whole_card_not_just_economics(client: TestClient, e
 
 @respx.mock
 def test_one_click_applies_the_launch_gate(client: TestClient, enable_prolific):
-    """One-click is a shortcut through the pilot form, not around readiness.
+    """One-click is a shortcut through the pilot form, not around readiness:
+    the pilot's own gate refuses it, even with a complete card.
 
     Questions are uploaded first so the gate is what refuses — without them the
-    missing upload is reported instead, which is the check just above it.
+    missing upload is reported instead, which is checked first.
     """
-    exp = client.post("/api/admin/experiments", json={"name": "Bare"}).json()
+    dataset = client.post(
+        "/api/admin/datasets",
+        json={"name": "gated", "waves": ["fall25"], **_CARD, **_ECONOMICS},
+    ).json()
+    group = _group(client, dataset, "fall25")
+    exp = client.post("/api/admin/experiments", json={"group_id": group["id"]}).json()
     _upload_one_question(client, exp["id"])
+    route = _mock_create_study()
 
     resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
     assert resp.status_code == 400
     assert "rater instructions" in resp.json()["detail"]
+    assert route.call_count == 0
