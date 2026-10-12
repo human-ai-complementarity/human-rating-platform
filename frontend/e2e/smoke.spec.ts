@@ -2319,7 +2319,7 @@ test("a pilot's time and reward can be saved to the dataset card", async ({ page
 
   // Copied unconverted: minutes, and minor units per participant.
   await expect(page.getByTestId('card-readiness')).toHaveText(
-    'Card complete: one-click launch can use it.',
+    'Card complete: one-click pilots can use it.',
   );
   expect(state.datasetPatches).toEqual([{ estimated_completion_time: 20, reward: 900 }]);
   await expect(page.getByTestId('save-to-card-button')).toHaveCount(0);
