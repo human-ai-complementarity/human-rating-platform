@@ -14,10 +14,10 @@ import {
   textareaStyle,
 } from './experiment-detail/ui';
 
-// Placeholders each name template may use; mirrors backend study_names.py. The
-// public name gets only {dataset}, so raters can't tell which arm they're in.
+// Placeholders each name may use; mirrors backend study_names.py. The public
+// name takes none, so raters can't tell the dataset, wave or arm.
 const TEMPLATE_PLACEHOLDERS = {
-  external_study_name: ['dataset'],
+  external_study_name: [],
   internal_study_name: ['dataset', 'wave', 'method'],
 } as const;
 
@@ -45,16 +45,16 @@ function toDraft(card: Dataset, currencyCode: string | null): Draft {
   };
 }
 
+// Only placeholders are checked here; the server owns the round-suffix rule.
 function checkTemplate(field: keyof typeof TEMPLATE_PLACEHOLDERS, value: string) {
   const allowed: readonly string[] = TEMPLATE_PLACEHOLDERS[field];
   for (const [, key] of value.matchAll(/\{([^{}]*)\}/g)) {
-    if (!allowed.includes(key.trim())) {
-      const known = allowed.map((p) => `{${p}}`).join(', ');
-      throw new Error(`Unknown placeholder {${key}} in ${fieldLabel(field)}. Available: ${known}.`);
+    if (allowed.includes(key.trim())) continue;
+    if (allowed.length === 0) {
+      throw new Error(`Remove {${key}} from ${fieldLabel(field)}: raters see it, so it takes no placeholders.`);
     }
-  }
-  if (/-\s*(pilot|round)\b/i.test(value)) {
-    throw new Error(`Leave "- Pilot" and "- Round" out of ${fieldLabel(field)}; each study adds its own.`);
+    const known = allowed.map((p) => `{${p}}`).join(', ');
+    throw new Error(`Unknown placeholder {${key}} in ${fieldLabel(field)}. Available: ${known}.`);
   }
 }
 
@@ -255,8 +255,8 @@ export default function DatasetCardEditor({
             </div>
             <Field
               id="card-external_study_name"
-              label="Public study name template"
-              hint="Names an experiment created through the API without one. Placeholder: {dataset}."
+              label="Public study name"
+              hint="Shown to raters, so no placeholders."
             >
               {text('external_study_name', 'card-external-name-input')}
             </Field>

@@ -2642,16 +2642,11 @@ test('the card editor sends the other card fields and tells no screeners from de
   await page.getByTestId('group-card-edit-1').click();
   const editor = page.getByTestId('dataset-card-editor');
 
-  // The public name may only use {dataset}, and no template carries a round suffix.
-  await editor.getByTestId('card-external-name-input').fill('{dataset} {wave}');
+  // The public name takes no placeholders.
+  await editor.getByTestId('card-external-name-input').fill('{dataset} passages');
   await editor.getByTestId('card-save-button').click();
   await expect(editor.getByRole('alert')).toContainText(
-    'Unknown placeholder {wave} in external study name. Available: {dataset}.',
-  );
-  await editor.getByTestId('card-external-name-input').fill('{dataset} - Pilot');
-  await editor.getByTestId('card-save-button').click();
-  await expect(editor.getByRole('alert')).toContainText(
-    'Leave "- Pilot" and "- Round" out of external study name',
+    'Remove {dataset} from external study name: raters see it, so it takes no placeholders.',
   );
   expect(state.datasetPatches).toEqual([]);
 
@@ -2660,13 +2655,14 @@ test('the card editor sends the other card fields and tells no screeners from de
   for (const screener of ['ai_taskers', 'fact_checkers', 'approval_rate']) {
     await editor.getByTestId(`card-screener-${screener}`).uncheck();
   }
-  await editor.getByTestId('card-external-name-input').fill('{dataset} passages');
+  // A hyphenated word isn't a round suffix; the server refuses a real one.
+  await editor.getByTestId('card-external-name-input').fill('Co-pilot evaluation');
   await editor.getByTestId('card-time-input').fill('25');
   await editor.getByTestId('card-study-label-select').selectOption('survey');
   await editor.getByTestId('card-save-button').click();
   await expect.poll(() => state.datasetPatches.length).toBe(1);
   expect(state.datasetPatches[0]).toEqual({
-    external_study_name: '{dataset} passages',
+    external_study_name: 'Co-pilot evaluation',
     estimated_completion_time: 25,
     study_label: 'survey',
     screeners: [],
