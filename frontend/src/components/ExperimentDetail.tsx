@@ -2709,7 +2709,7 @@ function LaunchPanel(props: {
               )}
 
               {/* After a pilot, offer its time and reward to the dataset card so
-                  the dataset's next study can launch in one click. */}
+                  the dataset's next study can skip the pilot form. */}
               {recommendation &&
                 recommendation.avg_time_per_question_seconds > 0 &&
                 experiment.group_dataset_id !== null &&
