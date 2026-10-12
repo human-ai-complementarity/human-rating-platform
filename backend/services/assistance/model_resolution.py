@@ -28,12 +28,14 @@ from fastapi import HTTPException
 from config import get_settings
 
 # Role -> the LLMSettings attribute that backs it when nothing overrides.
-# Clustering has none: it follows whatever confidence resolves to.
 _ROLE_DEFAULTS: dict[str, str] = {
     "answer": "default_model",
     "decomposition": "decomposition_model",
     "confidence": "confidence_model",
 }
+
+# Roles with no setting of their own: each defaults to what another resolves to.
+_ROLE_FALLBACKS: dict[str, str] = {"clustering": "confidence"}
 
 # Roles that run the model *under test*, and so take `pinned_model`.
 # Confidence and clustering keep their own models for now (see #148).
@@ -58,8 +60,9 @@ REMOVED_MODEL_KEY = "model"
 RESOLVED_MODEL_KEY = "resolved_model"
 
 
-# Where a resolved model came from: the experiment's map, or the method default.
-ModelSource = Literal["assistance_models", "default"]
+# Where a resolved model came from: the experiment's map (inheriting roles),
+# the role's own `<role>_model` key (the others), or the platform default.
+ModelSource = Literal["assistance_models", "override", "default"]
 
 
 def role_default(role: str) -> str:
@@ -76,23 +79,30 @@ def pinned_model(params: Mapping[str, object], method: str) -> str | None:
 
 
 def resolve_model_and_source(
-    params: Mapping[str, object], method: str, default: str
+    params: Mapping[str, object], method: str, role: str
 ) -> tuple[str, ModelSource]:
-    """The model under test for `method`, plus which of the two it used."""
-    pinned = pinned_model(params, method)
-    if pinned:
-        return pinned, "assistance_models"
-    return default, "default"
+    """The model `method` runs `role` on under `assistance_params`, and its source.
+
+    The one resolution path: the calls themselves (via `resolve_model`) and
+    the admin display (`registry.resolved_models`) both come through here.
+    """
+    if role in _INHERITING_ROLES:
+        pinned = pinned_model(params, method)
+        if pinned:
+            return pinned, "assistance_models"
+    else:
+        override = params.get(f"{role}_model")
+        if override:
+            return str(override), "override"
+    fallback = _ROLE_FALLBACKS.get(role)
+    if fallback is not None:
+        return resolve_model_and_source(params, method, fallback)
+    return role_default(role), "default"
 
 
 def resolve_model(params: Mapping[str, object], method: str, role: str) -> str:
     """The model `method` runs `role` on, given an experiment's `assistance_params`."""
-    if role in _INHERITING_ROLES:
-        return resolve_model_and_source(params, method, role_default(role))[0]
-    model = params.get(f"{role}_model")
-    if not model and role == "clustering":
-        return resolve_model(params, method, "confidence")
-    return str(model or role_default(role))
+    return resolve_model_and_source(params, method, role)[0]
 
 
 # Appended on create/PATCH: an admin page loaded before `model` was removed

@@ -11,8 +11,12 @@ from config import get_settings
 from models import Question
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
-from services.assistance.model_resolution import resolve_model, validate_model_id
-from services.assistance.registry import resolved_models
+from services.assistance.model_resolution import (
+    resolve_model,
+    resolve_model_and_source,
+    validate_model_id,
+)
+from services.assistance.registry import assisted_methods, get_method, resolved_models
 
 # Sentinels, not real models: a map entry equal to a settings default would
 # let a call site that ignores the map pass anyway.
@@ -83,6 +87,35 @@ def test_an_entry_equal_to_the_default_still_reports_the_map():
     default = get_settings().llm.default_model
     resolved = resolved_models({"assistance_models": {"top_n": default}})
     assert resolved["top_n"] == (default, "assistance_models")
+
+
+@pytest.mark.parametrize("params", [{}, _MAP, {"assistance_models": {"top_n": _TOP_N}}])
+def test_the_display_and_the_call_resolve_through_one_function(params):
+    """The admin display asks `resolve_model_and_source` about each method's
+    primary role: the question the call itself asks, via `resolve_model`."""
+    for name, resolved in resolved_models(params).items():
+        role = get_method(name).primary_model_role
+        assert resolved == resolve_model_and_source(params, name, role)
+        assert resolved[0] == resolve_model(params, name, role)
+
+
+def test_every_displayed_role_takes_the_map():
+    """The display shows primary roles only. They run the model under test, so
+    their source is never `override`, which the API's `ResolvedModel` lacks."""
+    for name in assisted_methods():
+        role = get_method(name).primary_model_role
+        params = {"assistance_models": {name: _SESSION}, f"{role}_model": _CONFIDENCE}
+        assert resolve_model_and_source(params, name, role) == (_SESSION, "assistance_models")
+
+
+def test_an_instrument_override_reports_its_source():
+    params = {"confidence_model": _CONFIDENCE}
+    override = (_CONFIDENCE, "override")
+    assert resolve_model_and_source(params, "human_as_a_tool", "confidence") == override
+    # Clustering follows confidence, source included.
+    assert resolve_model_and_source(params, "human_as_a_tool", "clustering") == override
+    default = (get_settings().llm.confidence_model, "default")
+    assert resolve_model_and_source({}, "human_as_a_tool", "clustering") == default
 
 
 def test_the_instrument_takes_its_own_overrides():

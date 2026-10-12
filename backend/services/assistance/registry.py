@@ -119,21 +119,21 @@ def get_method(name: str) -> AssistanceMethod:
     return cls()
 
 
-def _default_models() -> dict[str, str]:
-    defaults = {name: cls.default_model() for name, cls in sorted(_REGISTRY.items())}
-    return {name: model for name, model in defaults.items() if model is not None}
+def _assisted() -> list[tuple[str, type[AssistanceMethod]]]:
+    return [(name, cls) for name, cls in sorted(_REGISTRY.items()) if cls.primary_model_role]
 
 
 def assisted_methods() -> list[str]:
-    """Registered methods that run on a model: those with a default model."""
-    return list(_default_models())
+    """Registered methods that run on a model: those with a primary model role."""
+    return [name for name, _ in _assisted()]
 
 
 def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
-    """Per assisted method, the model it would run on under `params`, and its source."""
+    """Per assisted method, the model its primary role would run on under
+    `params`, and its source, resolved the same way as the call itself."""
     return {
-        name: resolve_model_and_source(params, name, default)
-        for name, default in _default_models().items()
+        name: resolve_model_and_source(params, name, cls.primary_model_role)
+        for name, cls in _assisted()
     }
 
 
