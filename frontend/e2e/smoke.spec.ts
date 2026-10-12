@@ -2512,6 +2512,33 @@ test('cancelling the one-click confirm sends no launch request', async ({ page }
   expect(state.launchRequests).toEqual([]);
 });
 
+test('a one-click draft whose refresh fails offers no second launch', async ({ page }) => {
+  const state = createMockState();
+  seedCardExperiment(state, COMPLETE_CARD);
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByTestId('one-click-card')).toBeVisible();
+
+  // The launch succeeds, but the rounds reload that would show its draft fails.
+  await page.route('**/api/admin/experiments/1/prolific/rounds', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await fulfillJson(route, 500, { detail: 'Round history unavailable' });
+  });
+  await page.getByTestId('one-click-launch-button').click();
+
+  await expect(page.getByTestId('one-click-created')).toHaveText(
+    'Pilot draft created — reload to see it.',
+  );
+  await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
+  await expect(page.getByTestId('one-click-launch-button')).toHaveText(
+    'Create pilot draft from the card',
+  );
+  await expect(page.getByTestId('one-click-panel').getByRole('alert')).toHaveCount(0);
+  expect(state.launchRequests).toEqual([1]);
+});
+
 test('an incomplete dataset card names what it lacks and offers no one-click', async ({ page }) => {
   const state = createMockState();
   seedCardExperiment(state, { ...COMPLETE_CARD, estimated_completion_time: null, reward: null });
