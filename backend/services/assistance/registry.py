@@ -20,15 +20,16 @@ test different approaches and compare their effect on rating quality.
         )
 
         async def start(self, question: Question, params: dict) -> InteractionStep:
-            model = resolve_model(params, self.method_key, self.primary_model_role)
+            model = self.role_models(params)[self.primary_model_role]
             hint = await generate_hint(question.question_text, model)
             return InteractionStep(type=StepType.DISPLAY, payload={"hint": hint}, is_terminal=True)
 
    ``method_key`` is the name experiments select the method by, and keys its
    ``assistance_models`` entry. ``primary_model_role`` is the
    ``model_resolution`` role its rater-facing call runs on; leave it None for
-   a method that calls no model. Resolve through both, never literals, so
-   what runs is what the session records.
+   a method that calls no model. Take models from ``role_models`` (override
+   ``model_roles`` if the method calls more than its primary role), never
+   literals, so what runs is what the session records.
 
    ``rater_instructions`` is a short plain-text description of how the method
    works from the rater's perspective, shown on the intro screen before they
@@ -143,7 +144,7 @@ def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
 
 def record_role_models(name: str, params: dict | None) -> dict:
     """A session's params snapshot: `params` plus, as `role_models`, the model
-    each role method `name` calls runs on (`AssistanceMethod.role_models`).
+    each role method `name` calls is called on (`AssistanceMethod.role_models`).
 
     Shared by the foreground start and the preparation runner, the two places
     a session row is created, so both record the same map. Reads the class
