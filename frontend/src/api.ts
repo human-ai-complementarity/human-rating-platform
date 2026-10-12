@@ -93,6 +93,8 @@ const routes = {
     apiKeys: '/admin/api-keys',
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
+    launch: (id: number) => `/admin/experiments/${id}/launch`,
+    launchPreview: (id: number) => `/admin/experiments/${id}/launch/preview`,
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
     prolificRounds: (id: number) => `/admin/experiments/${id}/prolific/rounds`,
@@ -664,14 +666,14 @@ export const api = {
   // first study usually goes through the pilot form. Publishing is still separate.
   // It excludes the dataset's other experiments; getLaunchPreview lists them.
   async launchFromCard(experimentId: number, places?: number): Promise<ExperimentRound> {
-    return requestJson<ExperimentRound>(`/admin/experiments/${experimentId}/launch`, {
+    return requestJson<ExperimentRound>(routes.admin.launch(experimentId), {
       method: 'POST',
       json: places != null ? { places } : {},
     });
   },
 
   async getLaunchPreview(experimentId: number): Promise<LaunchPreview> {
-    return requestJson<LaunchPreview>(`/admin/experiments/${experimentId}/launch/preview`);
+    return requestJson<LaunchPreview>(routes.admin.launchPreview(experimentId));
   },
 
   async getRecommendation(
