@@ -55,6 +55,8 @@ export interface Experiment {
   // ready; the list is exactly what the API would reject the launch with.
   launch_ready: boolean;
   launch_blockers: string[];
+  // How to fix each blocker, one per blocker in the same order.
+  launch_blocker_fixes: string[];
 }
 
 export interface Tag {
