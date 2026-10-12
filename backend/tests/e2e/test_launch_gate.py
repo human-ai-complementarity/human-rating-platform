@@ -523,9 +523,9 @@ def test_one_click_refuses_a_card_without_economics_until_they_are_added(
 
 @respx.mock
 def test_one_click_needs_the_whole_card_not_just_economics(client: TestClient, enable_prolific):
-    """Complete means launch-ready plus economics. Names given explicitly at
-    create make the experiment launchable, but the card itself still lacks its
-    name templates, so it is not complete and one-click refuses."""
+    """Names given explicitly at create clear the experiment's launch gate,
+    but the card itself still lacks its name templates, so it is not complete
+    and one-click refuses."""
     dataset = client.post(
         "/api/admin/datasets",
         json={"name": "gated", "waves": ["fall25"], "study_blurb": "Rate.", **_ECONOMICS},

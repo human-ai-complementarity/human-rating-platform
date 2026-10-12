@@ -9,6 +9,7 @@ Design goals for contributors:
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -205,7 +206,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = Field(default=False)
 
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env",
+        env_file=BASE_DIR / os.environ.get("ENV_FILE", ".env"),
         env_file_encoding="utf-8",
         toml_file=BASE_DIR / "config.toml",
         env_nested_delimiter="__",

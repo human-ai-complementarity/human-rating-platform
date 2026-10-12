@@ -627,7 +627,7 @@ class Dataset(SQLModel, table=True):
     # --- Dataset card (#96) -------------------------------------------------
     # Study configuration declared once per dataset, set by editing the
     # dataset (POST/PATCH /admin/datasets). All nullable: a card is filled in
-    # over time, and an unfinished one is legal — it just can't launch a study.
+    # over time, and an unfinished one is legal.
     #
     # Prefixed `card_` so a card column never reads as the same thing as the
     # `experiments` column next to it. `None` means undeclared.

@@ -50,7 +50,7 @@ const COMPLETE_CARD_FIELDS = [
   'reward',
 ] as const;
 
-// Mirrors the backend's `complete` readiness level for the mocked card.
+// Mirrors the backend's card readiness for the mocked card.
 function withCardReadiness(dataset: DatasetRecord): DatasetRecord {
   const missing = COMPLETE_CARD_FIELDS.filter((field) => dataset[field] == null);
   return { ...dataset, complete: missing.length === 0, missing_for_complete: missing };
@@ -2357,7 +2357,7 @@ test("a pilot's time and reward can be saved to the dataset card", async ({ page
 
   // Copied unconverted: minutes, and minor units per participant.
   await expect(page.getByTestId('card-readiness')).toHaveText(
-    'Card complete: the next study on this dataset can launch in one click.',
+    'Card complete: one-click launch can use it.',
   );
   expect(state.datasetPatches).toEqual([{ estimated_completion_time: 20, reward: 900 }]);
   await expect(page.getByTestId('save-to-card-button')).toHaveCount(0);
