@@ -105,10 +105,8 @@ def test_the_model_under_test_has_no_role_override(method, role):
 
 @pytest.mark.parametrize("role", ["confidence", "clustering"])
 def test_the_instrument_does_not_inherit_the_map(role):
-    """The map holds the model under test; the confidence estimator is the
-    platform's measurement instrument. Swapping a pinned frontier model into
-    it would change the instrument across datasets and multiply cost by
-    num_samples per subtask per round."""
+    """Pins current behaviour: confidence and clustering keep their own models.
+    Whether confidence should follow the model under test is open in #148."""
     params = {"assistance_models": {"human_as_a_tool": _HAAT}}
     assert resolve_model(params, "human_as_a_tool", role) == get_settings().llm.confidence_model
 

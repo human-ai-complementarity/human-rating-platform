@@ -8,10 +8,11 @@ Answer and decomposition run the model *under test*: the method's entry in
 question upload's `dataset_meta`), else the platform default for that role in
 `LLMSettings`.
 
-Confidence and clustering are the platform's measurement instrument and do
-not inherit the map: each takes its own override (`confidence_model`,
-`clustering_model`), else the default. Clustering's default is whatever
-confidence resolves to.
+Confidence and clustering do not inherit the map today: each takes its own
+override (`confidence_model`, `clustering_model`), else the default.
+Clustering's default is whatever confidence resolves to. This records current
+behaviour, not a settled choice: whether confidence should follow the model
+under test is open in #148.
 
 Nothing here knows about datasets or waves: the wave's models are pinned once,
 when the pipeline's export is uploaded, and land in `assistance_params`.
@@ -34,14 +35,12 @@ _ROLE_DEFAULTS: dict[str, str] = {
     "confidence": "confidence_model",
 }
 
-# Roles that run the model *under test*, and so take `pinned_model`. The
-# others are the measurement instrument: swapping a pinned frontier model into
-# them would silently change the instrument across datasets and multiply cost
-# by `num_samples` per subtask per round.
+# Roles that run the model *under test*, and so take `pinned_model`.
+# Confidence and clustering keep their own models for now (see #148).
 _INHERITING_ROLES = frozenset({"answer", "decomposition"})
 
-# The only `<role>_model` overrides: the instrument's. The inheriting roles
-# have none, since `assistance_models` already sets them.
+# The only `<role>_model` overrides: confidence's and clustering's. The
+# inheriting roles have none, since `assistance_models` already sets them.
 INSTRUMENT_MODEL_KEYS = ("confidence_model", "clustering_model")
 
 # OpenRouter is the only transport; `llm._parse_model` rejects anything else.
