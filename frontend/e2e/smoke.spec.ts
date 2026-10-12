@@ -2559,7 +2559,7 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   const state = createMockState();
   seedCardExperiment(state, COMPLETE_CARD, {
     launch_ready: false,
-    launch_blockers: ['rater instructions', 'prompt suffix'],
+    launch_blockers: ['rater instructions', 'internal study name'],
   });
 
   await installApiMocks(page, state);
@@ -2567,7 +2567,7 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   await page.getByTestId('tab-launch').click();
 
   await expect(page.getByTestId('one-click-blockers')).toContainText(
-    'missing rater instructions, prompt suffix',
+    'missing rater instructions, internal study name',
   );
   await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
   await expect(page.getByTestId('launch-blockers')).toBeVisible();
