@@ -1,8 +1,7 @@
 """Dataset card readiness (#96).
 
-Two levels: a *launchable* card can launch a study; a *complete* one also
-carries the economics (estimated completion time and reward), which stay
-optional at onboarding.
+One level: a card is *complete* once it names and describes its studies and
+carries their economics (estimated completion time and reward), or it isn't.
 """
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ from models import Dataset
 from services.admin.dataset_card import (
     CARD_FIELDS,
     COMPLETE_REQUIRED_FIELDS,
-    LAUNCH_REQUIRED_FIELDS,
     card_readiness,
     dataset_readiness,
     missing_fields,
@@ -19,7 +17,7 @@ from services.admin.dataset_card import (
 )
 from services.admin.uploads import DATASET_META_KEYS
 
-_LAUNCHABLE = {
+_NAMED = {
     "external_study_name": "Reading comprehension rating",
     "internal_study_name": "demo fall25",
     "study_blurb": "Rate short passages for factual accuracy.",
@@ -33,52 +31,45 @@ def _dataset(**values) -> Dataset:
     return dataset
 
 
-def test_a_bare_dataset_reports_every_missing_field_at_both_levels():
+def test_a_bare_dataset_reports_every_missing_field():
     readiness = dataset_readiness(_dataset())
-    assert not readiness.launch_ready
     assert not readiness.complete
-    assert readiness.missing_for_launch == list(LAUNCH_REQUIRED_FIELDS)
     assert readiness.missing_for_complete == list(COMPLETE_REQUIRED_FIELDS)
 
 
-def test_a_card_without_economics_is_launchable_but_not_complete():
-    """Economics are optional at onboarding; the pilot form asks for them."""
-    readiness = dataset_readiness(_dataset(**_LAUNCHABLE))
-    assert readiness.launch_ready
-    assert readiness.missing_for_launch == []
+def test_a_card_without_economics_is_not_complete():
+    readiness = dataset_readiness(_dataset(**_NAMED))
     assert not readiness.complete
     assert readiness.missing_for_complete == ["estimated_completion_time", "reward"]
 
 
 def test_a_card_with_economics_is_complete():
-    readiness = dataset_readiness(_dataset(**_LAUNCHABLE, **_ECONOMICS))
-    assert readiness.launch_ready
+    readiness = dataset_readiness(_dataset(**_NAMED, **_ECONOMICS))
     assert readiness.complete
     assert readiness.missing_for_complete == []
 
 
-def test_economics_alone_do_not_make_a_card_launchable():
+def test_economics_alone_do_not_make_a_card_complete():
     readiness = card_readiness({**_ECONOMICS, "study_blurb": "A blurb."})
-    assert not readiness.launch_ready
-    assert readiness.missing_for_launch == ["external_study_name", "internal_study_name"]
+    assert not readiness.complete
     assert readiness.missing_for_complete == ["external_study_name", "internal_study_name"]
 
 
-def test_complete_is_launchable_plus_economics():
-    assert COMPLETE_REQUIRED_FIELDS[: len(LAUNCH_REQUIRED_FIELDS)] == LAUNCH_REQUIRED_FIELDS
-    assert set(COMPLETE_REQUIRED_FIELDS) - set(LAUNCH_REQUIRED_FIELDS) == {
+def test_complete_needs_names_blurb_and_economics():
+    assert COMPLETE_REQUIRED_FIELDS == (
+        "external_study_name",
+        "internal_study_name",
+        "study_blurb",
         "estimated_completion_time",
         "reward",
-    }
+    )
 
 
 def test_blank_and_whitespace_text_counts_as_missing():
     assert "study_blurb" in missing_fields(
-        {**_LAUNCHABLE, "study_blurb": "   "}, LAUNCH_REQUIRED_FIELDS
+        {**_NAMED, "study_blurb": "   "}, COMPLETE_REQUIRED_FIELDS
     )
-    assert "study_blurb" in missing_fields(
-        {**_LAUNCHABLE, "study_blurb": ""}, LAUNCH_REQUIRED_FIELDS
-    )
+    assert "study_blurb" in missing_fields({**_NAMED, "study_blurb": ""}, COMPLETE_REQUIRED_FIELDS)
 
 
 def test_the_card_does_not_carry_what_the_pipeline_stamps_into_the_export():

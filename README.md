@@ -259,7 +259,7 @@ Backend settings are loaded via `backend/config.py` (`get_settings()`), with thi
 
 1. Python init kwargs
 2. Process env vars
-3. `backend/.env`
+3. `backend/.env` (tests use `backend/.env.test`)
 4. `backend/config.toml`
 5. Python defaults
 
