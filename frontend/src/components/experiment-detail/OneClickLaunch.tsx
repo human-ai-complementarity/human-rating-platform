@@ -2,9 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { Dataset, LaunchPreview } from '../../types';
 import { formatMinorUnits } from './reward';
-import { SectionCard, primaryButton } from './ui';
-
-const fieldLabel = (field: string) => field.replace(/_/g, ' ');
+import { SectionCard, fieldLabel, primaryButton } from './ui';
 
 /**
  * One-click pilot (#96): builds the pilot draft from a complete dataset card
