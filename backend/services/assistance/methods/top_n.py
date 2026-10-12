@@ -36,7 +36,6 @@ from models import Question
 from ..base import InteractionStep, StepType
 from ..preparation import InitialStepPreparation, QuestionSnapshot
 from ..llm import complete
-from ..model_resolution import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -356,7 +355,7 @@ class TopNAssistance(InitialStepPreparation):
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                self.method_key: resolve_model(params, self.method_key, self.primary_model_role),
+                self.method_key: self.role_models(params)[self.primary_model_role],
             },
         }
 
@@ -369,7 +368,7 @@ class TopNAssistance(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
-        model = resolve_model(params, self.method_key, self.primary_model_role)
+        model = self.role_models(params)[self.primary_model_role]
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
         options = _parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n

@@ -69,9 +69,10 @@ ASSISTANCE_MODELS_KEY = "assistance_models"
 # The removed single-model key: it silently beat `assistance_models`.
 REMOVED_MODEL_KEY = "model"
 
-# Where a session's params snapshot records the model that ran. A record only:
-# nothing resolves a model from it. Not `model`, which reads as the removed key.
-RESOLVED_MODEL_KEY = "resolved_model"
+# Where a session's params snapshot records, per role its method calls, the
+# model that role runs on, e.g. {"decomposition": ..., "confidence": ...}. A
+# record only: nothing resolves a model from it.
+ROLE_MODELS_KEY = "role_models"
 
 
 # Where a resolved model came from: the experiment's map (inheriting roles),

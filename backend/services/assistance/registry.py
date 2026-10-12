@@ -99,12 +99,7 @@ What is expected to evolve:
 from __future__ import annotations
 
 from .base import AssistanceMethod
-from .model_resolution import (
-    RESOLVED_MODEL_KEY,
-    ModelSource,
-    resolve_model,
-    resolve_model_and_source,
-)
+from .model_resolution import ROLE_MODELS_KEY, ModelSource, resolve_model_and_source
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
@@ -146,19 +141,19 @@ def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
     }
 
 
-def record_resolved_model(name: str, params: dict | None) -> dict:
-    """A session's params snapshot: `params` plus the model method `name` ran
-    on, as `resolved_model`.
+def record_role_models(name: str, params: dict | None) -> dict:
+    """A session's params snapshot: `params` plus, as `role_models`, the model
+    each role method `name` calls runs on (`AssistanceMethod.role_models`).
 
     Shared by the foreground start and the preparation runner, the two places
-    a session row is created. Reads the class attribute without instantiating
-    the method; an unknown or model-free method records nothing extra.
+    a session row is created, so both record the same map. Reads the class
+    without instantiating it; an unknown or model-free method records none.
     """
     recorded = dict(params) if params else {}
     cls = _REGISTRY.get(name)
-    role = cls.primary_model_role if cls is not None else None
-    if role is not None:
-        recorded[RESOLVED_MODEL_KEY] = resolve_model(recorded, cls.method_key, role)
+    models = cls.role_models(recorded) if cls is not None else {}
+    if models:
+        recorded[ROLE_MODELS_KEY] = models
     return recorded
 
 

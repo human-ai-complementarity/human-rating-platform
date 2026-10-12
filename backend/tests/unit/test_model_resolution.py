@@ -21,7 +21,7 @@ from services.assistance.model_resolution import (
 from services.assistance.registry import (
     assisted_methods,
     get_method,
-    record_resolved_model,
+    record_role_models,
     resolved_models,
 )
 
@@ -73,12 +73,13 @@ def test_a_leftover_model_key_is_ignored():
     assert resolve_model({**_MAP, "model": _SESSION}, "top_n", "answer") == _TOP_N
 
 
-def test_a_snapshots_resolved_model_is_a_record_not_an_input():
-    """A session snapshot records what ran as `resolved_model`. advance() gets
-    the snapshot back as its params, and still resolves from the map."""
+def test_a_snapshots_role_models_are_a_record_not_an_input():
+    """A session snapshot records each role's model as `role_models`. advance()
+    gets the snapshot back as its params, and still resolves from the map."""
     default = get_settings().llm.default_model
-    assert resolve_model({"resolved_model": _SESSION}, "top_n", "answer") == default
-    assert resolve_model({**_MAP, "resolved_model": _SESSION}, "top_n", "answer") == _TOP_N
+    recorded = {"role_models": {"answer": _SESSION}}
+    assert resolve_model(recorded, "top_n", "answer") == default
+    assert resolve_model({**_MAP, **recorded}, "top_n", "answer") == _TOP_N
 
 
 def test_resolved_models_gives_every_assisted_method_its_model_and_source():
@@ -258,6 +259,47 @@ def test_human_as_a_tool_estimator_uses_the_instrument_overrides(
     assert {attr: getattr(estimator, attr) for attr in expected} == expected
 
 
+_HAAT_ROLES = {"decomposition": _HAAT, "confidence": _CONFIDENCE}
+
+
+@pytest.mark.parametrize(
+    ("name", "params", "expected"),
+    [
+        ("none", _MAP, None),
+        ("top_n", _MAP, {"answer": _TOP_N}),
+        ("human_as_a_tool", {**_MAP, **_INSTRUMENT}, _HAAT_ROLES),
+        (
+            "human_as_a_tool",
+            {**_MAP, **_INSTRUMENT, "confidence_method": "self_consistency"},
+            _HAAT_ROLES,
+        ),
+        (
+            "human_as_a_tool",
+            {**_MAP, **_INSTRUMENT, "confidence_method": "sampling"},
+            {**_HAAT_ROLES, "clustering": _CLUSTERING},
+        ),
+    ],
+)
+def test_a_session_records_every_role_its_method_calls(name, params, expected):
+    """Clustering only for the confidence method that clusters; a model-free
+    method records no map. The params themselves are kept as given."""
+    recorded = record_role_models(name, params)
+    assert recorded.get("role_models") == expected
+    assert {key: value for key, value in recorded.items() if key != "role_models"} == params
+
+
+@pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])
+def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_method):
+    params = {**_MAP, **_INSTRUMENT, "confidence_method": confidence_method}
+    estimator = HumanAsAToolMethod()._get_estimator(params)
+
+    ran = {"confidence": getattr(estimator, "_model", None) or estimator._sampling_model}
+    if hasattr(estimator, "_clustering_model"):
+        ran["clustering"] = estimator._clustering_model
+    recorded = record_role_models("human_as_a_tool", params)["role_models"]
+    assert recorded == {"decomposition": _HAAT, **ran}
+
+
 @pytest.mark.asyncio
 async def test_without_params_methods_keep_their_defaults():
     llm = AsyncMock(side_effect=RuntimeError("stop"))
@@ -302,7 +344,9 @@ async def test_top_n_runs_and_records_under_its_own_key_and_role(monkeypatch):
 
     default = get_settings().llm.decomposition_model
     assert [call.kwargs["model"] for call in llm.call_args_list] == [_SESSION, default]
-    assert record_resolved_model("top_n_variant", _VARIANTS)["resolved_model"] == _SESSION
+    assert record_role_models("top_n_variant", _VARIANTS)["role_models"] == {
+        "decomposition": _SESSION
+    }
     pinned = _TopNVariant().preparation_params({})["assistance_models"]
     assert pinned == {"top_n_variant": default}
 

@@ -19,8 +19,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from config import get_settings
+from services.assistance import operations
+from services.assistance import runner as runner_module
 from services.assistance.base import InteractionStep, StepType
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
+from services.assistance.methods.top_n import TopNAssistance
 from services.assistance.model_resolution import instrument_model_keys
 
 _CARD = {
@@ -405,7 +408,7 @@ def test_the_session_records_a_model_resolved_from_the_map(
         "/api/raters/assistance/start", json={"question_id": question["id"]}, headers=headers
     )
     assert resp.status_code == 200, resp.text
-    assert _session_params(sync_engine) == {**params, "resolved_model": _MAP_TOP_N}
+    assert _session_params(sync_engine) == {**params, "role_models": {"answer": _MAP_TOP_N}}
 
 
 def test_a_failed_session_still_records_the_model_and_logs_what_went_in(
@@ -413,7 +416,7 @@ def test_a_failed_session_still_records_the_model_and_logs_what_went_in(
 ):
     """A failed start leaves a NONE session. It was prepared, so the next
     start resumes it rather than retrying (#119). The session keeps the
-    `resolved_model` record, while its event logs the params start() was
+    `role_models` record, while its event logs the params start() was
     actually given, without it."""
     monkeypatch.setattr(
         "services.assistance.methods.top_n._complete_with_schema_fallback",
@@ -431,7 +434,7 @@ def test_a_failed_session_still_records_the_model_and_logs_what_went_in(
         assert resp.status_code == 200, resp.text
         assert resp.json()["type"] == "none"
 
-    assert _session_params(sync_engine) == {**params, "resolved_model": _MAP_TOP_N}
+    assert _session_params(sync_engine) == {**params, "role_models": {"answer": _MAP_TOP_N}}
     with sync_engine.connect() as conn:
         events = conn.execute(text("SELECT payload FROM assistance_events ORDER BY id")).scalars()
         requests = [json.loads(payload)["request"] for payload in events]
@@ -442,8 +445,8 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
     client: TestClient, sync_engine, monkeypatch
 ):
     """advance() runs on the session's params snapshot. What ran is recorded as
-    `resolved_model`, so the snapshot never carries the removed `model` key
-    that create, PATCH and upload reject, and advancing leaves it as it was."""
+    `role_models`, so the snapshot never carries the removed `model` key that
+    create, PATCH and upload reject, and advancing leaves it as it was."""
     ask = InteractionStep(type=StepType.ASK_INPUT, payload={"subtasks": []})
     advance = AsyncMock(return_value=InteractionStep(type=StepType.COMPLETE, is_terminal=True))
     monkeypatch.setattr(HumanAsAToolMethod, "start", AsyncMock(return_value=ask))
@@ -467,13 +470,85 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
     assert resp.status_code == 200, resp.text
 
     # The prepared snapshot also pins the confidence model (#119).
+    confidence = get_settings().llm.confidence_model
     snapshot = {
         **params,
-        "confidence_model": get_settings().llm.confidence_model,
-        "resolved_model": _MAP_HAAT,
+        "confidence_model": confidence,
+        "role_models": {"decomposition": _MAP_HAAT, "confidence": confidence},
     }
     assert advance.call_args.args[2] == snapshot
     assert _session_params(sync_engine) == snapshot
+
+
+_MAP_CONFIDENCE = "openrouter/test/confidence-override"
+
+
+@pytest.mark.parametrize(
+    ("method", "params", "role_models"),
+    [
+        ("top_n", {"assistance_models": {"top_n": _MAP_TOP_N}}, {"answer": _MAP_TOP_N}),
+        (
+            "human_as_a_tool",
+            {"assistance_models": {"human_as_a_tool": _MAP_HAAT}},
+            # None: the settings default.
+            {"decomposition": _MAP_HAAT, "confidence": None},
+        ),
+        (
+            "human_as_a_tool",
+            {
+                "assistance_models": {"human_as_a_tool": _MAP_HAAT},
+                "confidence_method": "sampling",
+                "confidence_model": _MAP_CONFIDENCE,
+            },
+            {
+                "decomposition": _MAP_HAAT,
+                "confidence": _MAP_CONFIDENCE,
+                "clustering": _MAP_CONFIDENCE,
+            },
+        ),
+    ],
+)
+def test_prepared_and_foreground_sessions_record_the_same_role_models(
+    client: TestClient, sync_engine, monkeypatch, method, params, role_models
+):
+    """One rater's session is prepared by the runner, the next is started in
+    the foreground. Their params snapshots differ (preparation pins defaults,
+    #119), but both record every role the method calls, identically."""
+    step = InteractionStep(type=StepType.DISPLAY, is_terminal=True)
+    for cls in (TopNAssistance, HumanAsAToolMethod):
+        monkeypatch.setattr(cls, "start", AsyncMock(return_value=step))
+    # Which of the two places a session row is created recorded each one.
+    paths: list[str] = []
+    for module in (runner_module, operations):
+
+        def spy(name, given, _module=module, _record=module.record_role_models):
+            paths.append(_module.__name__)
+            return _record(name, given)
+
+        monkeypatch.setattr(module, "record_role_models", spy)
+    exp = _create(
+        client, name=f"Paths {method}", assistance_method=method, assistance_params=params
+    )
+    _upload_with_meta(client, exp["id"], {})
+
+    for pid, runner in (
+        ("PID_PREPARED", client.app.state.preparation_runner),
+        ("PID_FOREGROUND", None),
+    ):
+        headers, question = _first_question(client, exp["id"], pid)
+        monkeypatch.setattr(client.app.state, "preparation_runner", runner)
+        resp = client.post(
+            "/api/raters/assistance/start", json={"question_id": question["id"]}, headers=headers
+        )
+        assert resp.status_code == 200, resp.text
+
+    assert paths == [runner_module.__name__, operations.__name__]
+    default = get_settings().llm.confidence_model
+    expected = {role: model or default for role, model in role_models.items()}
+    with sync_engine.connect() as conn:
+        rows = conn.execute(text("SELECT params FROM assistance_sessions ORDER BY id")).scalars()
+        recorded = [json.loads(row)["role_models"] for row in rows]
+    assert recorded == [expected, expected]
 
 
 # --- The wave's assistance models arrive with the export too (#96) -------

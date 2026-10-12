@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 #
 # Per Joshua on #96: "lets not duplicate data where possible… just attach the
 # experiment ID or session id associated with the rating". The session carries
-# the method and the resolved model, so one id is enough to load either later.
+# the method and its resolved models, so one id is enough to load either later.
 EXPORT_COLUMNS = [
     "rating_id",
     "question_id",
@@ -112,8 +112,8 @@ def _build_export_row(
         round(response_time, 2),
         counts_toward_target,
         # Blank when the rating had no assistance. Join to assistance_sessions
-        # for the method (`method_name`) and the model that actually ran
-        # (`resolved_model` in its `params`).
+        # for the method (`method_name`) and the model each role ran on
+        # (`role_models` in its `params`).
         rating.assistance_session_id or "",
     ]
 
