@@ -9,9 +9,9 @@ assistance_params:
     assistance_models:    {"human_as_a_tool": LLM for decomposition}
                           (default: settings.llm.decomposition_model)
     confidence_method:    "self_report" (default), "sampling", or "self_consistency"
-    confidence_model:     LLM for confidence scoring. Does NOT inherit
-                          `assistance_models` — the measurement instrument stays
-                          fixed across datasets (default: settings.llm.confidence_model)
+    confidence_model:     LLM for confidence scoring. Does not inherit
+                          `assistance_models` today; see #148
+                          (default: settings.llm.confidence_model)
     clustering_model:     LLM for semantic clustering, sampling method only (default: same as confidence_model)
     num_samples:          Samples per subtask, sampling method only (default: 5)
     max_rounds:           Maximum delegation rounds before forced synthesis (default: 5)
