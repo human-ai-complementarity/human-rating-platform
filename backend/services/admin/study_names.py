@@ -3,9 +3,8 @@
 Division of labour, because it is easy to get backwards: **the card's
 templates differentiate experiments** (dataset x wave x arm); `rounds.py`'s
 `_build_round_study_name` / `_build_round_internal_name` already differentiate
-*rounds* by appending " - Pilot" / " - Round N". So a template must not carry
-round information — that is already handled — and must leave room for the
-suffix that gets appended to it later.
+*rounds* by appending " - Pilot" / " - Round N". So a template must not end
+in that suffix — it is already handled — and must leave room for it.
 """
 
 from __future__ import annotations
@@ -30,16 +29,18 @@ ROUND_SUFFIX_RESERVE = len(" - Round 99")
 TEMPLATE_MAX_LENGTH = NAME_MAX_LENGTH - ROUND_SUFFIX_RESERVE
 
 _TOKEN = re.compile(r"\{([^{}]*)\}")
-_ROUND_SUFFIX = re.compile(r"-\s*(pilot|round)\b", re.IGNORECASE)
+# Only the suffix rounds.py appends, and only at the end, so "Co-pilot
+# evaluation" or "two-round debate" are fine.
+_ROUND_SUFFIX = re.compile(r" - (?:Pilot|Round \d+)\s*$")
 
 
 def assert_no_round_suffix(template: str, field: str) -> None:
-    """Reject a template that carries its own round marker."""
+    """Reject a template that ends in its own round suffix."""
     if _ROUND_SUFFIX.search(template):
         raise HTTPException(
             status_code=400,
             detail=(
-                f'{field} must not contain "- Pilot" or "- Round": the round suffix is '
+                f'{field} must not end in " - Pilot" or " - Round N": the round suffix is '
                 f'appended when each study is created, so "{template}" would render as '
                 f'"{template} - Pilot".'
             ),
