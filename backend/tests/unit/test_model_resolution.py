@@ -1,4 +1,4 @@
-"""Which model each assistance call runs on (#95, #96)."""
+"""Which model each assistance call runs on (#95, #96, #148)."""
 
 from __future__ import annotations
 
@@ -151,8 +151,8 @@ def test_an_override_beats_the_map():
     ("method", "role"), [("top_n", "answer"), ("human_as_a_tool", "decomposition")]
 )
 def test_the_model_under_test_has_no_role_override(method, role):
-    """`assistance_models` already sets these. A second key for the same thing
-    would be one more place a model could hide from validation."""
+    """The method's `assistance_models` entry already is the primary role's
+    setting, so a `<role>_model` key for it is ignored."""
     params = {**_MAP, f"{role}_model": "openrouter/test/role-override"}
     assert resolve_model(params, method, role) == _MAP["assistance_models"][method]
 

@@ -39,9 +39,10 @@ _ROLE_FALLBACKS: dict[str, str] = {"clustering": "confidence"}
 # Every role an assistance method can call a model for.
 MODEL_ROLES: tuple[str, ...] = (*_ROLE_DEFAULTS, *_ROLE_FALLBACKS)
 
-# Roles with a `<role>_model` override that beats `assistance_models`. The
-# primary roles have none: a second key for the model under test would be one
-# more place a model could hide from validation.
+# Roles with a `<role>_model` override that beats `assistance_models`: an
+# escape hatch for scoring or clustering on a different model than the one
+# under test, validated like any model key. The primary roles have none, since
+# their method's `assistance_models` entry already is their setting.
 _OVERRIDE_ROLES = frozenset({"confidence", "clustering"})
 
 
