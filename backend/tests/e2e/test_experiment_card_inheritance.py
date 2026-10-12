@@ -21,6 +21,7 @@ from sqlalchemy import text
 from config import get_settings
 from services.assistance.base import InteractionStep, StepType
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
+from services.assistance.model_resolution import instrument_model_keys
 
 _CARD = {
     "external_study_name": "Passage comprehension rating",
@@ -316,7 +317,7 @@ def test_a_restated_legacy_model_does_not_block_a_rename(
     assert after["assistance_params"] == _LEGACY_PARAMS
 
 
-@pytest.mark.parametrize("key", ["confidence_model", "clustering_model"])
+@pytest.mark.parametrize("key", instrument_model_keys())
 def test_the_instrument_overrides_are_validated_too(client: TestClient, sync_engine, key: str):
     """A bad confidence or clustering model also degrades to no assistance."""
     body = {"name": "Instrument", "assistance_method": "human_as_a_tool"}
@@ -341,6 +342,24 @@ def test_the_instrument_overrides_are_validated_too(client: TestClient, sync_eng
     changed = client.patch(url, json={**method, "assistance_params": {key: "claude-sonnet-4-6"}})
     assert changed.status_code == 400
     assert client.get(url).json()["assistance_params"] == legacy
+
+
+def test_a_role_moved_off_the_map_is_validated_with_no_other_edit(client: TestClient, monkeypatch):
+    """The override keys are derived from the roles, so a role that stops
+    inheriting `assistance_models` (#148 may move one) has its key checked."""
+    monkeypatch.setattr(
+        "services.assistance.model_resolution._INHERITING_ROLES", frozenset({"answer"})
+    )
+    resp = client.post(
+        "/api/admin/experiments",
+        json={
+            "name": "Moved",
+            "assistance_method": "human_as_a_tool",
+            "assistance_params": {"decomposition_model": "gpt-4o"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "assistance_params.decomposition_model" in resp.json()["detail"]
 
 
 # Sentinel map entries, distinct from every settings default.

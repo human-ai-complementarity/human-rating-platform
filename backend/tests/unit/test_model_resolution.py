@@ -11,7 +11,9 @@ from config import get_settings
 from models import Question
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
+from services.assistance import model_resolution
 from services.assistance.model_resolution import (
+    instrument_model_keys,
     resolve_model,
     resolve_model_and_source,
     validate_model_id,
@@ -142,6 +144,22 @@ def test_the_instrument_does_not_inherit_the_map(role):
     Whether confidence should follow the model under test is open in #148."""
     params = {"assistance_models": {"human_as_a_tool": _HAAT}}
     assert resolve_model(params, "human_as_a_tool", role) == get_settings().llm.confidence_model
+
+
+def test_today_the_instrument_roles_have_the_override_keys():
+    assert instrument_model_keys() == ("confidence_model", "clustering_model")
+
+
+def test_moving_confidence_onto_the_map_is_one_edit(monkeypatch):
+    """If #148 makes confidence inherit, adding it to the inheriting set is
+    enough: its key stops being an override, and clustering still follows it."""
+    inheriting = frozenset({"answer", "decomposition", "confidence"})
+    monkeypatch.setattr(model_resolution, "_INHERITING_ROLES", inheriting)
+
+    assert instrument_model_keys() == ("clustering_model",)
+    params = {**_MAP, "confidence_model": _CONFIDENCE}
+    assert resolve_model(params, "human_as_a_tool", "confidence") == _HAAT
+    assert resolve_model(params, "human_as_a_tool", "clustering") == _HAAT
 
 
 @pytest.mark.parametrize("bad", ["gpt-4o", "anthropic/claude-sonnet-4-6", ""])

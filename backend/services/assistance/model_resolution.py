@@ -37,13 +37,27 @@ _ROLE_DEFAULTS: dict[str, str] = {
 # Roles with no setting of their own: each defaults to what another resolves to.
 _ROLE_FALLBACKS: dict[str, str] = {"clustering": "confidence"}
 
+# Every role an assistance method can call a model for.
+MODEL_ROLES: tuple[str, ...] = (*_ROLE_DEFAULTS, *_ROLE_FALLBACKS)
+
 # Roles that run the model *under test*, and so take `pinned_model`.
 # Confidence and clustering keep their own models for now (see #148).
 _INHERITING_ROLES = frozenset({"answer", "decomposition"})
 
-# The only `<role>_model` overrides: confidence's and clustering's. The
-# inheriting roles have none, since `assistance_models` already sets them.
-INSTRUMENT_MODEL_KEYS = ("confidence_model", "clustering_model")
+
+def _override_key(role: str) -> str:
+    return f"{role}_model"
+
+
+def instrument_model_keys() -> tuple[str, ...]:
+    """The `<role>_model` overrides, one per role that does not inherit
+    `assistance_models` (the inheriting roles have none: the map sets them).
+
+    Derived, so a new instrument role, or one moved between the sets (#148),
+    is validated with no edit here.
+    """
+    return tuple(_override_key(role) for role in MODEL_ROLES if role not in _INHERITING_ROLES)
+
 
 # OpenRouter is the only transport; `llm._parse_model` rejects anything else.
 MODEL_PREFIX = "openrouter/"
@@ -91,7 +105,7 @@ def resolve_model_and_source(
         if pinned:
             return pinned, "assistance_models"
     else:
-        override = params.get(f"{role}_model")
+        override = params.get(_override_key(role))
         if override:
             return str(override), "override"
     fallback = _ROLE_FALLBACKS.get(role)

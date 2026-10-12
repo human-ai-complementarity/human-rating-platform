@@ -40,8 +40,8 @@ from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
-    INSTRUMENT_MODEL_KEYS,
     RELOAD_HINT,
+    instrument_model_keys,
     reject_removed_model_key,
     validate_model_id,
 )
@@ -703,9 +703,9 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
     no-assistance step (or a 500 for a non-string). Only values this request
     changes are checked: the admin UI re-sends the stored params on every save,
     so a legacy value it merely restates must not block an unrelated edit.
-    Covers the confidence/clustering overrides and `assistance_models`.
+    Covers every instrument role's override and `assistance_models`.
     """
-    for key in INSTRUMENT_MODEL_KEYS:
+    for key in instrument_model_keys():
         value = merged.get(key)
         if value not in (None, "") and value != stored.get(key):
             _check_model_id(value, f"assistance_params.{key}")
