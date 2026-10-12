@@ -57,12 +57,14 @@ async def dataset_exclusions(experiment: Experiment, db: AsyncSession) -> list[E
         .scalar_subquery()
     )
     rows = await db.execute(
-        select(Experiment.id, Experiment.name)
+        select(Experiment.id, Experiment.name, Experiment.internal_name)
         .join(ExperimentGroup, Experiment.group_id == ExperimentGroup.id)
         .where(ExperimentGroup.dataset_id == dataset_id, Experiment.id != experiment.id)
         .order_by(Experiment.id)
     )
-    return [ExperimentRef(id=row.id, name=row.name) for row in rows]
+    return [
+        ExperimentRef(id=row.id, name=row.name, internal_name=row.internal_name) for row in rows
+    ]
 
 
 async def preview_launch_from_card(experiment_id: int, db: AsyncSession) -> OneClickLaunchPreview:

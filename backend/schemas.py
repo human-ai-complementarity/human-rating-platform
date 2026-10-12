@@ -77,6 +77,8 @@ class OneClickLaunchRequest(BaseModel):
 class ExperimentRef(BaseModel):
     id: int
     name: str
+    # The admin UI shows `internal_name || name`; public names can be generic.
+    internal_name: Optional[str] = None
 
 
 class OneClickLaunchPreview(BaseModel):
