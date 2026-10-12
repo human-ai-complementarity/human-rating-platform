@@ -64,13 +64,14 @@ def compute_attention_reason(
 # snapshots onto the row at create, so the card's current state has nothing to
 # do with what raters will see; and #84 deliberately keeps ungrouped
 # experiments valid, so they have no card at all. Asking the row — "will this
-# rater actually get instructions, framing and a pinned model?" — is a question
-# every experiment can answer, and holds ungrouped ones to the same bar instead
-# of blocking them wholesale or waving them through.
+# rater actually get instructions and a pinned model?" — is a question every
+# experiment can answer, and holds ungrouped ones to the same bar instead of
+# blocking them wholesale or waving them through.
+#
+# The prompt prefix and suffix are optional: a dataset may frame its questions
+# with one, both or neither.
 _ROW_REQUIRED_TEXT: tuple[tuple[str, str], ...] = (
     ("description", "rater instructions"),
-    ("human_prompt_prefix", "prompt prefix"),
-    ("human_prompt_suffix", "prompt suffix"),
     ("internal_name", "internal study name"),
 )
 
@@ -100,7 +101,7 @@ def experiment_launch_blockers(experiment: Experiment) -> list[str]:
 # upload (`_apply_meta_to_experiment`). The internal study name is the one
 # gated field the dataset card supplies instead — and only when an experiment
 # is created, so editing the card afterwards cannot fix an existing one.
-_FROM_UPLOAD_META = ("rater instructions", "prompt prefix", "prompt suffix", "assistance model")
+_FROM_UPLOAD_META = ("rater instructions", "assistance model")
 
 
 def launch_blocker_fixes(blockers: list[str]) -> list[str]:
