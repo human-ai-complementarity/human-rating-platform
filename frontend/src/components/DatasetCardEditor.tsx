@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import type { Dataset, DatasetCardFields, Screener, StudyLabel } from '../types';
-import { ScreenerCheckboxes } from './ExperimentDetail';
 import { rewardInputToMinor, rewardMinorToInput } from './experiment-detail/reward';
 import {
+  DEFAULT_SCREENERS,
   Field,
+  STUDY_LABELS,
+  ScreenerCheckboxes,
   inputStyle,
   primaryButton,
   secondaryButton,
@@ -17,18 +19,6 @@ const TEMPLATE_PLACEHOLDERS = {
   external_study_name: ['dataset'],
   internal_study_name: ['dataset', 'wave', 'method'],
 } as const;
-
-const STUDY_LABELS: [StudyLabel, string][] = [
-  ['annotation', 'Annotation'],
-  ['survey', 'Survey'],
-  ['decision_making_task', 'Decision-making task'],
-  ['writing_task', 'Writing task'],
-  ['interview', 'Interview'],
-  ['other', 'Other'],
-];
-
-// What a launch uses when the card leaves screeners unset (PilotStudyCreate's default).
-const DEFAULT_SCREENERS: Screener[] = ['ai_taskers', 'fact_checkers', 'approval_rate'];
 
 type Draft = {
   external_study_name: string;
