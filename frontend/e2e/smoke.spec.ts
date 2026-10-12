@@ -2241,6 +2241,7 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
   // Served by the API (status.py), one per blocker; the page renders them as given.
   const fixes = [
+    'Questions: upload questions on the Questions tab.',
     'Rater instructions: set them under Instructions & prompts.',
     'Internal study name: set it with the pencil by its title.',
     'Assistance model: PATCH assistance_params.assistance_models.<method>.',
@@ -2250,22 +2251,14 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
     buildExperiment(state, {
       id: 1,
       name: 'Unfinished Experiment',
-      question_count: 2,
+      question_count: 0,
       launch_ready: false,
-      launch_blockers: ['rater instructions', 'internal study name', 'assistance model'],
+      launch_blockers: ['questions', 'rater instructions', 'internal study name', 'assistance model'],
       launch_blocker_fixes: fixes,
     }),
   ];
   state.nextExperimentId = 2;
-  state.uploads[1] = [
-    {
-      id: 1,
-      filename: 'sample_questions.csv',
-      uploaded_at: '2026-03-09T00:01:00Z',
-      question_count: 2,
-      dataset_meta: null,
-    },
-  ];
+  state.uploads[1] = [];
   state.rounds[1] = [];
 
   await installApiMocks(page, state);
@@ -2276,7 +2269,7 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
   // admin fills in the whole form.
   const banner = page.getByTestId('launch-blockers');
   await expect(banner).toContainText(
-    'missing rater instructions, internal study name, assistance model.',
+    'missing questions, rater instructions, internal study name, assistance model.',
   );
   // Each fix as the API served it, with no copy of its own.
   for (const fix of fixes) {
@@ -2438,7 +2431,7 @@ function seedCardExperiment(
 test('a complete dataset card creates the pilot draft in one click', async ({ page }) => {
   const state = createMockState();
   seedCardExperiment(state, COMPLETE_CARD);
-  state.launchError = 'Cannot launch: upload questions for this experiment first.';
+  state.launchError = 'A pilot study has already been run for this experiment';
   // Named by internal name where there is one; arms share the public name.
   state.launchExcluded = [
     { id: 7, name: 'Passage rating', internal_name: 'passages fall24 control' },
@@ -2460,7 +2453,7 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   // A refusal shows the API's own detail.
   await page.getByTestId('one-click-launch-button').click();
   await expect(page.getByTestId('one-click-panel')).toContainText(
-    'Cannot launch: upload questions for this experiment first.',
+    'A pilot study has already been run for this experiment',
   );
 
   state.launchError = null;

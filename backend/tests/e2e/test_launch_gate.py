@@ -70,6 +70,28 @@ def _mock_create_study() -> respx.Route:
     )
 
 
+def _upload_one_question(client: TestClient, experiment_id: int) -> None:
+    resp = client.post(
+        f"/api/admin/experiments/{experiment_id}/upload",
+        files={
+            "file": (
+                "gated_n1.csv",
+                "question_id,question_text,gt_answer,options,question_type\n"
+                "q1,Is this useful?,Yes,Yes|No,MC\n",
+                "text/csv",
+            )
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _with_a_question(client: TestClient, **payload) -> dict:
+    """A new experiment past the "questions" blocker, so a test sees the rest."""
+    exp = client.post("/api/admin/experiments", json=payload).json()
+    _upload_one_question(client, exp["id"])
+    return exp
+
+
 def _fill_row_fields(client: TestClient, experiment_id: int, method: str = "none") -> dict:
     """Put the gate's text fields on the row, as an upload's `#META:` would."""
     resp = client.patch(
@@ -88,12 +110,8 @@ def _carded_experiment(client: TestClient, method: str = "none") -> dict:
         "/api/admin/experiment-groups",
         json={"name": "gated fall25", "dataset_id": dataset["id"], "wave": "fall25"},
     ).json()
-    resp = client.post(
-        "/api/admin/experiments",
-        json={"group_id": group["id"], "assistance_method": method},
-    )
-    assert resp.status_code == 200, resp.text
-    return _fill_row_fields(client, resp.json()["id"], method)
+    exp = _with_a_question(client, group_id=group["id"], assistance_method=method)
+    return _fill_row_fields(client, exp["id"], method)
 
 
 def test_a_fully_configured_experiment_reports_ready(client: TestClient):
@@ -106,9 +124,10 @@ def test_a_fully_configured_experiment_reports_ready(client: TestClient):
 def test_a_bare_experiment_reports_what_it_is_missing(client: TestClient):
     exp = client.post("/api/admin/experiments", json={"name": "Bare"}).json()
     assert exp["launch_ready"] is False
-    assert exp["launch_blockers"] == ["rater instructions", "internal study name"]
+    assert exp["launch_blockers"] == ["questions", "rater instructions", "internal study name"]
     # One fix per blocker, in the same order, so the UI renders them as served.
     assert [fix.split(":")[0] for fix in exp["launch_blocker_fixes"]] == [
+        "Questions",
         "Rater instructions",
         "Internal study name",
     ]
@@ -120,7 +139,7 @@ def test_a_bare_experiment_reports_what_it_is_missing(client: TestClient):
 )
 def test_the_prompt_prefix_and_suffix_are_optional(client: TestClient, framing):
     """A dataset may frame its questions with one, both or neither."""
-    exp = client.post("/api/admin/experiments", json={"name": "Unframed"}).json()
+    exp = _with_a_question(client, name="Unframed")
     patched = client.patch(
         f"/api/admin/experiments/{exp['id']}",
         json={
@@ -136,7 +155,7 @@ def test_the_prompt_prefix_and_suffix_are_optional(client: TestClient, framing):
 def test_an_ungrouped_experiment_can_still_be_ready(client: TestClient):
     """#84 keeps ungrouped experiments valid. They have no card, but they can
     carry the same values on the row, and the gate asks the row."""
-    exp = client.post("/api/admin/experiments", json={"name": "Scratch"}).json()
+    exp = _with_a_question(client, name="Scratch")
     patched = client.patch(
         f"/api/admin/experiments/{exp['id']}",
         json={
@@ -153,7 +172,7 @@ def test_an_ungrouped_experiment_can_still_be_ready(client: TestClient):
 def test_a_control_arm_needs_no_model(client: TestClient):
     """assistance_method "none" never calls an LLM, so requiring a pinned
     model for it would block every control arm."""
-    exp = client.post("/api/admin/experiments", json={"name": "Control"}).json()
+    exp = _with_a_question(client, name="Control")
     patched = client.patch(
         f"/api/admin/experiments/{exp['id']}",
         json={
@@ -168,9 +187,7 @@ def test_a_control_arm_needs_no_model(client: TestClient):
 
 
 def test_an_assisted_arm_without_a_model_is_blocked(client: TestClient):
-    exp = client.post(
-        "/api/admin/experiments", json={"name": "Assisted", "assistance_method": "top_n"}
-    ).json()
+    exp = _with_a_question(client, name="Assisted", assistance_method="top_n")
     patched = client.patch(
         f"/api/admin/experiments/{exp['id']}",
         json={
@@ -196,14 +213,12 @@ def test_an_assistance_models_entry_for_the_current_method_is_a_model(
 ):
     """The upload pins the wave's model per method; only the entry for the
     method this arm runs counts."""
-    exp = client.post(
-        "/api/admin/experiments",
-        json={
-            "name": "Mapped",
-            "assistance_method": "top_n",
-            "assistance_params": {"assistance_models": assistance_models},
-        },
-    ).json()
+    exp = _with_a_question(
+        client,
+        name="Mapped",
+        assistance_method="top_n",
+        assistance_params={"assistance_models": assistance_models},
+    )
     patched = client.patch(
         f"/api/admin/experiments/{exp['id']}",
         json={
@@ -275,21 +290,6 @@ _ECONOMICS = {
 }
 
 
-def _upload_one_question(client: TestClient, experiment_id: int) -> None:
-    resp = client.post(
-        f"/api/admin/experiments/{experiment_id}/upload",
-        files={
-            "file": (
-                "gated_n1.csv",
-                "question_id,question_text,gt_answer,options,question_type\n"
-                "q1,Is this useful?,Yes,Yes|No,MC\n",
-                "text/csv",
-            )
-        },
-    )
-    assert resp.status_code == 200, resp.text
-
-
 def _carded_experiment_with_economics(client: TestClient) -> dict:
     dataset = client.post(
         "/api/admin/datasets",
@@ -345,9 +345,8 @@ def _group(client: TestClient, dataset: dict, wave: str) -> dict:
 
 
 def _ready_in_group(client: TestClient, group: dict, name: str) -> dict:
-    exp = client.post("/api/admin/experiments", json={"group_id": group["id"], "name": name})
-    assert exp.status_code == 200, exp.text
-    return _fill_row_fields(client, exp.json()["id"])
+    exp = _with_a_question(client, group_id=group["id"], name=name)
+    return _fill_row_fields(client, exp["id"])
 
 
 @respx.mock
@@ -374,7 +373,6 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
         assert pilot.status_code == 200, pilot.text
 
     target = _ready_in_group(client, fall25, "Target")
-    _upload_one_question(client, target["id"])
     # Each carries its internal name, which the admin UI shows over the public one.
     expected = [
         {"id": exp["id"], "name": exp["name"], "internal_name": exp["internal_name"]}
@@ -425,7 +423,6 @@ def test_a_failed_exclusion_group_is_a_prolific_error(client: TestClient, enable
     fall25 = _group(client, dataset, "fall25")
     sibling = _ready_in_group(client, fall25, "Sibling")
     target = _ready_in_group(client, fall25, "Target")
-    _upload_one_question(client, target["id"])
 
     def _create(request: httpx.Request) -> httpx.Response:
         name = json.loads(request.content.decode())["name"]
@@ -465,7 +462,11 @@ def test_one_click_honours_a_places_override(client: TestClient, enable_prolific
 
 
 @respx.mock
-def test_one_click_refuses_without_questions(client: TestClient, enable_prolific):
+def test_without_questions_the_pilot_form_and_one_click_refuse_alike(
+    client: TestClient, enable_prolific
+):
+    """A pilot with nothing to rate would publish the experiment into LAUNCH,
+    which blocks uploads. Both paths refuse with the blocker the API serves."""
     dataset = client.post(
         "/api/admin/datasets",
         json={"name": "gated", "waves": ["fall25"], **_CARD, **_ECONOMICS},
@@ -475,13 +476,27 @@ def test_one_click_refuses_without_questions(client: TestClient, enable_prolific
         json={"name": "gated fall25", "dataset_id": dataset["id"], "wave": "fall25"},
     ).json()
     exp = client.post("/api/admin/experiments", json={"group_id": group["id"]}).json()
-    _fill_row_fields(client, exp["id"])
+    exp = _fill_row_fields(client, exp["id"])
+    assert exp["launch_blockers"] == ["questions"]
     route = _mock_create_study()
 
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
-    assert resp.status_code == 400
-    assert "upload questions" in resp.json()["detail"]
+    pilot = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+    one_click = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
+
+    assert pilot.status_code == one_click.status_code == 400
+    assert (
+        pilot.json()["detail"]
+        == one_click.json()["detail"]
+        == (
+            "Cannot launch: this experiment is missing questions. " + exp["launch_blocker_fixes"][0]
+        )
+    )
+    assert "upload questions" in exp["launch_blocker_fixes"][0]
     assert route.call_count == 0
+
+    _upload_one_question(client, exp["id"])
+    after = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert after["launch_ready"] is True
 
 
 @respx.mock
@@ -492,8 +507,8 @@ def test_one_click_names_the_missing_upload_before_the_missing_text(
     grouped experiment now starts.
 
     The rater text arrives WITH the upload — the pipeline stamps it into the
-    exported file — so reporting it as the blocker would misdiagnose the
-    problem and send the admin in a circle: the way to supply it is to upload.
+    exported file — so the upload is named first, and its fix says to upload
+    before setting the text by hand rather than sending the admin in a circle.
     Note this experiment deliberately does NOT call `_fill_row_fields`.
     """
     dataset = client.post(
@@ -511,8 +526,11 @@ def test_one_click_names_the_missing_upload_before_the_missing_text(
     resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
     assert resp.status_code == 400
     detail = resp.json()["detail"]
-    assert "upload questions" in detail
-    assert "rater instructions" not in detail
+    assert detail.startswith(
+        "Cannot launch: this experiment is missing questions, rater instructions."
+    )
+    assert detail.index("Questions: upload questions") < detail.index("Rater instructions:")
+    assert "upload before setting either by hand" in detail
     assert route.call_count == 0
 
 
@@ -525,7 +543,6 @@ def test_one_click_refuses_a_card_without_economics_until_they_are_added(
     which asks for them; once they are on the card, the next study can skip
     the form."""
     exp = _carded_experiment(client)
-    _upload_one_question(client, exp["id"])
     route = _mock_create_study()
 
     resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
@@ -580,8 +597,7 @@ def test_one_click_applies_the_launch_gate(client: TestClient, enable_prolific):
     """One-click is a shortcut through the pilot form, not around readiness:
     the pilot's own gate refuses it, even with a complete card.
 
-    Questions are uploaded first so the gate is what refuses — without them the
-    missing upload is reported instead, which is checked first.
+    Questions are uploaded so the refusal is about the rater text alone.
     """
     dataset = client.post(
         "/api/admin/datasets",

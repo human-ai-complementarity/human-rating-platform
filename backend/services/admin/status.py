@@ -22,6 +22,8 @@ from models import (
 )
 from services.assistance.model_resolution import pinned_model
 
+from .queries import fetch_total_questions_for_experiment
+
 
 def is_locked(experiment: Experiment) -> bool:
     """True once experiment-level config must be frozen (LAUNCH or FINISHED)."""
@@ -76,8 +78,13 @@ _ROW_REQUIRED_TEXT: tuple[tuple[str, str], ...] = (
 )
 
 
-def experiment_launch_blockers(experiment: Experiment) -> list[str]:
+def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -> list[str]:
     """What still stops this experiment launching a study, in report order.
+
+    `question_count` is `ExperimentResponse.question_count`, which skips parent
+    rows (header-only, never served). Publishing with none would move the
+    experiment to LAUNCH, which blocks uploads. Reported first, since the
+    upload also brings the rater instructions and model.
 
     `name` is not checked: it is required at create, so it is always present.
     The model is only required when assistance is actually on — a control arm
@@ -87,7 +94,8 @@ def experiment_launch_blockers(experiment: Experiment) -> list[str]:
     `pinned_model` finds one for the current method, the resolver's own test,
     so the gate and the model that runs cannot disagree.
     """
-    blockers = [
+    blockers = [] if question_count > 0 else ["questions"]
+    blockers += [
         label for attr, label in _ROW_REQUIRED_TEXT if not (getattr(experiment, attr) or "").strip()
     ]
     if experiment.assistance_method != "none":
@@ -104,6 +112,11 @@ def experiment_launch_blockers(experiment: Experiment) -> list[str]:
 # card afterwards cannot fix an existing one. Served to the admin UI too
 # (`ExperimentResponse.launch_blocker_fixes`), so the wording names its fields.
 _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
+    "questions": (
+        "Questions: upload questions on the Questions tab. The pipeline export's metadata "
+        "brings the rater instructions and assistance model with them, so upload before "
+        "setting either by hand."
+    ),
     "rater instructions": (
         "Rater instructions: part of the pipeline export's metadata, applied at upload. "
         "If the upload lacked them, set them under Instructions & prompts; uploading "
@@ -127,7 +140,7 @@ def launch_blocker_fixes(blockers: list[str]) -> list[str]:
     return [_LAUNCH_BLOCKER_FIXES[blocker] for blocker in blockers]
 
 
-def assert_launch_ready(experiment: Experiment) -> None:
+async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
     """Refuse to create a study for an experiment that isn't fully onboarded.
 
     Bites at first study creation — the last moment before a Prolific study
@@ -135,7 +148,8 @@ def assert_launch_ready(experiment: Experiment) -> None:
     headroom analysis must keep working on an unfinished card) and not at
     publish, where refusing would leave an orphan draft study to discard.
     """
-    blockers = experiment_launch_blockers(experiment)
+    question_count = await fetch_total_questions_for_experiment(experiment.id, db)
+    blockers = experiment_launch_blockers(experiment, question_count=question_count)
     if blockers:
         raise HTTPException(
             status_code=400,
