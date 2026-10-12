@@ -535,6 +535,32 @@ def test_one_click_names_the_missing_upload_before_the_missing_text(
 
 
 @respx.mock
+def test_one_click_names_missing_questions_before_an_incomplete_card(
+    client: TestClient, enable_prolific
+):
+    """The gate runs before the card checks, so an experiment with no questions
+    on a card without economics is told to upload, not to finish the card."""
+    dataset = client.post(
+        "/api/admin/datasets", json={"name": "gated", "waves": ["fall25"], **_CARD}
+    ).json()
+    assert dataset["complete"] is False
+    group = _group(client, dataset, "fall25")
+    exp = client.post("/api/admin/experiments", json={"group_id": group["id"]}).json()
+    exp = _fill_row_fields(client, exp["id"])
+    assert exp["launch_blockers"] == ["questions"]
+    route = _mock_create_study()
+
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail == (
+        "Cannot launch: this experiment is missing questions. " + exp["launch_blocker_fixes"][0]
+    )
+    assert "complete dataset card" not in detail
+    assert route.call_count == 0
+
+
+@respx.mock
 def test_one_click_refuses_a_card_without_economics_until_they_are_added(
     client: TestClient, enable_prolific
 ):
