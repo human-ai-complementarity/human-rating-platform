@@ -34,7 +34,6 @@ from .dataset_card import card_readiness
 from .experiments import fetch_card_for_group
 from .queries import fetch_experiment_or_404
 from .rounds import run_pilot_study
-from .status import assert_launch_ready
 
 DEFAULT_PILOT_PLACES = 5
 
@@ -74,15 +73,6 @@ async def preview_launch_from_card(experiment_id: int, db: AsyncSession) -> OneC
     return OneClickLaunchPreview(excluded_experiments=await dataset_exclusions(experiment, db))
 
 
-def _blurb(card: dict[str, object]) -> str | None:
-    """The Prolific-facing study description.
-
-    Distinct from the rater guide: this is what a prospective participant
-    reads in the study listing, where the full limitations blob reads badly.
-    """
-    return card.get("study_blurb")  # type: ignore[return-value]
-
-
 async def launch_from_card(
     experiment_id: int,
     payload: OneClickLaunchRequest,
@@ -90,6 +80,11 @@ async def launch_from_card(
 ) -> ExperimentRoundResponse:
     experiment = await fetch_experiment_or_404(experiment_id, db)
 
+    # Before the launch gate, which run_pilot_study applies. The rater
+    # instructions and prompt framing arrive WITH the upload (the pipeline
+    # stamps them into the exported file), so on an experiment with nothing
+    # uploaded the gate's error would both misdiagnose the problem and send the
+    # admin in a circle: the way to supply what it asks for is to upload.
     question_count = (
         await db.execute(
             select(func.count())
@@ -102,13 +97,6 @@ async def launch_from_card(
             status_code=400,
             detail="Cannot launch: upload questions for this experiment first.",
         )
-
-    # After the question check, not before. The rater instructions and prompt
-    # framing now arrive WITH the upload (the pipeline stamps them into the
-    # exported file), so on an experiment with nothing uploaded the readiness
-    # error would both misdiagnose the problem and send the admin in a circle:
-    # the way to supply what it asks for is to upload.
-    assert_launch_ready(experiment)
 
     group_card = await fetch_card_for_group(experiment.group_id, db)
     if group_card is None:
@@ -132,10 +120,10 @@ async def launch_from_card(
             ),
         )
 
-    description = _blurb(card)
     excluded_ids = [ref.id for ref in await dataset_exclusions(experiment, db)]
     pilot = PilotStudyCreate(
-        description=str(description),
+        # The Prolific listing gets the blurb, not the rater guide.
+        description=str(card["study_blurb"]),
         estimated_completion_time=int(card["estimated_completion_time"]),  # type: ignore[arg-type]
         reward=int(card["reward"]),  # type: ignore[arg-type]
         pilot_places=payload.places or DEFAULT_PILOT_PLACES,
