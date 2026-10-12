@@ -7,10 +7,10 @@ study". Two things keep it there deliberately:
 - Questions still arrive by upload, so this refuses rather than creating a
   study with nothing to rate.
 
-Only a *complete* dataset launches this way: launch-ready, with the
-economics (estimated completion time and reward) on its card too. Those stay
-optional at onboarding, so a dataset's first study usually goes through the
-pilot form, which asks for them.
+Only a dataset with a *complete* card launches this way, economics
+(estimated completion time and reward) included. Those stay optional at
+onboarding, so a dataset's first study usually goes through the pilot form,
+which asks for them. The experiment's launch gate applies either way.
 
 The pilot excludes the participants of the dataset's other experiments, which
 the pilot form would otherwise ask the admin to pick by hand.
