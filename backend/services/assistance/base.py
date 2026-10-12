@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from models import Question, StepType
 
@@ -58,10 +58,15 @@ class AssistanceMethod(ABC):
 
     rater_instructions: str = ""
 
+    # The name experiments select this method by. The registry is keyed by it,
+    # and it keys the method's `assistance_models` entry, so the calls resolve
+    # their models under the same name the session record does.
+    method_key: ClassVar[str]
+
     # Which `model_resolution` role this method's rater-facing call runs on;
     # None for a method that calls no model. Read without instantiation, like
     # `rater_instructions`, so a session can record the model that actually ran.
-    primary_model_role: str | None = None
+    primary_model_role: ClassVar[str | None] = None
 
     def preparation_params(self, params: dict) -> dict:
         """Resolve method defaults before taking a durable input snapshot."""

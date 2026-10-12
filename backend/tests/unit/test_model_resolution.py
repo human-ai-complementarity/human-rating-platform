@@ -11,14 +11,19 @@ from config import get_settings
 from models import Question
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
-from services.assistance import model_resolution
+from services.assistance import model_resolution, registry
 from services.assistance.model_resolution import (
     instrument_model_keys,
     resolve_model,
     resolve_model_and_source,
     validate_model_id,
 )
-from services.assistance.registry import assisted_methods, get_method, resolved_models
+from services.assistance.registry import (
+    assisted_methods,
+    get_method,
+    record_resolved_model,
+    resolved_models,
+)
 
 # Sentinels, not real models: a map entry equal to a settings default would
 # let a call site that ignores the map pass anyway.
@@ -265,3 +270,52 @@ async def test_without_params_methods_keep_their_defaults():
     settings = get_settings().llm
     assert llm.call_args.kwargs["model"] == settings.default_model
     assert method._decomposer.start.call_args.args[3] == settings.decomposition_model
+
+
+def test_each_method_is_registered_under_its_method_key():
+    for name in ("none", "top_n", "human_as_a_tool"):
+        assert type(get_method(name)).method_key == name
+
+
+# Subclasses with another key and role: a call site still naming "top_n" or
+# "answer" (or "human_as_a_tool"/"decomposition") would resolve the parent's.
+class _TopNVariant(TopNAssistance):
+    method_key = "top_n_variant"
+    primary_model_role = "decomposition"
+
+
+class _HaaTVariant(HumanAsAToolMethod):
+    method_key = "haat_variant"
+    primary_model_role = "answer"
+
+
+_VARIANTS = {"assistance_models": {**_MAP["assistance_models"], "top_n_variant": _SESSION}}
+
+
+@pytest.mark.asyncio
+async def test_top_n_runs_and_records_under_its_own_key_and_role(monkeypatch):
+    monkeypatch.setitem(registry._REGISTRY, "top_n_variant", _TopNVariant)
+    llm = AsyncMock(side_effect=RuntimeError("stop"))
+    with patch("services.assistance.methods.top_n._complete_with_schema_fallback", new=llm):
+        await _TopNVariant().start(_question(), _VARIANTS)
+        await _TopNVariant().start(_question(), {})
+
+    default = get_settings().llm.decomposition_model
+    assert [call.kwargs["model"] for call in llm.call_args_list] == [_SESSION, default]
+    assert record_resolved_model("top_n_variant", _VARIANTS)["resolved_model"] == _SESSION
+    pinned = _TopNVariant().preparation_params({})["assistance_models"]
+    assert pinned == {"top_n_variant": default}
+
+
+@pytest.mark.asyncio
+async def test_human_as_a_tool_runs_under_its_own_key_and_role():
+    method = _HaaTVariant()
+    method._decomposer.start = AsyncMock(side_effect=RuntimeError("stop"))
+    method._decomposer.advance = AsyncMock(side_effect=RuntimeError("stop"))
+    await method.start(_question(), {"assistance_models": {"haat_variant": _SESSION}})
+    await method.advance({}, "{}", _MAP)
+
+    default = get_settings().llm.default_model
+    assert method._decomposer.start.call_args.args[3] == _SESSION
+    assert method._decomposer.advance.call_args.kwargs["model"] == default
+    assert method.preparation_params({})["assistance_models"] == {"haat_variant": default}

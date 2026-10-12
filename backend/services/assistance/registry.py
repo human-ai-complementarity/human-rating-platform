@@ -12,14 +12,23 @@ test different approaches and compare their effect on rating quality.
 2. Define a class that extends AssistanceMethod and implements start():
 
     class HintMethod(AssistanceMethod):
+        method_key = "hint"
+        primary_model_role = "answer"
         rater_instructions = (
             "For each question, an AI-generated hint will be shown alongside "
             "the question to help you reason through it."
         )
 
         async def start(self, question: Question, params: dict) -> InteractionStep:
-            hint = await generate_hint(question.question_text, params)
+            model = resolve_model(params, self.method_key, self.primary_model_role)
+            hint = await generate_hint(question.question_text, model)
             return InteractionStep(type=StepType.DISPLAY, payload={"hint": hint}, is_terminal=True)
+
+   ``method_key`` is the name experiments select the method by, and keys its
+   ``assistance_models`` entry. ``primary_model_role`` is the
+   ``model_resolution`` role its rater-facing call runs on; leave it None for
+   a method that calls no model. Resolve through both, never literals, so
+   what runs is what the session records.
 
    ``rater_instructions`` is a short plain-text description of how the method
    works from the rater's perspective, shown on the intro screen before they
@@ -27,10 +36,10 @@ test different approaches and compare their effect on rating quality.
    experience — leave as the empty string only if the method is invisible to
    the rater (e.g. NoAssistance).
 
-3. Register it here:
+3. Register it here, keyed by its ``method_key``:
 
     from .methods.hint import HintMethod
-    _REGISTRY["hint"] = HintMethod
+    _REGISTRY = {cls.method_key: cls for cls in (..., HintMethod)}
 
 4. Configure an experiment to use it by setting assistance_method="hint" on
    ExperimentCreate (and optionally assistance_params for method-specific config).
@@ -100,10 +109,10 @@ from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
 
+# Keyed by each class's own `method_key`, so the name an experiment selects a
+# method by is the one it resolves its models under.
 _REGISTRY: dict[str, type[AssistanceMethod]] = {
-    "none": NoAssistance,
-    "human_as_a_tool": HumanAsAToolMethod,
-    "top_n": TopNAssistance,
+    cls.method_key: cls for cls in (NoAssistance, HumanAsAToolMethod, TopNAssistance)
 }
 
 
@@ -132,7 +141,7 @@ def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
     """Per assisted method, the model its primary role would run on under
     `params`, and its source, resolved the same way as the call itself."""
     return {
-        name: resolve_model_and_source(params, name, cls.primary_model_role)
+        name: resolve_model_and_source(params, cls.method_key, cls.primary_model_role)
         for name, cls in _assisted()
     }
 
@@ -149,7 +158,7 @@ def record_resolved_model(name: str, params: dict | None) -> dict:
     cls = _REGISTRY.get(name)
     role = cls.primary_model_role if cls is not None else None
     if role is not None:
-        recorded[RESOLVED_MODEL_KEY] = resolve_model(recorded, name, role)
+        recorded[RESOLVED_MODEL_KEY] = resolve_model(recorded, cls.method_key, role)
     return recorded
 
 
