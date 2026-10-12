@@ -2,15 +2,13 @@ import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { Dataset, LaunchPreview } from '../../types';
 import { formatMinorUnits } from './reward';
-import { SectionCard, primaryButton } from './ui';
-
-const fieldLabel = (field: string) => field.replace(/_/g, ' ');
+import { SectionCard, fieldLabel, primaryButton } from './ui';
 
 /**
  * One-click pilot (#96): builds the pilot draft from a complete dataset card
  * instead of the pilot form, excluding the participants of the dataset's other
- * experiments (the backend's list, shown on load and re-read for the confirm).
- * Publishing stays a separate step. An incomplete card gets one line naming
+ * experiments (the backend's list). The card and the list are shown on load and
+ * re-read for the confirm. Publishing stays a separate step. An incomplete card gets one line naming
  * what's missing, since a dataset's first study usually goes through the pilot
  * form anyway.
  */
@@ -35,6 +33,8 @@ export function OneClickLaunch({
   const [excluded, setExcluded] = useState<LaunchPreview['excluded_experiments']>([]);
   const [checking, setChecking] = useState(false);
   const [launching, setLaunching] = useState(false);
+  // Set only when the draft was created but the page couldn't refresh to show it.
+  const [created, setCreated] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -71,31 +71,43 @@ export function OneClickLaunch({
     );
   }
 
-  const time = card.estimated_completion_time ?? 0;
-  const money = formatMinorUnits(card.reward ?? 0, currencyCode, currencySymbol);
+  const minutesOf = (c: Dataset) => `${c.estimated_completion_time ?? 0} min`;
+  const rewardOf = (c: Dataset) =>
+    `${formatMinorUnits(c.reward ?? 0, currencyCode, currencySymbol)} per participant`;
   const blocked = launchBlockers.length > 0;
+  const disabled = blocked || checking || launching || created;
+  // Public names can be shared by every arm; researchers know them by internal name.
   const namesOf = (refs: LaunchPreview['excluded_experiments']) =>
-    refs.map((exp) => exp.name).join(', ');
+    refs.map((exp) => exp.internal_name || exp.name).join(', ');
   const excludedNames = namesOf(excluded);
 
   const handleLaunch = async () => {
     setError(null);
     setChecking(true);
+    let current: Dataset;
     let names: string;
     try {
-      // Re-read the list, so the confirm names what the launch excludes now.
-      const preview = await api.getLaunchPreview(experimentId);
+      // Re-read both, so the confirm quotes what the launch uses now.
+      const [dataset, preview] = await Promise.all([
+        api.getDataset(datasetId),
+        api.getLaunchPreview(experimentId),
+      ]);
+      setCard(dataset);
       setExcluded(preview.excluded_experiments);
+      current = dataset;
       names = namesOf(preview.excluded_experiments);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load the exclusions');
+      setError(err instanceof Error ? err.message : 'Failed to load the card and exclusions');
       return;
     } finally {
       setChecking(false);
     }
+    // No longer complete: the panel now names what's missing.
+    if (!current.complete) return;
     if (
       !window.confirm(
-        `Create a pilot draft from the ${datasetName} card: ${time} min, ${money} per participant?\n` +
+        `Create a pilot draft from the ${datasetName} card: ` +
+          `${minutesOf(current)}, ${rewardOf(current)}?\n` +
           (names
             ? `It excludes participants of: ${names}.\n`
             : 'The dataset has no other grouped experiments, so it excludes nobody.\n') +
@@ -107,10 +119,17 @@ export function OneClickLaunch({
     setLaunching(true);
     try {
       await api.launchFromCard(experimentId);
-      await onLaunched();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to launch from the dataset card');
       setLaunching(false);
+      return;
+    }
+    try {
+      await onLaunched();
+    } catch {
+      // The draft exists; only the refresh failed, so offer no second launch.
+      setLaunching(false);
+      setCreated(true);
     }
   };
 
@@ -130,8 +149,8 @@ export function OneClickLaunch({
           still edit the draft before publishing.
         </p>
         <div data-testid="one-click-card" style={{ display: 'grid', gap: 6, marginBottom: 14 }}>
-          {row('Completion time', `${time} min`)}
-          {row('Reward', `${money} per participant`)}
+          {row('Completion time', minutesOf(card))}
+          {row('Reward', rewardOf(card))}
           {row('Study description', card.study_blurb)}
           {row(
             'Excludes',
@@ -150,14 +169,23 @@ export function OneClickLaunch({
           </div>
         )}
         {errorLine}
+        {created && (
+          <div
+            role="status"
+            data-testid="one-click-created"
+            style={{ fontSize: 13, color: 'var(--ink)', marginBottom: 10 }}
+          >
+            Pilot draft created — reload to see it.
+          </div>
+        )}
         <button
           type="button"
           data-testid="one-click-launch-button"
           onClick={handleLaunch}
-          disabled={blocked || checking || launching}
+          disabled={disabled}
           style={{
             ...primaryButton,
-            ...(blocked || checking || launching ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+            ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
           }}
         >
           {launching ? 'Creating…' : 'Create pilot draft from the card'}

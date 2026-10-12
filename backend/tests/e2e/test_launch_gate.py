@@ -27,14 +27,10 @@ _CARD = {
     "study_blurb": "Rate short passages.",
 }
 
-# The gate's text fields are no longer on the platform card (#96): the
-# pipeline stamps them into the export and the upload applies them to the
-# row. Tests here only need them *on the row*, so they write them directly.
-_ROW_FIELDS = {
-    "description": "Answer using only the passage.",
-    "human_prompt_prefix": "Given the passage:",
-    "human_prompt_suffix": "Rate your confidence.",
-}
+# The gate's text field is no longer on the platform card (#96): the pipeline
+# stamps it into the export and the upload applies it to the row. Tests here
+# only need it *on the row*, so they write it directly.
+_ROW_FIELDS = {"description": "Answer using only the passage."}
 
 _PILOT = {
     "description": "Test study",
@@ -104,17 +100,37 @@ def test_a_fully_configured_experiment_reports_ready(client: TestClient):
     exp = _carded_experiment(client)
     assert exp["launch_ready"] is True
     assert exp["launch_blockers"] == []
+    assert exp["launch_blocker_fixes"] == []
 
 
 def test_a_bare_experiment_reports_what_it_is_missing(client: TestClient):
     exp = client.post("/api/admin/experiments", json={"name": "Bare"}).json()
     assert exp["launch_ready"] is False
-    assert exp["launch_blockers"] == [
-        "rater instructions",
-        "prompt prefix",
-        "prompt suffix",
-        "internal study name",
+    assert exp["launch_blockers"] == ["rater instructions", "internal study name"]
+    # One fix per blocker, in the same order, so the UI renders them as served.
+    assert [fix.split(":")[0] for fix in exp["launch_blocker_fixes"]] == [
+        "Rater instructions",
+        "Internal study name",
     ]
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [{}, {"human_prompt_prefix": "Given the passage:"}, {"human_prompt_suffix": "Rate it."}],
+)
+def test_the_prompt_prefix_and_suffix_are_optional(client: TestClient, framing):
+    """A dataset may frame its questions with one, both or neither."""
+    exp = client.post("/api/admin/experiments", json={"name": "Unframed"}).json()
+    patched = client.patch(
+        f"/api/admin/experiments/{exp['id']}",
+        json={
+            "assistance_method": "none",
+            "internal_name": "unframed internal",
+            "description": "Instructions.",
+            **framing,
+        },
+    ).json()
+    assert patched["launch_blockers"] == []
 
 
 def test_an_ungrouped_experiment_can_still_be_ready(client: TestClient):
@@ -211,8 +227,11 @@ def test_pilot_is_refused_with_the_blocker_list(client: TestClient, enable_proli
     assert "rater instructions" in detail
     # Each blocker gets the fix for where its value comes from: the text from
     # the upload's metadata, the internal name from the card only at create.
-    assert "Rater instructions, prompt prefix, prompt suffix: part of the pipeline export" in detail
+    assert "Rater instructions: part of the pipeline export" in detail
     assert "Internal study name: copied from the dataset card's template only when" in detail
+    # The same fixes the experiment response serves the admin UI.
+    for fix in exp["launch_blocker_fixes"]:
+        assert fix in detail
     # Refused before anything is created on Prolific — no orphan study to clean up.
     assert route.call_count == 0
 
@@ -230,8 +249,11 @@ def test_a_missing_model_is_refused_with_both_ways_to_supply_it(
     detail = resp.json()["detail"]
     assert "missing assistance model." in detail
     # The export carries a per-method map; a PATCH can set an entry.
-    assert "per method under `assistance_models`" in detail
-    assert "PATCH assistance_params.assistance_models.<method>." in detail
+    assert "per method under assistance_models" in detail
+    assert (
+        "PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>."
+        in detail
+    )
     assert "assistance_params.model" not in detail
     assert route.call_count == 0
 
@@ -353,11 +375,13 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
 
     target = _ready_in_group(client, fall25, "Target")
     _upload_one_question(client, target["id"])
+    # Each carries its internal name, which the admin UI shows over the public one.
     expected = [
-        {"id": same_wave["id"], "name": "Same wave"},
-        {"id": other_wave["id"], "name": "Other wave"},
-        {"id": never_ran["id"], "name": "Never ran"},
+        {"id": exp["id"], "name": exp["name"], "internal_name": exp["internal_name"]}
+        for exp in (same_wave, other_wave, never_ran)
     ]
+    assert [ref["name"] for ref in expected] == ["Same wave", "Other wave", "Never ran"]
+    assert all(ref["internal_name"] for ref in expected)
     preview = client.get(f"/api/admin/experiments/{target['id']}/launch/preview")
     assert preview.status_code == 200, preview.text
     assert preview.json() == {"excluded_experiments": expected}
@@ -553,14 +577,22 @@ def test_one_click_needs_the_whole_card_not_just_economics(client: TestClient, e
 
 @respx.mock
 def test_one_click_applies_the_launch_gate(client: TestClient, enable_prolific):
-    """One-click is a shortcut through the pilot form, not around readiness.
+    """One-click is a shortcut through the pilot form, not around readiness:
+    the pilot's own gate refuses it, even with a complete card.
 
     Questions are uploaded first so the gate is what refuses — without them the
-    missing upload is reported instead, which is the check just above it.
+    missing upload is reported instead, which is checked first.
     """
-    exp = client.post("/api/admin/experiments", json={"name": "Bare"}).json()
+    dataset = client.post(
+        "/api/admin/datasets",
+        json={"name": "gated", "waves": ["fall25"], **_CARD, **_ECONOMICS},
+    ).json()
+    group = _group(client, dataset, "fall25")
+    exp = client.post("/api/admin/experiments", json={"group_id": group["id"]}).json()
     _upload_one_question(client, exp["id"])
+    route = _mock_create_study()
 
     resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
     assert resp.status_code == 400
     assert "rater instructions" in resp.json()["detail"]
+    assert route.call_count == 0

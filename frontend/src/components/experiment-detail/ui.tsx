@@ -372,3 +372,8 @@ export const dangerButton: React.CSSProperties = {
   font: '600 14px var(--font-body)',
   cursor: 'pointer',
 };
+
+/** A dataset card field name as UI copy: `estimated_completion_time` → `estimated completion time`. */
+export function fieldLabel(field: string): string {
+  return field.replace(/_/g, ' ');
+}

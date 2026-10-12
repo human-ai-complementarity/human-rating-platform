@@ -162,7 +162,7 @@ type MockState = {
   launchRequests: number[];
   launchError: string | null;
   // What GET /launch/preview reports a one-click launch would exclude.
-  launchExcluded: { id: number; name: string }[];
+  launchExcluded: { id: number; name: string; internal_name: string | null }[];
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
@@ -207,6 +207,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     // its own test below.
     launch_ready: true,
     launch_blockers: [],
+    launch_blocker_fixes: [],
     ...partial,
   };
 }
@@ -2232,6 +2233,12 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 
 
 test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
+  // Served by the API (status.py), one per blocker; the page renders them as given.
+  const fixes = [
+    'Rater instructions: set them under Instructions & prompts.',
+    'Internal study name: set it with the pencil by its title.',
+    'Assistance model: PATCH assistance_params.assistance_models.<method>.',
+  ];
   const state = createMockState();
   state.experiments = [
     buildExperiment(state, {
@@ -2239,12 +2246,8 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
       name: 'Unfinished Experiment',
       question_count: 2,
       launch_ready: false,
-      launch_blockers: [
-        'rater instructions',
-        'prompt prefix',
-        'internal study name',
-        'assistance model',
-      ],
+      launch_blockers: ['rater instructions', 'internal study name', 'assistance model'],
+      launch_blocker_fixes: fixes,
     }),
   ];
   state.nextExperimentId = 2;
@@ -2265,20 +2268,14 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
 
   // The same list the API would reject the launch with, shown before the
   // admin fills in the whole form.
-  await expect(page.getByTestId('launch-blockers')).toContainText('rater instructions');
-  await expect(page.getByTestId('launch-blockers')).toContainText('prompt prefix');
-  // Each blocker gets the fix for where its value comes from: the text from
-  // the upload (editable here), the internal name from the card only at create.
-  await expect(page.getByTestId('launch-blockers')).toContainText(
-    'If the upload lacked them, edit them under Instructions & prompts.',
+  const banner = page.getByTestId('launch-blockers');
+  await expect(banner).toContainText(
+    'missing rater instructions, internal study name, assistance model.',
   );
-  await expect(page.getByTestId('launch-blockers')).toContainText(
-    'Internal study name: the dataset card fills it only when an experiment is created.',
-  );
-  // The model has no field: the export carries a per-method map, and a PATCH can set an entry.
-  await expect(page.getByTestId('launch-blockers')).toContainText(
-    'PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>.',
-  );
+  // Each fix as the API served it, with no copy of its own.
+  for (const fix of fixes) {
+    await expect(banner).toContainText(fix);
+  }
   await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
   // Ungrouped, so no dataset card and no one-click.
   await expect(page.locator('[data-testid^="one-click"]')).toHaveCount(0);
@@ -2360,7 +2357,7 @@ test("a pilot's time and reward can be saved to the dataset card", async ({ page
 
   // Copied unconverted: minutes, and minor units per participant.
   await expect(page.getByTestId('card-readiness')).toHaveText(
-    'Card complete: one-click launch can use it.',
+    'Card complete: one-click pilots can use it.',
   );
   expect(state.datasetPatches).toEqual([{ estimated_completion_time: 20, reward: 900 }]);
   await expect(page.getByTestId('save-to-card-button')).toHaveCount(0);
@@ -2436,9 +2433,10 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   const state = createMockState();
   seedCardExperiment(state, COMPLETE_CARD);
   state.launchError = 'Cannot launch: upload questions for this experiment first.';
+  // Named by internal name where there is one; arms share the public name.
   state.launchExcluded = [
-    { id: 7, name: 'Passages fall24 control' },
-    { id: 9, name: 'Passages fall25 top_n' },
+    { id: 7, name: 'Passage rating', internal_name: 'passages fall24 control' },
+    { id: 9, name: 'Passages fall25 top_n', internal_name: null },
   ];
 
   await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
@@ -2449,7 +2447,7 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   await expect(card).toContainText('30 min');
   await expect(card).toContainText('£9.00 per participant');
   await expect(card).toContainText('Rate short passages.');
-  await expect(card).toContainText('Participants of Passages fall24 control, Passages fall25 top_n');
+  await expect(card).toContainText('Participants of passages fall24 control, Passages fall25 top_n');
   // The pilot form stays as the alternative.
   await expect(page.getByTestId('run-pilot-button')).toBeVisible();
 
@@ -2460,8 +2458,12 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   );
 
   state.launchError = null;
-  // A sibling added since the panel loaded is named in the confirm.
-  state.launchExcluded = [...state.launchExcluded, { id: 11, name: 'Passages fall25 decomp' }];
+  // A card edit and a sibling added since the panel loaded reach the confirm.
+  state.datasets[0] = { ...state.datasets[0], estimated_completion_time: 25, reward: 1000 };
+  state.launchExcluded = [
+    ...state.launchExcluded,
+    { id: 11, name: 'Passage rating', internal_name: 'passages fall25 decomp' },
+  ];
   page.removeAllListeners('dialog');
   let confirmMessage = '';
   page.once('dialog', async (dialog) => {
@@ -2472,9 +2474,9 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
 
   await expect(page.getByTestId('study-rounds-list')).toBeVisible();
   expect(confirmMessage).toBe(
-    'Create a pilot draft from the passages card: 30 min, £9.00 per participant?\n' +
-      'It excludes participants of: Passages fall24 control, Passages fall25 top_n, ' +
-      'Passages fall25 decomp.\n' +
+    'Create a pilot draft from the passages card: 25 min, £10.00 per participant?\n' +
+      'It excludes participants of: passages fall24 control, Passages fall25 top_n, ' +
+      'passages fall25 decomp.\n' +
       'You can still edit the draft before publishing.',
   );
   await expect(page.getByTestId('one-click-panel')).toHaveCount(0);
@@ -2513,6 +2515,33 @@ test('cancelling the one-click confirm sends no launch request', async ({ page }
   expect(state.launchRequests).toEqual([]);
 });
 
+test('a one-click draft whose refresh fails offers no second launch', async ({ page }) => {
+  const state = createMockState();
+  seedCardExperiment(state, COMPLETE_CARD);
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByTestId('one-click-card')).toBeVisible();
+
+  // The launch succeeds, but the rounds reload that would show its draft fails.
+  await page.route('**/api/admin/experiments/1/prolific/rounds', async (route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    await fulfillJson(route, 500, { detail: 'Round history unavailable' });
+  });
+  await page.getByTestId('one-click-launch-button').click();
+
+  await expect(page.getByTestId('one-click-created')).toHaveText(
+    'Pilot draft created — reload to see it.',
+  );
+  await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
+  await expect(page.getByTestId('one-click-launch-button')).toHaveText(
+    'Create pilot draft from the card',
+  );
+  await expect(page.getByTestId('one-click-panel').getByRole('alert')).toHaveCount(0);
+  expect(state.launchRequests).toEqual([1]);
+});
+
 test('an incomplete dataset card names what it lacks and offers no one-click', async ({ page }) => {
   const state = createMockState();
   seedCardExperiment(state, { ...COMPLETE_CARD, estimated_completion_time: null, reward: null });
@@ -2533,7 +2562,7 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   const state = createMockState();
   seedCardExperiment(state, COMPLETE_CARD, {
     launch_ready: false,
-    launch_blockers: ['rater instructions', 'prompt suffix'],
+    launch_blockers: ['rater instructions', 'internal study name'],
   });
 
   await installApiMocks(page, state);
@@ -2541,7 +2570,7 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   await page.getByTestId('tab-launch').click();
 
   await expect(page.getByTestId('one-click-blockers')).toContainText(
-    'missing rater instructions, prompt suffix',
+    'missing rater instructions, internal study name',
   );
   await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
   await expect(page.getByTestId('launch-blockers')).toBeVisible();

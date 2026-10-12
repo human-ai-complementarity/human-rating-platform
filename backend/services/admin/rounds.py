@@ -810,11 +810,13 @@ async def run_experiment_round(
     device_compatibility = _parse_device_compatibility(pilot_round.device_compatibility)
     screeners = _parse_screeners(pilot_round.screeners)
     excluded_experiment_ids = _parse_excluded_experiment_ids(pilot_round.excluded_experiment_ids)
-    blocklist_group_ids = await _build_round_blocklist_group_ids(
-        experiment, excluded_experiment_ids, db
-    )
 
     try:
+        # Inside the try, as in run_pilot_study: the blocklist may create
+        # participant groups on Prolific.
+        blocklist_group_ids = await _build_round_blocklist_group_ids(
+            experiment, excluded_experiment_ids, db
+        )
         result = await _create_prolific_study_for_round(
             experiment,
             round_number=next_round_number,
@@ -1138,7 +1140,8 @@ async def update_experiment_round(
         prolific_fields["study_labels"] = [payload.study_label]
     # `filters` on Prolific is a full replacement, so we always rebuild the
     # combined screener + exclusion filter list when either side changes.
-    if payload.screeners is not None or payload.excluded_experiment_ids is not None:
+    rebuild_filters = payload.screeners is not None or payload.excluded_experiment_ids is not None
+    if rebuild_filters:
         screeners = (
             list(payload.screeners)
             if payload.screeners is not None
@@ -1165,20 +1168,39 @@ async def update_experiment_round(
         # the round in an unsaveable state. Filtering here also self-heals the
         # persisted list below so the ghost is gone for good after one save.
         excluded_ids = await _filter_to_existing_experiment_ids(excluded_ids, db)
-        blocklist_group_ids = await _build_round_blocklist_group_ids(
-            experiment,
-            excluded_ids,
-            db,
-        )
-        prolific_fields["filters"] = build_screener_filters(screeners) + build_exclusion_filters(
-            blocklist_group_ids
-        )
 
     try:
+        if rebuild_filters:
+            # Inside the try, as in run_pilot_study: the blocklist may create
+            # participant groups on Prolific.
+            exclusion_filters = build_exclusion_filters(
+                await _build_round_blocklist_group_ids(experiment, excluded_ids, db)
+            )
+            prolific_fields["filters"] = build_screener_filters(screeners) + exclusion_filters
         await update_study(
             settings=settings.prolific,
             study_id=round_.prolific_study_id,
             fields=prolific_fields,
+        )
+    except HTTPException:
+        raise
+    except ProlificAPIError as exc:
+        logger.error(
+            "Failed to update Prolific study",
+            extra={
+                "attributes": {
+                    "experiment_id": experiment_id,
+                    "round_id": round_id,
+                    "study_id": round_.prolific_study_id,
+                    "fields_updated": sorted(prolific_fields.keys()),
+                    "prolific_status": exc.status_code,
+                    "prolific_body": exc.body,
+                }
+            },
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=_prolific_error_detail("Failed to update study on Prolific.", exc),
         )
     except Exception:
         logger.error(

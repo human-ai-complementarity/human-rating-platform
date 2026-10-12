@@ -64,13 +64,14 @@ def compute_attention_reason(
 # snapshots onto the row at create, so the card's current state has nothing to
 # do with what raters will see; and #84 deliberately keeps ungrouped
 # experiments valid, so they have no card at all. Asking the row — "will this
-# rater actually get instructions, framing and a pinned model?" — is a question
-# every experiment can answer, and holds ungrouped ones to the same bar instead
-# of blocking them wholesale or waving them through.
+# rater actually get instructions and a pinned model?" — is a question every
+# experiment can answer, and holds ungrouped ones to the same bar instead of
+# blocking them wholesale or waving them through.
+#
+# The prompt prefix and suffix are optional: a dataset may frame its questions
+# with one, both or neither.
 _ROW_REQUIRED_TEXT: tuple[tuple[str, str], ...] = (
     ("description", "rater instructions"),
-    ("human_prompt_prefix", "prompt prefix"),
-    ("human_prompt_suffix", "prompt suffix"),
     ("internal_name", "internal study name"),
 )
 
@@ -96,39 +97,34 @@ def experiment_launch_blockers(experiment: Experiment) -> list[str]:
     return blockers
 
 
-# Blockers whose value is part of the pipeline export's metadata, applied at
-# upload (`_apply_meta_to_experiment`). The internal study name is the one
-# gated field the dataset card supplies instead — and only when an experiment
-# is created, so editing the card afterwards cannot fix an existing one.
-_FROM_UPLOAD_META = ("rater instructions", "prompt prefix", "prompt suffix", "assistance model")
+# The fix for each blocker, by where its value comes from. The rater
+# instructions and model are part of the pipeline export's metadata, applied
+# at upload (`_apply_meta_to_experiment`); the internal study name comes from
+# the dataset card, and only when an experiment is created, so editing the
+# card afterwards cannot fix an existing one. Served to the admin UI too
+# (`ExperimentResponse.launch_blocker_fixes`), so the wording names its fields.
+_LAUNCH_BLOCKER_FIXES: dict[str, str] = {
+    "rater instructions": (
+        "Rater instructions: part of the pipeline export's metadata, applied at upload. "
+        "If the upload lacked them, set them under Instructions & prompts; uploading "
+        "the file again would add its questions twice."
+    ),
+    "internal study name": (
+        "Internal study name: copied from the dataset card's template only when an "
+        "experiment is created, so set it on this experiment with the pencil by its title."
+    ),
+    "assistance model": (
+        "Assistance model: part of the pipeline export's metadata, per method under "
+        "assistance_models, applied at upload. It has no field in the admin UI; to set "
+        "it by hand, PATCH /api/admin/experiments/<id> with "
+        "assistance_params.assistance_models.<method>."
+    ),
+}
 
 
 def launch_blocker_fixes(blockers: list[str]) -> list[str]:
-    """The fix for each blocker, grouped by where its value comes from."""
-    fixes: list[str] = []
-    from_upload = [b for b in blockers if b in _FROM_UPLOAD_META]
-    if from_upload:
-        them = "it" if len(from_upload) == 1 else "them"
-        listed = ", ".join(from_upload)
-        via_api = (
-            " The assistance model has no field in the UI. The export declares it per"
-            " method under `assistance_models`; to set it by hand, PATCH"
-            " assistance_params.assistance_models.<method>."
-            if "assistance model" in from_upload
-            else ""
-        )
-        fixes.append(
-            f"{listed[0].upper()}{listed[1:]}: part of the pipeline export's "
-            f"metadata, applied at upload. If the upload lacked {them}, set {them} on "
-            "this experiment directly; uploading the file again would add its "
-            f"questions twice.{via_api}"
-        )
-    if "internal study name" in blockers:
-        fixes.append(
-            "Internal study name: copied from the dataset card's template only when "
-            "an experiment is created, so set it on this experiment."
-        )
-    return fixes
+    """The fix for each blocker, in the blockers' order."""
+    return [_LAUNCH_BLOCKER_FIXES[blocker] for blocker in blockers]
 
 
 def assert_launch_ready(experiment: Experiment) -> None:

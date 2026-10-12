@@ -2,11 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { Dataset, ExperimentRound } from '../../types';
 import { formatMinorUnits } from './reward';
-import { SectionCard, secondaryButton } from './ui';
-
-function fieldLabel(field: string): string {
-  return field.replace(/_/g, ' ');
-}
+import { SectionCard, fieldLabel, secondaryButton } from './ui';
 
 /**
  * Offers to save a pilot's estimated completion time and reward to the
@@ -106,7 +102,7 @@ export function SaveToDatasetCard({
             style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 10 }}
           >
             {card.complete
-              ? 'Card complete: one-click launch can use it.'
+              ? 'Card complete: one-click pilots can use it.'
               : `Card incomplete: missing ${card.missing_for_complete.map(fieldLabel).join(', ')}.`}
           </div>
         )}
