@@ -74,7 +74,8 @@ class PreparationRunner:
 
     async def wait_ready(self):
         try:
-            await asyncio.wait_for(self._listening.wait(), STARTUP_SECONDS)
+            async with asyncio.timeout(STARTUP_SECONDS):
+                await self._listening.wait()
         except TimeoutError as exc:
             raise RuntimeError(
                 "Assistance listener did not become ready before startup timeout"
@@ -276,7 +277,9 @@ class PreparationRunner:
             try:
                 # A process-level recovery sweep finds claims whose owner died.
                 # Foreground requests never poll or hold a database connection.
-                await asyncio.wait_for(wake.wait(), timeout=30)
+                # Not wait_for: on 3.11 it drops a cancel that lands with a wake.
+                async with asyncio.timeout(30):
+                    await wake.wait()
             except TimeoutError:
                 pass
 
