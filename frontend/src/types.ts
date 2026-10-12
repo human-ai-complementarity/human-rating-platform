@@ -385,7 +385,7 @@ export interface PilotStudyCreate {
 
 // What a one-click launch excludes: every other experiment on the dataset.
 export interface LaunchPreview {
-  excluded_experiments: { id: number; name: string }[];
+  excluded_experiments: { id: number; name: string; internal_name: string | null }[];
 }
 
 export interface RecommendationResponse {
