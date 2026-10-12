@@ -2720,6 +2720,8 @@ function LaunchPanel(props: {
                   onSubmit={onRunPilot}
                   otherExperiments={otherExperiments}
                   datasetDescription={experiment.description}
+                  launchBlockers={experiment.launch_blockers ?? []}
+                  launchBlockerFixes={experiment.launch_blocker_fixes ?? []}
                 />
               )}
             </>
@@ -3256,6 +3258,9 @@ function PilotForm(props: {
   otherExperiments: Experiment[];
   datasetDescription: string | null;
   sessionDurationMinutes: number;
+  launchBlockers: string[];
+  // From the API, one per blocker: the same fixes its 400 would give.
+  launchBlockerFixes: string[];
 }) {
   const {
     pilotForm,
@@ -3269,6 +3274,8 @@ function PilotForm(props: {
     otherExperiments,
     datasetDescription,
     sessionDurationMinutes,
+    launchBlockers,
+    launchBlockerFixes,
   } = props;
   const prefilledFromDataset =
     !!datasetDescription && pilotForm.description === datasetDescription;
@@ -3461,7 +3468,28 @@ function PilotForm(props: {
             style={inputStyle}
           />
         </Field>
-        <button data-testid="run-pilot-button" type="submit" style={{ ...primaryButton, width: '100%' }}>
+        {launchBlockers.length > 0 && (
+          <div data-testid="launch-blockers" style={{ marginBottom: 12 }}>
+            <Banner tone="warn">
+              This study can't launch yet — it's missing {launchBlockers.join(', ')}.
+              {launchBlockerFixes.map((fix) => (
+                <div key={fix} style={{ marginTop: 6 }}>
+                  {fix}
+                </div>
+              ))}
+            </Banner>
+          </div>
+        )}
+        <button
+          data-testid="run-pilot-button"
+          type="submit"
+          disabled={launchBlockers.length > 0}
+          style={{
+            ...primaryButton,
+            width: '100%',
+            ...(launchBlockers.length > 0 ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+          }}
+        >
           Create pilot draft
         </button>
       </form>

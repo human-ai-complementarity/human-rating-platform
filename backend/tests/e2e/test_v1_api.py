@@ -259,6 +259,10 @@ _INTERNAL_FIELDS = {
     "group_dataset_name",
     "wave",
     "tags",
+    # Operational readiness, for the admin dashboard only (#96).
+    "launch_ready",
+    "launch_blockers",
+    "launch_blocker_fixes",
 }
 
 

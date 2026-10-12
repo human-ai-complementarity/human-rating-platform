@@ -51,6 +51,12 @@ export interface Experiment {
   group_dataset_name: string | null;
   wave: string | null;
   tags: string[];
+  // What still stops this experiment launching a study (#96). Empty means
+  // ready; the list is exactly what the API would reject the launch with.
+  launch_ready: boolean;
+  launch_blockers: string[];
+  // How to fix each blocker, one per blocker in the same order.
+  launch_blocker_fixes: string[];
 }
 
 export interface Tag {

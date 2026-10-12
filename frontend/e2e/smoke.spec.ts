@@ -173,6 +173,11 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     group_dataset_name: null,
     wave: null,
     tags: [],
+    // Ready by default so existing pilot coverage is unaffected; the gate has
+    // its own test below.
+    launch_ready: true,
+    launch_blockers: [],
+    launch_blocker_fixes: [],
     ...partial,
   };
 }
@@ -2149,4 +2154,52 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 
   await expect(page.getByRole('heading', { name: 'Tagged draft' })).toBeVisible();
   expect(state.experiments[0].tags).toEqual(['needs-review', 'client-x']);
+});
+
+
+test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
+  // Served by the API (status.py), one per blocker; the page renders them as given.
+  const fixes = [
+    'Rater instructions: set them under Instructions & prompts.',
+    'Internal study name: set it with the pencil by its title.',
+    'Assistance model: PATCH assistance_params.assistance_models.<method>.',
+  ];
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Unfinished Experiment',
+      question_count: 2,
+      launch_ready: false,
+      launch_blockers: ['rater instructions', 'internal study name', 'assistance model'],
+      launch_blocker_fixes: fixes,
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [
+    {
+      id: 1,
+      filename: 'sample_questions.csv',
+      uploaded_at: '2026-03-09T00:01:00Z',
+      question_count: 2,
+      dataset_meta: null,
+    },
+  ];
+  state.rounds[1] = [];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  // The same list the API would reject the launch with, shown before the
+  // admin fills in the whole form.
+  const banner = page.getByTestId('launch-blockers');
+  await expect(banner).toContainText(
+    'missing rater instructions, internal study name, assistance model.',
+  );
+  // Each fix as the API served it, with no copy of its own.
+  for (const fix of fixes) {
+    await expect(banner).toContainText(fix);
+  }
+  await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
 });

@@ -54,8 +54,8 @@ _JSON_CARD_FIELDS = ("screeners",)
 # for headroom analysis — an unfinished card still uploads and analyses.
 #
 # Completeness does not gate a launch: the launch gate reads the experiment
-# row, which also needs the rater instructions and prompt prefix/suffix that
-# arrive with the upload, not from the card.
+# row, which also needs the rater instructions that arrive with the upload,
+# not from the card.
 COMPLETE_REQUIRED_FIELDS: tuple[str, ...] = (
     "external_study_name",
     "internal_study_name",
