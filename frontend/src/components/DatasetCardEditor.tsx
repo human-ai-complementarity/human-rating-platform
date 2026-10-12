@@ -7,6 +7,7 @@ import {
   Field,
   STUDY_LABELS,
   ScreenerCheckboxes,
+  fieldLabel,
   inputStyle,
   primaryButton,
   secondaryButton,
@@ -30,8 +31,6 @@ type Draft = {
   study_label: StudyLabel | '';
   screeners: Screener[] | null;
 };
-
-const fieldLabel = (field: string) => field.replace(/_/g, ' ');
 
 function toDraft(card: Dataset, currencyCode: string | null): Draft {
   return {
@@ -177,7 +176,6 @@ export default function DatasetCardEditor({
     }
   };
 
-  const missing = (fields: string[]) => fields.map(fieldLabel).join(', ');
   const text = (field: 'external_study_name' | 'internal_study_name', testId: string) => (
     <input
       id={`card-${field}`}
@@ -251,8 +249,8 @@ export default function DatasetCardEditor({
             >
               <div data-testid="card-complete">
                 {card.complete
-                  ? 'Complete: one-click pilots can use it.'
-                  : `Not complete: missing ${missing(card.missing_for_complete)}.`}
+                  ? 'Card complete: one-click pilots can use it.'
+                  : `Card incomplete: missing ${card.missing_for_complete.map(fieldLabel).join(', ')}.`}
               </div>
             </div>
             <Field

@@ -2596,7 +2596,7 @@ test('the dataset card editor saves what changed and shows whether the card is c
   await page.getByTestId('group-card-edit-1').click();
   const editor = page.getByTestId('dataset-card-editor');
   await expect(editor.getByTestId('card-complete')).toHaveText(
-    'Not complete: missing internal study name, study blurb.',
+    'Card incomplete: missing internal study name, study blurb.',
   );
   // Minor units per participant, entered as the pilot form's reward is.
   await expect(editor.getByTestId('card-reward-input')).toHaveValue('9.00');
@@ -2614,7 +2614,7 @@ test('the dataset card editor saves what changed and shows whether the card is c
   await editor.getByTestId('card-save-button').click();
 
   await expect(editor.getByTestId('card-complete')).toHaveText(
-    'Complete: one-click pilots can use it.',
+    'Card complete: one-click pilots can use it.',
   );
   // Only what changed is sent, and a cleared field is an explicit null.
   expect(state.datasetPatches).toEqual([
