@@ -5,6 +5,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import islice
 from typing import Any
 
 from sqlalchemy import case, func, or_, select
@@ -47,8 +48,8 @@ from services.assistance.model_resolution import (
 from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
 from .study_names import (
-    disambiguate,
-    external_placeholders,
+    EXTERNAL_PLACEHOLDERS,
+    numbered_variants,
     render_study_name,
 )
 from .waves import normalize_wave_token
@@ -99,8 +100,25 @@ async def _fetch_card_for_group(group_id: int | None, db: AsyncSession) -> _Grou
     )
 
 
-async def _existing_experiment_names(db: AsyncSession) -> set[str]:
-    return set((await db.execute(select(Experiment.name))).scalars().all())
+# Candidate internal names checked per query; one batch almost always settles it.
+_NAME_BATCH = 20
+
+
+async def _unused_internal_name(name: str, db: AsyncSession) -> str:
+    """`name`, or its first " (N)" variant no experiment's internal_name uses.
+
+    Only those candidates are queried, a batch at a time.
+    """
+    variants = numbered_variants(name)
+    while True:
+        batch = list(islice(variants, _NAME_BATCH))
+        result = await db.execute(
+            select(Experiment.internal_name).where(Experiment.internal_name.in_(batch))
+        )
+        taken = set(result.scalars().all())
+        for candidate in batch:
+            if candidate not in taken:
+                return candidate
 
 
 async def _resolve_names(
@@ -110,7 +128,9 @@ async def _resolve_names(
 ) -> tuple[str, str | None]:
     """Experiment name / internal name, from the payload or the card templates.
 
-    An explicit payload value always wins; the card only fills a blank.
+    An explicit payload value always wins; the card only fills a blank. The
+    public name is the card's fixed text, shared by every arm; a rendered
+    internal name is numbered when another experiment already has it.
     """
     name = (payload.name or "").strip()
     internal_name = (payload.internal_name or "").strip() or None
@@ -122,9 +142,8 @@ async def _resolve_names(
             card.values["external_study_name"],
             context=context,
             field="external_study_name",
-            allowed=external_placeholders(),
+            allowed=EXTERNAL_PLACEHOLDERS,
         )
-        name = disambiguate(name, await _existing_experiment_names(db))
     if not name:
         raise HTTPException(
             status_code=400,
@@ -135,11 +154,12 @@ async def _resolve_names(
         )
 
     if internal_name is None and card and card.values.get("internal_study_name"):
-        internal_name = render_study_name(
+        rendered = render_study_name(
             card.values["internal_study_name"],
             context=context,
             field="internal_study_name",
         )
+        internal_name = await _unused_internal_name(rendered, db)
     return name, internal_name
 
 

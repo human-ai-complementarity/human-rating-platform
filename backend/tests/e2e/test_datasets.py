@@ -182,8 +182,8 @@ def test_bad_name_templates_are_refused_when_the_card_is_saved(client: TestClien
 
     created = _create(client, "templated")
     for body, field in (
-        # The public name may only use {dataset}: raters read it.
-        ({"external_study_name": "{dataset} {method}"}, "external_study_name"),
+        # The public name takes no placeholders: participants read it.
+        ({"external_study_name": "{dataset} rating"}, "external_study_name"),
         ({"internal_study_name": "{dataset} - Round 1"}, "internal_study_name"),
     ):
         resp = client.patch(f"/api/admin/datasets/{created['id']}", json=body)
@@ -195,6 +195,13 @@ def test_bad_name_templates_are_refused_when_the_card_is_saved(client: TestClien
 
     ok = client.patch(
         f"/api/admin/datasets/{created['id']}",
-        json={"external_study_name": "{dataset}", "internal_study_name": "{dataset} {wave}"},
+        json={"external_study_name": "Passage rating", "internal_study_name": "{dataset} {wave}"},
+    )
+    assert ok.status_code == 200, ok.text
+
+    # "pilot" / "round" are fine anywhere but the trailing round suffix.
+    ok = client.patch(
+        f"/api/admin/datasets/{created['id']}",
+        json={"internal_study_name": "{dataset} Co-pilot evaluation"},
     )
     assert ok.status_code == 200, ok.text
