@@ -262,6 +262,7 @@ _INTERNAL_FIELDS = {
     # Operational readiness, for the admin dashboard only (#96).
     "launch_ready",
     "launch_blockers",
+    "launch_blocker_fixes",
 }
 
 

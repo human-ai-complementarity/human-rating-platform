@@ -98,12 +98,18 @@ def test_a_fully_configured_experiment_reports_ready(client: TestClient):
     exp = _carded_experiment(client)
     assert exp["launch_ready"] is True
     assert exp["launch_blockers"] == []
+    assert exp["launch_blocker_fixes"] == []
 
 
 def test_a_bare_experiment_reports_what_it_is_missing(client: TestClient):
     exp = client.post("/api/admin/experiments", json={"name": "Bare"}).json()
     assert exp["launch_ready"] is False
     assert exp["launch_blockers"] == ["rater instructions", "internal study name"]
+    # One fix per blocker, in the same order, so the UI renders them as served.
+    assert [fix.split(":")[0] for fix in exp["launch_blocker_fixes"]] == [
+        "Rater instructions",
+        "Internal study name",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -221,6 +227,9 @@ def test_pilot_is_refused_with_the_blocker_list(client: TestClient, enable_proli
     # the upload's metadata, the internal name from the card only at create.
     assert "Rater instructions: part of the pipeline export" in detail
     assert "Internal study name: copied from the dataset card's template only when" in detail
+    # The same fixes the experiment response serves the admin UI.
+    for fix in exp["launch_blocker_fixes"]:
+        assert fix in detail
     # Refused before anything is created on Prolific — no orphan study to clean up.
     assert route.call_count == 0
 
@@ -238,8 +247,11 @@ def test_a_missing_model_is_refused_with_both_ways_to_supply_it(
     detail = resp.json()["detail"]
     assert "missing assistance model." in detail
     # The export carries a per-method map; a PATCH can set an entry.
-    assert "per method under `assistance_models`" in detail
-    assert "PATCH assistance_params.assistance_models.<method>." in detail
+    assert "per method under assistance_models" in detail
+    assert (
+        "PATCH /api/admin/experiments/<id> with assistance_params.assistance_models.<method>."
+        in detail
+    )
     assert "assistance_params.model" not in detail
     assert route.call_count == 0
 
