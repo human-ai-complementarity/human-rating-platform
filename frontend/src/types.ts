@@ -82,13 +82,9 @@ export interface Dataset extends DatasetCardFields {
   name: string;
   waves: string[];
   created_at: string;
-  // Card readiness, two levels; neither is needed to upload or analyse.
-  // Launch-ready: the study names and blurb are declared. Complete: launch-ready
-  // plus the economics (estimated_completion_time, reward), which are optional
-  // at onboarding. Each missing list is what that level still lacks, so
-  // missing_for_complete includes missing_for_launch.
-  launch_ready: boolean;
-  missing_for_launch: string[];
+  // Card readiness: complete once the study names, blurb, estimated completion
+  // time and reward are declared. Not needed to upload or analyse, and not a
+  // launch signal: whether a study can launch is decided on the experiment.
   complete: boolean;
   missing_for_complete: string[];
 }
