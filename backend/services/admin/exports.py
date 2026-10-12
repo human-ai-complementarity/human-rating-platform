@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 #
 # Per Joshua on #96: "lets not duplicate data where possible… just attach the
 # experiment ID or session id associated with the rating". The session carries
-# the method and the resolved model, so one id is enough to load either later.
-_BASE_EXPORT_COLUMNS = [
+# the method and its resolved models, so one id is enough to load either later.
+EXPORT_COLUMNS = [
     "rating_id",
     "question_id",
     "question_text",
@@ -43,14 +43,10 @@ _BASE_EXPORT_COLUMNS = [
     "time_submitted",
     "response_time_seconds",
     "counts_toward_target",
+    "assistance_session_id",
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
-
-
-def export_columns() -> list[str]:
-    """Header for the ratings CSV."""
-    return [*_BASE_EXPORT_COLUMNS, "assistance_session_id"]
 
 
 def build_export_filename(experiment_id: int) -> str:
@@ -86,7 +82,7 @@ def _csv_row(values: list[object]) -> str:
 def _build_export_header_chunk() -> str:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(export_columns())
+    writer.writerow(EXPORT_COLUMNS)
     return output.getvalue()
 
 
@@ -116,8 +112,10 @@ def _build_export_row(
         round(response_time, 2),
         counts_toward_target,
         # Blank when the rating had no assistance. Join to assistance_sessions
-        # for the method (`method_name`) and the model that actually ran
-        # (`resolved_model` in its `params`).
+        # for the method (`method_name`) and `role_models` in its `params`:
+        # per role, the model the call was made to, not one known to have
+        # answered. It is recorded on failed calls too (`step_type` NONE, e.g.
+        # a provider_error), so filter on `step_type`.
         rating.assistance_session_id or "",
     ]
 
