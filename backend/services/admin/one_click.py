@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Dataset, Experiment, ExperimentGroup, Question
+from models import Experiment, ExperimentGroup, Question
 from schemas import (
     ExperimentRef,
     ExperimentRoundResponse,
@@ -30,7 +30,8 @@ from schemas import (
     OneClickLaunchRequest,
     PilotStudyCreate,
 )
-from .dataset_card import card_readiness, card_values_from_row
+from .dataset_card import card_readiness
+from .experiments import fetch_card_for_group
 from .queries import fetch_experiment_or_404
 from .rounds import run_pilot_study
 from .status import assert_launch_ready
@@ -109,7 +110,8 @@ async def launch_from_card(
     # the way to supply what it asks for is to upload.
     assert_launch_ready(experiment)
 
-    if experiment.group_id is None:
+    group_card = await fetch_card_for_group(experiment.group_id, db)
+    if group_card is None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -117,9 +119,7 @@ async def launch_from_card(
                 "group. Use the pilot form instead."
             ),
         )
-    group = await db.get(ExperimentGroup, experiment.group_id)
-    dataset = await db.get(Dataset, group.dataset_id) if group else None
-    card = card_values_from_row(dataset) if dataset else {}
+    card = group_card.values
 
     readiness = card_readiness(card)
     if not readiness.complete:
