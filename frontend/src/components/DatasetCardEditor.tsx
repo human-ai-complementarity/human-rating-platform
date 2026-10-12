@@ -259,14 +259,9 @@ export default function DatasetCardEditor({
                 marginBottom: 16,
               }}
             >
-              <div data-testid="card-launch-ready">
-                {card.launch_ready
-                  ? 'Launchable.'
-                  : `Not launchable: missing ${missing(card.missing_for_launch)}.`}
-              </div>
               <div data-testid="card-complete">
                 {card.complete
-                  ? 'Complete: one-click pilots available.'
+                  ? 'Complete: one-click pilots can use it.'
                   : `Not complete: missing ${missing(card.missing_for_complete)}.`}
               </div>
             </div>

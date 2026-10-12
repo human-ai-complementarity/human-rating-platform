@@ -41,26 +41,22 @@ type DatasetRecord = {
   num_ratings_per_question?: number | null;
   study_label?: string | null;
   screeners?: string[] | null;
-  launch_ready?: boolean;
-  missing_for_launch?: string[];
   complete?: boolean;
   missing_for_complete?: string[];
 };
 
-const LAUNCH_CARD_FIELDS = ['external_study_name', 'internal_study_name', 'study_blurb'] as const;
-const COMPLETE_CARD_FIELDS = [...LAUNCH_CARD_FIELDS, 'estimated_completion_time', 'reward'] as const;
+const COMPLETE_CARD_FIELDS = [
+  'external_study_name',
+  'internal_study_name',
+  'study_blurb',
+  'estimated_completion_time',
+  'reward',
+] as const;
 
 // Mirrors the backend's card readiness for the mocked card.
 function withCardReadiness(dataset: DatasetRecord): DatasetRecord {
-  const missingLaunch = LAUNCH_CARD_FIELDS.filter((field) => dataset[field] == null);
   const missing = COMPLETE_CARD_FIELDS.filter((field) => dataset[field] == null);
-  return {
-    ...dataset,
-    launch_ready: missingLaunch.length === 0,
-    missing_for_launch: missingLaunch,
-    complete: missing.length === 0,
-    missing_for_complete: missing,
-  };
+  return { ...dataset, complete: missing.length === 0, missing_for_complete: missing };
 }
 
 type GroupRecord = {
@@ -2551,7 +2547,7 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   await expect(page.getByTestId('launch-blockers')).toBeVisible();
 });
 
-test('the dataset card editor saves what changed and shows both readiness levels', async ({
+test('the dataset card editor saves what changed and shows whether the card is complete', async ({
   page,
 }) => {
   const state = createMockState();
@@ -2570,9 +2566,6 @@ test('the dataset card editor saves what changed and shows both readiness levels
   await expect(page.getByTestId('group-card-edit-1')).toHaveText('passages card · incomplete');
   await page.getByTestId('group-card-edit-1').click();
   const editor = page.getByTestId('dataset-card-editor');
-  await expect(editor.getByTestId('card-launch-ready')).toHaveText(
-    'Not launchable: missing internal study name, study blurb.',
-  );
   await expect(editor.getByTestId('card-complete')).toHaveText(
     'Not complete: missing internal study name, study blurb.',
   );
@@ -2591,9 +2584,8 @@ test('the dataset card editor saves what changed and shows both readiness levels
   await editor.getByTestId('card-ratings-input').fill('');
   await editor.getByTestId('card-save-button').click();
 
-  await expect(editor.getByTestId('card-launch-ready')).toHaveText('Launchable.');
   await expect(editor.getByTestId('card-complete')).toHaveText(
-    'Complete: one-click pilots available.',
+    'Complete: one-click pilots can use it.',
   );
   // Only what changed is sent, and a cleared field is an explicit null.
   expect(state.datasetPatches).toEqual([

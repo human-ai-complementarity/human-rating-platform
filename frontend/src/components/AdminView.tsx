@@ -1040,7 +1040,7 @@ function GroupCard({
               }}
             >
               {bucket.datasetName} card ·{' '}
-              {!card ? 'edit' : card.complete ? 'complete' : card.launch_ready ? 'launchable' : 'incomplete'}
+              {!card ? 'edit' : card.complete ? 'complete' : 'incomplete'}
             </button>
           )}
         </div>
