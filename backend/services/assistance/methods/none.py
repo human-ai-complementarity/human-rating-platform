@@ -7,6 +7,8 @@ from ..base import AssistanceMethod, InteractionStep, StepType
 
 
 class NoAssistance(AssistanceMethod):
+    method_key = "none"
+
     async def start(
         self,
         question: Question,

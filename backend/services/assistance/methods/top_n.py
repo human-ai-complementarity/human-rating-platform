@@ -36,7 +36,6 @@ from models import Question
 from ..base import InteractionStep, StepType
 from ..preparation import InitialStepPreparation, QuestionSnapshot
 from ..llm import complete
-from ..model_resolution import resolve_model
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +347,7 @@ def _compose_system_prompt(extra: str | None) -> str:
 
 
 class TopNAssistance(InitialStepPreparation):
+    method_key = "top_n"
     primary_model_role = "answer"
 
     def preparation_params(self, params: dict) -> dict:
@@ -355,7 +355,7 @@ class TopNAssistance(InitialStepPreparation):
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                "top_n": resolve_model(params, "top_n", "answer"),
+                self.method_key: self.role_models(params)[self.primary_model_role],
             },
         }
 
@@ -368,7 +368,7 @@ class TopNAssistance(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
-        model = resolve_model(params, "top_n", "answer")
+        model = self.role_models(params)[self.primary_model_role]
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
         options = _parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n
