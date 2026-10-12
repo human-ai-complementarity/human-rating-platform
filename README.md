@@ -259,7 +259,7 @@ Backend settings are loaded via `backend/config.py` (`get_settings()`), with thi
 
 1. Python init kwargs
 2. Process env vars
-3. `backend/.env`
+3. `backend/.env` (tests use `backend/.env.test`)
 4. `backend/config.toml`
 5. Python defaults
 
@@ -522,7 +522,7 @@ A dataset's card declares once how studies on it run. Edit it from the **card** 
 
 Saving the card refuses a template with an unknown placeholder or its own "- Pilot"/"- Round" (each study appends that).
 
-- **Launchable vs complete.** A card is *launchable* with both name templates and the blurb, and *complete* once it also has the time and reward. Neither level is needed to upload or analyse. `GET /api/admin/datasets/{id}` reports `launch_ready`/`missing_for_launch` and `complete`/`missing_for_complete`.
+- **Complete card.** A card is *complete* once it has both name templates, the blurb, the time and the reward; `GET /api/admin/datasets/{id}` reports `complete`/`missing_for_complete`. That isn't needed to upload or analyse, and it doesn't say whether an experiment can launch: the experiment's `launch_blockers` does (see the launch gate below).
 - **Inheritance at create.** A new grouped experiment takes the rendered templates and ratings target from its card for whatever the create request leaves out. It's a copy: later card edits don't reach existing experiments. The dashboard's create form always sends a public name and ratings target, so there only the internal name is inherited.
 - **What comes from the export instead.** Rater instructions, prompt prefix/suffix, system prompt, Prolific pool and the assistance models arrive with the upload's `dataset_meta`. Each assisted method runs on its `assistance_models` entry, else the platform default; the launch gate requires an entry for the experiment's method.
 - **Launch gate.** A pilot is refused until the experiment has rater instructions, a prompt prefix and suffix, an internal study name, and, when assisted, an assistance model. The pilot form lists what's missing and where each value comes from.
