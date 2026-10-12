@@ -53,10 +53,9 @@ _JSON_CARD_FIELDS = ("screeners",)
 # What a *complete* card declares. Per Joshua on #96 none of this is needed
 # for headroom analysis — an unfinished card still uploads and analyses.
 #
-# Only fields this card owns can be required *of it*. The rater instructions
-# and the prompt prefix/suffix are equally mandatory before a launch, but they
-# arrive with the upload, so the gate that asks for them reads the experiment
-# row instead.
+# Completeness does not gate a launch: the launch gate reads the experiment
+# row, which also needs the rater instructions and prompt prefix/suffix that
+# arrive with the upload, not from the card.
 COMPLETE_REQUIRED_FIELDS: tuple[str, ...] = (
     "external_study_name",
     "internal_study_name",
