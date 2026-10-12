@@ -11,7 +11,7 @@ here: inference-pipeline's DatasetCard owns it and stamps it into the
 exported CSV/parquet, which the upload path applies to the experiment.
 
 All columns are nullable — a card is filled in over time, and an unfinished
-card is legal (it just cannot launch a study).
+card is legal.
 
 Revision ID: 20261007010000
 Revises: 20260929055545
