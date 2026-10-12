@@ -490,7 +490,7 @@ question_id,question_text,gt_answer,options,question_type
 q1,...,...,...,MC
 ```
 
-Allowed keys: `description` (rater intro splash + Prolific study description; supports markdown — same renderer as the Prolific description: headings, bold/italic/strike, lists, paragraphs), `system_prompt` (appended to AI prompts for Top-N / Human-as-a-Tool; plain text), `human_prompt_prefix` (rendered above every question; plain text), `human_prompt_suffix` (rendered below every question; plain text), `prolific_pool` (reference label for the target Prolific audience). All optional. Newlines inside any value must be encoded as `\n` escapes since the JSON object has to fit on one line — `json.dumps(...)` handles this automatically. Full field-by-field guide is in the admin help page in-app.
+Allowed keys: `description` (rater intro splash + Prolific study description; supports markdown — same renderer as the Prolific description: headings, bold/italic/strike, lists, paragraphs), `system_prompt` (appended to AI prompts for Top-N / Human-as-a-Tool; plain text), `human_prompt_prefix` (rendered above every question; plain text), `human_prompt_suffix` (rendered below every question; plain text), `prolific_pool` (reference label for the target Prolific audience). All optional here, though a pilot needs `description` set, here or in the admin form. Newlines inside any value must be encoded as `\n` escapes since the JSON object has to fit on one line — `json.dumps(...)` handles this automatically. Full field-by-field guide is in the admin help page in-app.
 
 An optional `assistance_models` key pins each assisted method's model into `assistance_params` instead of a column: an object mapping method to model (`{"top_n": "openrouter/anthropic/claude-sonnet-4.6", "human_as_a_tool": "openrouter/google/gemini-3-flash-preview"}`). A method without an entry runs on the platform default; the Assistance tab shows the model for the experiment's selected method only (none for `none`). Model ids must start with `openrouter/`. The old single `model` key is rejected.
 
@@ -503,6 +503,31 @@ q1,Is the sky blue?,Yes,Yes|No,MC
 q2,Does the passage mention Paris?,No,Yes|No,MC
 q3,Summarise the passage in one sentence.,,,FT
 ```
+
+---
+
+## Dataset Cards
+
+A dataset's card declares once how studies on it run. Set it with `PATCH /api/admin/datasets/{id}`: an omitted field is left alone and an explicit `null` clears it.
+
+| Field | What it does |
+| --- | --- |
+| `external_study_name` | Public name for new experiments: fixed text, no placeholders. Raters see it, so it mustn't give away the dataset, wave or arm. |
+| `internal_study_name` | Researcher-facing name template: `{dataset}`, `{wave}`, `{method}`. This is what tells arms apart. |
+| `study_blurb` | Prolific study description for one-click pilots. |
+| `estimated_completion_time` | Minutes. |
+| `reward` | Per participant, in the workspace currency's minor units (pence, cents; yen for JPY). |
+| `num_ratings_per_question` | Ratings target for new experiments. |
+| `study_label`, `screeners` | Prolific label and pre-screeners for one-click pilots; unset uses the pilot defaults. |
+
+Saving the card refuses a placeholder in the public name, an unknown one in the internal name, and a name ending in " - Pilot" or " - Round N" (each study appends that).
+
+- **Complete card.** A card is *complete* once it has both names, the blurb, the time and the reward; `GET /api/admin/datasets/{id}` reports `complete`/`missing_for_complete`. That isn't needed to upload or analyse, and it doesn't say whether an experiment can launch: the experiment's `launch_blockers` does (see the launch gate below).
+- **Inheritance at create.** A new grouped experiment takes the public name, the rendered internal name and the ratings target from its card for whatever the create request leaves out. A rendered internal name another experiment already has gets " (2)", " (3)" and so on. It's a copy: later card edits don't reach existing experiments. The dashboard's create form always sends a public name and ratings target, so there only the internal name is inherited.
+- **What comes from the export instead.** Rater instructions, prompt prefix/suffix, system prompt, Prolific pool and the assistance models arrive with the upload's `dataset_meta`. Each assisted method runs on its `assistance_models` entry, else the platform default; the launch gate requires an entry for the experiment's method.
+- **Launch gate.** A pilot is refused until the experiment has rater instructions, an internal study name, and, when assisted, an assistance model. The prompt prefix and suffix are optional. The pilot form lists what's missing and how to fix each (`launch_blocker_fixes` on the experiment).
+- **One-click pilot.** For a grouped experiment with a complete card, the Launch tab offers **Create pilot draft from the card** (`POST /api/admin/experiments/{id}/launch`, optional `places`, default 5). It uses the card's time, reward, blurb, label and screeners, and automatically excludes the participants of every other experiment in the dataset's groups: any wave, any status, even one with no study yet, since its Prolific group fills as raters arrive. The panel lists them by internal name (`GET /api/admin/experiments/{id}/launch/preview`), and the confirm re-reads the card and the list, so it quotes what the launch will use. An arm created after a pilot isn't on that pilot's list, so create all of a wave's arms before piloting any. The draft can still be edited before publishing, which stays a separate step. A dataset's first study usually goes through the pilot form, since the economics are optional at onboarding.
+- **Saving pilot numbers back.** Once a grouped experiment's pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, which completes it for the next study.
 
 ---
 
@@ -550,7 +575,7 @@ Typical workflow:
 
 ### Excluding prior participants
 
-Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
+Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. A one-click pilot fills this in itself (see [Dataset Cards](#dataset-cards)). Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
 
 ### Study URL format
 
@@ -632,6 +657,9 @@ contributors.
 - `GET /api/admin/experiments/{id}/analytics` — rating analytics
 - `GET /api/admin/experiments/{id}/export` — export ratings as CSV
 - `POST /api/admin/experiments/{id}/prolific/pilot` — create the pilot round draft
+- `POST /api/admin/experiments/{id}/launch` — create the pilot draft from a complete dataset card
+- `GET /api/admin/experiments/{id}/launch/preview` — list the experiments that pilot would exclude
+- `GET`/`PATCH /api/admin/datasets/{id}` — read or edit a dataset and its card
 - `GET /api/admin/experiments/{id}/prolific/recommend` — calculate the next-round recommendation
 - `GET /api/admin/experiments/{id}/prolific/rounds` — list Prolific rounds for the experiment
 - `POST /api/admin/experiments/{id}/prolific/rounds` — create a follow-on round draft
