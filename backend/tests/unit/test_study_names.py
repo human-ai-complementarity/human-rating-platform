@@ -43,12 +43,21 @@ def test_format_string_injection_is_rejected():
         _render("{0.__class__}")
 
 
-@pytest.mark.parametrize("template", ["Study - Pilot", "Study - Round 2", "x -pilot"])
+@pytest.mark.parametrize("template", ["Study - Pilot", "Study - Round 2", "X - Pilot "])
 def test_templates_carrying_their_own_round_suffix_are_rejected(template):
     """rounds.py appends the round suffix, so this would double it."""
     with pytest.raises(HTTPException) as exc:
         _render(template)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["Co-pilot evaluation", "{dataset} two-round debate", "Round 2 - Pilot study"],
+)
+def test_pilot_or_round_elsewhere_in_the_name_is_fine(template):
+    """Only the trailing suffix rounds.py appends is refused."""
+    assert _render(template)
 
 
 def test_render_leaves_room_for_the_round_suffix():
