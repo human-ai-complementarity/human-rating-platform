@@ -27,7 +27,7 @@ from .events import _MethodCall, _record_call
 from .base import InteractionStep, StepType
 from .llm import speculative_call
 from .preparation import PreparationSpec
-from .registry import get_method, record_resolved_model
+from .registry import get_method, record_role_models
 from .session_values import optional_json, step_columns
 
 logger = logging.getLogger(__name__)
@@ -426,12 +426,11 @@ class PreparationRunner:
                         experiment_id=rater.experiment_id,
                         question_id=current.question_id,
                         method_name=current.method_name,
-                        # The session records the model that ran; the event
-                        # below keeps the params as given.
+                        # The session records each role's model, as a
+                        # foreground start does; the event below keeps the
+                        # params as given.
                         params=optional_json(
-                            record_resolved_model(
-                                current.method_name, json.loads(current.params_json)
-                            )
+                            record_role_models(current.method_name, json.loads(current.params_json))
                         ),
                         turn=1,
                         created_at=now,

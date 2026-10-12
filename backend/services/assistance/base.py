@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from models import Question, StepType
 
-from .model_resolution import role_default
+from .model_resolution import resolve_model
 
 if TYPE_CHECKING:
     from .preparation import PreparationContext, PreparationSpec, QuestionSnapshot
@@ -60,18 +61,34 @@ class AssistanceMethod(ABC):
 
     rater_instructions: str = ""
 
+    # The name experiments select this method by. The registry is keyed by it,
+    # and it keys the method's `assistance_models` entry, so the calls resolve
+    # their models under the same name the session record does.
+    method_key: ClassVar[str]
+
     # Which `model_resolution` role this method's rater-facing call runs on;
     # None for a method that calls no model. Read without instantiation, like
-    # `rater_instructions`, so a session can record the model that actually ran.
-    primary_model_role: str | None = None
+    # `rater_instructions`, so a session can record the models its method called.
+    primary_model_role: ClassVar[str | None] = None
 
     @classmethod
-    def default_model(cls) -> str | None:
-        """The model this method runs on without an `assistance_models` entry.
+    def model_roles(cls, params: Mapping[str, object]) -> tuple[str, ...]:
+        """Every role this method calls a model for under `params`.
 
-        None for a method that calls no model.
+        Just the primary role unless a method calls more.
         """
-        return role_default(cls.primary_model_role) if cls.primary_model_role else None
+        return (cls.primary_model_role,) if cls.primary_model_role else ()
+
+    @classmethod
+    def role_models(cls, params: Mapping[str, object]) -> dict[str, str]:
+        """The model each of `model_roles` is called on under `params`.
+
+        The methods take their models from here and a session records this
+        map, so what runs and what is recorded come from one place.
+        """
+        return {
+            role: resolve_model(params, cls.method_key, role) for role in cls.model_roles(params)
+        }
 
     def preparation_params(self, params: dict) -> dict:
         """Resolve method defaults before taking a durable input snapshot."""

@@ -28,20 +28,36 @@ from fastapi import HTTPException
 from config import get_settings
 
 # Role -> the LLMSettings attribute that backs it when nothing overrides.
-# Clustering has none: it follows whatever confidence resolves to.
 _ROLE_DEFAULTS: dict[str, str] = {
     "answer": "default_model",
     "decomposition": "decomposition_model",
     "confidence": "confidence_model",
 }
 
+# Roles with no setting of their own: each defaults to what another resolves to.
+_ROLE_FALLBACKS: dict[str, str] = {"clustering": "confidence"}
+
+# Every role an assistance method can call a model for.
+MODEL_ROLES: tuple[str, ...] = (*_ROLE_DEFAULTS, *_ROLE_FALLBACKS)
+
 # Roles that run the model *under test*, and so take `pinned_model`.
 # Confidence and clustering keep their own models for now (see #148).
 _INHERITING_ROLES = frozenset({"answer", "decomposition"})
 
-# The only `<role>_model` overrides: confidence's and clustering's. The
-# inheriting roles have none, since `assistance_models` already sets them.
-INSTRUMENT_MODEL_KEYS = ("confidence_model", "clustering_model")
+
+def _override_key(role: str) -> str:
+    return f"{role}_model"
+
+
+def instrument_model_keys() -> tuple[str, ...]:
+    """The `<role>_model` overrides, one per role that does not inherit
+    `assistance_models` (the inheriting roles have none: the map sets them).
+
+    Derived, so a new instrument role, or one moved between the sets (#148),
+    is validated with no edit here.
+    """
+    return tuple(_override_key(role) for role in MODEL_ROLES if role not in _INHERITING_ROLES)
+
 
 # OpenRouter is the only transport; `llm._parse_model` rejects anything else.
 MODEL_PREFIX = "openrouter/"
@@ -53,13 +69,16 @@ ASSISTANCE_MODELS_KEY = "assistance_models"
 # The removed single-model key: it silently beat `assistance_models`.
 REMOVED_MODEL_KEY = "model"
 
-# Where a session's params snapshot records the model that ran. A record only:
-# nothing resolves a model from it. Not `model`, which reads as the removed key.
-RESOLVED_MODEL_KEY = "resolved_model"
+# Where a session's params snapshot records, per role its method calls, the
+# model the call is made to, e.g. {"decomposition": ..., "confidence": ...}.
+# Recorded whether or not the call succeeds, so filter on `step_type`. A
+# record only: nothing resolves a model from it.
+ROLE_MODELS_KEY = "role_models"
 
 
-# Where a resolved model came from: the experiment's map, or the method default.
-ModelSource = Literal["assistance_models", "default"]
+# Where a resolved model came from: the experiment's map (inheriting roles),
+# the role's own `<role>_model` key (the others), or the platform default.
+ModelSource = Literal["assistance_models", "override", "default"]
 
 
 def role_default(role: str) -> str:
@@ -76,23 +95,30 @@ def pinned_model(params: Mapping[str, object], method: str) -> str | None:
 
 
 def resolve_model_and_source(
-    params: Mapping[str, object], method: str, default: str
+    params: Mapping[str, object], method: str, role: str
 ) -> tuple[str, ModelSource]:
-    """The model under test for `method`, plus which of the two it used."""
-    pinned = pinned_model(params, method)
-    if pinned:
-        return pinned, "assistance_models"
-    return default, "default"
+    """The model `method` runs `role` on under `assistance_params`, and its source.
+
+    The one resolution path: the calls themselves (via `resolve_model`) and
+    the admin display (`registry.resolved_models`) both come through here.
+    """
+    if role in _INHERITING_ROLES:
+        pinned = pinned_model(params, method)
+        if pinned:
+            return pinned, "assistance_models"
+    else:
+        override = params.get(_override_key(role))
+        if override:
+            return str(override), "override"
+    fallback = _ROLE_FALLBACKS.get(role)
+    if fallback is not None:
+        return resolve_model_and_source(params, method, fallback)
+    return role_default(role), "default"
 
 
 def resolve_model(params: Mapping[str, object], method: str, role: str) -> str:
     """The model `method` runs `role` on, given an experiment's `assistance_params`."""
-    if role in _INHERITING_ROLES:
-        return resolve_model_and_source(params, method, role_default(role))[0]
-    model = params.get(f"{role}_model")
-    if not model and role == "clustering":
-        return resolve_model(params, method, "confidence")
-    return str(model or role_default(role))
+    return resolve_model_and_source(params, method, role)[0]
 
 
 # Appended on create/PATCH: an admin page loaded before `model` was removed
@@ -112,6 +138,19 @@ def reject_removed_model_key(values: dict, *, where: str, hint: str = "") -> Non
                 f"{ASSISTANCE_MODELS_KEY!r}, which sets each method's model, e.g. "
                 f'{{"top_n": "{MODEL_PREFIX}anthropic/claude-sonnet-4.6"}}.'
                 + (f" {hint}" if hint else "")
+            ),
+        )
+
+
+def reject_role_models_key(values: Mapping[str, object], *, where: str) -> None:
+    """400 when `values` sets `role_models`. Sessions write that record; set
+    in `assistance_params` it would be copied into each one as if it ran."""
+    if ROLE_MODELS_KEY in values:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{ROLE_MODELS_KEY!r} cannot be set in {where}: each assistance session "
+                f"records it. Set each method's model with {ASSISTANCE_MODELS_KEY!r}."
             ),
         )
 
