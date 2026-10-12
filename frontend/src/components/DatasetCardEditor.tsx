@@ -224,9 +224,8 @@ export default function DatasetCardEditor({
           {datasetName} card
         </h2>
         <p style={{ margin: '0 0 16px', fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.55 }}>
-          How studies on this dataset run. An experiment created from the dashboard copies only the
-          internal name template; the create form sets its own public name and ratings target, which
-          only API creates inherit. One-click pilots use the rest.
+          How studies on this dataset run. A new experiment in one of its groups takes the names and
+          ratings target unless its create form sets them; one-click pilots use the rest.
         </p>
         {error && (
           <div role="alert" style={{ fontSize: 13, color: 'var(--danger)', marginBottom: 12 }}>

@@ -159,6 +159,7 @@ type MockState = {
   statsRequests: string[];
   recommendationRequests: string[];
   datasetPatches: Record<string, unknown>[];
+  experimentCreates: Record<string, unknown>[];
   launchRequests: number[];
   launchError: string | null;
   // What GET /launch/preview reports a one-click launch would exclude.
@@ -239,6 +240,7 @@ function createMockState(): MockState {
     statsRequests: [],
     recommendationRequests: [],
     datasetPatches: [],
+    experimentCreates: [],
     launchRequests: [],
     launchError: null,
     launchExcluded: [],
@@ -434,12 +436,13 @@ async function installApiMocks(
     if (pathname === '/api/admin/experiments' && method === 'POST') {
       const payload = request.postDataJSON() as {
         name: string;
-        num_ratings_per_question: number;
+        num_ratings_per_question?: number;
         session_duration_minutes: number;
         assistance_method?: string;
         group_id?: number | null;
         tags?: string[];
       };
+      state.experimentCreates.push(payload);
       if (payload.name === 'TRIGGER-FAIL') {
         await fulfillJson(route, 400, { detail: 'Could not create experiment' });
         return;
@@ -469,9 +472,12 @@ async function installApiMocks(
       const group = payload.group_id
         ? state.groups.find((item) => item.id === payload.group_id)
         : undefined;
+      // Like the backend, a blank name or ratings target comes from the card.
+      const card = state.datasets.find((item) => item.id === group?.dataset_id);
       const experiment = buildExperiment(state, {
-        name: payload.name,
-        num_ratings_per_question: payload.num_ratings_per_question,
+        name: payload.name || card?.external_study_name || '',
+        num_ratings_per_question:
+          payload.num_ratings_per_question ?? card?.num_ratings_per_question ?? 3,
         session_duration_minutes: payload.session_duration_minutes,
         assistance_method: payload.assistance_method ?? 'none',
         group_id: group?.id ?? null,
@@ -2713,4 +2719,63 @@ test('the card editor asks before discarding unsaved edits', async ({ page }) =>
   await editor.getByRole('button', { name: 'Close' }).click();
   await expect(editor).toHaveCount(0);
   expect(state.datasetPatches).toEqual([]);
+});
+
+test('the create form leaves names and the ratings target to the card unless typed over', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, { ...COMPLETE_CARD, num_ratings_per_question: 5 });
+  state.groups = [
+    {
+      id: 1,
+      name: 'passages fall25',
+      dataset_id: 1,
+      dataset_name: 'passages',
+      wave: 'fall25',
+      experiment_count: 1,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+  const name = page.getByTestId('experiment-name-input');
+  const internalName = page.getByTestId('experiment-internal-name-input');
+  const ratings = page.getByTestId('ratings-per-question-input');
+  // Ungrouped there's no card: the name is required and the target defaults to 3.
+  await expect(name).toHaveAttribute('placeholder', 'e.g., Factuality Evaluation');
+  await expect(name).toHaveAttribute('required', '');
+  await expect(ratings).toHaveAttribute('placeholder', '3');
+
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-option-1').click();
+  await expect(name).toHaveAttribute('placeholder', 'Passage rating');
+  await expect(name).not.toHaveAttribute('required');
+  await expect(internalName).toHaveAttribute('placeholder', '{dataset} {wave} {method}');
+  await expect(ratings).toHaveAttribute('placeholder', '5');
+  await expect(
+    page.getByText('Shown to raters on Prolific. From the dataset card unless you type one.'),
+  ).toBeVisible();
+
+  // Untouched, they're sent blank, so the backend fills them from the card.
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+  await expect(page.getByRole('heading', { name: 'Passage rating' })).toBeVisible();
+  expect(state.experimentCreates).toHaveLength(1);
+  expect(state.experimentCreates[0]).toMatchObject({ name: '', internal_name: '', group_id: 1 });
+  expect(state.experimentCreates[0]).not.toHaveProperty('num_ratings_per_question');
+
+  // Typed values win.
+  await page.goto('/admin');
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-option-1').click();
+  await name.fill('Long passage rating');
+  await ratings.fill('2');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+  await expect(page.getByRole('heading', { name: 'Long passage rating' })).toBeVisible();
+  expect(state.experimentCreates[1]).toMatchObject({
+    name: 'Long passage rating',
+    num_ratings_per_question: 2,
+    group_id: 1,
+  });
 });

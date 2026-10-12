@@ -195,7 +195,6 @@ function AdminView() {
   const [newExperiment, setNewExperiment] = useState<ExperimentCreate>({
     name: '',
     internal_name: '',
-    num_ratings_per_question: 3,
     session_duration_minutes: 60,
     prolific_completion_url: '',
     assistance_method: 'none',
@@ -316,7 +315,6 @@ function AdminView() {
     setNewExperiment({
       name: '',
       internal_name: '',
-      num_ratings_per_question: 3,
       session_duration_minutes: 60,
       prolific_completion_url: '',
       assistance_method: 'none',
@@ -1716,6 +1714,12 @@ function CreatePanel({
     datasetMode === 'existing' ? datasets.find((d) => d.id === datasetId) ?? null : null;
   const datasetWaves = selectedDataset?.waves ?? [];
   const pickerWaves = datasetMode === 'new' ? newDatasetWaves : datasetWaves;
+  // The card of the dataset the experiment will be grouped on. The backend
+  // fills a blank name, internal name or ratings target from it, so the form
+  // shows its values as placeholders and sends blank unless they're typed over.
+  const cardDatasetId = groupMode === 'new' ? selectedDataset?.id : selectedGroup?.dataset_id;
+  const card = datasets.find((d) => d.id === cardDatasetId) ?? null;
+  const fromCard = 'From the dataset card unless you type one.';
 
   const resetBuilder = () => {
     setNewGroupName('');
@@ -1829,11 +1833,11 @@ function CreatePanel({
           id="experiment-name"
           testId="experiment-name-input"
           label="Public name"
-          hint="Shown to raters on Prolific."
+          hint={`Shown to raters on Prolific.${card?.external_study_name ? ` ${fromCard}` : ''}`}
           value={value.name}
           onChange={(v) => onChange({ ...value, name: v })}
-          placeholder="e.g., Factuality Evaluation"
-          required
+          placeholder={card?.external_study_name ?? 'e.g., Factuality Evaluation'}
+          required={!card?.external_study_name}
         />
         <Field
           id="experiment-internal-name"
@@ -1844,21 +1848,32 @@ function CreatePanel({
               <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
             </>
           }
-          hint="Only visible to you and other researchers (in this dashboard and Prolific's researcher view)."
+          hint={
+            card?.internal_study_name
+              ? "Only visible to researchers. From the dataset card's template unless you type one."
+              : "Only visible to you and other researchers (in this dashboard and Prolific's researcher view)."
+          }
           value={value.internal_name ?? ''}
           onChange={(v) => onChange({ ...value, internal_name: v })}
-          placeholder="e.g., Q2 Factuality Eval — Sander"
+          placeholder={card?.internal_study_name ?? 'e.g., Q2 Factuality Eval — Sander'}
         />
         <Field
           id="ratings-per-question"
           testId="ratings-per-question-input"
           type="number"
           label="Ratings per question"
-          hint="How many different raters should evaluate each question."
-          value={String(value.num_ratings_per_question)}
-          onChange={(v) => onChange({ ...value, num_ratings_per_question: parseInt(v, 10) || 0 })}
+          hint={`How many different raters should evaluate each question. ${
+            card?.num_ratings_per_question != null ? fromCard : 'Defaults to 3.'
+          }`}
+          value={value.num_ratings_per_question?.toString() ?? ''}
+          onChange={(v) =>
+            onChange({
+              ...value,
+              num_ratings_per_question: v.trim() ? parseInt(v, 10) || 0 : undefined,
+            })
+          }
+          placeholder={String(card?.num_ratings_per_question ?? 3)}
           min={1}
-          required
         />
         <Field
           id="session-duration"
