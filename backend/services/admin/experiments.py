@@ -87,7 +87,7 @@ class _GroupCard:
     context: dict[str, str]
 
 
-async def _fetch_card_for_group(group_id: int | None, db: AsyncSession) -> _GroupCard | None:
+async def fetch_card_for_group(group_id: int | None, db: AsyncSession) -> _GroupCard | None:
     """Card values for a group's dataset, or None when ungrouped."""
     if group_id is None:
         return None
@@ -174,7 +174,7 @@ async def create_experiment(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     group_id = payload.group_id
-    card = await _fetch_card_for_group(group_id, db)
+    card = await fetch_card_for_group(group_id, db)
     name, internal_name = await _resolve_names(payload, card, db)
 
     ratings_target = payload.num_ratings_per_question

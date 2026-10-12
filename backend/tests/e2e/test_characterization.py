@@ -4429,6 +4429,79 @@ def test_prolific_main_round_inherits_pilot_exclusions(
     assert round_resp.json()["excluded_experiment_ids"] == [excluded["id"]]
 
 
+def _mock_group_create_refused() -> respx.Route:
+    return respx.post(f"{PROLIFIC_BASE}/participant-groups/").mock(
+        return_value=Response(400, json={"error": {"detail": "Group limit reached"}})
+    )
+
+
+@respx.mock
+def test_prolific_main_round_reports_a_failed_group_create_as_502(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    """A main round creates any participant group its blocklist still lacks
+    (here: the pilot ran before PROLIFIC__PROJECT_ID was set). If Prolific
+    refuses, that is a 502 with Prolific's message, as for the pilot."""
+    excluded = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
+    new = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+
+    enable_prolific.prolific.project_id = ""
+    studies = _mock_create_study(study_id="PILOT_GRP")
+    _make_launchable(client, new["id"])
+    pilot_resp = client.post(
+        f"/api/admin/experiments/{new['id']}/prolific/pilot",
+        json={**_pilot_payload(), "excluded_experiment_ids": [excluded["id"]]},
+    )
+    assert pilot_resp.status_code == 200, pilot_resp.text
+    _mock_publish_study(study_id="PILOT_GRP")
+    assert client.post(f"/api/admin/experiments/{new['id']}/prolific/rounds/1/publish").is_success
+    _mock_close_study(study_id="PILOT_GRP")
+    assert client.post(f"/api/admin/experiments/{new['id']}/prolific/rounds/1/close").is_success
+
+    enable_prolific.prolific.project_id = "test-project"
+    _mock_group_create_refused()
+    resp = client.post(f"/api/admin/experiments/{new['id']}/prolific/rounds", json={"places": 3})
+
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == (
+        "Failed to create round on Prolific. Prolific said: Group limit reached"
+    )
+    assert studies.call_count == 1  # the pilot's only
+    rounds = client.get(f"/api/admin/experiments/{new['id']}/prolific/rounds").json()
+    assert [round_["round_number"] for round_ in rounds] == [0]
+
+
+@respx.mock
+def test_prolific_round_edit_reports_a_failed_group_create_as_502(
+    client: TestClient,
+    enable_prolific,
+    sync_engine,
+):
+    """Adding an exclusion whose experiment has no participant group yet
+    creates one; if Prolific refuses, the edit is a 502 with its message."""
+    excluded = client.post("/api/admin/experiments", json=_prolific_experiment_payload()).json()
+    _mark_experiment_status(sync_engine, excluded["id"], "FINISHED")
+    experiment, _pilot = _create_prolific_experiment(client)
+
+    _mock_group_create_refused()
+    update_route = _mock_update_study()
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment['id']}/prolific/rounds/1",
+        json={"excluded_experiment_ids": [excluded["id"]]},
+    )
+
+    assert resp.status_code == 502, resp.text
+    assert resp.json()["detail"] == (
+        "Failed to update study on Prolific. Prolific said: Group limit reached"
+    )
+    assert not update_route.called
+    rounds = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/rounds").json()
+    assert rounds[0]["excluded_experiment_ids"] == []
+
+
 @respx.mock
 def test_prolific_pilot_blocks_own_group_by_default(
     client: TestClient,
