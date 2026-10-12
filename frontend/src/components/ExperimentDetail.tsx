@@ -556,17 +556,22 @@ function ExperimentDetail({
     }
   }, [experiment.id, prolificEnabled]);
 
+  // Throws on failure; loadRounds reports it on the page instead.
+  const reloadRounds = useCallback(async () => {
+    const data = await api.listExperimentRounds(experiment.id);
+    setRounds(data);
+    // Every round (re)load also refreshes spend, so the card stays current
+    // after publish/close/edit without a separate trigger per handler.
+    void syncSpend();
+  }, [experiment.id, syncSpend]);
+
   const loadRounds = useCallback(async () => {
     try {
-      const data = await api.listExperimentRounds(experiment.id);
-      setRounds(data);
-      // Every round (re)load also refreshes spend, so the card stays current
-      // after publish/close/edit without a separate trigger per handler.
-      void syncSpend();
+      await reloadRounds();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load round history');
     }
-  }, [experiment.id, syncSpend]);
+  }, [reloadRounds]);
 
   const loadRecommendation = useCallback(async () => {
     try {
@@ -931,10 +936,12 @@ function ExperimentDetail({
     }
   };
 
+  // A failed rounds reload throws, so the one-click panel can say the draft
+  // exists rather than offer a second launch.
   const handleLaunchedFromCard = async () => {
     showSuccess('Pilot draft created from the dataset card. Publish it when ready.', 4000);
     onRefresh();
-    await loadRounds();
+    await reloadRounds();
     await loadRecommendation();
   };
 

@@ -33,6 +33,8 @@ export function OneClickLaunch({
   const [excluded, setExcluded] = useState<LaunchPreview['excluded_experiments']>([]);
   const [checking, setChecking] = useState(false);
   const [launching, setLaunching] = useState(false);
+  // Set only when the draft was created but the page couldn't refresh to show it.
+  const [created, setCreated] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -73,6 +75,7 @@ export function OneClickLaunch({
   const rewardOf = (c: Dataset) =>
     `${formatMinorUnits(c.reward ?? 0, currencyCode, currencySymbol)} per participant`;
   const blocked = launchBlockers.length > 0;
+  const disabled = blocked || checking || launching || created;
   // Public names can be shared by every arm; researchers know them by internal name.
   const namesOf = (refs: LaunchPreview['excluded_experiments']) =>
     refs.map((exp) => exp.internal_name || exp.name).join(', ');
@@ -103,7 +106,8 @@ export function OneClickLaunch({
     if (!current.complete) return;
     if (
       !window.confirm(
-        `Create a pilot draft from the ${datasetName} card: ${minutesOf(current)}, ${rewardOf(current)}?\n` +
+        `Create a pilot draft from the ${datasetName} card: ` +
+          `${minutesOf(current)}, ${rewardOf(current)}?\n` +
           (names
             ? `It excludes participants of: ${names}.\n`
             : 'The dataset has no other grouped experiments, so it excludes nobody.\n') +
@@ -115,10 +119,17 @@ export function OneClickLaunch({
     setLaunching(true);
     try {
       await api.launchFromCard(experimentId);
-      await onLaunched();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to launch from the dataset card');
       setLaunching(false);
+      return;
+    }
+    try {
+      await onLaunched();
+    } catch {
+      // The draft exists; only the refresh failed, so offer no second launch.
+      setLaunching(false);
+      setCreated(true);
     }
   };
 
@@ -158,14 +169,23 @@ export function OneClickLaunch({
           </div>
         )}
         {errorLine}
+        {created && (
+          <div
+            role="status"
+            data-testid="one-click-created"
+            style={{ fontSize: 13, color: 'var(--ink)', marginBottom: 10 }}
+          >
+            Pilot draft created — reload to see it.
+          </div>
+        )}
         <button
           type="button"
           data-testid="one-click-launch-button"
           onClick={handleLaunch}
-          disabled={blocked || checking || launching}
+          disabled={disabled}
           style={{
             ...primaryButton,
-            ...(blocked || checking || launching ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+            ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
           }}
         >
           {launching ? 'Creating…' : 'Create pilot draft from the card'}
