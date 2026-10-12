@@ -113,9 +113,10 @@ def _build_export_row(
         counts_toward_target,
         # Blank when the rating had no assistance. Join to assistance_sessions
         # for the method (`method_name`) and `role_models` in its `params`:
-        # per role, the model the call was made to, not one known to have
-        # answered. It is recorded on failed calls too (`step_type` NONE, e.g.
-        # a provider_error), so filter on `step_type`.
+        # per role, the model that role is set to call, not one known to have
+        # answered; a session may end before calling a role at all. It is
+        # recorded on failed sessions too (`step_type` NONE, e.g. a
+        # provider_error), so filter on `step_type`.
         rating.assistance_session_id or "",
     ]
 

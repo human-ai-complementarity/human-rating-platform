@@ -69,10 +69,10 @@ ASSISTANCE_MODELS_KEY = "assistance_models"
 # The removed single-model key: it silently beat `assistance_models`.
 REMOVED_MODEL_KEY = "model"
 
-# Where a session's params snapshot records, per role its method calls, the
-# model the call is made to, e.g. {"decomposition": ..., "confidence": ...}.
-# Recorded whether or not the call succeeds, so filter on `step_type`. A
-# record only: nothing resolves a model from it.
+# Where a session's params snapshot records, per role its method uses, the
+# model that role is set to call, e.g. {"decomposition": ..., "confidence": ...}.
+# A session may end before calling a role, and failed sessions are recorded
+# too, so filter on `step_type`. A record only: nothing resolves a model from it.
 ROLE_MODELS_KEY = "role_models"
 
 
