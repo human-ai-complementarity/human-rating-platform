@@ -10,8 +10,8 @@ function fieldLabel(field: string): string {
 
 /**
  * Offers to save a pilot's estimated completion time and reward to the
- * experiment's dataset card, so the dataset's next study can launch in one
- * click (#96).
+ * experiment's dataset card, so the dataset's next study can skip the pilot
+ * form (#96).
  *
  * The values are the pilot round's own, which every later round on this
  * experiment reuses; the recommendation itself sizes places only. Both units
@@ -106,7 +106,7 @@ export function SaveToDatasetCard({
             style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 10 }}
           >
             {card.complete
-              ? 'Card complete: the next study on this dataset can launch in one click.'
+              ? 'Card complete: one-click launch can use it.'
               : `Card incomplete: missing ${card.missing_for_complete.map(fieldLabel).join(', ')}.`}
           </div>
         )}
