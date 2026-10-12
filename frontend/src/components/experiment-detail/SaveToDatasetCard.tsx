@@ -2,11 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { Dataset, ExperimentRound } from '../../types';
 import { formatMinorUnits } from './reward';
-import { SectionCard, secondaryButton } from './ui';
-
-function fieldLabel(field: string): string {
-  return field.replace(/_/g, ' ');
-}
+import { SectionCard, fieldLabel, secondaryButton } from './ui';
 
 /**
  * Offers to save a pilot's estimated completion time and reward to the
