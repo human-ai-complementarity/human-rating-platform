@@ -81,7 +81,7 @@ class AssistanceMethod(ABC):
 
     @classmethod
     def role_models(cls, params: Mapping[str, object]) -> dict[str, str]:
-        """The model each of `model_roles` runs on under `params`.
+        """The model each of `model_roles` is called on under `params`.
 
         The methods take their models from here and a session records this
         map, so what runs and what is recorded come from one place.

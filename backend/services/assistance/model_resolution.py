@@ -70,7 +70,8 @@ ASSISTANCE_MODELS_KEY = "assistance_models"
 REMOVED_MODEL_KEY = "model"
 
 # Where a session's params snapshot records, per role its method calls, the
-# model that role runs on, e.g. {"decomposition": ..., "confidence": ...}. A
+# model the call is made to, e.g. {"decomposition": ..., "confidence": ...}.
+# Recorded whether or not the call succeeds, so filter on `step_type`. A
 # record only: nothing resolves a model from it.
 ROLE_MODELS_KEY = "role_models"
 
