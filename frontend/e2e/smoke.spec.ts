@@ -2278,6 +2278,13 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
   await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
   // Ungrouped, so no dataset card and no one-click.
   await expect(page.locator('[data-testid^="one-click"]')).toHaveCount(0);
+
+  // The pencil the internal-name fix points to doesn't call it optional.
+  await page.getByRole('button', { name: 'Edit internal name' }).click();
+  await expect(page.getByLabel('Internal name', { exact: true })).toHaveAttribute(
+    'placeholder',
+    'Internal name (required to launch)',
+  );
 });
 
 
@@ -2740,12 +2747,16 @@ test('the create form leaves names and the ratings target to the card unless typ
   await expect(name).toHaveAttribute('placeholder', 'e.g., Factuality Evaluation');
   await expect(name).toHaveAttribute('required', '');
   await expect(ratings).toHaveAttribute('placeholder', '3');
+  // The launch gate needs an internal name; only a card template can fill a blank.
+  const internalLabel = page.locator('label[for="experiment-internal-name"]');
+  await expect(internalLabel).toHaveText('Internal name (required to launch)');
 
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-option-1').click();
   await expect(name).toHaveAttribute('placeholder', 'Passage rating');
   await expect(name).not.toHaveAttribute('required');
   await expect(internalName).toHaveAttribute('placeholder', '{dataset} {wave} {method}');
+  await expect(internalLabel).toHaveText('Internal name (optional)');
   await expect(ratings).toHaveAttribute('placeholder', '5');
   await expect(
     page.getByText('Shown to raters on Prolific. From the dataset card unless you type one.'),

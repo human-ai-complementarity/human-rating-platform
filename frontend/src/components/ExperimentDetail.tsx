@@ -1046,7 +1046,7 @@ function ExperimentDetail({
                 onCancel={() => setEditingName(null)}
                 saving={savingName}
                 big
-                placeholder="Internal name (optional)"
+                placeholder="Internal name (required to launch)"
                 ariaLabel="Internal name"
               />
             ) : (
