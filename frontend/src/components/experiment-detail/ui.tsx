@@ -1,4 +1,5 @@
 import React from 'react';
+import type { Screener, StudyLabel } from '../../types';
 
 /**
  * Small styled primitives shared across the experiment-detail panels. Kept
@@ -376,4 +377,73 @@ export const dangerButton: React.CSSProperties = {
 /** A dataset card field name as UI copy: `estimated_completion_time` → `estimated completion time`. */
 export function fieldLabel(field: string): string {
   return field.replace(/_/g, ' ');
+}
+
+/** Prolific's study labels, in the order the selects list them. */
+export const STUDY_LABELS: [StudyLabel, string][] = [
+  ['annotation', 'Annotation'],
+  ['survey', 'Survey'],
+  ['decision_making_task', 'Decision-making task'],
+  ['writing_task', 'Writing task'],
+  ['interview', 'Interview'],
+  ['other', 'Other'],
+];
+
+/** The screeners a pilot uses unless told otherwise (PilotStudyCreate's default). */
+export const DEFAULT_SCREENERS: Screener[] = ['ai_taskers', 'fact_checkers', 'approval_rate'];
+
+export function ScreenerCheckboxes({
+  value,
+  onChange,
+  testIdPrefix,
+}: {
+  value: Screener[];
+  onChange: (next: Screener[]) => void;
+  testIdPrefix: string;
+}) {
+  const items: [Screener, string, string][] = [
+    ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
+    ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
+    ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
+  ];
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 9,
+        padding: '10px 12px',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius-sm)',
+        background: 'var(--surface-2)',
+      }}
+    >
+      {items.map(([key, label, hint]) => {
+        const checked = value.includes(key);
+        return (
+          <label
+            key={key}
+            style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13.5 }}
+          >
+            <input
+              type="checkbox"
+              data-testid={`${testIdPrefix}-${key}`}
+              checked={checked}
+              onChange={(e) => {
+                const next = e.target.checked
+                  ? Array.from(new Set([...value, key]))
+                  : value.filter((s) => s !== key);
+                onChange(next);
+              }}
+              style={{ width: 16, height: 16, flex: '0 0 auto', margin: '2px 0 0 0', padding: 0, cursor: 'pointer' }}
+            />
+            <span style={{ lineHeight: 1.4 }}>
+              <strong>{label}</strong>
+              <span style={{ color: 'var(--muted)' }}> — {hint}</span>
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
 }

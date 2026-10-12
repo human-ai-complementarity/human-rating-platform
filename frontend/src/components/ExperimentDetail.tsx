@@ -27,8 +27,11 @@ import {
 } from './experiment-detail/StepperTabs';
 import {
   Banner,
+  DEFAULT_SCREENERS,
   Field,
   ProgressBar,
+  STUDY_LABELS,
+  ScreenerCheckboxes,
   SectionCard,
   Toast,
   ToggleSwitch,
@@ -426,7 +429,7 @@ function ExperimentDetail({
     pilot_places: 5,
     device_compatibility: ['desktop'],
     study_label: 'annotation',
-    screeners: ['ai_taskers', 'fact_checkers', 'approval_rate'],
+    screeners: DEFAULT_SCREENERS,
     excluded_experiment_ids: [],
   });
   // Keep the pilot description in sync with the experiment's dataset-level
@@ -3162,12 +3165,11 @@ function RoundCard(props: {
               }
               style={{ ...inputStyle, cursor: 'pointer' }}
             >
-              <option value="annotation">Annotation</option>
-              <option value="survey">Survey</option>
-              <option value="decision_making_task">Decision-making task</option>
-              <option value="writing_task">Writing task</option>
-              <option value="interview">Interview</option>
-              <option value="other">Other</option>
+              {STUDY_LABELS.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
             </select>
           </Field>
           <Field label="Pre-screeners">
@@ -3380,12 +3382,11 @@ function PilotForm(props: {
             }
             style={{ ...inputStyle, cursor: 'pointer' }}
           >
-            <option value="annotation">Annotation</option>
-            <option value="survey">Survey</option>
-            <option value="decision_making_task">Decision-making task</option>
-            <option value="writing_task">Writing task</option>
-            <option value="interview">Interview</option>
-            <option value="other">Other</option>
+            {STUDY_LABELS.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
           </select>
         </Field>
         <Field label="Pre-screeners" hint="Default on. Screeners narrow the participant pool to higher-quality raters.">
@@ -3543,63 +3544,6 @@ function PilotForm(props: {
     </SectionCard>
   );
 }
-
-function ScreenerCheckboxes({
-  value,
-  onChange,
-  testIdPrefix,
-}: {
-  value: Screener[];
-  onChange: (next: Screener[]) => void;
-  testIdPrefix: string;
-}) {
-  const items: [Screener, string, string][] = [
-    ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
-    ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
-    ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
-  ];
-  return (
-    <div
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 9,
-        padding: '10px 12px',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius-sm)',
-        background: 'var(--surface-2)',
-      }}
-    >
-      {items.map(([key, label, hint]) => {
-        const checked = value.includes(key);
-        return (
-          <label
-            key={key}
-            style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', fontSize: 13.5 }}
-          >
-            <input
-              type="checkbox"
-              data-testid={`${testIdPrefix}-${key}`}
-              checked={checked}
-              onChange={(e) => {
-                const next = e.target.checked
-                  ? Array.from(new Set([...value, key]))
-                  : value.filter((s) => s !== key);
-                onChange(next);
-              }}
-              style={{ width: 16, height: 16, flex: '0 0 auto', margin: '2px 0 0 0', padding: 0, cursor: 'pointer' }}
-            />
-            <span style={{ lineHeight: 1.4 }}>
-              <strong>{label}</strong>
-              <span style={{ color: 'var(--muted)' }}> — {hint}</span>
-            </span>
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
 
 // ── Shared step-navigation footer ────────────────────────────────────────
 

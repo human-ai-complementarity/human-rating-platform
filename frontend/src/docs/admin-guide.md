@@ -83,7 +83,7 @@ The pilot can't be created until the experiment has rater instructions, an inter
 
 ### Dataset cards and the one-click pilot
 
-A grouped experiment's dataset has a **card**: a public study name, an internal name template, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. A new experiment copies the card's internal name (and, for API callers, the public name and ratings target) when it's created.
+A grouped experiment's dataset has a **card**: a public study name, an internal name template, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. Edit it from the **card** chip on any of the dataset's groups in the Experiments page's **Grouped** view; the chip and the editor show whether it's complete. A new experiment copies the card's names and ratings target when it's created; the create form shows them as placeholders, and anything you type there wins.
 
 The public name takes no placeholders: raters see it, so it mustn't give away the dataset, wave or arm. Arms are told apart by internal name, which can use `{dataset}`, `{wave}` and `{method}`; if another experiment already has the result, the new one gets " (2)", " (3)" and so on.
 

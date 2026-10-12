@@ -12,6 +12,7 @@ import type {
 import StatusLabel from './StatusLabel';
 import RowActionMenu from './RowActionMenu';
 import ConfirmDialog from './ConfirmDialog';
+import DatasetCardEditor from './DatasetCardEditor';
 import { rewardDecimals } from './experiment-detail/reward';
 
 // Notification amber (from the design mock). Used for the row "needs attention"
@@ -117,6 +118,7 @@ type GroupBucket = {
   key: string;
   groupId: number | null;
   name: string;
+  datasetId: number | null;
   datasetName: string | null;
   wave: string | null;
   experiments: Experiment[];
@@ -135,6 +137,7 @@ function bucketExperiments(experiments: Experiment[]): GroupBucket[] {
       key,
       groupId: exp.group_id,
       name: exp.group_name ?? 'Ungrouped',
+      datasetId: exp.group_dataset_id,
       datasetName: exp.group_dataset_name,
       wave: exp.wave,
       experiments: [exp],
@@ -179,6 +182,7 @@ function AdminView() {
   const [groups, setGroups] = useState<ExperimentGroup[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<Tag[]>([]);
+  const [editingCard, setEditingCard] = useState<{ id: number; name: string } | null>(null);
 
   // Delete is the one destructive/irreversible action, so it still confirms;
   // archive/restore apply immediately with a toast (per the mock).
@@ -191,7 +195,6 @@ function AdminView() {
   const [newExperiment, setNewExperiment] = useState<ExperimentCreate>({
     name: '',
     internal_name: '',
-    num_ratings_per_question: 3,
     session_duration_minutes: 60,
     prolific_completion_url: '',
     assistance_method: 'none',
@@ -312,7 +315,6 @@ function AdminView() {
     setNewExperiment({
       name: '',
       internal_name: '',
-      num_ratings_per_question: 3,
       session_duration_minutes: 60,
       prolific_completion_url: '',
       assistance_method: 'none',
@@ -441,8 +443,21 @@ function AdminView() {
           onDuplicate={handleDuplicateExperiment}
           onArchiveToggle={handleArchiveToggle}
           onDelete={(exp) => setPendingDelete(exp)}
+          datasets={datasets}
+          onEditCard={(id, name) => setEditingCard({ id, name })}
         />
       </div>
+
+      {editingCard && (
+        <DatasetCardEditor
+          datasetId={editingCard.id}
+          datasetName={editingCard.name}
+          currencyCode={currencyCode}
+          currencySymbol={currencySymbol}
+          onClose={() => setEditingCard(null)}
+          onSaved={() => void loadCatalog()}
+        />
+      )}
 
       {pendingDelete && (
         <ConfirmDialog
@@ -495,6 +510,8 @@ function ListPanel({
   onDuplicate,
   onArchiveToggle,
   onDelete,
+  datasets,
+  onEditCard,
 }: {
   experiments: Experiment[];
   loading: boolean;
@@ -521,6 +538,8 @@ function ListPanel({
   onDuplicate: (exp: Experiment) => void;
   onArchiveToggle: (exp: Experiment) => void;
   onDelete: (exp: Experiment) => void;
+  datasets: Dataset[];
+  onEditCard: (datasetId: number, datasetName: string) => void;
 }) {
   return (
     <div>
@@ -763,6 +782,8 @@ function ListPanel({
               onDelete={onDelete}
               onWaveClick={(wave) => onWaveFilterChange(waveFilter === wave ? '' : wave)}
               onTagClick={onTagFilterChange}
+              card={datasets.find((d) => d.id === bucket.datasetId)}
+              onEditCard={onEditCard}
             />
           ))}
         </div>
@@ -806,6 +827,8 @@ function GroupCard({
   onDelete,
   onWaveClick,
   onTagClick,
+  card,
+  onEditCard,
 }: {
   bucket: GroupBucket;
   currencySymbol: string;
@@ -816,11 +839,14 @@ function GroupCard({
   onDelete: (exp: Experiment) => void;
   onWaveClick: (wave: string) => void;
   onTagClick: (tag: string) => void;
+  card: Dataset | undefined;
+  onEditCard: (datasetId: number, datasetName: string) => void;
 }) {
   const [open, setOpen] = useState(true);
   const spend = bucket.experiments.reduce((sum, exp) => sum + (exp.spend_minor_units || 0), 0);
   const attention = bucket.experiments.find((exp) => exp.needs_attention);
   const isGroup = bucket.groupId != null;
+  const datasetId = bucket.datasetId;
   const methodsPresent = new Set(
     bucket.experiments.map((exp) => exp.assistance_method || 'none'),
   );
@@ -993,6 +1019,28 @@ function GroupCard({
               </span>
             );
           })}
+          {datasetId != null && (
+            <button
+              type="button"
+              data-testid={`group-card-edit-${bucket.groupId}`}
+              title="Edit the dataset card"
+              onClick={() => onEditCard(datasetId, bucket.datasetName ?? 'dataset')}
+              style={{
+                marginLeft: 'auto',
+                border: '1px solid var(--faint)',
+                borderRadius: 999,
+                padding: '2px 10px',
+                font: '600 11px var(--font-mono)',
+                color: card?.complete ? 'var(--accent-soft-ink)' : 'var(--muted)',
+                background: 'var(--surface)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {bucket.datasetName} card ·{' '}
+              {!card ? 'edit' : card.complete ? 'complete' : 'incomplete'}
+            </button>
+          )}
         </div>
       )}
 
@@ -1666,6 +1714,12 @@ function CreatePanel({
     datasetMode === 'existing' ? datasets.find((d) => d.id === datasetId) ?? null : null;
   const datasetWaves = selectedDataset?.waves ?? [];
   const pickerWaves = datasetMode === 'new' ? newDatasetWaves : datasetWaves;
+  // The card of the dataset the experiment will be grouped on. The backend
+  // fills a blank name, internal name or ratings target from it, so the form
+  // shows its values as placeholders and sends blank unless they're typed over.
+  const cardDatasetId = groupMode === 'new' ? selectedDataset?.id : selectedGroup?.dataset_id;
+  const card = datasets.find((d) => d.id === cardDatasetId) ?? null;
+  const fromCard = 'From the dataset card unless you type one.';
 
   const resetBuilder = () => {
     setNewGroupName('');
@@ -1779,11 +1833,11 @@ function CreatePanel({
           id="experiment-name"
           testId="experiment-name-input"
           label="Public name"
-          hint="Shown to raters on Prolific."
+          hint={`Shown to raters on Prolific.${card?.external_study_name ? ` ${fromCard}` : ''}`}
           value={value.name}
           onChange={(v) => onChange({ ...value, name: v })}
-          placeholder="e.g., Factuality Evaluation"
-          required
+          placeholder={card?.external_study_name ?? 'e.g., Factuality Evaluation'}
+          required={!card?.external_study_name}
         />
         <Field
           id="experiment-internal-name"
@@ -1794,21 +1848,32 @@ function CreatePanel({
               <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
             </>
           }
-          hint="Only visible to you and other researchers (in this dashboard and Prolific's researcher view)."
+          hint={
+            card?.internal_study_name
+              ? "Only visible to researchers. From the dataset card's template unless you type one."
+              : "Only visible to you and other researchers (in this dashboard and Prolific's researcher view)."
+          }
           value={value.internal_name ?? ''}
           onChange={(v) => onChange({ ...value, internal_name: v })}
-          placeholder="e.g., Q2 Factuality Eval — Sander"
+          placeholder={card?.internal_study_name ?? 'e.g., Q2 Factuality Eval — Sander'}
         />
         <Field
           id="ratings-per-question"
           testId="ratings-per-question-input"
           type="number"
           label="Ratings per question"
-          hint="How many different raters should evaluate each question."
-          value={String(value.num_ratings_per_question)}
-          onChange={(v) => onChange({ ...value, num_ratings_per_question: parseInt(v, 10) || 0 })}
+          hint={`How many different raters should evaluate each question. ${
+            card?.num_ratings_per_question != null ? fromCard : 'Defaults to 3.'
+          }`}
+          value={value.num_ratings_per_question?.toString() ?? ''}
+          onChange={(v) =>
+            onChange({
+              ...value,
+              num_ratings_per_question: v.trim() ? parseInt(v, 10) || 0 : undefined,
+            })
+          }
+          placeholder={String(card?.num_ratings_per_question ?? 3)}
           min={1}
-          required
         />
         <Field
           id="session-duration"

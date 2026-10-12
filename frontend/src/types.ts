@@ -325,9 +325,11 @@ export interface PlatformStatus {
 }
 
 export interface ExperimentCreate {
+  // A blank name, internal name or ratings target comes from the group's
+  // dataset card when it has one; the ratings target otherwise defaults to 3.
   name: string;
   internal_name?: string | null;
-  num_ratings_per_question: number;
+  num_ratings_per_question?: number;
   session_duration_minutes: number;
   prolific_completion_url: string;
   prolific?: ProlificStudyConfig;

@@ -38,6 +38,9 @@ type DatasetRecord = {
   study_blurb?: string | null;
   estimated_completion_time?: number | null;
   reward?: number | null;
+  num_ratings_per_question?: number | null;
+  study_label?: string | null;
+  screeners?: string[] | null;
   complete?: boolean;
   missing_for_complete?: string[];
 };
@@ -156,6 +159,7 @@ type MockState = {
   statsRequests: string[];
   recommendationRequests: string[];
   datasetPatches: Record<string, unknown>[];
+  experimentCreates: Record<string, unknown>[];
   launchRequests: number[];
   launchError: string | null;
   // What GET /launch/preview reports a one-click launch would exclude.
@@ -236,6 +240,7 @@ function createMockState(): MockState {
     statsRequests: [],
     recommendationRequests: [],
     datasetPatches: [],
+    experimentCreates: [],
     launchRequests: [],
     launchError: null,
     launchExcluded: [],
@@ -336,7 +341,7 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/datasets' && method === 'GET') {
-      await fulfillJson(route, 200, state.datasets);
+      await fulfillJson(route, 200, state.datasets.map(withCardReadiness));
       return;
     }
 
@@ -431,12 +436,13 @@ async function installApiMocks(
     if (pathname === '/api/admin/experiments' && method === 'POST') {
       const payload = request.postDataJSON() as {
         name: string;
-        num_ratings_per_question: number;
+        num_ratings_per_question?: number;
         session_duration_minutes: number;
         assistance_method?: string;
         group_id?: number | null;
         tags?: string[];
       };
+      state.experimentCreates.push(payload);
       if (payload.name === 'TRIGGER-FAIL') {
         await fulfillJson(route, 400, { detail: 'Could not create experiment' });
         return;
@@ -466,9 +472,12 @@ async function installApiMocks(
       const group = payload.group_id
         ? state.groups.find((item) => item.id === payload.group_id)
         : undefined;
+      // Like the backend, a blank name or ratings target comes from the card.
+      const card = state.datasets.find((item) => item.id === group?.dataset_id);
       const experiment = buildExperiment(state, {
-        name: payload.name,
-        num_ratings_per_question: payload.num_ratings_per_question,
+        name: payload.name || card?.external_study_name || '',
+        num_ratings_per_question:
+          payload.num_ratings_per_question ?? card?.num_ratings_per_question ?? 3,
         session_duration_minutes: payload.session_duration_minutes,
         assistance_method: payload.assistance_method ?? 'none',
         group_id: group?.id ?? null,
@@ -2571,4 +2580,202 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   );
   await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
   await expect(page.getByTestId('launch-blockers')).toBeVisible();
+});
+
+test('the dataset card editor saves what changed and shows whether the card is complete', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, {
+    external_study_name: 'Passage rating',
+    internal_study_name: null,
+    study_blurb: null,
+    estimated_completion_time: 30,
+    reward: 900,
+    num_ratings_per_question: 3,
+  });
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin');
+
+  await expect(page.getByTestId('group-card-edit-1')).toHaveText('passages card · incomplete');
+  await page.getByTestId('group-card-edit-1').click();
+  const editor = page.getByTestId('dataset-card-editor');
+  await expect(editor.getByTestId('card-complete')).toHaveText(
+    'Card incomplete: missing internal study name, study blurb.',
+  );
+  // Minor units per participant, entered as the pilot form's reward is.
+  await expect(editor.getByTestId('card-reward-input')).toHaveValue('9.00');
+
+  // An unknown placeholder is caught before anything is sent.
+  await editor.getByTestId('card-internal-name-input').fill('{dataset} {waves}');
+  await editor.getByTestId('card-save-button').click();
+  await expect(editor.getByRole('alert')).toContainText('Unknown placeholder {waves}');
+  expect(state.datasetPatches).toEqual([]);
+
+  await editor.getByTestId('card-internal-name-input').fill('{dataset} {wave} {method}');
+  await editor.getByTestId('card-blurb-input').fill('Rate short passages.');
+  await editor.getByTestId('card-reward-input').fill('12.5');
+  await editor.getByTestId('card-ratings-input').fill('');
+  await editor.getByTestId('card-save-button').click();
+
+  await expect(editor.getByTestId('card-complete')).toHaveText(
+    'Card complete: one-click pilots can use it.',
+  );
+  // Only what changed is sent, and a cleared field is an explicit null.
+  expect(state.datasetPatches).toEqual([
+    {
+      internal_study_name: '{dataset} {wave} {method}',
+      study_blurb: 'Rate short passages.',
+      reward: 1250,
+      num_ratings_per_question: null,
+    },
+  ]);
+  await expect(editor.getByTestId('card-reward-input')).toHaveValue('12.50');
+
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect(page.getByTestId('group-card-edit-1')).toHaveText('passages card · complete');
+});
+
+test('the card editor sends the other card fields and tells no screeners from defaults', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, COMPLETE_CARD);
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin');
+  await page.getByTestId('group-card-edit-1').click();
+  const editor = page.getByTestId('dataset-card-editor');
+
+  // The public name takes no placeholders.
+  await editor.getByTestId('card-external-name-input').fill('{dataset} passages');
+  await editor.getByTestId('card-save-button').click();
+  await expect(editor.getByRole('alert')).toContainText(
+    'Remove {dataset} from external study name: raters see it, so it takes no placeholders.',
+  );
+  expect(state.datasetPatches).toEqual([]);
+
+  // Unset screeners show the launch defaults; unticking them all declares none.
+  await expect(editor).toContainText('Not set: launches use these defaults.');
+  for (const screener of ['ai_taskers', 'fact_checkers', 'approval_rate']) {
+    await editor.getByTestId(`card-screener-${screener}`).uncheck();
+  }
+  // A hyphenated word isn't a round suffix; the server refuses a real one.
+  await editor.getByTestId('card-external-name-input').fill('Co-pilot evaluation');
+  await editor.getByTestId('card-time-input').fill('25');
+  await editor.getByTestId('card-study-label-select').selectOption('survey');
+  await editor.getByTestId('card-save-button').click();
+  await expect.poll(() => state.datasetPatches.length).toBe(1);
+  expect(state.datasetPatches[0]).toEqual({
+    external_study_name: 'Co-pilot evaluation',
+    estimated_completion_time: 25,
+    study_label: 'survey',
+    screeners: [],
+  });
+
+  // "Use defaults" and "Not set" clear back to null.
+  await editor.getByRole('button', { name: 'Use defaults' }).click();
+  await editor.getByTestId('card-study-label-select').selectOption('');
+  await editor.getByTestId('card-save-button').click();
+  await expect.poll(() => state.datasetPatches.length).toBe(2);
+  expect(state.datasetPatches[1]).toEqual({ study_label: null, screeners: null });
+  await expect(editor).toContainText('Not set: launches use these defaults.');
+  await expect(editor.getByTestId('card-screener-ai_taskers')).toBeChecked();
+});
+
+test('the card editor asks before discarding unsaved edits', async ({ page }) => {
+  const state = createMockState();
+  seedCardExperiment(state, COMPLETE_CARD);
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+  page.removeAllListeners('dialog');
+  const prompts: string[] = [];
+  page.on('dialog', async (dialog) => {
+    prompts.push(dialog.message());
+    await dialog.dismiss();
+  });
+
+  // Nothing edited: Escape closes without asking.
+  await page.getByTestId('group-card-edit-1').click();
+  const editor = page.getByTestId('dataset-card-editor');
+  await expect(editor.getByTestId('card-blurb-input')).toHaveValue('Rate short passages.');
+  await page.keyboard.press('Escape');
+  await expect(editor).toHaveCount(0);
+
+  // Escape, the overlay and Close each ask; dismissing keeps the edit.
+  await page.getByTestId('group-card-edit-1').click();
+  await editor.getByTestId('card-blurb-input').fill('Rate long passages.');
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect.poll(() => prompts.length).toBe(3);
+  expect(prompts).toEqual(Array(3).fill('Discard unsaved changes to the passages card?'));
+  await expect(editor.getByTestId('card-blurb-input')).toHaveValue('Rate long passages.');
+
+  page.removeAllListeners('dialog');
+  page.once('dialog', (dialog) => dialog.accept());
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect(editor).toHaveCount(0);
+  expect(state.datasetPatches).toEqual([]);
+});
+
+test('the create form leaves names and the ratings target to the card unless typed over', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, { ...COMPLETE_CARD, num_ratings_per_question: 5 });
+  state.groups = [
+    {
+      id: 1,
+      name: 'passages fall25',
+      dataset_id: 1,
+      dataset_name: 'passages',
+      wave: 'fall25',
+      experiment_count: 1,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+  const name = page.getByTestId('experiment-name-input');
+  const internalName = page.getByTestId('experiment-internal-name-input');
+  const ratings = page.getByTestId('ratings-per-question-input');
+  // Ungrouped there's no card: the name is required and the target defaults to 3.
+  await expect(name).toHaveAttribute('placeholder', 'e.g., Factuality Evaluation');
+  await expect(name).toHaveAttribute('required', '');
+  await expect(ratings).toHaveAttribute('placeholder', '3');
+
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-option-1').click();
+  await expect(name).toHaveAttribute('placeholder', 'Passage rating');
+  await expect(name).not.toHaveAttribute('required');
+  await expect(internalName).toHaveAttribute('placeholder', '{dataset} {wave} {method}');
+  await expect(ratings).toHaveAttribute('placeholder', '5');
+  await expect(
+    page.getByText('Shown to raters on Prolific. From the dataset card unless you type one.'),
+  ).toBeVisible();
+
+  // Untouched, they're sent blank, so the backend fills them from the card.
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+  await expect(page.getByRole('heading', { name: 'Passage rating' })).toBeVisible();
+  expect(state.experimentCreates).toHaveLength(1);
+  expect(state.experimentCreates[0]).toMatchObject({ name: '', internal_name: '', group_id: 1 });
+  expect(state.experimentCreates[0]).not.toHaveProperty('num_ratings_per_question');
+
+  // Typed values win.
+  await page.goto('/admin');
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-option-1').click();
+  await name.fill('Long passage rating');
+  await ratings.fill('2');
+  await page.getByRole('button', { name: 'Create Experiment' }).click();
+  await expect(page.getByRole('heading', { name: 'Long passage rating' })).toBeVisible();
+  expect(state.experimentCreates[1]).toMatchObject({
+    name: 'Long passage rating',
+    num_ratings_per_question: 2,
+    group_id: 1,
+  });
 });
