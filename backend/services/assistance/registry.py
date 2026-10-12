@@ -150,6 +150,9 @@ def record_role_models(name: str, params: dict | None) -> dict:
     without instantiating it; an unknown or model-free method records none.
     """
     recorded = dict(params) if params else {}
+    # Create/PATCH reject the key; drop any that reached the row another way,
+    # so a model-free method never records a model.
+    recorded.pop(ROLE_MODELS_KEY, None)
     cls = _REGISTRY.get(name)
     models = cls.role_models(recorded) if cls is not None else {}
     if models:

@@ -43,6 +43,7 @@ from services.assistance.model_resolution import (
     RELOAD_HINT,
     instrument_model_keys,
     reject_removed_model_key,
+    reject_role_models_key,
     validate_model_id,
 )
 from services.assistance.registry import assisted_methods, get_method
@@ -188,6 +189,7 @@ async def create_experiment(
     assistance_params = dict(payload.assistance_params or {}) or None
     if assistance_params:
         reject_removed_model_key(assistance_params, where="assistance_params", hint=RELOAD_HINT)
+        reject_role_models_key(assistance_params, where="assistance_params")
         _validate_changed_models({}, assistance_params)
 
     db_experiment = Experiment(
@@ -750,6 +752,7 @@ async def update_experiment(
         reject_removed_model_key(
             payload.assistance_params, where="assistance_params", hint=RELOAD_HINT
         )
+        reject_role_models_key(payload.assistance_params, where="assistance_params")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
 

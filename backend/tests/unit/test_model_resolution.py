@@ -288,6 +288,14 @@ def test_a_session_records_every_role_its_method_calls(name, params, expected):
     assert {key: value for key, value in recorded.items() if key != "role_models"} == params
 
 
+@pytest.mark.parametrize(("name", "expected"), [("none", None), ("top_n", {"answer": _TOP_N})])
+def test_a_role_models_key_in_the_params_is_never_recorded(name, expected):
+    """Create/PATCH reject it; one that reached the row anyway is dropped,
+    not copied into the session as if its models ran."""
+    stale = {**_MAP, "role_models": {"answer": _SESSION}}
+    assert record_role_models(name, stale).get("role_models") == expected
+
+
 @pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])
 def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_method):
     params = {**_MAP, **_INSTRUMENT, "confidence_method": confidence_method}

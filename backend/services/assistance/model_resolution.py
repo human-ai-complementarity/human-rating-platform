@@ -142,6 +142,19 @@ def reject_removed_model_key(values: dict, *, where: str, hint: str = "") -> Non
         )
 
 
+def reject_role_models_key(values: Mapping[str, object], *, where: str) -> None:
+    """400 when `values` sets `role_models`. Sessions write that record; set
+    in `assistance_params` it would be copied into each one as if it ran."""
+    if ROLE_MODELS_KEY in values:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{ROLE_MODELS_KEY!r} cannot be set in {where}: each assistance session "
+                f"records it. Set each method's model with {ASSISTANCE_MODELS_KEY!r}."
+            ),
+        )
+
+
 def validate_model_id(model: str, *, field: str) -> None:
     """Reject a model id the transport cannot parse, as a 400.
 

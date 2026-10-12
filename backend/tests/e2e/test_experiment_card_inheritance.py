@@ -347,6 +347,25 @@ def test_the_instrument_overrides_are_validated_too(client: TestClient, sync_eng
     assert client.get(url).json()["assistance_params"] == legacy
 
 
+def test_create_and_patch_reject_the_session_record_key(client: TestClient):
+    """`role_models` is what a session records; set on the experiment it
+    would be copied into every session as if those models ran."""
+    record = {"role_models": {"answer": "openrouter/test/not-what-ran"}}
+    body = {"name": "Recorded", "assistance_method": "none"}
+    created = client.post("/api/admin/experiments", json={**body, "assistance_params": record})
+    assert created.status_code == 400
+    assert "'role_models'" in created.json()["detail"]
+
+    exp = _create(client, **body, assistance_params={"n": 3})
+    url = f"/api/admin/experiments/{exp['id']}"
+    patched = client.patch(
+        url, json={"assistance_method": "none", "assistance_params": {"n": 3, **record}}
+    )
+    assert patched.status_code == 400
+    assert "'role_models'" in patched.json()["detail"]
+    assert client.get(url).json()["assistance_params"] == {"n": 3}
+
+
 def test_a_role_moved_off_the_map_is_validated_with_no_other_edit(client: TestClient, monkeypatch):
     """The override keys are derived from the roles, so a role that stops
     inheriting `assistance_models` (#148 may move one) has its key checked."""
