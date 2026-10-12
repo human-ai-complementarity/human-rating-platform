@@ -22,7 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Dataset, Experiment, ExperimentGroup, Question
+from models import Experiment, ExperimentGroup, Question
 from schemas import (
     ExperimentRef,
     ExperimentRoundResponse,
@@ -30,10 +30,10 @@ from schemas import (
     OneClickLaunchRequest,
     PilotStudyCreate,
 )
-from .dataset_card import card_readiness, card_values_from_row
+from .dataset_card import card_readiness
+from .experiments import fetch_card_for_group
 from .queries import fetch_experiment_or_404
 from .rounds import run_pilot_study
-from .status import assert_launch_ready
 
 DEFAULT_PILOT_PLACES = 5
 
@@ -57,27 +57,20 @@ async def dataset_exclusions(experiment: Experiment, db: AsyncSession) -> list[E
         .scalar_subquery()
     )
     rows = await db.execute(
-        select(Experiment.id, Experiment.name)
+        select(Experiment.id, Experiment.name, Experiment.internal_name)
         .join(ExperimentGroup, Experiment.group_id == ExperimentGroup.id)
         .where(ExperimentGroup.dataset_id == dataset_id, Experiment.id != experiment.id)
         .order_by(Experiment.id)
     )
-    return [ExperimentRef(id=row.id, name=row.name) for row in rows]
+    return [
+        ExperimentRef(id=row.id, name=row.name, internal_name=row.internal_name) for row in rows
+    ]
 
 
 async def preview_launch_from_card(experiment_id: int, db: AsyncSession) -> OneClickLaunchPreview:
     """What `launch_from_card` would exclude, for the admin to see first."""
     experiment = await fetch_experiment_or_404(experiment_id, db)
     return OneClickLaunchPreview(excluded_experiments=await dataset_exclusions(experiment, db))
-
-
-def _blurb(card: dict[str, object]) -> str | None:
-    """The Prolific-facing study description.
-
-    Distinct from the rater guide: this is what a prospective participant
-    reads in the study listing, where the full limitations blob reads badly.
-    """
-    return card.get("study_blurb")  # type: ignore[return-value]
 
 
 async def launch_from_card(
@@ -87,6 +80,11 @@ async def launch_from_card(
 ) -> ExperimentRoundResponse:
     experiment = await fetch_experiment_or_404(experiment_id, db)
 
+    # Before the launch gate, which run_pilot_study applies. The rater
+    # instructions and prompt framing arrive WITH the upload (the pipeline
+    # stamps them into the exported file), so on an experiment with nothing
+    # uploaded the gate's error would both misdiagnose the problem and send the
+    # admin in a circle: the way to supply what it asks for is to upload.
     question_count = (
         await db.execute(
             select(func.count())
@@ -100,14 +98,8 @@ async def launch_from_card(
             detail="Cannot launch: upload questions for this experiment first.",
         )
 
-    # After the question check, not before. The rater instructions and prompt
-    # framing now arrive WITH the upload (the pipeline stamps them into the
-    # exported file), so on an experiment with nothing uploaded the readiness
-    # error would both misdiagnose the problem and send the admin in a circle:
-    # the way to supply what it asks for is to upload.
-    assert_launch_ready(experiment)
-
-    if experiment.group_id is None:
+    group_card = await fetch_card_for_group(experiment.group_id, db)
+    if group_card is None:
         raise HTTPException(
             status_code=400,
             detail=(
@@ -115,9 +107,7 @@ async def launch_from_card(
                 "group. Use the pilot form instead."
             ),
         )
-    group = await db.get(ExperimentGroup, experiment.group_id)
-    dataset = await db.get(Dataset, group.dataset_id) if group else None
-    card = card_values_from_row(dataset) if dataset else {}
+    card = group_card.values
 
     readiness = card_readiness(card)
     if not readiness.complete:
@@ -130,10 +120,10 @@ async def launch_from_card(
             ),
         )
 
-    description = _blurb(card)
     excluded_ids = [ref.id for ref in await dataset_exclusions(experiment, db)]
     pilot = PilotStudyCreate(
-        description=str(description),
+        # The Prolific listing gets the blurb, not the rater guide.
+        description=str(card["study_blurb"]),
         estimated_completion_time=int(card["estimated_completion_time"]),  # type: ignore[arg-type]
         reward=int(card["reward"]),  # type: ignore[arg-type]
         pilot_places=payload.places or DEFAULT_PILOT_PLACES,
