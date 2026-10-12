@@ -72,8 +72,9 @@ export function OneClickLaunch({
   const time = card.estimated_completion_time ?? 0;
   const money = formatMinorUnits(card.reward ?? 0, currencyCode, currencySymbol);
   const blocked = launchBlockers.length > 0;
+  // Public names can be shared by every arm; researchers know them by internal name.
   const namesOf = (refs: LaunchPreview['excluded_experiments']) =>
-    refs.map((exp) => exp.name).join(', ');
+    refs.map((exp) => exp.internal_name || exp.name).join(', ');
   const excludedNames = namesOf(excluded);
 
   const handleLaunch = async () => {

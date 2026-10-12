@@ -159,7 +159,7 @@ type MockState = {
   launchRequests: number[];
   launchError: string | null;
   // What GET /launch/preview reports a one-click launch would exclude.
-  launchExcluded: { id: number; name: string }[];
+  launchExcluded: { id: number; name: string; internal_name: string | null }[];
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
@@ -2430,9 +2430,10 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   const state = createMockState();
   seedCardExperiment(state, COMPLETE_CARD);
   state.launchError = 'Cannot launch: upload questions for this experiment first.';
+  // Named by internal name where there is one; arms share the public name.
   state.launchExcluded = [
-    { id: 7, name: 'Passages fall24 control' },
-    { id: 9, name: 'Passages fall25 top_n' },
+    { id: 7, name: 'Passage rating', internal_name: 'passages fall24 control' },
+    { id: 9, name: 'Passages fall25 top_n', internal_name: null },
   ];
 
   await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
@@ -2443,7 +2444,7 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   await expect(card).toContainText('30 min');
   await expect(card).toContainText('£9.00 per participant');
   await expect(card).toContainText('Rate short passages.');
-  await expect(card).toContainText('Participants of Passages fall24 control, Passages fall25 top_n');
+  await expect(card).toContainText('Participants of passages fall24 control, Passages fall25 top_n');
   // The pilot form stays as the alternative.
   await expect(page.getByTestId('run-pilot-button')).toBeVisible();
 
@@ -2455,7 +2456,10 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
 
   state.launchError = null;
   // A sibling added since the panel loaded is named in the confirm.
-  state.launchExcluded = [...state.launchExcluded, { id: 11, name: 'Passages fall25 decomp' }];
+  state.launchExcluded = [
+    ...state.launchExcluded,
+    { id: 11, name: 'Passage rating', internal_name: 'passages fall25 decomp' },
+  ];
   page.removeAllListeners('dialog');
   let confirmMessage = '';
   page.once('dialog', async (dialog) => {
@@ -2467,8 +2471,8 @@ test('a complete dataset card creates the pilot draft in one click', async ({ pa
   await expect(page.getByTestId('study-rounds-list')).toBeVisible();
   expect(confirmMessage).toBe(
     'Create a pilot draft from the passages card: 30 min, £9.00 per participant?\n' +
-      'It excludes participants of: Passages fall24 control, Passages fall25 top_n, ' +
-      'Passages fall25 decomp.\n' +
+      'It excludes participants of: passages fall24 control, Passages fall25 top_n, ' +
+      'passages fall25 decomp.\n' +
       'You can still edit the draft before publishing.',
   );
   await expect(page.getByTestId('one-click-panel')).toHaveCount(0);
