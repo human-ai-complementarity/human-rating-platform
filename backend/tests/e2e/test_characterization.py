@@ -48,8 +48,6 @@ def _unique_name(prefix: str) -> str:
 _LAUNCHABLE_FIELDS = {
     "internal_name": "internal",
     "description": "Rater instructions.",
-    "human_prompt_prefix": "Prefix:",
-    "human_prompt_suffix": "Suffix.",
 }
 
 
