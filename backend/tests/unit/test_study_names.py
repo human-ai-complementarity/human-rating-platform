@@ -6,12 +6,12 @@ import pytest
 from fastapi import HTTPException
 
 from services.admin.study_names import (
+    EXTERNAL_PLACEHOLDERS,
     NAME_MAX_LENGTH,
     ROUND_SUFFIX_RESERVE,
     TEMPLATE_MAX_LENGTH,
     check_card_templates,
     disambiguate,
-    external_placeholders,
     render_study_name,
 )
 
@@ -72,24 +72,31 @@ def test_render_leaves_room_for_the_round_suffix():
     assert len(f"{rendered} - Round 99") <= NAME_MAX_LENGTH
 
 
-def test_external_name_excludes_the_arm():
-    """A participant reads the study name before accepting, so naming the arm
-    there risks biasing who self-selects in."""
-    assert external_placeholders() == ("dataset",)
-    with pytest.raises(HTTPException):
-        render_study_name(
-            "{dataset} {method}",
-            context=_CTX,
-            field="external_study_name",
-            allowed=external_placeholders(),
-        )
+def _render_external(template: str) -> str:
+    return render_study_name(
+        template, context=_CTX, field="external_study_name", allowed=EXTERNAL_PLACEHOLDERS
+    )
+
+
+@pytest.mark.parametrize("template", ["{dataset} rating", "{wave}", "Rating {method}"])
+def test_external_name_takes_no_placeholders(template):
+    """Participants read the public name, so it must not name the dataset,
+    wave or arm."""
+    with pytest.raises(HTTPException) as exc:
+        _render_external(template)
+    assert exc.value.status_code == 400
+    assert "external_study_name" in exc.value.detail
+
+
+def test_external_name_is_fixed_text():
+    assert _render_external("  Passage  comprehension rating ") == "Passage comprehension rating"
 
 
 def test_card_templates_are_checked_by_the_render_rules():
     """Saving a card applies the rules rendering would, per field."""
     check_card_templates(
         {
-            "external_study_name": "{dataset} rating",
+            "external_study_name": "Passage rating",
             "internal_study_name": "{dataset} {wave} {method}",
             "study_blurb": "{anything} goes in prose",
         }
@@ -97,7 +104,7 @@ def test_card_templates_are_checked_by_the_render_rules():
     check_card_templates({"external_study_name": None})
 
     for values, field in (
-        ({"external_study_name": "{dataset} {wave}"}, "external_study_name"),
+        ({"external_study_name": "{dataset} rating"}, "external_study_name"),
         ({"internal_study_name": "{dataset} {waves}"}, "internal_study_name"),
         ({"internal_study_name": "{dataset} - Pilot"}, "internal_study_name"),
     ):

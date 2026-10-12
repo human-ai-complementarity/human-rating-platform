@@ -46,8 +46,8 @@ from services.assistance.model_resolution import (
 from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
 from .study_names import (
+    EXTERNAL_PLACEHOLDERS,
     disambiguate,
-    external_placeholders,
     render_study_name,
 )
 from .waves import normalize_wave_token
@@ -121,7 +121,7 @@ async def _resolve_names(
             card.values["external_study_name"],
             context=context,
             field="external_study_name",
-            allowed=external_placeholders(),
+            allowed=EXTERNAL_PLACEHOLDERS,
         )
         name = disambiguate(name, await _existing_experiment_names(db))
     if not name:
