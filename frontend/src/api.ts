@@ -12,6 +12,7 @@ import type {
   ExperimentRound,
   ExperimentRoundUpdate,
   Dataset,
+  DatasetCardFields,
   Experiment,
   ExperimentCreate,
   ExperimentGroup,
@@ -474,9 +475,22 @@ export const api = {
     return requestJson<Dataset[]>(routes.admin.datasets);
   },
 
-  async createDataset(data: { name: string; waves?: string[] }): Promise<Dataset> {
+  async createDataset(
+    data: { name: string; waves?: string[] } & Partial<DatasetCardFields>,
+  ): Promise<Dataset> {
     return requestJson<Dataset>(routes.admin.datasets, {
       method: 'POST',
+      json: data,
+    });
+  },
+
+  // Partial: omitted keys are left alone, an explicit null clears the field.
+  async updateDatasetCard(
+    datasetId: number,
+    data: Partial<DatasetCardFields> & { name?: string; waves?: string[] },
+  ): Promise<Dataset> {
+    return requestJson<Dataset>(`${routes.admin.datasets}/${datasetId}`, {
+      method: 'PATCH',
       json: data,
     });
   },
