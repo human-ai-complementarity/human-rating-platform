@@ -14,10 +14,14 @@ from collections.abc import Mapping
 
 from fastapi import HTTPException
 
-# Closed whitelist. Substitution is explicit rather than `str.format` because
-# format strings over author-supplied text are a footgun ("{0.__class__}"),
-# and a typo like "{waves}" must be a clean 400 rather than a 500.
+# Closed whitelist for the internal name. Substitution is explicit rather than
+# `str.format` because format strings over author-supplied text are a footgun
+# ("{0.__class__}"), and a typo like "{waves}" must be a clean 400 rather than
+# a 500.
 PLACEHOLDERS = ("dataset", "wave", "method")
+# The public name takes none. Participants read it in the Prolific title and
+# the rater header, so it must not tell them the dataset, wave or arm.
+EXTERNAL_PLACEHOLDERS: tuple[str, ...] = ()
 
 # Matches the Experiment.name / internal_name String(255) columns.
 NAME_MAX_LENGTH = 255
@@ -62,12 +66,14 @@ def check_template(
     assert_no_round_suffix(template, field)
     for match in _TOKEN.finditer(template):
         key = match.group(1).strip()
-        if key not in allowed:
-            known = ", ".join(f"{{{p}}}" for p in allowed) or "(none)"
-            raise HTTPException(
-                status_code=400,
-                detail=(f'Unknown placeholder "{{{key}}}" in {field}. Available here: {known}.'),
-            )
+        if key in allowed:
+            continue
+        if not allowed:
+            detail = f'{field} takes no placeholders: participants see it. Remove "{{{key}}}".'
+        else:
+            known = ", ".join(f"{{{p}}}" for p in allowed)
+            detail = f'Unknown placeholder "{{{key}}}" in {field}. Available here: {known}.'
+        raise HTTPException(status_code=400, detail=detail)
 
 
 def render_study_name(
@@ -90,16 +96,6 @@ def render_study_name(
     return rendered[:TEMPLATE_MAX_LENGTH].rstrip()
 
 
-def external_placeholders() -> tuple[str, ...]:
-    """Placeholders the rater-visible name may use (#96).
-
-    The arm and wave stay out of it: a participant reads the study name before
-    accepting, so naming the arm there tells them which condition they are in
-    and risks biasing who self-selects in.
-    """
-    return ("dataset",)
-
-
 def check_card_templates(values: Mapping[str, object]) -> None:
     """Check the card's name templates when they are saved.
 
@@ -107,7 +103,7 @@ def check_card_templates(values: Mapping[str, object]) -> None:
     template would sit on the card until a create tripped over it.
     """
     for field, allowed in (
-        ("external_study_name", external_placeholders()),
+        ("external_study_name", EXTERNAL_PLACEHOLDERS),
         ("internal_study_name", PLACEHOLDERS),
     ):
         template = values.get(field)
