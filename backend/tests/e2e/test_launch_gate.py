@@ -530,7 +530,7 @@ def test_one_click_names_the_missing_upload_before_the_missing_text(
         "Cannot launch: this experiment is missing questions, rater instructions."
     )
     assert detail.index("Questions: upload questions") < detail.index("Rater instructions:")
-    assert "upload before setting either by hand" in detail
+    assert "upload before setting those by hand" in detail
     assert route.call_count == 0
 
 

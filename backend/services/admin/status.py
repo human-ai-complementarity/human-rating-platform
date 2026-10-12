@@ -84,7 +84,7 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
     `question_count` is `ExperimentResponse.question_count`, which skips parent
     rows (header-only, never served). Publishing with none would move the
     experiment to LAUNCH, which blocks uploads. Reported first, since the
-    upload also brings the rater instructions and model.
+    upload also brings the rater instructions and, when assisted, the model.
 
     `name` is not checked: it is required at create, so it is always present.
     The model is only required when assistance is actually on — a control arm
@@ -114,8 +114,8 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
 _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
     "questions": (
         "Questions: upload questions on the Questions tab. The pipeline export's metadata "
-        "brings the rater instructions and assistance model with them, so upload before "
-        "setting either by hand."
+        "brings the rater instructions with them (and the model, on an assisted arm), so "
+        "upload before setting those by hand."
     ),
     "rater instructions": (
         "Rater instructions: part of the pipeline export's metadata, applied at upload. "
