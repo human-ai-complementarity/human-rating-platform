@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import islice
+
 import pytest
 from fastapi import HTTPException
 
@@ -11,7 +13,7 @@ from services.admin.study_names import (
     ROUND_SUFFIX_RESERVE,
     TEMPLATE_MAX_LENGTH,
     check_card_templates,
-    disambiguate,
+    numbered_variants,
     render_study_name,
 )
 
@@ -114,16 +116,12 @@ def test_card_templates_are_checked_by_the_render_rules():
         assert field in exc.value.detail
 
 
-def test_disambiguate_separates_identical_renders():
-    """`experiments.name` has no unique constraint, so two arms of one group
-    rendered from the same template would be indistinguishable in Prolific."""
-    assert disambiguate("Study", set()) == "Study"
-    assert disambiguate("Study", {"Study"}) == "Study (2)"
-    assert disambiguate("Study", {"Study", "Study (2)"}) == "Study (3)"
+def test_numbered_variants_start_with_the_name_itself():
+    assert list(islice(numbered_variants("Study"), 3)) == ["Study", "Study (2)", "Study (3)"]
 
 
-def test_disambiguated_name_still_fits_the_column():
+def test_numbered_variants_still_fit_the_column():
     long_name = "y" * TEMPLATE_MAX_LENGTH
-    result = disambiguate(long_name, {long_name})
-    assert len(result) <= TEMPLATE_MAX_LENGTH
-    assert result.endswith(" (2)")
+    variant = list(islice(numbered_variants(long_name), 2))[1]
+    assert len(variant) <= TEMPLATE_MAX_LENGTH
+    assert variant.endswith(" (2)")
