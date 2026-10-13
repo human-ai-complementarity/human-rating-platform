@@ -39,7 +39,7 @@ def build_experiment_response(
 ) -> ExperimentResponse:
     params = json.loads(experiment.assistance_params) if experiment.assistance_params else None
     resolved = resolved_models(params if isinstance(params, dict) else {})
-    launch_blockers = experiment_launch_blockers(experiment)
+    launch_blockers = experiment_launch_blockers(experiment, question_count=question_count)
     return ExperimentResponse(
         id=experiment.id,
         name=experiment.name,
