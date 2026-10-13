@@ -4,8 +4,8 @@
 study". Two things keep it there deliberately:
 
 - Publishing stays a separate action, because it spends money.
-- Questions still arrive by upload, so this refuses rather than creating a
-  study with nothing to rate.
+- Questions still arrive by upload, so the launch gate refuses rather than
+  creating a study with nothing to rate.
 
 Only a dataset with a *complete* card launches this way, economics
 (estimated completion time and reward) included. Those stay optional at
@@ -19,10 +19,10 @@ the pilot form would otherwise ask the admin to pick by hand.
 from __future__ import annotations
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models import Experiment, ExperimentGroup, Question
+from models import Experiment, ExperimentGroup
 from schemas import (
     ExperimentRef,
     ExperimentRoundResponse,
@@ -34,6 +34,7 @@ from .dataset_card import card_readiness
 from .experiments import fetch_card_for_group
 from .queries import fetch_experiment_or_404
 from .rounds import run_pilot_study
+from .status import assert_launch_ready
 
 DEFAULT_PILOT_PLACES = 5
 
@@ -80,23 +81,10 @@ async def launch_from_card(
 ) -> ExperimentRoundResponse:
     experiment = await fetch_experiment_or_404(experiment_id, db)
 
-    # Before the launch gate, which run_pilot_study applies. The rater
-    # instructions and prompt framing arrive WITH the upload (the pipeline
-    # stamps them into the exported file), so on an experiment with nothing
-    # uploaded the gate's error would both misdiagnose the problem and send the
-    # admin in a circle: the way to supply what it asks for is to upload.
-    question_count = (
-        await db.execute(
-            select(func.count())
-            .select_from(Question)
-            .where(Question.experiment_id == experiment_id)
-        )
-    ).scalar_one()
-    if not question_count:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot launch: upload questions for this experiment first.",
-        )
+    # The gate first (run_pilot_study repeats it): a blocked experiment hears
+    # what blocks it, missing questions first, rather than being sent to the
+    # pilot form below, which would refuse it too.
+    await assert_launch_ready(experiment, db)
 
     group_card = await fetch_card_for_group(experiment.group_id, db)
     if group_card is None:
