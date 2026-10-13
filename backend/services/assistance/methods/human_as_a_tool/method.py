@@ -67,8 +67,6 @@ class HumanAsAToolMethod(InitialStepPreparation):
         return (*roles, "clustering") if _confidence_method(params) == "sampling" else roles
 
     def preparation_params(self, params: dict) -> dict:
-        # Pins confidence too: unpinned, a defaulted confidence model would
-        # follow the newly pinned entry. Clustering follows confidence.
         models = self.role_models(params)
         return {
             **params,
