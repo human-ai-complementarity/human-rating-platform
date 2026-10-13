@@ -71,6 +71,26 @@ def test_grouped_experiment_inherits_every_card_field(client: TestClient):
     assert exp["internal_name"] == "medqa fall25 top_n"
 
 
+def test_the_dashboard_create_forms_blank_payload_takes_the_card(client: TestClient):
+    """Exactly what AdminView's create form posts with a carded group picked
+    and nothing typed: blank names as "", and no ratings target at all."""
+    group = _carded_group(client)
+    exp = _create(
+        client,
+        name="",
+        internal_name="",
+        session_duration_minutes=60,
+        prolific_completion_url="",
+        assistance_method="none",
+        group_id=group["id"],
+        tags=[],
+    )
+
+    assert exp["name"] == "Passage comprehension rating"
+    assert exp["internal_name"] == "medqa fall25 none"
+    assert exp["num_ratings_per_question"] == 5
+
+
 def test_create_leaves_the_exported_fields_blank_for_the_upload(client: TestClient):
     """The card must not pre-fill what the export is authoritative for.
 

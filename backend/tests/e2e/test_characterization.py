@@ -54,9 +54,12 @@ _LAUNCHABLE_FIELDS = {
 def _make_launchable(client: TestClient, experiment_id: int) -> None:
     """Fill in what the launch gate requires, for tests that then run a pilot.
 
-    Only fills blanks, so a test that set a value deliberately keeps it.
+    Only fills blanks, so a test that set a value deliberately keeps it, and
+    uploads `_upload_questions`'s two only when the test uploaded none.
     """
     current = client.get(f"/api/admin/experiments/{experiment_id}").json()
+    if current["question_count"] == 0:
+        _upload_questions(client, experiment_id)
     fields = {k: v for k, v in _LAUNCHABLE_FIELDS.items() if not current.get(k)}
     if not fields:
         return
@@ -2240,7 +2243,6 @@ def test_prolific_recommendation_returns_zeros_before_ratings(client: TestClient
 @respx.mock
 def test_prolific_recommendation_updates_after_pilot_rating(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
-    _upload_questions(client, experiment["id"])
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_PILOT_RATER")
 
     question = client.get(
@@ -2278,7 +2280,6 @@ def test_prolific_recommendation_updates_after_pilot_rating(client: TestClient, 
 @respx.mock
 def test_prolific_recommendation_honors_include_preview(client: TestClient, enable_prolific):
     experiment, _pilot = _create_prolific_experiment(client)
-    _upload_questions(client, experiment["id"])
 
     response = client.post(
         "/api/raters/start",
@@ -5186,8 +5187,7 @@ def test_list_experiments_surfaces_pending_action_flag(
     dashboard can show an attention dot: an unpublished draft round, then
     (after all rounds close with the target unmet) a prompt to launch another
     round. Terminal / actively-collecting states carry no flag."""
-    experiment, pilot = _create_prolific_experiment(client)
-    _upload_questions(client, experiment["id"])  # 2 questions × target 2 = 4 actions
+    experiment, pilot = _create_prolific_experiment(client)  # 2 questions × target 2
 
     # Pilot draft sits UNPUBLISHED → publish it.
     entry = _list_entry(client, experiment["id"])
@@ -5545,9 +5545,9 @@ def test_export_flags_ratings_beyond_target(client: TestClient, sync_engine):
 
 @respx.mock
 def test_submit_auto_stops_active_round_when_target_met(client: TestClient, enable_prolific):
+    # The pilot needs the questions, so they are in before the publish that
+    # locks experiment config.
     experiment, pilot = _create_prolific_experiment(client)
-    # Upload before publishing: the first publish locks experiment config.
-    _upload_questions(client, experiment["id"])
     _mock_publish_study()
     publish_resp = client.post(
         f"/api/admin/experiments/{experiment['id']}/prolific/rounds/{pilot['id']}/publish"

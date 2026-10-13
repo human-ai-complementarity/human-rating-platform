@@ -679,7 +679,7 @@ async def run_pilot_study(
             status_code=400,
             detail="A pilot study has already been run for this experiment",
         )
-    assert_launch_ready(experiment)
+    await assert_launch_ready(experiment, db)
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
     # Pilot creation is the first write for this experiment's exclusion list —

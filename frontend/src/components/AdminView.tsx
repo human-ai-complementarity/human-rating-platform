@@ -1845,7 +1845,10 @@ function CreatePanel({
           label={
             <>
               Internal name{' '}
-              <span style={{ fontWeight: 400, color: 'var(--muted)' }}>(optional)</span>
+              {/* The launch gate requires one; a card template fills a blank. */}
+              <span style={{ fontWeight: 400, color: 'var(--muted)' }}>
+                {card?.internal_study_name ? '(optional)' : '(required to launch)'}
+              </span>
             </>
           }
           hint={
