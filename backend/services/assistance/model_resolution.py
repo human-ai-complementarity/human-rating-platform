@@ -10,8 +10,8 @@ that role in `LLMSettings`.
 
 Confidence and clustering keep an override (`confidence_model`,
 `clustering_model`) that beats the map: an escape hatch for running them on
-another model. Clustering follows confidence, override included, unless it has
-its own.
+another model. Each role resolves independently: overriding one never moves
+another.
 
 Nothing here knows about datasets or waves: the wave's models are pinned once,
 when the pipeline's export is uploaded, and land in `assistance_params`.
@@ -31,13 +31,11 @@ _ROLE_DEFAULTS: dict[str, str] = {
     "answer": "default_model",
     "decomposition": "decomposition_model",
     "confidence": "confidence_model",
+    "clustering": "clustering_model",
 }
 
-# Roles with no setting of their own: each defaults to what another resolves to.
-_ROLE_FALLBACKS: dict[str, str] = {"clustering": "confidence"}
-
 # Every role an assistance method can call a model for.
-MODEL_ROLES: tuple[str, ...] = (*_ROLE_DEFAULTS, *_ROLE_FALLBACKS)
+MODEL_ROLES: tuple[str, ...] = tuple(_ROLE_DEFAULTS)
 
 # Roles with a `<role>_model` override that beats `assistance_models`: an
 # escape hatch for scoring or clustering on a different model than the one
@@ -105,10 +103,6 @@ def resolve_model_and_source(
         override = params.get(_override_key(role))
         if override:
             return str(override), "override"
-    # Before the map, so a fallback role follows its target's override too.
-    fallback = _ROLE_FALLBACKS.get(role)
-    if fallback is not None:
-        return resolve_model_and_source(params, method, fallback)
     pinned = pinned_model(params, method)
     if pinned:
         return pinned, "assistance_models"

@@ -538,12 +538,13 @@ _MAP_CONFIDENCE = "openrouter/test/confidence-override"
         ),
         (
             # No entry: each role's settings default. Preparation pins one for
-            # decomposition, which confidence must not then follow.
+            # decomposition, which confidence and clustering must not then follow.
             "human_as_a_tool",
             {"confidence_method": "sampling"},
             dict.fromkeys(("decomposition", "confidence", "clustering")),
         ),
         (
+            # Clustering stays on the map: confidence's override is its own.
             "human_as_a_tool",
             {
                 "assistance_models": {"human_as_a_tool": _MAP_HAAT},
@@ -553,8 +554,13 @@ _MAP_CONFIDENCE = "openrouter/test/confidence-override"
             {
                 "decomposition": _MAP_HAAT,
                 "confidence": _MAP_CONFIDENCE,
-                "clustering": _MAP_CONFIDENCE,
+                "clustering": _MAP_HAAT,
             },
+        ),
+        (
+            "human_as_a_tool",
+            {"confidence_method": "sampling", "confidence_model": _MAP_CONFIDENCE},
+            {"decomposition": None, "confidence": _MAP_CONFIDENCE, "clustering": None},
         ),
     ],
 )
@@ -594,12 +600,12 @@ def test_prepared_and_foreground_sessions_record_the_same_role_models(
 
     assert paths == [runner_module.__name__, operations.__name__]
     llm = get_settings().llm
-    # None: the role's settings default; clustering's is confidence's.
+    # None: the role's settings default.
     defaults = {
         "answer": llm.default_model,
         "decomposition": llm.decomposition_model,
         "confidence": llm.confidence_model,
-        "clustering": llm.confidence_model,
+        "clustering": llm.clustering_model,
     }
     expected = {role: model or defaults[role] for role, model in role_models.items()}
     with sync_engine.connect() as conn:

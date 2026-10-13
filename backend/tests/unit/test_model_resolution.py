@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
-from config import get_settings
+from config import LLMSettings, get_settings
 from models import Question
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
@@ -37,7 +37,12 @@ _MAP = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": _HAAT}}
 
 def test_sentinels_differ_from_every_settings_default():
     llm = get_settings().llm
-    defaults = {llm.default_model, llm.decomposition_model, llm.confidence_model}
+    defaults = {
+        llm.default_model,
+        llm.decomposition_model,
+        llm.confidence_model,
+        llm.clustering_model,
+    }
     assert defaults.isdisjoint({_TOP_N, _HAAT, _SESSION, _CONFIDENCE, _CLUSTERING})
 
 
@@ -46,7 +51,21 @@ def test_role_default_applies_when_nothing_is_pinned():
     assert resolve_model({}, "top_n", "answer") == llm.default_model
     assert resolve_model({}, "human_as_a_tool", "decomposition") == llm.decomposition_model
     assert resolve_model({}, "human_as_a_tool", "confidence") == llm.confidence_model
-    assert resolve_model({}, "human_as_a_tool", "clustering") == llm.confidence_model
+    assert resolve_model({}, "human_as_a_tool", "clustering") == llm.clustering_model
+
+
+def test_clustering_defaults_to_its_own_setting(monkeypatch):
+    """`LLM__CLUSTERING_MODEL`, not confidence's default (#151)."""
+    llm = get_settings().llm
+    monkeypatch.setattr(llm, "clustering_model", _CLUSTERING)
+    assert resolve_model_and_source({}, "human_as_a_tool", "clustering") == (_CLUSTERING, "default")
+    assert resolve_model({}, "human_as_a_tool", "confidence") == llm.confidence_model
+
+
+def test_the_clustering_setting_moved_no_default():
+    """Clustering got its own setting at confidence's default, so it still
+    runs where it did."""
+    assert LLMSettings().clustering_model == LLMSettings().confidence_model
 
 
 @pytest.mark.parametrize(
@@ -125,21 +144,31 @@ def test_every_displayed_role_takes_the_map():
         assert resolve_model_and_source(params, name, role) == (_SESSION, "assistance_models")
 
 
-def test_an_instrument_override_reports_its_source():
-    params = {"confidence_model": _CONFIDENCE}
-    override = (_CONFIDENCE, "override")
-    assert resolve_model_and_source(params, "human_as_a_tool", "confidence") == override
-    # Clustering follows confidence, source included.
-    assert resolve_model_and_source(params, "human_as_a_tool", "clustering") == override
-    default = (get_settings().llm.confidence_model, "default")
-    assert resolve_model_and_source({}, "human_as_a_tool", "clustering") == default
+@pytest.mark.parametrize(
+    ("role", "model"), [("confidence", _CONFIDENCE), ("clustering", _CLUSTERING)]
+)
+def test_an_instrument_override_reports_its_source(role, model):
+    params = {f"{role}_model": model}
+    assert resolve_model_and_source(params, "human_as_a_tool", role) == (model, "override")
+
+
+@pytest.mark.parametrize("params", [{}, _MAP], ids=["default", "map"])
+@pytest.mark.parametrize(
+    ("role", "other", "model"),
+    [("confidence", "clustering", _CONFIDENCE), ("clustering", "confidence", _CLUSTERING)],
+)
+def test_overriding_one_instrument_role_leaves_the_other(params, role, other, model):
+    """Each resolves on its own (#151): clustering no longer follows confidence."""
+    overridden = {**params, f"{role}_model": model}
+    before = resolve_model_and_source(params, "human_as_a_tool", other)
+    assert resolve_model_and_source(overridden, "human_as_a_tool", other) == before
 
 
 def test_an_override_beats_the_map():
     params = {**_MAP, "confidence_model": _CONFIDENCE}
     assert resolve_model(params, "human_as_a_tool", "decomposition") == _HAAT
     assert resolve_model(params, "human_as_a_tool", "confidence") == _CONFIDENCE
-    assert resolve_model(params, "human_as_a_tool", "clustering") == _CONFIDENCE
+    assert resolve_model(params, "human_as_a_tool", "clustering") == _HAAT
     with_clustering = {**params, "clustering_model": _CLUSTERING}
     assert resolve_model(with_clustering, "human_as_a_tool", "clustering") == _CLUSTERING
     only_clustering = {**_MAP, "clustering_model": _CLUSTERING}
@@ -160,7 +189,8 @@ def test_the_model_under_test_has_no_role_override(method, role):
 @pytest.mark.parametrize("role", ["confidence", "clustering"])
 def test_another_methods_entry_is_not_inherited(role):
     params = {"assistance_models": {"top_n": _TOP_N}}
-    assert resolve_model(params, "human_as_a_tool", role) == get_settings().llm.confidence_model
+    default = getattr(get_settings().llm, f"{role}_model")
+    assert resolve_model(params, "human_as_a_tool", role) == default
 
 
 def test_the_overrides_keep_their_keys_on_the_map():
@@ -267,9 +297,10 @@ _INSTRUMENT = {"confidence_model": _CONFIDENCE, "clustering_model": _CLUSTERING}
             {"_sampling_model": _CONFIDENCE, "_clustering_model": _CLUSTERING},
         ),
         (
+            # Clustering stays on the map: confidence's override is its own.
             {"confidence_model": _CONFIDENCE},
             "sampling",
-            {"_sampling_model": _CONFIDENCE, "_clustering_model": _CONFIDENCE},
+            {"_sampling_model": _CONFIDENCE, "_clustering_model": _HAAT},
         ),
     ],
 )
@@ -349,14 +380,19 @@ def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_me
         ("human_as_a_tool", {"confidence_method": "sampling"}),
         ("human_as_a_tool", {**_MAP, "confidence_method": "sampling"}),
         ("human_as_a_tool", {**_MAP, "confidence_model": _CONFIDENCE}),
+        ("human_as_a_tool", {"confidence_model": _CONFIDENCE, "confidence_method": "sampling"}),
         ("human_as_a_tool", {"clustering_model": _CLUSTERING, "confidence_method": "sampling"}),
         ("human_as_a_tool", {**_MAP, **_INSTRUMENT, "confidence_method": "sampling"}),
     ],
 )
-def test_preparation_pins_the_models_the_foreground_would_run(name, params):
+def test_preparation_pins_the_models_the_foreground_would_run(name, params, monkeypatch):
     """A prepared session runs on `preparation_params`, a foreground one on the
     params as stored: every role resolves the same either way. Without a map
-    entry, pinning one must not pull confidence off its own default."""
+    entry, pinning one must not pull confidence or clustering off its own
+    default."""
+    # Distinct defaults, so a role left to follow the newly pinned entry shows.
+    for role in ("decomposition", "confidence", "clustering"):
+        monkeypatch.setattr(get_settings().llm, f"{role}_model", f"openrouter/test/{role}-default")
     cls = registry._REGISTRY[name]
     assert cls.role_models(get_method(name).preparation_params(params)) == cls.role_models(params)
 
