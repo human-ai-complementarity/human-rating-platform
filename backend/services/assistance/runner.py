@@ -124,6 +124,10 @@ class PreparationRunner:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                # A close that fails while a cancel unwinds the connection
+                # replaces the CancelledError; reconnecting would hang close().
+                if asyncio.current_task().cancelling():
+                    raise asyncio.CancelledError
                 logger.exception("Preparation listener disconnected; reconnecting")
             finally:
                 self._connection_lost()
