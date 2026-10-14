@@ -15,7 +15,8 @@ assistance_params:
     clustering_model:     Override: LLM for semantic clustering, sampling method only
                           (default: the map entry; independent of confidence_model)
     num_samples:          LLM samples per subtask per round, "sampling" and
-                          "self_consistency" only (default: 5, also when null)
+                          "self_consistency" only (default: 5, also when null;
+                          range 1–10, MAX_NUM_SAMPLES, enforced on create/PATCH)
     max_rounds:           Maximum delegation rounds before forced synthesis (default: 5)
     max_subtasks:         Max subtasks to identify per round (default: 5)
     confidence_threshold: Show AI answer pre-filled below this score (default: 75, range 0–100)
@@ -46,6 +47,9 @@ logger = logging.getLogger(__name__)
 _CONFIDENCE_THRESHOLD = 75
 _EVIDENCE_EMPTY_CONFIDENCE_PENALTY = 20
 _DEFAULT_NUM_SAMPLES = 5
+# Each sample is a confidence call per subtask per round, so create/PATCH
+# refuse a `num_samples` above this (#155).
+MAX_NUM_SAMPLES = 10
 
 
 class HumanAsAToolMethod(InitialStepPreparation):
