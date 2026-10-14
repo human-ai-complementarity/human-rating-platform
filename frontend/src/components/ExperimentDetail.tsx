@@ -2429,7 +2429,7 @@ function AssistanceModePanel({
             >
               <option value="self_report">Self-report — single call, fastest</option>
               <option value="sampling">Sampling — K samples + clustering, most accurate</option>
-              <option value="self_consistency">Self-consistency — K samples, majority vote</option>
+              <option value="self_consistency">Self-consistency — K samples, share matching AI answer</option>
             </select>
           </Field>
           <ResolvedModelLine method="human_as_a_tool" resolved={resolvedModels?.human_as_a_tool} />
