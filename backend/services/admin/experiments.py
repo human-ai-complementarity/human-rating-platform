@@ -64,7 +64,7 @@ from .study_names import (
     numbered_variants,
     render_study_name,
 )
-from .waves import current_wave, normalize_wave_token
+from .waves import CURRENT_WAVE, normalize_wave_token
 from .queries import (
     fetch_experiment_or_404,
     fetch_total_questions_for_experiment,
@@ -509,16 +509,15 @@ def _pick_copy_names(
 
 def _stale_wave_warning(group: GroupSnapshot | None) -> WaveWarning | None:
     """Warn when a group's wave is not the current one. Ungrouped: no warning."""
-    current = current_wave()
-    if group is None or group.wave == current:
+    if group is None or group.wave == CURRENT_WAVE:
         return None
     return WaveWarning(
         group_wave=group.wave,
-        current_wave=current,
+        current_wave=CURRENT_WAVE,
         message=(
             f"Copied into {group.group_name} (wave {group.wave}), but the current wave "
-            f"is {current}. If this copy is for {current}, move it to a {current} group "
-            "before launch."
+            f"is {CURRENT_WAVE}. If this copy is for {CURRENT_WAVE}, move it to a "
+            f"{CURRENT_WAVE} group before launch."
         ),
     )
 

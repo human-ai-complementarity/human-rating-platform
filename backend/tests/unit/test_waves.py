@@ -1,22 +1,9 @@
 from __future__ import annotations
 
-import pytest
-
-from config import Settings
-from services.admin.waves import KNOWN_WAVES, current_wave
+from services.admin.waves import CURRENT_WAVE, KNOWN_WAVES, normalize_wave_token
 
 
-def test_current_wave_defaults_to_the_newest_known_wave(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("WAVES__CURRENT", raising=False)
-    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
-
-    assert current_wave(Settings(_env_file=None)) == KNOWN_WAVES[-1]
-
-
-def test_current_wave_env_override_is_normalized(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A wave the code does not know yet is allowed: the env var is how a new
-    # wave starts before KNOWN_WAVES is updated.
-    monkeypatch.setenv("WAVES__CURRENT", " SP27 ")
-    monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
-
-    assert current_wave(Settings(_env_file=None)) == "sp27"
+def test_current_wave_is_a_known_normalized_wave() -> None:
+    # Bumping CURRENT_WAVE means adding the wave to KNOWN_WAVES first.
+    assert CURRENT_WAVE in KNOWN_WAVES
+    assert CURRENT_WAVE == normalize_wave_token(CURRENT_WAVE)

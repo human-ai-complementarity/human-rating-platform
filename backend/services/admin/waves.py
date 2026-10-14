@@ -8,12 +8,13 @@ a datasets ↔ groups cycle.
 
 from __future__ import annotations
 
-from config import Settings, get_settings
-
-# Every wave the platform knows, oldest first. Append new waves at the end:
-# the last one is the current wave unless `WAVES__CURRENT` says otherwise.
+# Every wave the platform knows, oldest first. Append new waves at the end.
 # The catalog backfill also matches these tokens in experiment names.
 KNOWN_WAVES: tuple[str, ...] = ("fall25", "sp26", "sum26", "fall26")
+
+# The wave collections are being run for now. A constant, not a setting:
+# waves change rarely, and the PR that bumps it is the record.
+CURRENT_WAVE = "fall26"
 
 
 def normalize_wave_token(wave: str) -> str:
@@ -31,9 +32,3 @@ def normalize_waves(waves: list[str]) -> list[str]:
             seen.add(token)
             result.append(token)
     return result
-
-
-def current_wave(settings: Settings | None = None) -> str:
-    """The wave collections are being run for now: the setting, else the newest known."""
-    configured = normalize_wave_token((settings or get_settings()).waves.current)
-    return configured or KNOWN_WAVES[-1]

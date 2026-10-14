@@ -167,13 +167,6 @@ class PrefetchSettings(_StrictModel):
     lookahead_questions: int = Field(default=1, ge=0, le=5)
 
 
-class WaveSettings(_StrictModel):
-    # The wave collections are being run for now. Empty means the newest wave
-    # in services.admin.waves.KNOWN_WAVES (resolved there; importing it here
-    # would cycle through services.admin).
-    current: str = ""
-
-
 class Settings(BaseSettings):
     app: AppSettings = Field(default_factory=AppSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -185,7 +178,6 @@ class Settings(BaseSettings):
     prolific: ProlificSettings = Field(default_factory=ProlificSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
-    waves: WaveSettings = Field(default_factory=WaveSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)

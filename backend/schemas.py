@@ -176,7 +176,7 @@ class PlatformStatus(BaseModel):
     currency_code: str | None = None
     currency_symbol: str | None = None
     pricing: ProlificPricingResponse | None = None
-    # The wave collections are being run for now (`WAVES__CURRENT`).
+    # The wave collections are being run for now (`waves.CURRENT_WAVE`).
     current_wave: str
 
 
