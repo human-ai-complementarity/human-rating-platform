@@ -10,11 +10,13 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import openai
 import pytest
+from config import LLMSettings
 from models import Question, StepType
 from services.assistance.methods.top_n import (
     TopNAssistance,
@@ -614,6 +616,33 @@ async def test_start_returns_none_step_on_complete_runtime_error():
     assert step.is_terminal is True
     # Call never reached the parser, so there is no parse_status to record.
     assert step.payload == {}
+
+
+@pytest.mark.asyncio
+async def test_start_reports_reply_cut_off_with_no_content_as_provider_error(caplog):
+    # A reasoning model that spends max_tokens on hidden reasoning comes back
+    # empty with finish_reason "length": a provider failure, not a bad reply.
+    method = TopNAssistance()
+    question = _make_question()
+    choice = SimpleNamespace(message=SimpleNamespace(content=None), finish_reason="length")
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(choices=[choice]))
+
+    with (
+        caplog.at_level("ERROR", logger="services.assistance.methods.top_n"),
+        patch("services.assistance.llm._get_client", return_value=client),
+        patch(
+            "services.assistance.methods.top_n.get_settings",
+            return_value=SimpleNamespace(llm=LLMSettings(openrouter_api_key="sk-test")),
+        ),
+    ):
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.failure_reason == "provider_error"
+    assert step.payload == {}
+    record = next(r for r in caplog.records if "Top-N LLM call failed" in r.getMessage())
+    assert "max_tokens=4096" in str(record.exc_info[1])
 
 
 def _api_status_error(status: int) -> openai.APIStatusError:
