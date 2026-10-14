@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api, UploadAbortedError } from '../api';
 import { buildRaterPreviewUrl } from '../raterPreview';
 import StatusLabel from './StatusLabel';
 import type {
   DatasetMetaField,
+  DuplicateNavState,
   Experiment,
   ExperimentRound,
   ExperimentStats,
@@ -19,6 +20,7 @@ import type {
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
+import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import {
   StepperTabs,
   type StepDef,
@@ -302,6 +304,7 @@ function ExperimentDetail({
   onRefresh,
 }: ExperimentDetailProps) {
   const navigate = useNavigate();
+  const location = useLocation();
   // ── Data state ─────────────────────────────────────────────────────────
   const [stats, setStats] = useState<ExperimentStats | null>(null);
   // Spend starts from the last-known list value and is refreshed in the
@@ -423,6 +426,8 @@ function ExperimentDetail({
   // before it exists on Prolific (rewards alone read ~30% low against their
   // study page). Null until platform status loads, or when it has no rates.
   const [pricing, setPricing] = useState<ProlificPricing | null>(null);
+  // Null until platform status loads; no wave notice is shown before then.
+  const [currentWave, setCurrentWave] = useState<string | null>(null);
   const [pilotForm, setPilotForm] = useState<Omit<PilotStudyCreate, 'reward'>>({
     description: experiment.description ?? '',
     estimated_completion_time: 60,
@@ -595,6 +600,7 @@ function ExperimentDetail({
         setCurrencyCode(s.currency_code);
         setCurrencySymbol(s.currency_symbol);
         setPricing(s.pricing ?? null);
+        setCurrentWave(s.current_wave ?? null);
         setPlatformStatusMessage(null);
       })
       .catch(() => {
@@ -1010,6 +1016,29 @@ function ExperimentDetail({
   });
   const stepsCompletedCount = stepDefs.filter((s) => s.status === 'done').length;
 
+  // A DRAFT in an older wave's group may be a new wave's collection filed in
+  // the old group (duplicates keep their source's group). Right after a
+  // duplicate the warning is loud; later a small notice stays until it moves.
+  const isDraft = experiment.status === 'DRAFT';
+  const duplicateWaveWarning = (location.state as DuplicateNavState | null)?.waveWarning ?? null;
+  const showDuplicateWaveWarning =
+    isDraft && duplicateWaveWarning !== null && experiment.wave === duplicateWaveWarning.group_wave;
+  const showDraftWaveNotice =
+    !showDuplicateWaveWarning &&
+    isDraft &&
+    experiment.wave !== null &&
+    currentWave !== null &&
+    experiment.wave !== currentWave;
+
+  const handleGroupMoved = async (message: string) => {
+    setError(null);
+    showSuccess(message);
+    await onRefresh();
+    // The duplicate's warning was about the group it has now left.
+    if (duplicateWaveWarning) navigate(location.pathname, { replace: true, state: null });
+  };
+  const moveCallbacks = { onMoved: handleGroupMoved, onError: setError };
+
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="admin-page">
@@ -1106,6 +1135,33 @@ function ExperimentDetail({
               </>
             )}
           </div>
+          <GroupControl experiment={experiment} currentWave={currentWave} {...moveCallbacks} />
+          {showDraftWaveNotice && (
+            <div
+              data-testid="draft-wave-notice"
+              style={{
+                display: 'inline-flex',
+                gap: 8,
+                marginTop: 10,
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--warn-soft)',
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                color: 'var(--warn)',
+              }}
+            >
+              <span aria-hidden style={{ fontWeight: 700 }}>
+                !
+              </span>
+              <span>
+                {experiment.group_name ?? 'Its group'} is a {experiment.wave} group, but the
+                current wave is {currentWave}. If this is for {currentWave}, move it to a{' '}
+                {currentWave} group before launch.{' '}
+                <MoveToWaveButton experiment={experiment} wave={currentWave} {...moveCallbacks} />
+              </span>
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 2 }}>
           <a
@@ -1155,6 +1211,21 @@ function ExperimentDetail({
           )}
         </div>
       </div>
+
+      {showDuplicateWaveWarning && (
+        <div data-testid="duplicate-wave-warning" style={{ marginBottom: 20 }}>
+          <Banner tone="warn">
+            <strong>Check this copy's wave.</strong> {duplicateWaveWarning.message}
+            <div style={{ marginTop: 8 }}>
+              <MoveToWaveButton
+                experiment={experiment}
+                wave={duplicateWaveWarning.current_wave}
+                {...moveCallbacks}
+              />
+            </div>
+          </Banner>
+        </div>
+      )}
 
       <StepperTabs
         active={tab}

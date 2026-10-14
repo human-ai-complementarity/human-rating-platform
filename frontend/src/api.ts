@@ -15,6 +15,7 @@ import type {
   DatasetCardFields,
   Experiment,
   ExperimentCreate,
+  ExperimentDuplicate,
   ExperimentGroup,
   Tag,
   ExperimentStats,
@@ -492,6 +493,7 @@ export const api = {
   },
 
   // Partial: omitted keys are left alone, an explicit null clears the field.
+  // `waves` replaces the set; the backend rejects dropping one a group uses.
   async updateDatasetCard(
     datasetId: number,
     data: Partial<DatasetCardFields> & { name?: string; waves?: string[] },
@@ -589,6 +591,9 @@ export const api = {
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
       // experiment leaves DRAFT.
       session_duration_minutes?: number;
+      // Undefined means "leave unchanged"; null ungroups. Locked once the
+      // experiment leaves DRAFT.
+      group_id?: number | null;
     },
   ): Promise<Experiment> {
     return requestJson<Experiment>(routes.admin.experiment(experimentId), {
@@ -609,8 +614,8 @@ export const api = {
     });
   },
 
-  async duplicateExperiment(experimentId: number): Promise<Experiment> {
-    return requestJson<Experiment>(routes.admin.duplicateExperiment(experimentId), {
+  async duplicateExperiment(experimentId: number): Promise<ExperimentDuplicate> {
+    return requestJson<ExperimentDuplicate>(routes.admin.duplicateExperiment(experimentId), {
       method: 'POST',
     });
   },

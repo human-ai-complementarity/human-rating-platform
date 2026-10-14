@@ -23,6 +23,7 @@ from schemas import (
     ExperimentRoundResponse,
     ExperimentRoundUpdate,
     ExperimentCreate,
+    ExperimentDuplicateResponse,
     ExperimentResponse,
     ExperimentUpdate,
     OneClickLaunchPreview,
@@ -37,6 +38,7 @@ from models import ApiKey
 from services import admin as admin_service
 from services import api_keys as api_key_service
 from services.admin.prolific import get_cached_workspace_currency
+from services.admin.waves import CURRENT_WAVE
 from auth import AdminSession, require_admin, get_admin_manager
 from services.authn import verify_clerk_token_and_get_email
 
@@ -113,6 +115,7 @@ async def get_platform_status(db: AsyncSession = Depends(get_session)):
             if pricing is not None
             else None
         ),
+        current_wave=CURRENT_WAVE,
     )
 
 
@@ -285,7 +288,9 @@ async def delete_experiment(
     return await admin_service.delete_experiment(experiment_id=experiment_id, db=db)
 
 
-@secure_router.post("/experiments/{experiment_id}/duplicate", response_model=ExperimentResponse)
+@secure_router.post(
+    "/experiments/{experiment_id}/duplicate", response_model=ExperimentDuplicateResponse
+)
 async def duplicate_experiment(
     experiment_id: int,
     db: AsyncSession = Depends(get_session),

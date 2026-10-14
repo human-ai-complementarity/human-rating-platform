@@ -25,11 +25,22 @@ from models import (
     Tag,
     Upload,
 )
-from schemas import ExperimentCreate, ExperimentResponse, ExperimentUpdate
+from schemas import (
+    ExperimentCreate,
+    ExperimentDuplicateResponse,
+    ExperimentResponse,
+    ExperimentUpdate,
+    WaveWarning,
+)
 from .dataset_card import card_values_from_row
 from .mappers import build_experiment_response
 from fastapi import HTTPException
-from .groups import fetch_group_or_404, fetch_group_snapshot, fetch_group_snapshots
+from .groups import (
+    GroupSnapshot,
+    fetch_group_or_404,
+    fetch_group_snapshot,
+    fetch_group_snapshots,
+)
 from .tags import (
     fetch_tag_names_by_experiment,
     fetch_tag_names_for_experiment,
@@ -53,7 +64,7 @@ from .study_names import (
     numbered_variants,
     render_study_name,
 )
-from .waves import normalize_wave_token
+from .waves import CURRENT_WAVE, normalize_wave_token
 from .queries import (
     fetch_experiment_or_404,
     fetch_total_questions_for_experiment,
@@ -496,10 +507,25 @@ def _pick_copy_names(
         n += 1
 
 
+def _stale_wave_warning(group: GroupSnapshot | None) -> WaveWarning | None:
+    """Warn when a group's wave is not the current one. Ungrouped: no warning."""
+    if group is None or group.wave == CURRENT_WAVE:
+        return None
+    return WaveWarning(
+        group_wave=group.wave,
+        current_wave=CURRENT_WAVE,
+        message=(
+            f"Copied into {group.group_name} (wave {group.wave}), but the current wave "
+            f"is {CURRENT_WAVE}. If this copy is for {CURRENT_WAVE}, move it to a "
+            f"{CURRENT_WAVE} group before launch."
+        ),
+    )
+
+
 async def duplicate_experiment(
     experiment_id: int,
     db: AsyncSession,
-) -> ExperimentResponse:
+) -> ExperimentDuplicateResponse:
     """Create a fresh DRAFT experiment from an existing one.
 
     Copied: names (with a " COPY" suffix), ratings per question, the dataset
@@ -507,6 +533,10 @@ async def duplicate_experiment(
     instructions-page fields (description, system prompt, prefix/suffix,
     prolific pool). Everything else — status, assistance config, rounds,
     raters, ratings, participant group — starts from defaults.
+
+    The copy keeps the source's group even when that group's wave is not the
+    current one; `wave_warning` says so, since a re-collection for the
+    current wave would otherwise land in the old wave's group unnoticed.
     """
     source = await fetch_experiment_or_404(experiment_id, db)
 
@@ -615,13 +645,17 @@ async def duplicate_experiment(
     )
 
     question_count = await fetch_total_questions_for_experiment(duplicate.id, db)
-    return build_experiment_response(
+    group = await fetch_group_snapshot(duplicate.group_id, db)
+    response = build_experiment_response(
         duplicate,
         question_count=question_count,
         rating_count=0,
         dataset_filenames=[upload.filename for upload in source_uploads],
-        group=await fetch_group_snapshot(duplicate.group_id, db),
+        group=group,
         tags=tag_names,
+    )
+    return ExperimentDuplicateResponse(
+        **response.model_dump(), wave_warning=_stale_wave_warning(group)
     )
 
 
