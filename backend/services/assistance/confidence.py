@@ -4,7 +4,7 @@ A ConfidenceEstimator takes a question and a list of subtasks (each with a
 question and the AI's current best answer) and returns a confidence score
 0–100 for each subtask.
 
-Two implementations are provided:
+Three implementations are provided:
 
   LLMConfidenceEstimator (default)
       Single-call self-reporting: asks the LLM to rate its own confidence for
@@ -13,11 +13,19 @@ Two implementations are provided:
   SamplingConfidenceEstimator
       Multi-sample clustering method ported from human-ai-complementarity:
       1. Generate K independent responses per subtask (with temperature > 0)
-      2. Cluster responses semantically using a fast clustering model
-      3. Confidence = average self-reported confidence of responses in the
-         winning (largest) cluster
-      More accurate than self-reporting but uses K+1 LLM calls per subtask.
-      Configure via assistance_params: confidence_method="sampling".
+      2. Cluster the responses together with the subtask's ``my_answer``
+         semantically, using a fast clustering model (one call)
+      3. Confidence = summed self-reported confidence of the responses in
+         my_answer's cluster, divided by K — so it is high only when the
+         samples agree with the answer the rater is shown
+      Without a my_answer, step 3 scores the winning (largest) cluster
+      instead. More accurate than self-reporting but uses K+1 LLM calls per
+      subtask. Configure via assistance_params: confidence_method="sampling".
+
+  SelfConsistencyConfidenceEstimator
+      K samples per subtask; confidence = fraction that match my_answer (or
+      the majority answer, without one). No clustering call.
+      Configure via assistance_params: confidence_method="self_consistency".
 """
 
 from __future__ import annotations
@@ -208,9 +216,16 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
     For each subtask:
       1. Generate ``num_samples`` independent responses using ``sampling_model``
          at ``temperature`` > 0, each in ANSWER: / CONFIDENCE: format.
-      2. Cluster responses semantically using ``clustering_model``.
-      3. Confidence = mean self-reported confidence of responses in the winning
-         (largest) cluster, expressed as 0–100.
+      2. Cluster the responses plus the subtask's ``my_answer`` semantically
+         in one ``clustering_model`` call.
+      3. Confidence = summed self-reported confidence of the responses in
+         my_answer's cluster divided by the number of responses, expressed as
+         0–100. All samples agreeing gives their mean confidence; each one
+         that disagrees pulls the score down.
+
+    With no ``my_answer``, step 3 falls back to the mean confidence of the
+    winning (largest) cluster; if clustering fails, to a string-matching
+    majority vote.
 
     All subtasks in a batch are processed concurrently.
     """
@@ -239,7 +254,8 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
         if not responses:
             return 50
 
-        confidence = await self._cluster_and_score(subtask["question"], responses)
+        my_answer = (subtask.get("my_answer") or "").strip()
+        confidence = await self._cluster_and_score(subtask["question"], responses, my_answer)
         # Source uses 0–1; convert to 0–100
         score = confidence * 100 if confidence is not None else 50
         return max(0, min(100, round(score)))
@@ -262,15 +278,24 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
     # ------------------------------------------------------------------
 
     async def _cluster_and_score(
-        self, subtask_question: str, responses: list[dict]
+        self, subtask_question: str, responses: list[dict], my_answer: str = ""
     ) -> float | None:
-        """Cluster responses and return mean confidence of winning cluster (0–1)."""
+        """Cluster responses and score their agreement with ``my_answer`` (0–1).
+
+        ``my_answer`` is clustered last, alongside the responses, so placing it
+        costs no extra call. Without it, returns the mean confidence of the
+        winning cluster.
+        """
         answers = [r["answer"] for r in responses]
-        semantic_ids = await self._cluster_answers(subtask_question, answers)
+        to_cluster = [*answers, my_answer] if my_answer else answers
+        semantic_ids = await self._cluster_answers(subtask_question, to_cluster)
 
         if semantic_ids is None:
             # Fallback: string-matching majority vote
             return _compute_direct_confidence(responses, _select_best_answer(responses))
+
+        if my_answer:
+            return _confidence_weighted_share(responses, semantic_ids[:-1], semantic_ids[-1])
 
         # Winning cluster = largest; tie-break by mean confidence
         cluster_counts = Counter(semantic_ids)
@@ -329,10 +354,12 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
 
 
 class SelfConsistencyConfidenceEstimator(ConfidenceEstimator):
-    """Confidence = fraction of K samples that agree with the majority answer.
+    """Confidence = fraction of K samples that agree with the subtask's ``my_answer``.
 
-    Does not use self-reported confidence scores — purely based on how
-    consistently the model gives the same answer across samples.
+    Agreement is ``_simple_equivalence_check``. With no ``my_answer``, falls
+    back to the fraction agreeing with the majority answer. Does not use
+    self-reported confidence scores — purely based on how consistently the
+    model gives the answer the rater is shown.
     Configure via assistance_params: confidence_method="self_consistency".
     """
 
@@ -365,7 +392,13 @@ class SelfConsistencyConfidenceEstimator(ConfidenceEstimator):
         if not answers:
             return 50
 
-        # Majority vote via simple equivalence
+        my_answer = (subtask.get("my_answer") or "").strip()
+        if my_answer:
+            agreeing = sum(_simple_equivalence_check(ans, my_answer) for ans in answers)
+            confidence = agreeing / len(answers)
+            return max(0, min(100, round(confidence * 100)))
+
+        # No answer to check against: majority vote via simple equivalence
         clusters: list[list[int]] = []
         for i, ans in enumerate(answers):
             for cluster in clusters:
@@ -460,6 +493,22 @@ def _compute_direct_confidence(responses: list[dict], best_answer: str) -> float
     if not confs:
         confs = [r["confidence"] for r in responses if r.get("confidence") is not None]
     return sum(confs) / len(confs) if confs else None
+
+
+def _confidence_weighted_share(
+    responses: list[dict], semantic_ids: list[int], cluster_id: int
+) -> float:
+    """Summed confidence of responses in ``cluster_id`` over all responses (0–1).
+
+    Share of responses in the cluster times their mean confidence: 0 when no
+    response lands in it.
+    """
+    in_cluster = sum(
+        responses[i]["confidence"]
+        for i, sid in enumerate(semantic_ids)
+        if sid == cluster_id and responses[i].get("confidence") is not None
+    )
+    return in_cluster / len(responses)
 
 
 def _compute_direct_confidence_by_cluster(
