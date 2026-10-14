@@ -1,4 +1,4 @@
-"""Tests for HumanAsAToolMethod's LLM-error degradation paths."""
+"""Tests for HumanAsAToolMethod's LLM-error degradation paths and its params."""
 
 from __future__ import annotations
 
@@ -111,3 +111,17 @@ async def test_advance_returns_none_step_on_decomposer_value_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+
+
+@pytest.mark.parametrize("confidence_method", ["sampling", "self_consistency"])
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [({}, 5), ({"num_samples": None}, 5), ({"num_samples": 3}, 3)],
+    ids=["absent", "cleared", "set"],
+)
+def test_a_cleared_num_samples_runs_the_default(confidence_method, params, expected):
+    """PATCH stores a null `num_samples` as a clear; it ran `int(None)` before."""
+    params = {"confidence_method": confidence_method, **params}
+    estimator = HumanAsAToolMethod()._get_estimator(params)
+
+    assert estimator._num_samples == expected
