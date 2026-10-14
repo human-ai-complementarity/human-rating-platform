@@ -250,8 +250,8 @@ async def _complete_with_schema_fallback(
     params, but a provider that *rejects* `strict` json_schema would otherwise
     fail every question in the round. Retrying without `response_format` keeps
     the previous fail-soft behaviour; the model is remembered only once that
-    unconstrained retry succeeds, so a 404 for an unknown id does not poison
-    the memo. Later questions then skip the schema (one extra call per
+    unconstrained retry gets a reply (even one cut off empty), so a 404 for an
+    unknown id does not poison the memo. Later questions then skip the schema (one extra call per
     process, not per question). The prompt examples are then the only
     constraint.
 
