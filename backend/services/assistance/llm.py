@@ -107,7 +107,20 @@ async def complete(
         # OpenRouter sometimes returns HTTP 200 with an error body and no
         # choices; indexing [0] would 500 the rater's assistance fetch.
         raise RuntimeError(_empty_choices_message(response))
-    return response.choices[0].message.content or ""
+    choice = response.choices[0]
+    content = choice.message.content or ""
+    if not content.strip() and choice.finish_reason == "length":
+        # A reasoning model can spend all of max_tokens on hidden reasoning.
+        # Raise so callers log a provider error, not an unparseable reply.
+        raise EmptyTruncatedReplyError(
+            f"LLM reply from {model_id} hit max_tokens={settings.max_tokens} with no "
+            "content; reasoning may have used the whole budget"
+        )
+    return content
+
+
+class EmptyTruncatedReplyError(RuntimeError):
+    """The reply was cut off at max_tokens before any content was written."""
 
 
 def _empty_choices_message(response: object) -> str:
