@@ -153,6 +153,7 @@ class LLMSettings(_StrictModel):
     default_model: str = LLMModels.CLAUDE_SONNET
     decomposition_model: str = LLMModels.GEMINI_3_FLASH_PREVIEW
     confidence_model: str = LLMModels.GEMINI_FLASH_LITE
+    clustering_model: str = LLMModels.GEMINI_FLASH_LITE
     openrouter_api_key: str = ""
     max_tokens: int = 4096
     request_timeout: int = 60
