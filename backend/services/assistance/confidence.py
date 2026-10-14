@@ -356,8 +356,8 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
 class SelfConsistencyConfidenceEstimator(ConfidenceEstimator):
     """Confidence = fraction of K samples that agree with the subtask's ``my_answer``.
 
-    Agreement is ``_simple_equivalence_check``. With no ``my_answer``, falls
-    back to the fraction agreeing with the majority answer. Does not use
+    Agreement is ``_matches_my_answer``. With no ``my_answer``, falls back to
+    the fraction agreeing with the majority answer. Does not use
     self-reported confidence scores — purely based on how consistently the
     model gives the answer the rater is shown.
     Configure via assistance_params: confidence_method="self_consistency".
@@ -394,7 +394,7 @@ class SelfConsistencyConfidenceEstimator(ConfidenceEstimator):
 
         my_answer = (subtask.get("my_answer") or "").strip()
         if my_answer:
-            agreeing = sum(_simple_equivalence_check(ans, my_answer) for ans in answers)
+            agreeing = sum(_matches_my_answer(ans, my_answer, subtask) for ans in answers)
             confidence = agreeing / len(answers)
             return max(0, min(100, round(confidence * 100)))
 
@@ -456,6 +456,40 @@ def _simple_equivalence_check(text1: str, text2: str) -> bool:
         except ValueError:
             pass
     return False
+
+
+def _matches_my_answer(answer: str, my_answer: str, subtask: dict) -> bool:
+    """Whether a sample gives the subtask's pre-filled ``my_answer``.
+
+    Samples see only the sub-question, so they answer free-form ("Yes, it
+    does.") while ``my_answer`` is in the decomposer's normalised form ("yes",
+    an option's text, a short phrase). Both sides are reduced to that form
+    before ``_simple_equivalence_check``.
+    """
+    return _simple_equivalence_check(
+        _answer_form(answer, subtask), _answer_form(my_answer, subtask)
+    )
+
+
+def _answer_form(text: str, subtask: dict) -> str:
+    """Leading yes/no for binary subtasks, the longest option the text starts
+    with for multiple choice; otherwise the text minus trailing punctuation."""
+    text = text.strip()
+    if subtask.get("type") == "binary":
+        m = re.match(r"(yes|no)\b", text, re.IGNORECASE)
+        if m:
+            return m.group(1)
+    elif subtask.get("type") == "multiple_choice":
+        options = [
+            opt.strip()
+            for opt in subtask.get("options") or []
+            if isinstance(opt, str)
+            and opt.strip()
+            and re.match(re.escape(opt.strip()) + r"(?!\w)", text, re.IGNORECASE)
+        ]
+        if options:
+            return max(options, key=len)
+    return text.rstrip(".!? \t\n")
 
 
 def _select_best_answer(responses: list[dict]) -> str:

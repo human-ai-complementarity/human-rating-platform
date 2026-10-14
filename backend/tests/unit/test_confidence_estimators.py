@@ -43,8 +43,8 @@ def _fake_llm(samples: list[tuple[str, int]], clustering: str | None = None) -> 
     return AsyncMock(side_effect=complete)
 
 
-def _subtask(my_answer: str | None) -> dict:
-    st = {"index": 0, "question": "What is the capital of France?"}
+def _subtask(my_answer: str | None, **fields) -> dict:
+    st = {"index": 0, "question": "What is the capital of France?", **fields}
     if my_answer is not None:
         st["my_answer"] = my_answer
     return st
@@ -171,3 +171,59 @@ async def test_self_consistency_without_my_answer_scores_majority(my_answer):
         scores = await _self_consistency().estimate_batch("Q?", [_subtask(my_answer)])
 
     assert scores == [80]
+
+
+# Samples see only the sub-question, so they answer free-form; my_answer is in
+# the decomposer's normalised form. Matching must not hinge on that phrasing.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("my_answer", "expected"), [("yes", 60), ("no", 20)])
+async def test_self_consistency_binary_matches_leading_yes_no(my_answer, expected):
+    llm = _fake_llm(
+        [
+            ("Yes.", 80),
+            ("Yes, the source says so.", 80),
+            ("YES", 80),
+            ("No, it does not.", 80),
+            ("Not stated", 80),
+        ]
+    )
+    subtask = _subtask(my_answer, type="binary", options=None)
+
+    with patch(_COMPLETE, new=llm):
+        scores = await _self_consistency().estimate_batch("Q?", [subtask])
+
+    assert scores == [expected]
+
+
+@pytest.mark.asyncio
+async def test_self_consistency_multiple_choice_matches_option_text():
+    llm = _fake_llm(
+        [
+            ("Paris.", 80),
+            ("Paris, France.", 80),
+            ("Paris, Texas", 80),
+            ("Lyon", 80),
+            ("Parisian", 80),
+        ]
+    )
+    subtask = _subtask("Paris", type="multiple_choice", options=["Paris", "Paris, Texas", "Lyon"])
+
+    with patch(_COMPLETE, new=llm):
+        scores = await _self_consistency().estimate_batch("Q?", [subtask])
+
+    # The first two start with the option "Paris"; "Paris, Texas" is the
+    # longer option it starts with, and "Parisian" is not an option.
+    assert scores == [40]
+
+
+@pytest.mark.asyncio
+async def test_self_consistency_free_text_ignores_trailing_punctuation():
+    llm = _fake_llm([("Paris.", 80), ("paris!", 80), ("Paris", 80), ("Lyon.", 80), ("Lyon", 80)])
+    subtask = _subtask("Paris", type="free_text", options=None)
+
+    with patch(_COMPLETE, new=llm):
+        scores = await _self_consistency().estimate_batch("Q?", [subtask])
+
+    assert scores == [60]
