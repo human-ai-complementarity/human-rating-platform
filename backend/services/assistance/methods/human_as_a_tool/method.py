@@ -14,7 +14,8 @@ assistance_params:
     confidence_model:     Override: LLM for confidence scoring (default: the map entry)
     clustering_model:     Override: LLM for semantic clustering, sampling method only
                           (default: the map entry; independent of confidence_model)
-    num_samples:          Samples per subtask, sampling method only (default: 5)
+    num_samples:          LLM samples per subtask per round, "sampling" and
+                          "self_consistency" only (default: 5, also when null)
     max_rounds:           Maximum delegation rounds before forced synthesis (default: 5)
     max_subtasks:         Max subtasks to identify per round (default: 5)
     confidence_threshold: Show AI answer pre-filled below this score (default: 75, range 0–100)
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 _CONFIDENCE_THRESHOLD = 75
 _EVIDENCE_EMPTY_CONFIDENCE_PENALTY = 20
+_DEFAULT_NUM_SAMPLES = 5
 
 
 class HumanAsAToolMethod(InitialStepPreparation):
@@ -260,12 +262,12 @@ class HumanAsAToolMethod(InitialStepPreparation):
             estimator: ConfidenceEstimator = SamplingConfidenceEstimator(
                 sampling_model=confidence_model,
                 clustering_model=models["clustering"],
-                num_samples=int(params.get("num_samples", 5)),
+                num_samples=_num_samples(params),
             )
         elif method == "self_consistency":
             estimator = SelfConsistencyConfidenceEstimator(
                 sampling_model=confidence_model,
-                num_samples=int(params.get("num_samples", 5)),
+                num_samples=_num_samples(params),
             )
         else:
             estimator = LLMConfidenceEstimator(model=confidence_model)
@@ -285,6 +287,12 @@ class HumanAsAToolMethod(InitialStepPreparation):
 
 def _confidence_method(params: Mapping[str, object]) -> object:
     return params.get("confidence_method", "self_report")
+
+
+def _num_samples(params: dict) -> int:
+    """A cleared (null) `num_samples` runs the default, as a cleared model does."""
+    value = params.get("num_samples")
+    return _DEFAULT_NUM_SAMPLES if value is None else int(value)
 
 
 def _apply_evidence_penalty(subtask: dict, raw_score: int) -> int:
