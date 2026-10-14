@@ -135,8 +135,10 @@ The AI decomposes each question into smaller subtasks, the rater answers them on
 When you enable it, you pick a **confidence method**:
 
 - **Self-report** — fastest, single AI call. Fine default for piloting.
-- **Sampling** — most accurate; multiple samples + clustering, but slower and more expensive.
-- **Self-consistency** — multiple samples with majority vote; a middle ground.
+- **Sampling** — most accurate; the AI answers each subtask several times, and the score is how many of those answers mean the same as the pre-filled one (weighted by the AI's stated confidence). Slower and more expensive.
+- **Self-consistency** — the same repeated answers, scored by the share that match the pre-filled answer; a middle ground.
+
+With either sampling method, a high score means the AI kept giving the answer the rater sees pre-filled, not just that it kept agreeing with itself.
 
 ## Top-N suggestions
 
