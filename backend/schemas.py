@@ -176,6 +176,8 @@ class PlatformStatus(BaseModel):
     currency_code: str | None = None
     currency_symbol: str | None = None
     pricing: ProlificPricingResponse | None = None
+    # The wave collections are being run for now (`waves.CURRENT_WAVE`).
+    current_wave: str
 
 
 # --- Tags (free-form experiment labels) ------------------------------------
@@ -287,6 +289,20 @@ class ExperimentResponse(BaseModel):
     launch_blocker_fixes: list[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WaveWarning(BaseModel):
+    """A group whose wave is not the current one."""
+
+    group_wave: str
+    current_wave: str
+    message: str
+
+
+class ExperimentDuplicateResponse(ExperimentResponse):
+    # Set when the copy kept a group from another wave than the current one;
+    # it may be a new wave's collection that belongs in a new group.
+    wave_warning: Optional[WaveWarning] = None
 
 
 class ExperimentUpdate(BaseModel):

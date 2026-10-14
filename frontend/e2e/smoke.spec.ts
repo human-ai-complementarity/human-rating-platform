@@ -305,12 +305,14 @@ async function installApiMocks(
     currencyCode?: string | null;
     currencySymbol?: string | null;
     spendMinorUnits?: number;
+    currentWave?: string;
   } = {}
 ) {
   const prolificEnabled = options.prolificEnabled ?? true;
   const currencyCode = options.currencyCode ?? null;
   const currencySymbol = options.currencySymbol ?? null;
   const spendMinorUnits = options.spendMinorUnits ?? 0;
+  const currentWave = options.currentWave ?? 'fall26';
 
   await page.context().route('**/api/**', async (route) => {
     const request = route.request();
@@ -336,6 +338,7 @@ async function installApiMocks(
         // Prolific's real rates for a GBP academic workspace: a third on top of
         // rewards, plus VAT on that fee.
         pricing: { fees_percentage: 0.333333, vat_percentage: 0.2, fees_per_submission: 0 },
+        current_wave: currentWave,
       });
       return;
     }
@@ -366,8 +369,10 @@ async function installApiMocks(
         return;
       }
       if (method === 'PATCH') {
-        state.datasetPatches.push(request.postDataJSON() as Record<string, unknown>);
-        state.datasets[index] = { ...state.datasets[index], ...request.postDataJSON() };
+        const payload = request.postDataJSON() as Record<string, unknown> & { waves?: string[] };
+        state.datasetPatches.push(payload);
+        const waves = payload.waves?.map((wave) => wave.trim().toLowerCase()).filter(Boolean);
+        state.datasets[index] = { ...state.datasets[index], ...payload, ...(waves && { waves }) };
       }
       await fulfillJson(route, 200, withCardReadiness(state.datasets[index]));
       return;
@@ -379,7 +384,12 @@ async function installApiMocks(
     }
 
     if (pathname === '/api/admin/experiment-groups' && method === 'GET') {
-      await fulfillJson(route, 200, state.groups);
+      const datasetId = url.searchParams.get('dataset_id');
+      await fulfillJson(
+        route,
+        200,
+        state.groups.filter((group) => datasetId === null || group.dataset_id === Number(datasetId)),
+      );
       return;
     }
 
@@ -501,6 +511,48 @@ async function installApiMocks(
       return;
     }
 
+    const duplicateMatch = pathname.match(/^\/api\/admin\/experiments\/(\d+)\/duplicate$/);
+    if (duplicateMatch && method === 'POST') {
+      const source = state.experiments.find((item) => item.id === Number(duplicateMatch[1]));
+      if (!source) {
+        await fulfillJson(route, 404, { detail: 'Experiment not found' });
+        return;
+      }
+      // Mirrors duplicate_experiment: a DRAFT copy in the source's group, with
+      // a warning when that group's wave is not the current one.
+      const copy = buildExperiment(state, {
+        name: `${source.name} COPY`,
+        group_id: source.group_id,
+        group_name: source.group_name,
+        group_dataset_id: source.group_dataset_id,
+        group_dataset_name: source.group_dataset_name,
+        wave: source.wave,
+      });
+      state.experiments = [...state.experiments, copy];
+      state.uploads[copy.id] = [];
+      state.rounds[copy.id] = [];
+      state.recommendations[copy.id] = {
+        avg_time_per_question_seconds: 0,
+        remaining_rating_actions: 0,
+        total_hours_remaining: 0,
+        recommended_places: 0,
+        is_complete: false,
+      };
+      const waveWarning =
+        copy.wave !== null && copy.wave !== currentWave
+          ? {
+              group_wave: copy.wave,
+              current_wave: currentWave,
+              message:
+                `Copied into ${copy.group_name} (wave ${copy.wave}), but the current wave is ` +
+                `${currentWave}. If this copy is for ${currentWave}, move it to a ` +
+                `${currentWave} group before launch.`,
+            }
+          : null;
+      await fulfillJson(route, 200, { ...copy, wave_warning: waveWarning });
+      return;
+    }
+
     const experimentByIdMatch = pathname.match(/^\/api\/admin\/experiments\/(\d+)$/);
     if (experimentByIdMatch && method === 'GET') {
       const experimentId = Number(experimentByIdMatch[1]);
@@ -509,6 +561,39 @@ async function installApiMocks(
         await fulfillJson(route, 404, { detail: 'Experiment not found' });
         return;
       }
+      await fulfillJson(route, 200, experiment);
+      return;
+    }
+
+    if (experimentByIdMatch && method === 'PATCH') {
+      const experiment = state.experiments.find((item) => item.id === Number(experimentByIdMatch[1]));
+      if (!experiment) {
+        await fulfillJson(route, 404, { detail: 'Experiment not found' });
+        return;
+      }
+      const payload = request.postDataJSON() as {
+        name?: string;
+        internal_name?: string;
+        group_id?: number | null;
+      };
+      // Mirrors update_experiment: an omitted group_id is unchanged, null
+      // ungroups, and the group locks once the experiment leaves DRAFT.
+      if ('group_id' in payload && payload.group_id !== experiment.group_id) {
+        if (experiment.status !== 'DRAFT') {
+          await fulfillJson(route, 400, { detail: 'Cannot edit group_id' });
+          return;
+        }
+        const group = state.groups.find((item) => item.id === payload.group_id);
+        Object.assign(experiment, {
+          group_id: group?.id ?? null,
+          group_name: group?.name ?? null,
+          group_dataset_id: group?.dataset_id ?? null,
+          group_dataset_name: group?.dataset_name ?? null,
+          wave: group?.wave ?? null,
+        });
+      }
+      if (payload.name !== undefined) experiment.name = payload.name;
+      if (payload.internal_name !== undefined) experiment.internal_name = payload.internal_name || null;
       await fulfillJson(route, 200, experiment);
       return;
     }
@@ -2014,6 +2099,359 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
 
   await expect(page.getByRole('heading', { name: 'MedQA spring none' })).toBeVisible();
   expect(state.groups.some((group) => group.name === 'MedQA Spring' && group.wave === 'sp26')).toBe(true);
+});
+
+test('duplicating into an older wave group warns on the copy', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [{ id: 1, name: 'medqa', waves: ['sp26'], created_at: '2026-03-09T00:00:00Z' }];
+  state.groups = [
+    {
+      id: 1,
+      name: 'MedQA Spring',
+      dataset_id: 1,
+      dataset_name: 'medqa',
+      wave: 'sp26',
+      experiment_count: 1,
+      created_at: '2026-03-09T00:00:00Z',
+    },
+  ];
+  state.experiments = [
+    buildExperiment(state, {
+      name: 'MedQA none',
+      status: 'FINISHED',
+      group_id: 1,
+      group_name: 'MedQA Spring',
+      group_dataset_id: 1,
+      group_dataset_name: 'medqa',
+      wave: 'sp26',
+    }),
+  ];
+
+  await installApiMocks(page, state, { currentWave: 'fall26' });
+  await page.goto('/admin');
+
+  await page.getByRole('button', { name: 'Actions for MedQA none' }).click();
+  await page.getByTestId('row-action-duplicate').click();
+
+  await expect(page).toHaveURL(/\/admin\/experiments\/2$/);
+  const warning = page.getByTestId('duplicate-wave-warning');
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText('MedQA Spring (wave sp26)');
+  await expect(warning).toContainText('the current wave is fall26');
+  await expect(warning).toContainText('move it to a fall26 group before launch');
+  // The loud warning replaces the small notice rather than doubling it.
+  await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+});
+
+test('a DRAFT in an older wave group keeps a small wave notice', async ({ page }) => {
+  const state = createMockState();
+  const inGroup = (id: number, name: string, wave: string) => ({
+    group_id: id,
+    group_name: name,
+    group_dataset_id: 1,
+    group_dataset_name: 'medqa',
+    wave,
+  });
+  state.experiments = [
+    buildExperiment(state, { name: 'Spring draft', ...inGroup(1, 'MedQA Spring', 'sp26') }),
+    buildExperiment(state, { name: 'Fall draft', ...inGroup(2, 'MedQA Fall', 'fall26') }),
+    buildExperiment(state, {
+      name: 'Spring launched',
+      status: 'LAUNCH',
+      ...inGroup(1, 'MedQA Spring', 'sp26'),
+    }),
+  ];
+  // Prolific off: these pages need no round or recommendation mocks.
+  await installApiMocks(page, state, { currentWave: 'fall26', prolificEnabled: false });
+
+  await page.goto('/admin/experiments/1');
+  const notice = page.getByTestId('draft-wave-notice');
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText('MedQA Spring is a sp26 group');
+  await expect(notice).toContainText('the current wave is fall26');
+  await expect(page.getByTestId('duplicate-wave-warning')).toHaveCount(0);
+
+  // Current-wave drafts and launched experiments get no notice. Waiting on
+  // platform status first keeps the absence check from passing too early.
+  for (const id of [2, 3]) {
+    const statusLoaded = page.waitForResponse('**/api/admin/platform-status');
+    await page.goto(`/admin/experiments/${id}`);
+    await statusLoaded;
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+  }
+});
+
+function groupRecord(
+  id: number,
+  name: string,
+  dataset: { id: number; name: string },
+  wave: string,
+): GroupRecord {
+  return {
+    id,
+    name,
+    dataset_id: dataset.id,
+    dataset_name: dataset.name,
+    wave,
+    experiment_count: 1,
+    created_at: '2026-03-09T00:00:00Z',
+  };
+}
+
+function memberOf(group: GroupRecord): Partial<ExperimentRecord> {
+  return {
+    group_id: group.id,
+    group_name: group.name,
+    group_dataset_id: group.dataset_id,
+    group_dataset_name: group.dataset_name,
+    wave: group.wave,
+  };
+}
+
+const MEDQA = { id: 1, name: 'medqa' };
+
+function isExperimentPatch(experimentId: number) {
+  return (request: { method(): string; url(): string }) =>
+    request.method() === 'PATCH' &&
+    new URL(request.url()).pathname === `/api/admin/experiments/${experimentId}`;
+}
+
+test('the group picker moves a draft to another group and out of groups', async ({ page }) => {
+  const state = createMockState();
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  const fall = groupRecord(2, 'MedQA Fall', MEDQA, 'fall26');
+  // Sorts before medqa by dataset name, so its place shows medqa comes first.
+  const gpqa = groupRecord(3, 'GPQA Fall', { id: 2, name: 'gpqa' }, 'fall26');
+  state.groups = [gpqa, fall, spring];
+  state.experiments = [buildExperiment(state, { name: 'Spring draft', ...memberOf(spring) })];
+  await installApiMocks(page, state, { currentWave: 'fall26', prolificEnabled: false });
+
+  await page.goto('/admin/experiments/1');
+  const control = page.getByTestId('group-control');
+  await expect(control).toContainText('MedQA Spring · medqa × sp26');
+  await expect(page.getByTestId('draft-wave-notice')).toBeVisible();
+  await control.getByTestId('group-move-button').click();
+
+  const select = page.getByTestId('group-select');
+  await expect(select.locator('optgroup')).toHaveCount(2);
+  expect(
+    await select.locator('optgroup').evaluateAll((els) => els.map((el) => el.getAttribute('label'))),
+  ).toEqual(['medqa', 'gpqa']);
+  await expect(select.locator('option', { hasText: 'MedQA Fall · fall26 (current wave)' })).toHaveCount(1);
+  // Unchanged: nothing to save.
+  await expect(page.getByTestId('group-save')).toBeDisabled();
+
+  // Same dataset: one click, no confirm.
+  await select.selectOption('2');
+  const move = page.waitForRequest(isExperimentPatch(1));
+  await page.getByTestId('group-save').click();
+  expect((await move).postDataJSON()).toEqual({ assistance_method: 'none', group_id: 2 });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(control).toContainText('MedQA Fall · medqa × fall26');
+  await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+
+  await control.getByTestId('group-move-button').click();
+  await page.getByTestId('group-select').selectOption('');
+  const ungroup = page.waitForRequest(isExperimentPatch(1));
+  await page.getByTestId('group-save').click();
+  expect((await ungroup).postDataJSON()).toEqual({ assistance_method: 'none', group_id: null });
+  await expect(page.getByTestId('group-current')).toHaveText('Ungrouped');
+});
+
+test('moving a draft to another dataset asks first; from ungrouped it does not', async ({
+  page,
+}) => {
+  const state = createMockState();
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  const gpqa = groupRecord(2, 'GPQA Fall', { id: 2, name: 'gpqa' }, 'fall26');
+  state.groups = [spring, gpqa];
+  state.experiments = [buildExperiment(state, { name: 'Spring draft', ...memberOf(spring) })];
+  await installApiMocks(page, state, { prolificEnabled: false });
+  let patches = 0;
+  page.on('request', (request) => {
+    if (isExperimentPatch(1)(request)) patches++;
+  });
+
+  await page.goto('/admin/experiments/1');
+  const control = page.getByTestId('group-control');
+  const dialog = page.getByRole('dialog', { name: 'Move from medqa to gpqa?' });
+  await control.getByTestId('group-move-button').click();
+  await page.getByTestId('group-select').selectOption('2');
+  await page.getByTestId('group-save').click();
+  await expect(dialog).toContainText('re-attributes this experiment from medqa to gpqa');
+
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByTestId('group-select')).toHaveValue('2');
+  expect(patches).toBe(0);
+  expect(state.experiments[0].group_id).toBe(1);
+
+  await page.getByTestId('group-save').click();
+  const move = page.waitForRequest(isExperimentPatch(1));
+  await dialog.getByRole('button', { name: 'Move', exact: true }).click();
+  expect((await move).postDataJSON()).toEqual({ assistance_method: 'none', group_id: 2 });
+  await expect(control).toContainText('GPQA Fall · gpqa × fall26');
+
+  // No confirm without a dataset on both sides: ungroup, then move in from ungrouped.
+  for (const [value, shown] of [
+    ['', 'Ungrouped'],
+    ['1', 'MedQA Spring · medqa × sp26'],
+  ]) {
+    await control.getByTestId('group-move-button').click();
+    await page.getByTestId('group-select').selectOption(value);
+    const patch = page.waitForRequest(isExperimentPatch(1));
+    await page.getByTestId('group-save').click();
+    await patch;
+    await expect(page.getByTestId('group-current')).toHaveText(shown);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  }
+  expect(patches).toBe(3);
+});
+
+test('saving other fields leaves the group out of the PATCH', async ({ page }) => {
+  const state = createMockState();
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  state.groups = [spring];
+  state.experiments = [buildExperiment(state, { name: 'Spring draft', ...memberOf(spring) })];
+  await installApiMocks(page, state, { prolificEnabled: false });
+
+  await page.goto('/admin/experiments/1');
+  await page.getByRole('button', { name: 'Edit public name' }).click();
+  await page.getByRole('textbox', { name: 'Public name' }).fill('Spring draft v2');
+  const rename = page.waitForRequest(isExperimentPatch(1));
+  await page.getByRole('button', { name: 'Save name' }).click();
+  expect((await rename).postDataJSON()).not.toHaveProperty('group_id');
+  await expect(page.getByText('Public name (shown to raters): Spring draft v2')).toBeVisible();
+  await expect(page.getByTestId('group-current')).toHaveText('MedQA Spring · medqa × sp26');
+  expect(state.experiments[0].group_id).toBe(1);
+});
+
+test('the duplicate warning moves the copy to the existing current-wave group', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [{ ...MEDQA, waves: ['sp26', 'fall26'], created_at: '2026-03-09T00:00:00Z' }];
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  const fall = groupRecord(2, 'MedQA Fall', MEDQA, 'fall26');
+  state.groups = [fall, spring];
+  state.experiments = [
+    buildExperiment(state, { name: 'MedQA none', status: 'FINISHED', ...memberOf(spring) }),
+  ];
+  await installApiMocks(page, state, { currentWave: 'fall26' });
+
+  await page.goto('/admin');
+  await page.getByRole('button', { name: 'Actions for MedQA none' }).click();
+  await page.getByTestId('row-action-duplicate').click();
+  await expect(page).toHaveURL(/\/admin\/experiments\/2$/);
+
+  const warning = page.getByTestId('duplicate-wave-warning');
+  await warning.getByRole('button', { name: 'Move to medqa × fall26' }).click();
+
+  // No confirm: the group exists, so nothing is created.
+  await expect(warning).toHaveCount(0);
+  await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+  await expect(page.getByTestId('group-control')).toContainText('MedQA Fall · medqa × fall26');
+  expect(state.groups).toHaveLength(2);
+  expect(state.experiments[1].group_id).toBe(2);
+});
+
+test('the wave notice adds the wave and creates the group only after confirm', async ({ page }) => {
+  const state = createMockState();
+  state.datasets = [{ ...MEDQA, waves: ['sp26'], created_at: '2026-03-09T00:00:00Z' }];
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  state.groups = [spring];
+  state.nextGroupId = 2;
+  state.experiments = [buildExperiment(state, { name: 'Spring draft', ...memberOf(spring) })];
+  await installApiMocks(page, state, { currentWave: 'fall26', prolificEnabled: false });
+
+  await page.goto('/admin/experiments/1');
+  const notice = page.getByTestId('draft-wave-notice');
+  const fix = notice.getByRole('button', { name: 'Move to medqa × fall26' });
+  const dialog = page.getByRole('dialog', { name: 'Create a fall26 group for medqa?' });
+
+  await fix.click();
+  await expect(dialog).toContainText('adds fall26 to its waves, creates the group “medqa fall26”');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(notice).toBeVisible();
+  expect(state.datasets[0].waves).toEqual(['sp26']);
+  expect(state.groups).toHaveLength(1);
+  expect(state.experiments[0].group_id).toBe(1);
+
+  await fix.click();
+  await dialog.getByRole('button', { name: 'Create and move' }).click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByTestId('group-control')).toContainText('medqa fall26 · medqa × fall26');
+  expect(state.datasets[0].waves).toEqual(['sp26', 'fall26']);
+  expect(state.groups.map((group) => [group.name, group.wave])).toEqual([
+    ['MedQA Spring', 'sp26'],
+    ['medqa fall26', 'fall26'],
+  ]);
+  expect(state.experiments[0].group_id).toBe(2);
+});
+
+test('create-and-move keeps waves added meanwhile and recovers from a lost race', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.datasets = [{ ...MEDQA, waves: ['sp26'], created_at: '2026-03-09T00:00:00Z' }];
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  state.groups = [spring];
+  state.nextGroupId = 2;
+  state.experiments = [buildExperiment(state, { name: 'Spring draft', ...memberOf(spring) })];
+  await installApiMocks(page, state, { currentWave: 'fall26', prolificEnabled: false });
+  // Another admin creates the fall26 group just before ours, so ours gets a 409.
+  await page.route('**/api/admin/experiment-groups', async (route) => {
+    if (route.request().method() === 'POST' && state.groups.length === 1) {
+      state.groups.push(groupRecord(state.nextGroupId++, 'MedQA Fall', MEDQA, 'fall26'));
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/admin/experiments/1');
+  const notice = page.getByTestId('draft-wave-notice');
+  const fix = notice.getByRole('button', { name: 'Move to medqa × fall26' });
+  const dialog = page.getByRole('dialog', { name: 'Create a fall26 group for medqa?' });
+
+  await fix.click();
+  await expect(dialog).toBeVisible();
+  // Added by someone else while the dialog is open: must survive our wave add.
+  state.datasets[0].waves.push('sp27');
+  await dialog.getByRole('button', { name: 'Create and move' }).click();
+  await expect(page.getByText('A group for this dataset in wave already exists.')).toBeVisible();
+  await expect(dialog).toHaveCount(0);
+  expect(state.datasets[0].waves).toEqual(['sp26', 'sp27', 'fall26']);
+  expect(state.experiments[0].group_id).toBe(1);
+
+  // Retry moves to the group that won; no second group is created.
+  await fix.click();
+  await expect(notice).toHaveCount(0);
+  await expect(page.getByTestId('group-control')).toContainText('MedQA Fall · medqa × fall26');
+  expect(state.groups).toHaveLength(2);
+  expect(state.experiments[0].group_id).toBe(2);
+});
+
+test('a launched experiment shows its group without move controls', async ({ page }) => {
+  const state = createMockState();
+  const spring = groupRecord(1, 'MedQA Spring', MEDQA, 'sp26');
+  state.groups = [spring];
+  state.experiments = [
+    buildExperiment(state, { name: 'Spring launched', status: 'LAUNCH', ...memberOf(spring) }),
+  ];
+  await installApiMocks(page, state, { currentWave: 'fall26', prolificEnabled: false });
+
+  await page.goto('/admin/experiments/1');
+  const control = page.getByTestId('group-control');
+  await expect(control).toContainText('MedQA Spring · medqa × sp26');
+  await expect(control.getByTestId('group-locked')).toHaveText('(locked after launch)');
+  await expect(control.getByTestId('group-move-button')).toHaveCount(0);
+  await expect(page.getByTestId('move-to-current-wave')).toHaveCount(0);
+
+  // A locked group must not be sent: the backend 400s on any change.
+  await page.getByRole('button', { name: 'Edit public name' }).click();
+  await page.getByRole('textbox', { name: 'Public name' }).fill('Spring launched v2');
+  await page.getByRole('button', { name: 'Save name' }).click();
+  await expect(page.getByText('Public name (shown to raters): Spring launched v2')).toBeVisible();
+  await expect(control).toContainText('MedQA Spring · medqa × sp26');
 });
 
 test('group picker keyboard: type-ahead commits the match, not "No group"', async ({ page }) => {

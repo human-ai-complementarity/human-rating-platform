@@ -51,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import Dataset, Experiment, ExperimentGroup, Upload
 from .groups import resolve_attribution_wave
-from .waves import normalize_waves
+from .waves import KNOWN_WAVES, normalize_waves
 
 # The inference-pipeline commit the roster and the sp26 collections were taken from.
 PIPELINE_COMMIT = "9f75a12"
@@ -150,9 +150,6 @@ COLLECTIONS: dict[int, Collection] = {
     78: Collection("find_the_flaws_modified_gpqa_flaw", "none", "sum26"),
 }
 
-# Wave tokens recognised in experiment names and upload filenames.
-_WAVE_TOKENS = ("fall25", "sp26", "sum26", "fall26")
-
 
 @dataclass
 class DatasetCatalogAssignment:
@@ -220,9 +217,9 @@ def match_card_name(filename: str, card_names: Iterable[str]) -> str | None:
 
 
 def wave_tokens(texts: Iterable[str]) -> set[str]:
-    """Every wave token that appears in the given names or filenames."""
+    """Every known wave token that appears in the given names or filenames."""
     haystack = " ".join(texts).lower()
-    return {token for token in _WAVE_TOKENS if token in haystack}
+    return {token for token in KNOWN_WAVES if token in haystack}
 
 
 @dataclass

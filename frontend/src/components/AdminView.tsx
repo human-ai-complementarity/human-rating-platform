@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type {
   Dataset,
+  DuplicateNavState,
   Experiment,
   ExperimentCreate,
   ExperimentGroup,
@@ -268,7 +269,8 @@ function AdminView() {
     setDuplicating(true);
     try {
       const copy = await api.duplicateExperiment(exp.id);
-      navigate(`/admin/experiments/${copy.id}`);
+      const state: DuplicateNavState = { waveWarning: copy.wave_warning };
+      navigate(`/admin/experiments/${copy.id}`, { state });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -2165,8 +2167,8 @@ function CreatePanel({
             </div>
             {datasetMode === 'existing' && selectedDataset && datasetWaves.length === 0 && (
               <div style={{ fontSize: 12.5, color: 'var(--danger)', marginBottom: 16 }}>
-                This dataset has no waves yet. Create a new dataset (or add waves via the API)
-                before opening a group.
+                This dataset has no waves yet, so it can't hold a group. Pick another dataset or
+                create a new one with its waves.
               </div>
             )}
           </div>

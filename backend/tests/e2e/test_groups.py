@@ -2,13 +2,18 @@
 
 Covers wave auto-fill / validation against the dataset set, unique
 (dataset × wave) and per-dataset name, lock-after-launch, list filters,
-duplicate copying group_id, and RESTRICT deletes.
+duplicate copying group_id (and warning when its wave isn't current), and
+RESTRICT deletes.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+
+from config import get_settings
+from services.admin.waves import CURRENT_WAVE, KNOWN_WAVES
 
 
 def _dataset(client: TestClient, name: str, waves: list[str]) -> dict:
@@ -290,6 +295,59 @@ def test_duplicate_copies_group(client: TestClient) -> None:
     assert dup.json()["group_id"] == group["id"]
     assert dup.json()["wave"] == "fall25"
     assert dup.json()["status"] == "DRAFT"
+
+
+def _duplicate(client: TestClient, experiment_id: int) -> dict:
+    resp = client.post(f"/api/admin/experiments/{experiment_id}/duplicate")
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+# Written against whichever wave is current, so they outlive the next bump.
+_OLDER_WAVE = KNOWN_WAVES[0]
+
+
+def test_duplicate_in_current_wave_group_has_no_warning(client: TestClient) -> None:
+    dataset = _dataset(client, "medqa", [CURRENT_WAVE])
+    group = _group(client, "MedQA current", dataset["id"])
+    source = _experiment(client, "main", group["id"])
+
+    assert _duplicate(client, source["id"])["wave_warning"] is None
+
+
+def test_duplicate_in_older_wave_group_warns_and_keeps_the_group(client: TestClient) -> None:
+    dataset = _dataset(client, "medqa", [_OLDER_WAVE])
+    group = _group(client, "MedQA older", dataset["id"])
+    source = _experiment(client, "main", group["id"])
+
+    dup = _duplicate(client, source["id"])
+
+    # The copy still lands in the source's group; the warning is advisory.
+    assert dup["group_id"] == group["id"]
+    assert dup["wave"] == _OLDER_WAVE
+    warning = dup["wave_warning"]
+    assert warning["group_wave"] == _OLDER_WAVE
+    assert warning["current_wave"] == CURRENT_WAVE
+    assert "MedQA older" in warning["message"]
+    assert f"move it to a {CURRENT_WAVE} group before launch" in warning["message"]
+
+
+def test_duplicate_of_ungrouped_experiment_has_no_warning(client: TestClient) -> None:
+    source = _experiment(client, "scratch")
+
+    dup = _duplicate(client, source["id"])
+
+    assert dup["group_id"] is None
+    assert dup["wave_warning"] is None
+
+
+def test_platform_status_reports_the_current_wave(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The UI reads it to flag DRAFT experiments sitting in an older wave's group.
+    monkeypatch.setattr(get_settings().prolific, "api_token", "")
+    status = client.get("/api/admin/platform-status").json()
+    assert status["current_wave"] == CURRENT_WAVE
 
 
 def test_unknown_group_on_create_is_404(client: TestClient) -> None:
