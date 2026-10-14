@@ -18,6 +18,7 @@ import openai
 import pytest
 from config import LLMSettings
 from models import Question, StepType
+from services.assistance.llm import EmptyTruncatedReplyError
 from services.assistance.methods.top_n import (
     TopNAssistance,
     _SCHEMA_ACCEPTED_MODELS,
@@ -643,6 +644,9 @@ async def test_start_reports_reply_cut_off_with_no_content_as_provider_error(cap
     assert step.payload == {}
     record = next(r for r in caplog.records if "Top-N LLM call failed" in r.getMessage())
     assert "max_tokens=4096" in str(record.exc_info[1])
+    # The schema call came back 200, so the verdict is settled, not re-probed.
+    assert _SCHEMA_ACCEPTED_MODELS
+    assert not _SCHEMA_REJECTED_MODELS
 
 
 def _api_status_error(status: int) -> openai.APIStatusError:
@@ -770,6 +774,24 @@ async def test_start_does_not_remember_model_when_unconstrained_retry_fails():
     assert not _SCHEMA_REJECTED_MODELS
     assert mock_complete.call_count == 3
     assert "response_format" in mock_complete.call_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_remembers_rejection_when_retry_is_cut_off_with_no_content():
+    # The unconstrained retry came back 200, which settles the rejection even
+    # though the reply itself was empty.
+    method = TopNAssistance()
+    question = _make_question()
+    mock_complete = AsyncMock(
+        side_effect=[_api_status_error(400), EmptyTruncatedReplyError("cut off")]
+    )
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {})
+
+    assert step.failure_reason == "provider_error"
+    assert _SCHEMA_REJECTED_MODELS
+    assert not _SCHEMA_ACCEPTED_MODELS
 
 
 @pytest.mark.asyncio

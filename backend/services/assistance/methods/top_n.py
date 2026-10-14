@@ -35,7 +35,7 @@ from models import Question
 
 from ..base import InteractionStep, StepType
 from ..preparation import InitialStepPreparation, QuestionSnapshot
-from ..llm import complete
+from ..llm import EmptyTruncatedReplyError, complete
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +203,11 @@ async def _complete_with_schema(
     settings: LLMSettings,
     response_format: dict[str, Any],
 ) -> str:
-    """Send the schema, falling back to an unconstrained retry if it is refused."""
+    """Send the schema, falling back to an unconstrained retry if it is refused.
+
+    A reply cut off empty at max_tokens still came back 200, so it settles the
+    verdict like any other reply before the error goes up to the caller.
+    """
     try:
         raw = await complete(
             messages,
@@ -212,6 +216,9 @@ async def _complete_with_schema(
             response_format=response_format,
             temperature=0,
         )
+    except EmptyTruncatedReplyError:
+        _SCHEMA_ACCEPTED_MODELS.add(model)
+        raise
     except openai.APIStatusError as exc:
         if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
             raise
@@ -219,7 +226,11 @@ async def _complete_with_schema(
             "Top-N json_schema rejected by the provider; retrying without response_format",
             extra={"attributes": {"model": model, "status_code": exc.status_code}},
         )
-        raw = await complete(messages, model=model, settings=settings, temperature=0)
+        try:
+            raw = await complete(messages, model=model, settings=settings, temperature=0)
+        except EmptyTruncatedReplyError:
+            _SCHEMA_REJECTED_MODELS.add(model)
+            raise
         _SCHEMA_REJECTED_MODELS.add(model)
         return raw
     _SCHEMA_ACCEPTED_MODELS.add(model)
