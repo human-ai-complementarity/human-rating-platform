@@ -32,6 +32,12 @@ _CARD = {
 # only need it *on the row*, so they write it directly.
 _ROW_FIELDS = {"description": "Answer using only the passage."}
 
+
+def _entry(model: str) -> dict:
+    """A complete model entry: the upload pins these, not bare ids."""
+    return {"model": model, "reasoning_effort": None, "text_verbosity": None, "temperature": 0}
+
+
 _PILOT = {
     "description": "Test study",
     "estimated_completion_time": 10,
@@ -204,8 +210,11 @@ def test_an_assisted_arm_without_a_model_is_blocked(client: TestClient):
 @pytest.mark.parametrize(
     ("assistance_models", "blockers"),
     [
-        ({"top_n": "openrouter/test/top-n-entry"}, []),
-        ({"human_as_a_tool": "openrouter/test/human-as-a-tool-entry"}, ["assistance model"]),
+        ({"top_n": _entry("openrouter/test/top-n-entry")}, []),
+        (
+            {"human_as_a_tool": _entry("openrouter/test/human-as-a-tool-entry")},
+            ["assistance model"],
+        ),
     ],
 )
 def test_an_assistance_models_entry_for_the_current_method_is_a_model(
@@ -228,6 +237,28 @@ def test_an_assistance_models_entry_for_the_current_method_is_a_model(
         },
     ).json()
     assert patched["launch_blockers"] == blockers
+
+
+def test_a_provider_without_a_key_blocks_launch(client: TestClient, monkeypatch):
+    """Validation accepts an id for any registered provider; the key it needs
+    is checked at the gate, where the fix is a config change, rather than
+    failing every rater's first call."""
+    monkeypatch.setattr(get_settings().llm, "oai_api_key", "")
+    exp = _with_a_question(
+        client,
+        name="Keyless",
+        assistance_method="top_n",
+        assistance_params={"assistance_models": {"top_n": _entry("oai/test/top-n-entry")}},
+    )
+    patched = client.patch(
+        f"/api/admin/experiments/{exp['id']}",
+        json={"assistance_method": "top_n", "internal_name": "keyless internal", **_ROW_FIELDS},
+    ).json()
+    assert patched["launch_blockers"] == ["assistance model key"]
+    assert "LLM__OAI_API_KEY" in patched["launch_blocker_fixes"][0]
+
+    monkeypatch.setattr(get_settings().llm, "oai_api_key", "sk-test")
+    assert client.get(f"/api/admin/experiments/{exp['id']}").json()["launch_blockers"] == []
 
 
 @respx.mock

@@ -30,8 +30,9 @@ import openai
 
 from models import Question
 
-from ...base import InteractionStep, StepType
+from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
+from ...model_resolution import AssistanceModel
 from ...confidence import (
     ConfidenceEstimator,
     LLMConfidenceEstimator,
@@ -72,12 +73,12 @@ class HumanAsAToolMethod(InitialStepPreparation):
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                self.method_key: models[self.primary_model_role],
+                self.method_key: models[self.primary_model_role].to_dict(),
             },
-            "confidence_model": models["confidence"],
+            "confidence_model": models["confidence"].model,
         }
         if "clustering" in models:
-            prepared["clustering_model"] = models["clustering"]
+            prepared["clustering_model"] = models["clustering"].model
         return prepared
 
     def __init__(self, confidence_estimator: ConfidenceEstimator | None = None) -> None:
@@ -132,10 +133,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 )
 
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("human_as_a_tool start() failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -156,7 +160,8 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 "confidence_threshold": confidence_threshold,
                 "subtasks": subtasks,
                 "history": [],
-                "model": model,
+                # Pinned for the session: a PATCH mid-session changes nothing.
+                "model": model.to_dict(),
             },
         )
 
@@ -169,8 +174,14 @@ class HumanAsAToolMethod(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         # `state` first: the model is pinned at session start so a multi-turn
-        # interaction cannot switch models mid-flight.
-        model = state.get("model") or self.role_models(params)[self.primary_model_role]
+        # interaction cannot switch models mid-flight. A session started before
+        # entries carried options pinned a bare id; it keeps running with none.
+        pinned = state.get("model")
+        model = (
+            AssistanceModel.from_entry(pinned)
+            if pinned
+            else self.role_models(params)[self.primary_model_role]
+        )
 
         try:
             raw_input: dict = json.loads(human_input)
@@ -220,10 +231,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 )
 
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("human_as_a_tool advance() failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -244,7 +258,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 "confidence_threshold": confidence_threshold,
                 "subtasks": subtasks,
                 "history": history,
-                "model": model,
+                "model": model.to_dict(),
             },
         )
 
@@ -255,11 +269,12 @@ class HumanAsAToolMethod(InitialStepPreparation):
         # The map the session records: a role `model_roles` omits is a
         # KeyError here, not a model that runs unrecorded.
         models = self.role_models(params)
-        confidence_model = models["confidence"]
+        # The instruments take a model id: their options are their own.
+        confidence_model = models["confidence"].model
         if method == "sampling":
             estimator: ConfidenceEstimator = SamplingConfidenceEstimator(
                 sampling_model=confidence_model,
-                clustering_model=models["clustering"],
+                clustering_model=models["clustering"].model,
                 num_samples=int(params.get("num_samples", 5)),
             )
         elif method == "self_consistency":

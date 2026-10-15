@@ -1,4 +1,4 @@
-"""Which model each assistance call runs on (#95, #96, #148)."""
+"""Which model each assistance call runs on, and with what (#95, #96, #148)."""
 
 from __future__ import annotations
 
@@ -13,26 +13,36 @@ from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
 from services.assistance import model_resolution, registry
 from services.assistance.model_resolution import (
+    AssistanceModel,
     instrument_model_keys,
+    pinned_model,
     resolve_model,
     resolve_model_and_source,
+    validate_model_entry,
     validate_model_id,
 )
 from services.assistance.registry import (
     assisted_methods,
+    expand_bare_entry,
     get_method,
     record_role_models,
     resolved_models,
 )
 
 # Sentinels, not real models: a map entry equal to a settings default would
-# let a call site that ignores the map pass anyway.
-_TOP_N = "openrouter/test/top-n-entry"
-_HAAT = "openrouter/test/human-as-a-tool-entry"
-_SESSION = "openrouter/test/session-state"
+# let a call site that ignores the map pass anyway. Each carries options, so a
+# call site that keeps the model but drops them shows too.
+_TOP_N = AssistanceModel("openrouter/test/top-n-entry", reasoning_effort="low", temperature=0.5)
+_HAAT = AssistanceModel("openrouter/test/human-as-a-tool-entry", text_verbosity="low")
+_SESSION = AssistanceModel("openrouter/test/session-state", temperature=1)
 _CONFIDENCE = "openrouter/test/confidence-override"
 _CLUSTERING = "openrouter/test/clustering-override"
-_MAP = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": _HAAT}}
+_MAP = {"assistance_models": {"top_n": _TOP_N.to_dict(), "human_as_a_tool": _HAAT.to_dict()}}
+
+
+def _bare(model: str, **options) -> AssistanceModel:
+    """`model` with no options sent, unless given: how an instrument runs."""
+    return AssistanceModel(model, **options)
 
 
 def test_sentinels_differ_from_every_settings_default():
@@ -43,23 +53,30 @@ def test_sentinels_differ_from_every_settings_default():
         llm.confidence_model,
         llm.clustering_model,
     }
-    assert defaults.isdisjoint({_TOP_N, _HAAT, _SESSION, _CONFIDENCE, _CLUSTERING})
+    assert defaults.isdisjoint(
+        {_TOP_N.model, _HAAT.model, _SESSION.model, _CONFIDENCE, _CLUSTERING}
+    )
 
 
 def test_role_default_applies_when_nothing_is_pinned():
+    """Each role's settings model, with the options it always sent: Top-N
+    ranks at temperature 0, the rest send none."""
     llm = get_settings().llm
-    assert resolve_model({}, "top_n", "answer") == llm.default_model
-    assert resolve_model({}, "human_as_a_tool", "decomposition") == llm.decomposition_model
-    assert resolve_model({}, "human_as_a_tool", "confidence") == llm.confidence_model
-    assert resolve_model({}, "human_as_a_tool", "clustering") == llm.clustering_model
+    assert resolve_model({}, "top_n", "answer") == _bare(llm.default_model, temperature=0)
+    assert resolve_model({}, "human_as_a_tool", "decomposition") == _bare(llm.decomposition_model)
+    assert resolve_model({}, "human_as_a_tool", "confidence") == _bare(llm.confidence_model)
+    assert resolve_model({}, "human_as_a_tool", "clustering") == _bare(llm.clustering_model)
 
 
 def test_clustering_defaults_to_its_own_setting(monkeypatch):
     """`LLM__CLUSTERING_MODEL`, not confidence's default (#151)."""
     llm = get_settings().llm
     monkeypatch.setattr(llm, "clustering_model", _CLUSTERING)
-    assert resolve_model_and_source({}, "human_as_a_tool", "clustering") == (_CLUSTERING, "default")
-    assert resolve_model({}, "human_as_a_tool", "confidence") == llm.confidence_model
+    assert resolve_model_and_source({}, "human_as_a_tool", "clustering") == (
+        _bare(_CLUSTERING),
+        "default",
+    )
+    assert resolve_model({}, "human_as_a_tool", "confidence") == _bare(llm.confidence_model)
 
 
 def test_the_clustering_setting_moved_no_default():
@@ -73,59 +90,99 @@ def test_the_clustering_setting_moved_no_default():
     [
         ("top_n", "answer", _TOP_N),
         ("human_as_a_tool", "decomposition", _HAAT),
-        ("human_as_a_tool", "confidence", _HAAT),
-        ("human_as_a_tool", "clustering", _HAAT),
+        # #148: confidence and clustering run the model under test too, with
+        # their own options: sampling's temperature is the instrument's setting.
+        ("human_as_a_tool", "confidence", _bare(_HAAT.model)),
+        ("human_as_a_tool", "clustering", _bare(_HAAT.model)),
     ],
 )
 def test_every_role_resolves_its_methods_entry(method, role, expected):
-    """#148: confidence and clustering run the model under test too."""
     assert resolve_model_and_source(_MAP, method, role) == (expected, "assistance_models")
 
 
 @pytest.mark.parametrize(
     "params",
     [
-        {"assistance_models": {"human_as_a_tool": _HAAT}},
+        {"assistance_models": {"human_as_a_tool": _HAAT.to_dict()}},
         {"assistance_models": {"top_n": None}},
+        {"assistance_models": {"top_n": {}}},
+        {"assistance_models": {"top_n": {"model": ""}}},
         {"assistance_models": None},
     ],
 )
 def test_it_falls_back_to_the_default(params):
-    assert resolve_model(params, "top_n", "answer") == get_settings().llm.default_model
+    assert resolve_model(params, "top_n", "answer") == resolve_model({}, "top_n", "answer")
+
+
+def test_a_bare_id_in_the_map_runs_with_the_roles_default_options():
+    """A row or session snapshot written before entries carried options."""
+    params = {"assistance_models": {"top_n": "openrouter/test/legacy"}}
+    assert resolve_model(params, "top_n", "answer") == _bare(
+        "openrouter/test/legacy", temperature=0
+    )
+    params = {"assistance_models": {"human_as_a_tool": "openrouter/test/legacy"}}
+    assert resolve_model(params, "human_as_a_tool", "decomposition") == _bare(
+        "openrouter/test/legacy"
+    )
+
+
+def test_an_entry_missing_a_key_takes_the_roles_default_for_it():
+    params = {"assistance_models": {"top_n": {"model": "openrouter/test/partial"}}}
+    assert resolve_model(params, "top_n", "answer") == _bare(
+        "openrouter/test/partial", temperature=0
+    )
+
+
+def test_pinned_model_reads_the_entry_as_declared():
+    """The launch gate's test: a bare id has no options, an object its own."""
+    assert pinned_model(_MAP, "top_n") == _TOP_N
+    assert pinned_model({"assistance_models": {"top_n": "openrouter/x"}}, "top_n") == _bare(
+        "openrouter/x"
+    )
+    assert pinned_model({}, "top_n") is None
+    assert pinned_model({"assistance_models": {"top_n": None}}, "top_n") is None
+
+
+def test_expanding_a_bare_id_gives_the_entry_it_stood_for():
+    """The question upload's grace for exports written before entries existed."""
+    assert (
+        expand_bare_entry("top_n", "openrouter/x") == _bare("openrouter/x", temperature=0).to_dict()
+    )
+    assert expand_bare_entry("human_as_a_tool", "openrouter/x") == _bare("openrouter/x").to_dict()
 
 
 def test_a_leftover_model_key_is_ignored():
     """`model` was removed; an old session snapshot may still carry it."""
-    default = get_settings().llm.default_model
-    assert resolve_model({"model": _SESSION}, "top_n", "answer") == default
-    assert resolve_model({**_MAP, "model": _SESSION}, "top_n", "answer") == _TOP_N
+    default = resolve_model({}, "top_n", "answer")
+    assert resolve_model({"model": _SESSION.model}, "top_n", "answer") == default
+    assert resolve_model({**_MAP, "model": _SESSION.model}, "top_n", "answer") == _TOP_N
 
 
 def test_a_snapshots_role_models_are_a_record_not_an_input():
     """A session snapshot records each role's model as `role_models`. advance()
     gets the snapshot back as its params, and still resolves from the map."""
-    default = get_settings().llm.default_model
-    recorded = {"role_models": {"answer": _SESSION}}
+    default = resolve_model({}, "top_n", "answer")
+    recorded = {"role_models": {"answer": _SESSION.to_dict()}}
     assert resolve_model(recorded, "top_n", "answer") == default
     assert resolve_model({**_MAP, **recorded}, "top_n", "answer") == _TOP_N
 
 
-def test_resolved_models_gives_every_assisted_method_its_model_and_source():
+def test_resolved_models_gives_every_assisted_method_its_entry_and_source():
     llm = get_settings().llm
-    params = {"assistance_models": {"top_n": _TOP_N, "human_as_a_tool": None}}
+    params = {"assistance_models": {"top_n": _TOP_N.to_dict(), "human_as_a_tool": None}}
     assert resolved_models(params) == {
-        "human_as_a_tool": (llm.decomposition_model, "default"),
+        "human_as_a_tool": (_bare(llm.decomposition_model), "default"),
         "top_n": (_TOP_N, "assistance_models"),
     }
 
 
 def test_an_entry_equal_to_the_default_still_reports_the_map():
-    default = get_settings().llm.default_model
-    resolved = resolved_models({"assistance_models": {"top_n": default}})
+    default = resolve_model({}, "top_n", "answer")
+    resolved = resolved_models({"assistance_models": {"top_n": default.to_dict()}})
     assert resolved["top_n"] == (default, "assistance_models")
 
 
-@pytest.mark.parametrize("params", [{}, _MAP, {"assistance_models": {"top_n": _TOP_N}}])
+@pytest.mark.parametrize("params", [{}, _MAP, {"assistance_models": {"top_n": _TOP_N.to_dict()}}])
 def test_the_display_and_the_call_resolve_through_one_function(params):
     """The admin display asks `resolve_model_and_source` about each method's
     primary role: the question the call itself asks, via `resolve_model`."""
@@ -140,7 +197,7 @@ def test_every_displayed_role_takes_the_map():
     their source is never `override`, which the API's `ResolvedModel` lacks."""
     for name in assisted_methods():
         role = get_method(name).primary_model_role
-        params = {"assistance_models": {name: _SESSION}, f"{role}_model": _CONFIDENCE}
+        params = {"assistance_models": {name: _SESSION.to_dict()}, f"{role}_model": _CONFIDENCE}
         assert resolve_model_and_source(params, name, role) == (_SESSION, "assistance_models")
 
 
@@ -149,7 +206,7 @@ def test_every_displayed_role_takes_the_map():
 )
 def test_an_instrument_override_reports_its_source(role, model):
     params = {f"{role}_model": model}
-    assert resolve_model_and_source(params, "human_as_a_tool", role) == (model, "override")
+    assert resolve_model_and_source(params, "human_as_a_tool", role) == (_bare(model), "override")
 
 
 @pytest.mark.parametrize("params", [{}, _MAP], ids=["default", "map"])
@@ -167,13 +224,13 @@ def test_overriding_one_instrument_role_leaves_the_other(params, role, other, mo
 def test_an_override_beats_the_map():
     params = {**_MAP, "confidence_model": _CONFIDENCE}
     assert resolve_model(params, "human_as_a_tool", "decomposition") == _HAAT
-    assert resolve_model(params, "human_as_a_tool", "confidence") == _CONFIDENCE
-    assert resolve_model(params, "human_as_a_tool", "clustering") == _HAAT
+    assert resolve_model(params, "human_as_a_tool", "confidence") == _bare(_CONFIDENCE)
+    assert resolve_model(params, "human_as_a_tool", "clustering") == _bare(_HAAT.model)
     with_clustering = {**params, "clustering_model": _CLUSTERING}
-    assert resolve_model(with_clustering, "human_as_a_tool", "clustering") == _CLUSTERING
+    assert resolve_model(with_clustering, "human_as_a_tool", "clustering") == _bare(_CLUSTERING)
     only_clustering = {**_MAP, "clustering_model": _CLUSTERING}
-    assert resolve_model(only_clustering, "human_as_a_tool", "confidence") == _HAAT
-    assert resolve_model(only_clustering, "human_as_a_tool", "clustering") == _CLUSTERING
+    assert resolve_model(only_clustering, "human_as_a_tool", "confidence") == _bare(_HAAT.model)
+    assert resolve_model(only_clustering, "human_as_a_tool", "clustering") == _bare(_CLUSTERING)
 
 
 @pytest.mark.parametrize(
@@ -183,14 +240,14 @@ def test_the_model_under_test_has_no_role_override(method, role):
     """The method's `assistance_models` entry already is the primary role's
     setting, so a `<role>_model` key for it is ignored."""
     params = {**_MAP, f"{role}_model": "openrouter/test/role-override"}
-    assert resolve_model(params, method, role) == _MAP["assistance_models"][method]
+    assert resolve_model(params, method, role).to_dict() == _MAP["assistance_models"][method]
 
 
 @pytest.mark.parametrize("role", ["confidence", "clustering"])
 def test_another_methods_entry_is_not_inherited(role):
-    params = {"assistance_models": {"top_n": _TOP_N}}
+    params = {"assistance_models": {"top_n": _TOP_N.to_dict()}}
     default = getattr(get_settings().llm, f"{role}_model")
-    assert resolve_model(params, "human_as_a_tool", role) == default
+    assert resolve_model(params, "human_as_a_tool", role) == _bare(default)
 
 
 def test_the_overrides_keep_their_keys_on_the_map():
@@ -208,16 +265,16 @@ def test_giving_a_role_an_override_is_one_edit(monkeypatch):
         "confidence_model",
         "clustering_model",
     )
-    params = {**_MAP, "decomposition_model": _SESSION}
+    params = {**_MAP, "decomposition_model": _SESSION.model}
     assert resolve_model_and_source(params, "human_as_a_tool", "decomposition") == (
-        _SESSION,
+        _bare(_SESSION.model),
         "override",
     )
 
 
-@pytest.mark.parametrize("bad", ["gpt-4o", "anthropic/claude-sonnet-4-6", ""])
+@pytest.mark.parametrize("bad", ["gpt-4o", "anthropic/claude-sonnet-4-6", "openai/gpt-4o", ""])
 def test_a_model_the_transport_cannot_parse_is_a_400(bad):
-    """_parse_model raises ValueError and both methods swallow it into a NONE
+    """`parse_model` raises ValueError and both methods swallow it into a NONE
     step, so a typo would otherwise mean every rater silently gets no
     assistance on a study that still looks completed."""
     with pytest.raises(HTTPException) as exc:
@@ -227,6 +284,24 @@ def test_a_model_the_transport_cannot_parse_is_a_400(bad):
 
 def test_a_well_formed_model_passes():
     validate_model_id(_CONFIDENCE, field="assistance_params.confidence_model")
+    validate_model_id("oai/gpt-5.6-luna", field="assistance_params.confidence_model")
+
+
+def test_a_complete_entry_passes_and_a_bare_id_does_not():
+    validate_model_entry(_TOP_N.to_dict(), field="x")
+    with pytest.raises(HTTPException) as exc:
+        validate_model_entry(_TOP_N.model, field="x")
+    assert "bare model id" in exc.value.detail
+
+
+def test_a_key_added_later_is_optional_with_its_default(monkeypatch):
+    """Tool parity adds `tools`; an older export without it stays valid."""
+    monkeypatch.setattr(model_resolution, "OPTION_KEYS", (*model_resolution.OPTION_KEYS, "tools"))
+    monkeypatch.setattr(model_resolution, "ENTRY_KEYS", ("model", *model_resolution.OPTION_KEYS))
+    monkeypatch.setattr(model_resolution, "OPTIONAL_OPTIONS", {"tools": ()})
+    validate_model_entry(_TOP_N.to_dict(), field="x")
+    with pytest.raises(HTTPException):
+        validate_model_entry({"model": _TOP_N.model}, field="x")
 
 
 def _question() -> Question:
@@ -245,7 +320,20 @@ async def test_top_n_start_uses_its_entry():
     llm = AsyncMock(side_effect=RuntimeError("stop"))
     with patch("services.assistance.methods.top_n._complete_with_schema_fallback", new=llm):
         await TopNAssistance().start(_question(), _MAP)
-    assert llm.call_args.kwargs["model"] == _TOP_N
+    assert llm.call_args.kwargs["entry"] == _TOP_N
+
+
+@pytest.mark.asyncio
+async def test_top_n_sends_its_entry_options_to_the_client():
+    complete = AsyncMock(return_value='{"candidates": [{"option_index": 1, "confidence": 80}]}')
+    with patch("services.assistance.methods.top_n.complete", new=complete):
+        step = await TopNAssistance().start(_question(), _MAP)
+    assert step.payload["parse_status"] == "clean"
+    sent = complete.call_args.kwargs
+    assert sent["model"] == _TOP_N.model
+    assert sent["reasoning_effort"] == "low"
+    assert sent["text_verbosity"] is None
+    assert sent["temperature"] == 0.5
 
 
 @pytest.mark.asyncio
@@ -258,7 +346,12 @@ async def test_human_as_a_tool_start_uses_its_entry():
 
 @pytest.mark.parametrize(
     ("state_model", "expected"),
-    [(None, _HAAT), (_SESSION, _SESSION)],
+    [
+        (None, _HAAT),
+        (_SESSION.to_dict(), _SESSION),
+        # A session started before entries carried options.
+        (_SESSION.model, _bare(_SESSION.model)),
+    ],
 )
 @pytest.mark.asyncio
 async def test_human_as_a_tool_advance_prefers_the_session_model(state_model, expected):
@@ -277,10 +370,11 @@ async def test_human_as_a_tool_advance_prefers_the_session_model(state_model, ex
     ],
 )
 def test_human_as_a_tool_estimator_runs_on_the_map(confidence_method, attrs):
+    """The instruments take the entry's model id; their options are their own."""
     params = {**_MAP, "confidence_method": confidence_method}
     estimator = HumanAsAToolMethod()._get_estimator(params)
 
-    assert {attr: getattr(estimator, attr) for attr in attrs} == dict.fromkeys(attrs, _HAAT)
+    assert {attr: getattr(estimator, attr) for attr in attrs} == dict.fromkeys(attrs, _HAAT.model)
 
 
 _INSTRUMENT = {"confidence_model": _CONFIDENCE, "clustering_model": _CLUSTERING}
@@ -300,7 +394,7 @@ _INSTRUMENT = {"confidence_model": _CONFIDENCE, "clustering_model": _CLUSTERING}
             # Clustering stays on the map: confidence's override is its own.
             {"confidence_model": _CONFIDENCE},
             "sampling",
-            {"_sampling_model": _CONFIDENCE, "_clustering_model": _HAAT},
+            {"_sampling_model": _CONFIDENCE, "_clustering_model": _HAAT.model},
         ),
     ],
 )
@@ -314,19 +408,28 @@ def test_human_as_a_tool_estimator_uses_the_instrument_overrides(
     assert {attr: getattr(estimator, attr) for attr in expected} == expected
 
 
-_HAAT_ROLES = {"decomposition": _HAAT, "confidence": _CONFIDENCE}
+_HAAT_INSTRUMENT = _bare(_HAAT.model).to_dict()
+_HAAT_ROLES = {"decomposition": _HAAT.to_dict(), "confidence": _bare(_CONFIDENCE).to_dict()}
 
 
 @pytest.mark.parametrize(
     ("name", "params", "expected"),
     [
         ("none", _MAP, None),
-        ("top_n", _MAP, {"answer": _TOP_N}),
-        ("human_as_a_tool", _MAP, {"decomposition": _HAAT, "confidence": _HAAT}),
+        ("top_n", _MAP, {"answer": _TOP_N.to_dict()}),
+        (
+            "human_as_a_tool",
+            _MAP,
+            {"decomposition": _HAAT.to_dict(), "confidence": _HAAT_INSTRUMENT},
+        ),
         (
             "human_as_a_tool",
             {**_MAP, "confidence_method": "sampling"},
-            dict.fromkeys(("decomposition", "confidence", "clustering"), _HAAT),
+            {
+                "decomposition": _HAAT.to_dict(),
+                "confidence": _HAAT_INSTRUMENT,
+                "clustering": _HAAT_INSTRUMENT,
+            },
         ),
         ("human_as_a_tool", {**_MAP, **_INSTRUMENT}, _HAAT_ROLES),
         (
@@ -337,23 +440,26 @@ _HAAT_ROLES = {"decomposition": _HAAT, "confidence": _CONFIDENCE}
         (
             "human_as_a_tool",
             {**_MAP, **_INSTRUMENT, "confidence_method": "sampling"},
-            {**_HAAT_ROLES, "clustering": _CLUSTERING},
+            {**_HAAT_ROLES, "clustering": _bare(_CLUSTERING).to_dict()},
         ),
     ],
 )
 def test_a_session_records_every_role_its_method_calls(name, params, expected):
     """Clustering only for the confidence method that clusters; a model-free
-    method records no map. The params themselves are kept as given."""
+    method records no map. Each role is recorded as the entry it runs: the
+    model and the options sent. The params themselves are kept as given."""
     recorded = record_role_models(name, params)
     assert recorded.get("role_models") == expected
     assert {key: value for key, value in recorded.items() if key != "role_models"} == params
 
 
-@pytest.mark.parametrize(("name", "expected"), [("none", None), ("top_n", {"answer": _TOP_N})])
+@pytest.mark.parametrize(
+    ("name", "expected"), [("none", None), ("top_n", {"answer": _TOP_N.to_dict()})]
+)
 def test_a_role_models_key_in_the_params_is_never_recorded(name, expected):
     """Create/PATCH reject it; one that reached the row anyway is dropped,
     not copied into the session as if its models ran."""
-    stale = {**_MAP, "role_models": {"answer": _SESSION}}
+    stale = {**_MAP, "role_models": {"answer": _SESSION.to_dict()}}
     assert record_role_models(name, stale).get("role_models") == expected
 
 
@@ -367,7 +473,10 @@ def test_the_estimator_runs_exactly_the_recorded_instrument_models(confidence_me
     if hasattr(estimator, "_clustering_model"):
         ran["clustering"] = estimator._clustering_model
     recorded = record_role_models("human_as_a_tool", params)["role_models"]
-    assert recorded == {"decomposition": _HAAT, **ran}
+    assert {role: entry["model"] for role, entry in recorded.items()} == {
+        "decomposition": _HAAT.model,
+        **ran,
+    }
 
 
 @pytest.mark.parametrize(
@@ -407,8 +516,8 @@ async def test_without_params_methods_keep_their_defaults():
     await method.start(_question(), {})
 
     settings = get_settings().llm
-    assert llm.call_args.kwargs["model"] == settings.default_model
-    assert method._decomposer.start.call_args.args[3] == settings.decomposition_model
+    assert llm.call_args.kwargs["entry"] == _bare(settings.default_model, temperature=0)
+    assert method._decomposer.start.call_args.args[3] == _bare(settings.decomposition_model)
 
 
 def test_each_method_is_registered_under_its_method_key():
@@ -428,7 +537,9 @@ class _HaaTVariant(HumanAsAToolMethod):
     primary_model_role = "answer"
 
 
-_VARIANTS = {"assistance_models": {**_MAP["assistance_models"], "top_n_variant": _SESSION}}
+_VARIANTS = {
+    "assistance_models": {**_MAP["assistance_models"], "top_n_variant": _SESSION.to_dict()}
+}
 
 
 @pytest.mark.asyncio
@@ -439,13 +550,13 @@ async def test_top_n_runs_and_records_under_its_own_key_and_role(monkeypatch):
         await _TopNVariant().start(_question(), _VARIANTS)
         await _TopNVariant().start(_question(), {})
 
-    default = get_settings().llm.decomposition_model
-    assert [call.kwargs["model"] for call in llm.call_args_list] == [_SESSION, default]
+    default = _bare(get_settings().llm.decomposition_model)
+    assert [call.kwargs["entry"] for call in llm.call_args_list] == [_SESSION, default]
     assert record_role_models("top_n_variant", _VARIANTS)["role_models"] == {
-        "decomposition": _SESSION
+        "decomposition": _SESSION.to_dict()
     }
     pinned = _TopNVariant().preparation_params({})["assistance_models"]
-    assert pinned == {"top_n_variant": default}
+    assert pinned == {"top_n_variant": default.to_dict()}
 
 
 @pytest.mark.asyncio
@@ -453,10 +564,10 @@ async def test_human_as_a_tool_runs_under_its_own_key_and_role():
     method = _HaaTVariant()
     method._decomposer.start = AsyncMock(side_effect=RuntimeError("stop"))
     method._decomposer.advance = AsyncMock(side_effect=RuntimeError("stop"))
-    await method.start(_question(), {"assistance_models": {"haat_variant": _SESSION}})
+    await method.start(_question(), {"assistance_models": {"haat_variant": _SESSION.to_dict()}})
     await method.advance({}, "{}", _MAP)
 
-    default = get_settings().llm.default_model
+    default = _bare(get_settings().llm.default_model, temperature=0)
     assert method._decomposer.start.call_args.args[3] == _SESSION
     assert method._decomposer.advance.call_args.kwargs["model"] == default
-    assert method.preparation_params({})["assistance_models"] == {"haat_variant": default}
+    assert method.preparation_params({})["assistance_models"] == {"haat_variant": default.to_dict()}

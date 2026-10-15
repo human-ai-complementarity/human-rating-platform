@@ -1,12 +1,24 @@
-"""Which model each assistance call runs on (#95, #96, #148).
+"""Which model each assistance call runs on, and with what (#95, #96, #148).
 
 One resolver instead of an ad-hoc `params.get(...) or settings.llm.<x>` chain
 repeated at four call sites, so the precedence cannot drift.
 
 Every role a method calls a model for runs the model *under test* (#148): the
-method's entry in `assistance_params["assistance_models"]` (the wave's model,
+method's entry in `assistance_params["assistance_models"]` (the wave's arm,
 pinned by the question upload's `dataset_meta`), else the platform default for
 that role in `LLMSettings`.
+
+An entry is an object shaped like an arm in the inference pipeline's wave
+config, the model plus the request options every call to it is sent with:
+
+    {"model": "oai/gpt-5.6-luna", "reasoning_effort": "low",
+     "text_verbosity": "low", "temperature": null}
+
+Every option is declared and null means "do not send", so what assisted the
+raters is never left to a provider default. The options belong to the
+method's primary role, the model under test. The instrument roles (confidence,
+clustering) run the entry's *model* but keep their own options: sampling's
+temperature is an instrument setting, not the arm's.
 
 Confidence and clustering keep an override (`confidence_model`,
 `clustering_model`) that beats the map: an escape hatch for running them on
@@ -20,13 +32,14 @@ when the pipeline's export is uploaded, and land in `assistance_params`.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
 from config import get_settings
 
-from .llm import model_prefixes
+from .llm import REASONING_EFFORTS, TEXT_VERBOSITIES, parse_model
 
 # Role -> the LLMSettings attribute that backs it when nothing overrides.
 _ROLE_DEFAULTS: dict[str, str] = {
@@ -45,6 +58,11 @@ MODEL_ROLES: tuple[str, ...] = tuple(_ROLE_DEFAULTS)
 # their method's `assistance_models` entry already is their setting.
 _OVERRIDE_ROLES = frozenset({"confidence", "clustering"})
 
+# The request options a role sends when its entry declares none: what each
+# role always sent before entries carried options. Top-N ranks at temperature
+# 0; every other role sends nothing and runs on the provider's defaults.
+_ROLE_OPTIONS: dict[str, dict[str, Any]] = {"answer": {"temperature": 0}}
+
 
 def _override_key(role: str) -> str:
     return f"{role}_model"
@@ -58,22 +76,57 @@ def instrument_model_keys() -> tuple[str, ...]:
     return tuple(_override_key(role) for role in MODEL_ROLES if role in _OVERRIDE_ROLES)
 
 
-# The example prefix in error messages; `llm.parse_model` accepts every
-# registered provider's.
-MODEL_PREFIX = "openrouter/"
-
-# `assistance_params` key holding the wave's per-method models, e.g.
-# {"top_n": "openrouter/...", "human_as_a_tool": "openrouter/..."}.
+# `assistance_params` key holding the wave's per-method entries.
 ASSISTANCE_MODELS_KEY = "assistance_models"
 
 # The removed single-model key: it silently beat `assistance_models`.
 REMOVED_MODEL_KEY = "model"
 
 # Where a session's params snapshot records, per role its method uses, the
-# model that role is set to call, e.g. {"decomposition": ..., "confidence": ...}.
-# A session may end before calling a role, and failed sessions are recorded
-# too, so filter on `step_type`. A record only: nothing resolves a model from it.
+# entry that role is set to call, e.g. {"decomposition": {...}, "confidence":
+# {...}}. A session may end before calling a role, and failed sessions are
+# recorded too, so filter on `step_type`. A record only: nothing resolves a
+# model from it.
 ROLE_MODELS_KEY = "role_models"
+
+# An entry's option keys, every one declared. A key added later (`tools`,
+# `max_tokens`) goes in OPTIONAL_OPTIONS with the value an entry lacking it
+# gets, so an older export stays valid and the change is purely additive.
+OPTION_KEYS = ("reasoning_effort", "text_verbosity", "temperature")
+OPTIONAL_OPTIONS: dict[str, Any] = {}
+ENTRY_KEYS = ("model", *OPTION_KEYS)
+
+EXAMPLE_ENTRY = (
+    '{"model": "openrouter/anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
+    '"text_verbosity": null, "temperature": 0}'
+)
+
+
+@dataclass(frozen=True)
+class AssistanceModel:
+    """A model and the request options every call to it is sent with."""
+
+    model: str
+    reasoning_effort: str | None = None
+    text_verbosity: str | None = None
+    temperature: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The stored entry shape; also the keyword arguments for `llm.complete`."""
+        return asdict(self)
+
+    @classmethod
+    def from_entry(cls, entry: Any, options: Mapping[str, Any] = {}) -> AssistanceModel:
+        """Read a stored entry leniently, never failing a rater.
+
+        Writes are validated, so a complete object is the normal case. A bare
+        id (a session snapshot or row written before entries carried options)
+        and an object missing a key take `options` for what they lack.
+        """
+        if isinstance(entry, str):
+            return cls(model=entry, **{k: options.get(k) for k in OPTION_KEYS})
+        values = {k: entry.get(k, options.get(k, OPTIONAL_OPTIONS.get(k))) for k in OPTION_KEYS}
+        return cls(model=str(entry["model"]), **values)
 
 
 # Where a resolved model came from: the experiment's map, the role's own
@@ -81,39 +134,65 @@ ROLE_MODELS_KEY = "role_models"
 ModelSource = Literal["assistance_models", "override", "default"]
 
 
-def role_default(role: str) -> str:
-    """The platform default for `role`, from `LLMSettings`."""
-    return getattr(get_settings().llm, _ROLE_DEFAULTS[role])
+def role_options(role: str) -> dict[str, Any]:
+    """The options `role` sends when its entry declares none."""
+    return dict(_ROLE_OPTIONS.get(role, {}))
 
 
-def pinned_model(params: Mapping[str, object], method: str) -> str | None:
-    """`method`'s `assistance_models` entry; None leaves the default."""
+def role_default(role: str) -> AssistanceModel:
+    """The platform default for `role`: its `LLMSettings` model, its own options."""
+    model = getattr(get_settings().llm, _ROLE_DEFAULTS[role])
+    return AssistanceModel.from_entry(model, role_options(role))
+
+
+def _pinned_value(params: Mapping[str, object], method: str) -> str | Mapping[str, Any] | None:
+    """`method`'s raw `assistance_models` entry when it names a model."""
     models = params.get(ASSISTANCE_MODELS_KEY)
-    if isinstance(models, Mapping) and models.get(method):
-        return str(models[method])
+    if not isinstance(models, Mapping):
+        return None
+    value = models.get(method)
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, Mapping) and isinstance(value.get("model"), str) and value["model"]:
+        return value
     return None
+
+
+def pinned_model(params: Mapping[str, object], method: str) -> AssistanceModel | None:
+    """`method`'s `assistance_models` entry as declared; None leaves the default.
+
+    The launch gate's test (`status.experiment_launch_blockers`), so the gate
+    and the model that runs cannot disagree.
+    """
+    value = _pinned_value(params, method)
+    return AssistanceModel.from_entry(value) if value is not None else None
 
 
 def resolve_model_and_source(
     params: Mapping[str, object], method: str, role: str
-) -> tuple[str, ModelSource]:
-    """The model `method` runs `role` on under `assistance_params`, and its source.
+) -> tuple[AssistanceModel, ModelSource]:
+    """What `method` runs `role` on under `assistance_params`, and its source.
 
     The one resolution path: the calls themselves (via `resolve_model`) and
     the admin display (`registry.resolved_models`) both come through here.
     """
+    options = role_options(role)
     if role in _OVERRIDE_ROLES:
         override = params.get(_override_key(role))
         if override:
-            return str(override), "override"
-    pinned = pinned_model(params, method)
-    if pinned:
-        return pinned, "assistance_models"
+            return AssistanceModel.from_entry(str(override), options), "override"
+    value = _pinned_value(params, method)
+    if value is not None:
+        entry = AssistanceModel.from_entry(value, options)
+        if role in _OVERRIDE_ROLES:
+            # An instrument runs the model under test with its own options.
+            entry = AssistanceModel.from_entry(entry.model, options)
+        return entry, "assistance_models"
     return role_default(role), "default"
 
 
-def resolve_model(params: Mapping[str, object], method: str, role: str) -> str:
-    """The model `method` runs `role` on, given an experiment's `assistance_params`."""
+def resolve_model(params: Mapping[str, object], method: str, role: str) -> AssistanceModel:
+    """What `method` runs `role` on, given an experiment's `assistance_params`."""
     return resolve_model_and_source(params, method, role)[0]
 
 
@@ -132,8 +211,7 @@ def reject_removed_model_key(values: dict, *, where: str, hint: str = "") -> Non
             detail=(
                 f"{REMOVED_MODEL_KEY!r} is no longer supported in {where}; use "
                 f"{ASSISTANCE_MODELS_KEY!r}, which sets each method's model, e.g. "
-                f'{{"top_n": "{MODEL_PREFIX}anthropic/claude-sonnet-4.6"}}.'
-                + (f" {hint}" if hint else "")
+                f'{{"top_n": {EXAMPLE_ENTRY}}}.' + (f" {hint}" if hint else "")
             ),
         )
 
@@ -154,18 +232,64 @@ def reject_role_models_key(values: Mapping[str, object], *, where: str) -> None:
 def validate_model_id(model: str, *, field: str) -> None:
     """Reject a model id the transport cannot parse, as a 400.
 
-    Catches malformed ids, not unreachable ones: the providers accept arbitrary
-    model names, so `openrouter/anthropic/claude-sonnet-4-7` passes here and
-    only fails when it is actually called.
+    Worth failing early and loudly: `parse_model` raises `ValueError`, and
+    both assistance methods swallow that into a `NONE` step. A typo would
+    otherwise mean every rater silently gets no assistance, producing a study
+    that looks completed and is indistinguishable from one where the model
+    legitimately had nothing to offer.
+
+    Catches malformed ids, not unreachable ones: the providers accept
+    arbitrary model names, so `openrouter/anthropic/claude-sonnet-4-7` passes
+    here and only fails when it is actually called.
     """
-    prefixes = model_prefixes()
-    if not any(model.startswith(prefix) and len(model) > len(prefix) for prefix in prefixes):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Invalid model {model!r} in {field}. Expected "
-                f"'<provider>/<model-id>' with provider one of "
-                f"{', '.join(p.rstrip('/') for p in prefixes)}, e.g. "
-                f"'{MODEL_PREFIX}anthropic/claude-sonnet-4-6'."
-            ),
-        )
+    try:
+        parse_model(model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"In {field}: {exc}") from exc
+
+
+def _reject(field: str, problem: str) -> HTTPException:
+    return HTTPException(
+        status_code=400,
+        detail=f"Invalid model entry in {field}: {problem} Expected e.g. {EXAMPLE_ENTRY}.",
+    )
+
+
+def validate_model_entry(value: Any, *, field: str) -> None:
+    """Reject anything but a complete, well-typed entry object, as a 400.
+
+    Strict on purpose: a model declared without its options would run on
+    whatever the provider defaults to, which is a research setting nobody
+    chose. A bare model id is refused for the same reason (the question upload
+    alone still expands one, for exports written before entries existed).
+    """
+    if isinstance(value, str):
+        raise _reject(field, "a bare model id is no longer accepted; declare an object.")
+    if not isinstance(value, dict):
+        raise _reject(field, "must be a JSON object.")
+    missing = [k for k in ENTRY_KEYS if k not in value and k not in OPTIONAL_OPTIONS]
+    if missing:
+        raise _reject(field, f"missing required key(s) {', '.join(missing)}.")
+    unknown = sorted(set(value) - set(ENTRY_KEYS))
+    if unknown:
+        raise _reject(field, f"unknown key(s) {', '.join(unknown)}.")
+    if not isinstance(value["model"], str):
+        raise _reject(field, "'model' must be a string.")
+    try:
+        parse_model(value["model"])
+    except ValueError as exc:
+        raise _reject(field, str(exc)) from exc
+    _validate_choice(value["reasoning_effort"], REASONING_EFFORTS, field, "reasoning_effort")
+    _validate_choice(value["text_verbosity"], TEXT_VERBOSITIES, field, "text_verbosity")
+    temperature = value["temperature"]
+    if temperature is not None and (
+        isinstance(temperature, bool)
+        or not isinstance(temperature, (int, float))
+        or not 0 <= temperature <= 2
+    ):
+        raise _reject(field, "'temperature' must be null or a number from 0 to 2.")
+
+
+def _validate_choice(value: Any, allowed: tuple[str, ...], field: str, key: str) -> None:
+    if value is not None and value not in allowed:
+        raise _reject(field, f"'{key}' must be null or one of {', '.join(allowed)}.")
