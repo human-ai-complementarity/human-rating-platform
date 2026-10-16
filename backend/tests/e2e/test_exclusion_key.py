@@ -170,6 +170,26 @@ def test_parquet_upload_reads_exclusion_key_and_stores_blank_as_null(client, syn
     }
 
 
+def test_upload_rejects_an_exclusion_key_longer_than_its_column(client, sync_engine):
+    # a sits exactly at the limit, so naming b shows where the boundary is.
+    experiment = _create_experiment(client)
+    response = client.post(
+        f"/api/admin/experiments/{experiment['id']}/upload",
+        files={
+            "file": (
+                "keyed.csv",
+                "question_id,question_text,exclusion_key\n"
+                f"a,At the limit?,{'k' * 255}\n"
+                f"b,Over the limit?,{'k' * 256}\n",
+                "text/csv",
+            )
+        },
+    )
+    assert response.status_code == 400
+    assert "'b'" in response.json()["detail"]
+    assert _keys(sync_engine, experiment["id"]) == {}
+
+
 def test_duplicate_copies_exclusion_key(client, sync_engine):
     experiment = _create_experiment(client)
     _upload(client, experiment["id"], KEYED_CSV)
