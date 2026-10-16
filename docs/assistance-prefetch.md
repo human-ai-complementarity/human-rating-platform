@@ -146,25 +146,23 @@ queue enrollment. Enrollment marks those already-served reservations active,
 preventing assistance from getting stuck after a rolling deployment.
 ## Browser ownership
 
-`useRaterQueue` owns reservation, activation, preparation requests, and assistance
-responses. It accepts only responses for the current request generation and
-ignores older queue revisions. Refills coalesce while retaining pending demand.
-`AssistancePanel` renders the supplied resource and submits actual human input;
-it no longer independently starts assistance. No hidden components do work.
+`useRaterQueue` owns the displayed question, assistance responses, and frozen
+retry inputs. It calls `/next-question` (or the preview question endpoint), then
+`/assistance/start`. Selection, activation, refill, and speculative demand belong
+to the server. No browser queue revision, refill promise, or prepared-ID cache is
+needed. `AssistancePanel` renders the supplied resource and submits human input.
 
-Both fresh and restored sessions wait for intro acknowledgment before reserving
-or preparing work. The hook activates a question before exposing it to the view,
-then starts foreground assistance and requests preparation for the successor.
-Submission transport failures freeze the exact request and keep the answer
-visible until an identical retry is acknowledged. Assistance transport recovery retries frozen input with its original turn counter.
-The server returns an already committed step or reports that its claim is still
-active. A turn claim uses the existing assistance-session row and the same bounded
-execution/expiry budgets as preparation. Provider calls run outside transactions;
-publication rechecks ownership and session validity. Submission conflicts offer
-an explicit refresh from saved progress without overwriting an accepted answer.
-New sessions use the queue protocol at depth one by default. The experiment
-allowlist enables only the second slot and speculation. Stored legacy sessions
-retain their original path until they drain.
+Fresh and restored sessions wait for intro acknowledgment before requesting a
+question. Submission transport failures freeze the exact request, including the
+assignment ID and generation returned with the question. Assistance advances
+retry the frozen input and turn counter. Submission conflicts offer an explicit
+refresh from saved progress. Explicit failed-step skipping remains a mutation;
+client-visible wait telemetry remains a separate best-effort observation.
+
+The server enrolls experiments enabled by the allowlist when serving
+questions. Disabling an experiment stops new enrollment and speculative work; existing queue sessions
+drain at depth one. Old tabs can still submit their active question without the
+new identity fields. A supplied identity is always checked.
 
 Initial assistance HTTP waits end after 90 seconds with a retryable 503; the
 180-second execution and 195-second claim budgets remain independent. The browser
