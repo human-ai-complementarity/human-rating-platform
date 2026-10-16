@@ -141,7 +141,7 @@ class ProlificSettings(_StrictModel):
 class TermsSettings(_StrictModel):
     # Where rater consent and debrief statements live: `gs://bucket/prefix`
     # (a private bucket, read with Application Default Credentials), an
-    # `http(s)://` prefix, or a `file://` path relative to the backend
+    # `https://` prefix, or a `file://` path relative to the backend
     # directory. Read live when an admin configures or publishes an
     # experiment; whatever an experiment pins is archived in the database.
     # The platform deliberately ships no statement text of its own: unset, the

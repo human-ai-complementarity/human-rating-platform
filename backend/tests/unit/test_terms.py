@@ -7,42 +7,29 @@ import json
 import pytest
 
 from services.terms import (
+    CONSENT_STANDARD,
+    CONSENT_WARNED,
+    DEBRIEF,
     TermsSourceError,
     find_placeholders,
     format_session_length,
     parse_manifest,
     render_markdown,
+    statement_path,
 )
 
 
-def _manifest(bundles: dict) -> str:
-    return json.dumps({"schema": 1, "bundles": bundles})
+def _manifest(documents: dict) -> str:
+    return json.dumps({"documents": documents})
 
 
-def test_parse_manifest_reads_bundles_and_versions() -> None:
-    manifest = parse_manifest(
-        _manifest(
-            {
-                "standard": {"label": "Standard", "content_warnings": ["none"], "consent": 2},
-                "sensitive": {
-                    "label": "Sensitive",
-                    "content_warnings": ["sensitive", "explicit"],
-                    "consent": 1,
-                    "debrief": 3,
-                },
-            }
-        )
-    )
-    standard = manifest.bundle("standard")
-    assert standard is not None
-    assert standard.consent_version == 2
-    assert standard.debrief_version is None
-    assert standard.permits("none") and not standard.permits("sensitive")
-    sensitive = manifest.bundle("sensitive")
-    assert sensitive is not None
-    assert sensitive.debrief_version == 3
-    assert sensitive.permits("explicit")
-    assert manifest.bundle("missing") is None
+def test_parse_manifest_reads_the_three_document_versions() -> None:
+    manifest = parse_manifest(_manifest({CONSENT_STANDARD: 2, CONSENT_WARNED: 1, DEBRIEF: 3}))
+    assert manifest.version_of(CONSENT_STANDARD) == 2
+    assert manifest.version_of(CONSENT_WARNED) == 1
+    assert manifest.version_of(DEBRIEF) == 3
+    assert statement_path(CONSENT_WARNED, 1) == "consent/warned/v1.md"
+    assert statement_path(DEBRIEF, 3) == "debrief/v3.md"
 
 
 @pytest.mark.parametrize(
@@ -50,17 +37,15 @@ def test_parse_manifest_reads_bundles_and_versions() -> None:
     [
         ("not json", "not valid JSON"),
         ("[]", "must be a JSON object"),
-        (json.dumps({"schema": 1}), "non-empty 'bundles'"),
-        (_manifest({"Bad Key": {"content_warnings": ["none"], "consent": 1}}), "invalid"),
-        (_manifest({"a": {"content_warnings": [], "consent": 1}}), "content_warnings"),
-        (_manifest({"a": {"content_warnings": ["scary"], "consent": 1}}), "content_warnings"),
-        (_manifest({"a": {"content_warnings": ["none"], "consent": 0}}), "positive integer"),
-        (_manifest({"a": {"content_warnings": ["none"], "consent": "1"}}), "positive integer"),
+        (json.dumps({}), "needs a 'documents' object"),
+        (_manifest({CONSENT_STANDARD: 1, CONSENT_WARNED: 1}), "missing \\['debrief'\\]"),
         (
-            _manifest({"a": {"content_warnings": ["sensitive"], "consent": 1}}),
-            "needs a 'debrief' version",
+            _manifest({CONSENT_STANDARD: 1, CONSENT_WARNED: 1, DEBRIEF: 1, "consent/x": 1}),
+            "unknown \\['consent/x'\\]",
         ),
-        (_manifest({"a": {"content_warnings": ["none"], "consent": 1, "label": ""}}), "label"),
+        (_manifest({CONSENT_STANDARD: 0, CONSENT_WARNED: 1, DEBRIEF: 1}), "positive integer"),
+        (_manifest({CONSENT_STANDARD: "1", CONSENT_WARNED: 1, DEBRIEF: 1}), "positive integer"),
+        (_manifest({CONSENT_STANDARD: True, CONSENT_WARNED: 1, DEBRIEF: 1}), "positive integer"),
     ],
 )
 def test_parse_manifest_rejects_bad_input(raw: str, message: str) -> None:

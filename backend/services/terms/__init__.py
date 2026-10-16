@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from .render import KNOWN_PLACEHOLDERS, find_placeholders, format_session_length, render_markdown
 from .source import (
-    KIND_CONSENT,
-    KIND_DEBRIEF,
-    BundleSpec,
+    CONSENT_STANDARD,
+    CONSENT_WARNED,
+    DEBRIEF,
+    DOCUMENTS,
     Manifest,
     TermsSourceError,
     fetch_text,
@@ -15,10 +16,11 @@ from .source import (
 )
 
 __all__ = [
+    "CONSENT_STANDARD",
+    "CONSENT_WARNED",
+    "DEBRIEF",
+    "DOCUMENTS",
     "KNOWN_PLACEHOLDERS",
-    "KIND_CONSENT",
-    "KIND_DEBRIEF",
-    "BundleSpec",
     "Manifest",
     "TermsSourceError",
     "fetch_text",

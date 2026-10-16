@@ -714,6 +714,30 @@ Operational note: all of a session's clocks — deadline, grace window, token TT
 
 ---
 
+## Rater terms
+
+Rater-facing consent and debrief statements are not part of this repository: consent wording is each deploying organisation's responsibility. The backend reads them at runtime from a **terms source** named by `TERMS__SOURCE_URL`: a private GCS prefix (`gs://<bucket>/rater-terms`), an `https://` prefix (plain `http://` is refused), or a `file://` path relative to the backend directory. Never use a personal gcloud login for this. Layout:
+
+```
+manifest.json
+consent/standard/v<N>.md
+consent/warned/v<N>.md
+debrief/v<N>.md
+```
+
+There are exactly three documents: the consent statement for ordinary studies, the consent statement for studies with a content warning, and the debrief shown at the end of a study that needs one. Which a study gets follows from its flags; nobody picks a document by hand. `manifest.json` says which version of each is current:
+
+```json
+{"documents": {"consent/standard": 1, "consent/warned": 1, "debrief": 1}}
+```
+
+Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{content_warning_details}}`; anything else fails validation at read time. To change a statement, add a new version file and bump the manifest rather than editing a version in place. The reader lives in `backend/services/terms/`. With the source unset, raters are shown a placeholder statement saying consent has not been configured, and the Render predeploy check warns.
+
+**Credentials for a `gs://` source.** The platform reads as its own service account, one of two ways:
+
+- A service-account key file, named by `GOOGLE_APPLICATION_CREDENTIALS` (on Render: a secret file). This is what production uses.
+- Keyless Workload Identity Federation: set `TERMS__GCS_WIF_AUDIENCE` to the provider's audience and, optionally, `TERMS__GCS_IMPERSONATE_SERVICE_ACCOUNT`. The host must leave an OIDC identity token in a file: Render writes one to `AWS_WEB_IDENTITY_TOKEN_FILE` once the service has `AWS_ROLE_ARN` set to any value (the ARN itself is unused, it only switches the token on); set `TERMS__GCS_WIF_TOKEN_FILE` on other hosts. This needs Render's managed OIDC, which is a paid-plan feature, so it is wired but not used today.
+
 ## Supported Targets
 
 - **Local runtime:** Docker Compose
@@ -723,14 +747,3 @@ Operational note: all of a session's clocks — deadline, grace window, token TT
 
 MIT
 
-### Rater terms source
-
-Rater-facing consent (and debrief) statements are not part of this repository: consent wording is each deploying organisation's responsibility. The backend reads them at runtime from a **terms source** named by `TERMS__SOURCE_URL`: a private GCS prefix (`gs://<bucket>/rater-terms`, read as the platform's service account via `GOOGLE_APPLICATION_CREDENTIALS`, or keylessly through Workload Identity Federation with `TERMS__GCS_WIF_AUDIENCE`), a plain `https://` prefix, or a `file://` path relative to the backend directory. Never use a personal gcloud login for this. Layout:
-
-```
-manifest.json
-consent/<bundle>/v<N>.md
-debrief/<bundle>/v<N>.md
-```
-
-`manifest.json` names the **bundles** (for example `standard`, `sensitive`), says which version of each file is current, and which content-warning levels each bundle may serve; a bundle serving a warning must have a debrief. Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{content_warning_details}}`; anything else fails validation at read time. To change a statement, add a new version file and bump the manifest rather than editing a version in place. The reader lives in `backend/services/terms/`. With the source unset, raters are shown a placeholder statement saying consent has not been configured, and the Render predeploy check warns.
