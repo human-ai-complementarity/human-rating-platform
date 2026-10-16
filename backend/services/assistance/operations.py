@@ -225,9 +225,11 @@ async def start_assistance(
 
         async def invoke():
             with provider_context(
-                rater_id=rater_id, question_id=question_id,
+                rater_id=rater_id,
+                question_id=question_id,
                 experiment_id=question_snapshot.experiment_id,
-                session_id=session_id, method=method_name,
+                session_id=session_id,
+                method=method_name,
             ):
                 async with asyncio.timeout(EXECUTION_SECONDS):
                     return await method.start(
