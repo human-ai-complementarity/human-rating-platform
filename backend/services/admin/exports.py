@@ -44,6 +44,7 @@ EXPORT_COLUMNS = [
     "response_time_seconds",
     "counts_toward_target",
     "assistance_session_id",
+    "exclusion_key",
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
@@ -118,6 +119,9 @@ def _build_export_row(
         # recorded on failed sessions too (`step_type` NONE, e.g. a
         # provider_error), so filter on `step_type`.
         rating.assistance_session_id or "",
+        # Blank when the question has no key. Groups related questions, of
+        # which each rater is served at most one.
+        question.exclusion_key or "",
     ]
 
 

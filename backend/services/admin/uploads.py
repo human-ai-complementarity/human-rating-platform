@@ -391,6 +391,7 @@ def _build_questions_with_parent_refs(
                 options=row.get("options") or "",
                 question_type=row.get("question_type") or "MC",
                 extra_data=row.get("metadata") or "{}",
+                exclusion_key=(row.get("exclusion_key") or "").strip() or None,
             )
         )
         parent_refs.append((row.get("parent_question_id") or "").strip())
