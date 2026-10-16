@@ -197,6 +197,32 @@ def test_export_includes_exclusion_key(client, sync_engine):
     assert {row["question_id"]: row["exclusion_key"] for row in rows} == {"a": "commit-1", "c": ""}
 
 
+def test_recommendation_counts_a_key_as_one_unit(client, sync_engine):
+    # Target 2 and e already rated once: 9 ratings still needed. A rater takes
+    # at most one question per pair, so each pair needs 4 distinct raters.
+    # Counting questions instead would recommend 2 places.
+    experiment = _create_experiment(client)
+    _upload(
+        client,
+        experiment["id"],
+        "question_id,question_text,exclusion_key\n"
+        "a,Vulnerable version?,commit-1\n"
+        "b,Patched version?,commit-1\n"
+        "c,Vulnerable version?,commit-2\n"
+        "d,Patched version?,commit-2\n"
+        "e,Unrelated?,\n",
+    )
+    ids = _row_ids(sync_engine, experiment["id"])
+    session = _start_session(client, experiment["id"])
+    _seed_rating(sync_engine, session["rater_id"], ids["e"])
+
+    response = client.get(f"/api/admin/experiments/{experiment['id']}/prolific/recommend")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["remaining_rating_actions"] == 9
+    assert payload["recommended_places"] == 4
+
+
 def test_rating_one_question_drops_its_partner(client, sync_engine):
     experiment = _create_experiment(client)
     _upload(client, experiment["id"], KEYED_CSV)
