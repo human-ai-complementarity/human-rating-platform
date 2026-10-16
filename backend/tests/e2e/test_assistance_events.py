@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
@@ -357,8 +358,8 @@ def test_retrying_a_failed_session_keeps_its_history(client: TestClient, sync_en
 
 
 def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sync_engine):
-    """Two overlapping retries of a NONE session: one runs the method, the other waits
-    on the row lock and returns the same step. One event pair, not two."""
+    """Two overlapping retries of a NONE session: one runs the method, the other gets a retryable response
+    or reconciles the committed step. One event pair, not two."""
     headers, question_id = _setup(client, "test_fails_then_slow")
     first = client.post(
         "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
@@ -369,13 +370,16 @@ def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sy
         response = client.post(
             "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
         )
-        assert response.status_code == 200, response.text
-        return response.json()
+        assert response.status_code in (200, 503), response.text
+        return response.json() if response.status_code == 200 else None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         a, b = list(pool.map(lambda _: _retry(), range(2)))
 
-    assert a == b
+    assert a is not None or b is not None
+    if a is not None and b is not None:
+        assert a == b
+    a = a or b
     assert a["session_id"] == first["session_id"]
     assert a["type"] == "ask_input"
     assert _FailsThenSlow.calls == 2  # the failed attempt plus exactly one retry
@@ -392,7 +396,7 @@ def test_concurrent_retries_of_a_failed_session_serialize(client: TestClient, sy
 def test_concurrent_retries_that_both_would_fail_run_the_method_once(
     client: TestClient, sync_engine
 ):
-    """When the first retry fails too, the second still reports its outcome rather than
+    """When the first retry fails too, the second reports pending or its outcome rather than
     hitting the (down) provider again for the same double-click."""
     headers, question_id = _setup(client, "test_always_fails_slowly")
     first = client.post(
@@ -404,13 +408,16 @@ def test_concurrent_retries_that_both_would_fail_run_the_method_once(
         response = client.post(
             "/api/raters/assistance/start", json={"question_id": question_id}, headers=headers
         )
-        assert response.status_code == 200, response.text
-        return response.json()
+        assert response.status_code in (200, 503), response.text
+        return response.json() if response.status_code == 200 else None
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         a, b = list(pool.map(lambda _: _retry(), range(2)))
 
-    assert a == b
+    assert a is not None or b is not None
+    if a is not None and b is not None:
+        assert a == b
+    a = a or b
     assert a["type"] == "none" and a["turn"] == 2
     assert _AlwaysFailsSlowly.calls == 2  # the original attempt and one retry
     assert len(_events(sync_engine, first["session_id"])) == 2
@@ -740,3 +747,91 @@ def test_admin_session_list_is_scoped_to_the_experiment(client: TestClient, sync
     assert [s["question_id"] for s in listed] == [question_b]
 
     assert client.get("/api/admin/experiments/999999/assistance-sessions").status_code == 404
+
+
+@pytest.mark.parametrize("interruption", [None, "end", "reset", "assignment", "expiry"])
+def test_fallback_start_releases_lock_and_fences_publication(
+    client, monkeypatch, sync_engine, interruption
+):
+    from services.rater.operations import _ASSIGNMENT_LOCK_NAMESPACE
+
+    headers, question_id = _setup(client, "test_two_turn")
+    entered, release = threading.Event(), threading.Event()
+    calls = 0
+
+    async def slow_start(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        entered.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        return InteractionStep(type=StepType.ASK_INPUT, payload={"answer": "ready"})
+
+    monkeypatch.setattr(_TwoTurn, "start", slow_start)
+    with ThreadPoolExecutor() as pool:
+        pending = pool.submit(
+            client.post,
+            "/api/raters/assistance/start",
+            headers=headers,
+            json={"question_id": question_id},
+        )
+        try:
+            assert entered.wait(5)
+            with sync_engine.begin() as conn:
+                experiment_id = conn.execute(
+                    text("SELECT experiment_id FROM questions WHERE id=:id"), {"id": question_id}
+                ).scalar_one()
+                assert conn.execute(
+                    text("SELECT pg_try_advisory_xact_lock(:ns, :key)"),
+                    {"ns": _ASSIGNMENT_LOCK_NAMESPACE, "key": experiment_id},
+                ).scalar_one()
+                session_id = conn.execute(text("SELECT id FROM assistance_sessions")).scalar_one()
+            duplicate = client.post(
+                "/api/raters/assistance/start",
+                headers=headers,
+                json={"question_id": question_id},
+            )
+            assert duplicate.status_code == 503
+            assert (
+                client.post(
+                    "/api/raters/assistance/advance",
+                    headers=headers,
+                    json={"session_id": session_id, "human_input": "test"},
+                ).status_code
+                == 409
+            )
+            if interruption == "end":
+                assert client.post("/api/raters/end-session", headers=headers).status_code == 200
+            elif interruption is not None:
+                with sync_engine.begin() as conn:
+                    if interruption == "reset":
+                        conn.execute(
+                            text(
+                                "UPDATE raters SET session_start=session_start+interval '1 second'"
+                            )
+                        )
+                    elif interruption == "assignment":
+                        conn.execute(text("UPDATE question_assignments SET completed_at=now()"))
+                    else:
+                        conn.execute(
+                            text(
+                                "UPDATE assistance_sessions SET advance_expires_at=now()-interval '1 second'"
+                            )
+                        )
+        finally:
+            release.set()
+        result = pending.result(5)
+    assert calls == 1
+    assert (
+        result.status_code
+        == ({None: 200, "end": 403, "reset": 401, "assignment": 409, "expiry": 409}[interruption])
+    ), result.text
+    with sync_engine.connect() as conn:
+        assert (
+            conn.execute(text("SELECT advance_token FROM assistance_sessions")).scalar_one() is None
+        )
+        assert conn.execute(text("SELECT count(*) FROM assistance_events")).scalar_one() == (
+            1 if interruption is None else 0
+        )
+    if interruption is None:
+        assert result.json()["turn"] == 1
