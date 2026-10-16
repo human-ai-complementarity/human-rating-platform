@@ -23,6 +23,7 @@ Upload a CSV or Parquet file in the **Questions** section. You can upload multip
 | `question_type` | No | `MC` (multiple-choice) or `FT` (free-text). Defaults to `MC`. |
 | `metadata` | No | Per-row JSON blob you can attach for your own use. Surfaced in exports. |
 | `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. The delimiter check looks at the current file only, so a document that contains that marker as content must be referenced by a child in the same upload. |
+| `exclusion_key` | No | Marks related questions, such as two versions of one item where seeing one helps answer the other. A rater is served at most one question per key in the experiment, even within a parent group. Blank means no key. The key is included in the ratings export. |
 
 ### Dataset-level metadata (optional)
 

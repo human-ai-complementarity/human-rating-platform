@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import ExperimentRound, Question, QuestionAssignment, Rating, Rater
@@ -120,7 +121,8 @@ async def fetch_eligible_questions_with_counts(
     The selector needs them separately: committed counts decide which tier a
     question falls in, while reservations only influence serving priority.
     Preview ratings are excluded: they aren't real data and must not make a
-    question look satisfied to the selector.
+    question look satisfied to the selector. So is any question sharing an
+    exclusion_key with another this rater has seen.
     """
     # Both subqueries scope to this experiment's questions before grouping:
     # the outer experiment filter can't be pushed into a grouped subquery, so
@@ -168,7 +170,41 @@ async def fetch_eligible_questions_with_counts(
     if rated_question_ids:
         eligible_query = eligible_query.where(Question.id.notin_(rated_question_ids))
 
-    return (await db.execute(eligible_query)).all()
+    rows = (await db.execute(eligible_query)).all()
+    # Only a keyed candidate can be dropped, so an unkeyed pool skips the query.
+    if any(question.exclusion_key is not None for question, _, _ in rows):
+        rows = await _drop_exclusion_key_partners(rows, rater_id=rater_id, db=db)
+    return rows
+
+
+async def _drop_exclusion_key_partners(
+    rows: Sequence[tuple[Question, int | None, int | None]],
+    *,
+    rater_id: int,
+    db: AsyncSession,
+) -> list[tuple[Question, int | None, int | None]]:
+    """Drop questions sharing an exclusion_key with one this rater has seen.
+
+    Seen is any rating or reservation, whatever its state: expired, released
+    (as on a skip), or queued but never shown. Only *other* questions count,
+    so a question whose own reservation expired can be served again.
+    Filtering the pool here, before the selector runs, keeps sibling
+    preference from bringing a dropped question back.
+    """
+    seen_ids = union(
+        select(Rating.question_id).where(Rating.rater_id == rater_id),
+        select(QuestionAssignment.question_id).where(QuestionAssignment.rater_id == rater_id),
+    )
+    seen_by_key: dict[str, set[int]] = {}
+    for question_id, key in (
+        await db.execute(
+            select(Question.id, Question.exclusion_key)
+            .where(Question.exclusion_key.is_not(None))
+            .where(Question.id.in_(seen_ids))
+        )
+    ).all():
+        seen_by_key.setdefault(key, set()).add(question_id)
+    return [row for row in rows if not seen_by_key.get(row[0].exclusion_key, set()) - {row[0].id}]
 
 
 async def fetch_live_assignment_for_rater(
