@@ -142,6 +142,18 @@ class RenderValidator(ProviderValidator):
                 "TERMS__SOURCE_URL is a file:// path; on Render that is a folder inside the "
                 "deployed image. Use the team's bucket (gs://) for production."
             )
+        elif source.startswith("http://"):
+            # The reader refuses plain http (consent text could be altered in
+            # transit), so this deploy would fail every terms read.
+            result.add_error(
+                "TERMS__SOURCE_URL uses http://, which the terms reader refuses. "
+                "Use https:// or the team's bucket (gs://)."
+            )
+        elif not source.startswith(("gs://", "https://")):
+            result.add_error(
+                f"TERMS__SOURCE_URL has an unsupported scheme ({source!r}); the terms reader "
+                "accepts gs://, https:// or file://."
+            )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────

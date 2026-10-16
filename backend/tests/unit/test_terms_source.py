@@ -76,6 +76,14 @@ def test_https_transport_failures_surface_as_source_errors(
         )
 
 
+def test_malformed_https_url_is_a_source_error() -> None:
+    # httpx.InvalidURL is not an HTTPError; without naming it this would be a 500.
+    with pytest.raises(TermsSourceError, match="Could not fetch"):
+        asyncio.run(
+            terms_source.fetch_text(TermsSettings(source_url="https://[::1/terms"), "manifest.json")
+        )
+
+
 def test_plain_http_is_refused() -> None:
     with pytest.raises(TermsSourceError, match="must use https://"):
         asyncio.run(

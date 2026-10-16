@@ -257,7 +257,9 @@ async def fetch_text(settings: TermsSettings, relative_path: str) -> str:
                 timeout=_HTTP_TIMEOUT_SECONDS, transport=_http_transport
             ) as client:
                 response = await client.get(url)
-        except httpx.HTTPError as exc:
+        # InvalidURL (a malformed host or port in TERMS__SOURCE_URL) is not an
+        # HTTPError, so it is named here or it would escape as a 500.
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
             raise TermsSourceError(f"Could not fetch {url}: {exc}") from exc
         if response.status_code != 200:
             raise TermsSourceError(f"Could not fetch {url}: HTTP {response.status_code}")
