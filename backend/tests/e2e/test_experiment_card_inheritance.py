@@ -296,7 +296,9 @@ def test_export_carries_the_assistance_session_id(client: TestClient):
         assert response.status_code == 200
         header = "".join(response.iter_text()).splitlines()[0]
 
-    assert header.endswith("counts_toward_target,assistance_session_id")
+    assert header.endswith(
+        "counts_toward_target,assistance_session_id,assistance_method,assistance_outcome"
+    )
 
 
 _LEGACY_PARAMS = {"assistance_models": {"top_n": "gpt-4o"}, "n": 3}
