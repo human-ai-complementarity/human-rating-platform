@@ -12,6 +12,7 @@ from sqlalchemy.orm import aliased
 from config import get_settings
 from models import ConsentRecord, Question, Rating, Rater
 from services.queries import canonical_rating_rank_subquery, counts_toward_target
+from services.terms import statement_ref
 from .queries import fetch_experiment_or_404
 
 logger = logging.getLogger(__name__)
@@ -211,7 +212,9 @@ async def stream_export_csv_chunks(
                     counts,
                     parent_id,
                     parent_pk,
-                    f"{consent_statement} v{consent_version}" if consent_statement else None,
+                    statement_ref(consent_statement, consent_version)
+                    if consent_statement
+                    else None,
                     consented_at,
                 )
             )
