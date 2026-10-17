@@ -89,7 +89,7 @@ def _validate_assistance_models(value: Any) -> dict[str, dict[str, Any]]:
     id is still accepted here, and only here, for exports written before
     entries carried options: it is expanded to the entry it always stood for
     (the model with its method's default options), so the stored map holds
-    one shape. The pipeline now stamps entries, so this is one release's grace.
+    one shape. Until the pipeline stamps entries (inference-pipeline#224), this is the grace.
     """
     if not isinstance(value, dict):
         raise HTTPException(

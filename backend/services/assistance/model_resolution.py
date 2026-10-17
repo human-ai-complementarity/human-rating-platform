@@ -58,9 +58,12 @@ MODEL_ROLES: tuple[str, ...] = tuple(_ROLE_DEFAULTS)
 # their method's `assistance_models` entry already is their setting.
 _OVERRIDE_ROLES = frozenset({"confidence", "clustering"})
 
-# The request options a role sends when its entry declares none: what each
-# role always sent before entries carried options. Top-N ranks at temperature
-# 0; every other role sends nothing and runs on the provider's defaults.
+# The request options a primary role sends when its entry declares none: what
+# it always sent before entries carried options. Top-N ranks at temperature 0;
+# decomposition sends nothing. The instrument roles are not listed: their
+# options belong to the estimator the method builds (sampling at 0.7,
+# clustering at 0), so the method fills them in (`HumanAsAToolMethod.role_models`)
+# from the same values it passes to the estimator.
 _ROLE_OPTIONS: dict[str, dict[str, Any]] = {"answer": {"temperature": 0}}
 
 

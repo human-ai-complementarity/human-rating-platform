@@ -427,27 +427,32 @@ _HAAT_ROLES = {"decomposition": _HAAT.to_dict(), "confidence": _bare(_CONFIDENCE
             {**_MAP, "confidence_method": "sampling"},
             {
                 "decomposition": _HAAT.to_dict(),
-                "confidence": _HAAT_INSTRUMENT,
-                "clustering": _HAAT_INSTRUMENT,
+                "confidence": _bare(_HAAT.model, temperature=0.7).to_dict(),
+                "clustering": _bare(_HAAT.model, temperature=0).to_dict(),
             },
         ),
         ("human_as_a_tool", {**_MAP, **_INSTRUMENT}, _HAAT_ROLES),
         (
             "human_as_a_tool",
             {**_MAP, **_INSTRUMENT, "confidence_method": "self_consistency"},
-            _HAAT_ROLES,
+            {**_HAAT_ROLES, "confidence": _bare(_CONFIDENCE, temperature=0.7).to_dict()},
         ),
         (
             "human_as_a_tool",
             {**_MAP, **_INSTRUMENT, "confidence_method": "sampling"},
-            {**_HAAT_ROLES, "clustering": _bare(_CLUSTERING).to_dict()},
+            {
+                **_HAAT_ROLES,
+                "confidence": _bare(_CONFIDENCE, temperature=0.7).to_dict(),
+                "clustering": _bare(_CLUSTERING, temperature=0).to_dict(),
+            },
         ),
     ],
 )
 def test_a_session_records_every_role_its_method_calls(name, params, expected):
     """Clustering only for the confidence method that clusters; a model-free
     method records no map. Each role is recorded as the entry it runs: the
-    model and the options sent. The params themselves are kept as given."""
+    model and the options sent, so the sampling estimators show their 0.7 and
+    clustering its 0. The params themselves are kept as given."""
     recorded = record_role_models(name, params)
     assert recorded.get("role_models") == expected
     assert {key: value for key, value in recorded.items() if key != "role_models"} == params
@@ -461,6 +466,17 @@ def test_a_role_models_key_in_the_params_is_never_recorded(name, expected):
     not copied into the session as if its models ran."""
     stale = {**_MAP, "role_models": {"answer": _SESSION.to_dict()}}
     assert record_role_models(name, stale).get("role_models") == expected
+
+
+@pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])
+def test_the_instruments_record_the_temperature_the_estimator_sends(confidence_method):
+    """The record and the call take their temperatures from one place."""
+    params = {**_MAP, "confidence_method": confidence_method}
+    models = HumanAsAToolMethod.role_models(params)
+    estimator = HumanAsAToolMethod()._get_estimator(params)
+    assert models["confidence"].temperature == getattr(estimator, "_temperature", None)
+    if "clustering" in models:
+        assert models["clustering"].temperature == estimator._clustering_temperature
 
 
 @pytest.mark.parametrize("overrides", [{}, _INSTRUMENT], ids=["map", "overrides"])

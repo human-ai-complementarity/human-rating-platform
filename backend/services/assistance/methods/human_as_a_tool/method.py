@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 
 import openai
 
@@ -34,6 +35,8 @@ from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
 from ...model_resolution import AssistanceModel
 from ...confidence import (
+    CLUSTERING_TEMPERATURE,
+    SAMPLING_TEMPERATURE,
     ConfidenceEstimator,
     LLMConfidenceEstimator,
     SamplingConfidenceEstimator,
@@ -66,6 +69,20 @@ class HumanAsAToolMethod(InitialStepPreparation):
         estimator, the one that clusters."""
         roles = (cls.primary_model_role, "confidence")
         return (*roles, "clustering") if _confidence_method(params) == "sampling" else roles
+
+    @classmethod
+    def role_models(cls, params: Mapping[str, object]) -> dict[str, AssistanceModel]:
+        """The instruments' options are the estimator's, not the arm's: the
+        sampling estimators draw at `SAMPLING_TEMPERATURE`, clustering groups
+        at `CLUSTERING_TEMPERATURE`, self-report sends none. Filled in here,
+        from the same values `_get_estimator` passes on, so the session's
+        `role_models` records what runs."""
+        models = super().role_models(params)
+        if _confidence_method(params) in ("sampling", "self_consistency"):
+            models["confidence"] = replace(models["confidence"], temperature=SAMPLING_TEMPERATURE)
+        if "clustering" in models:
+            models["clustering"] = replace(models["clustering"], temperature=CLUSTERING_TEMPERATURE)
+        return models
 
     def preparation_params(self, params: dict) -> dict:
         models = self.role_models(params)
@@ -269,21 +286,26 @@ class HumanAsAToolMethod(InitialStepPreparation):
         # The map the session records: a role `model_roles` omits is a
         # KeyError here, not a model that runs unrecorded.
         models = self.role_models(params)
-        # The instruments take a model id: their options are their own.
-        confidence_model = models["confidence"].model
+        # Model and temperature from the recorded entries (`role_models`), so
+        # the estimator runs exactly what the session says it did.
+        confidence = models["confidence"]
         if method == "sampling":
+            clustering = models["clustering"]
             estimator: ConfidenceEstimator = SamplingConfidenceEstimator(
-                sampling_model=confidence_model,
-                clustering_model=models["clustering"].model,
+                sampling_model=confidence.model,
+                clustering_model=clustering.model,
                 num_samples=int(params.get("num_samples", 5)),
+                temperature=confidence.temperature,
+                clustering_temperature=clustering.temperature,
             )
         elif method == "self_consistency":
             estimator = SelfConsistencyConfidenceEstimator(
-                sampling_model=confidence_model,
+                sampling_model=confidence.model,
                 num_samples=int(params.get("num_samples", 5)),
+                temperature=confidence.temperature,
             )
         else:
-            estimator = LLMConfidenceEstimator(model=confidence_model)
+            estimator = LLMConfidenceEstimator(model=confidence.model)
         self._estimator = estimator
         return estimator
 

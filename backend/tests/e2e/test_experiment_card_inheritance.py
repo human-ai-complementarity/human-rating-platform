@@ -427,6 +427,9 @@ _MAP_TOP_N = _entry("openrouter/test/top-n-entry", reasoning_effort="low", tempe
 _MAP_HAAT = _entry("openrouter/test/human-as-a-tool-entry", text_verbosity="low")
 # An instrument runs the entry's model with its own options: none declared.
 _MAP_HAAT_INSTRUMENT = _entry(_MAP_HAAT["model"])
+# Under the sampling estimator the instruments send their own temperatures.
+_MAP_HAAT_SAMPLING = _entry(_MAP_HAAT["model"], temperature=0.7)
+_MAP_HAAT_CLUSTERING = _entry(_MAP_HAAT["model"], temperature=0)
 
 
 def _first_question(client: TestClient, experiment_id: int, pid: str) -> tuple[dict, dict]:
@@ -539,7 +542,7 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
 
 
 _MAP_CONFIDENCE = "openrouter/test/confidence-override"
-_MAP_CONFIDENCE_ENTRY = _entry(_MAP_CONFIDENCE)
+_MAP_CONFIDENCE_SAMPLING = _entry(_MAP_CONFIDENCE, temperature=0.7)
 
 
 @pytest.mark.parametrize(
@@ -556,8 +559,8 @@ _MAP_CONFIDENCE_ENTRY = _entry(_MAP_CONFIDENCE)
             {"assistance_models": {"human_as_a_tool": _MAP_HAAT}, "confidence_method": "sampling"},
             {
                 "decomposition": _MAP_HAAT,
-                "confidence": _MAP_HAAT_INSTRUMENT,
-                "clustering": _MAP_HAAT_INSTRUMENT,
+                "confidence": _MAP_HAAT_SAMPLING,
+                "clustering": _MAP_HAAT_CLUSTERING,
             },
         ),
         (
@@ -577,14 +580,14 @@ _MAP_CONFIDENCE_ENTRY = _entry(_MAP_CONFIDENCE)
             },
             {
                 "decomposition": _MAP_HAAT,
-                "confidence": _MAP_CONFIDENCE_ENTRY,
-                "clustering": _MAP_HAAT_INSTRUMENT,
+                "confidence": _MAP_CONFIDENCE_SAMPLING,
+                "clustering": _MAP_HAAT_CLUSTERING,
             },
         ),
         (
             "human_as_a_tool",
             {"confidence_method": "sampling", "confidence_model": _MAP_CONFIDENCE},
-            {"decomposition": None, "confidence": _MAP_CONFIDENCE_ENTRY, "clustering": None},
+            {"decomposition": None, "confidence": _MAP_CONFIDENCE_SAMPLING, "clustering": None},
         ),
     ],
 )
@@ -628,8 +631,9 @@ def test_prepared_and_foreground_sessions_record_the_same_role_models(
     defaults = {
         "answer": _entry(llm.default_model, temperature=0),
         "decomposition": _entry(llm.decomposition_model),
-        "confidence": _entry(llm.confidence_model),
-        "clustering": _entry(llm.clustering_model),
+        # Every case leaving these to the default runs the sampling estimator.
+        "confidence": _entry(llm.confidence_model, temperature=0.7),
+        "clustering": _entry(llm.clustering_model, temperature=0),
     }
     expected = {role: model or defaults[role] for role, model in role_models.items()}
     with sync_engine.connect() as conn:
