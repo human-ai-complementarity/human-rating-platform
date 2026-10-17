@@ -214,6 +214,12 @@ def _setup(client: TestClient, method: str) -> tuple[dict, int]:
     )
     assert response.status_code == 200, response.text
     headers = {"X-Rater-Session": response.json()["rater_session_token"]}
+    # Study content is refused until the rater has agreed to the consent
+    # statement; these tests are about what happens after that. Consent
+    # reissues the token, so continue with that one.
+    consent = client.post("/api/raters/consent", headers=headers)
+    assert consent.status_code == 200
+    headers = {"X-Rater-Session": consent.json()["rater_session_token"]}
 
     question = client.get("/api/raters/next-question", headers=headers).json()
     return headers, question["id"]

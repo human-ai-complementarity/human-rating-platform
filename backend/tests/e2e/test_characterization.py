@@ -159,7 +159,17 @@ def _start_session(client: TestClient, experiment_id: int, prolific_pid: str = "
         },
     )
     assert response.status_code == 200
-    return response.json()
+    payload = response.json()
+    # Questions are refused until the rater has agreed to the consent
+    # statement; these tests are about what happens after that. The consent
+    # step itself is covered in test_consent.py.
+    consent = client.post("/api/raters/consent", headers=_rater_headers(payload))
+    assert consent.status_code == 200
+    # The clock starts at consent and the token is reissued from it; the
+    # start token stops working, so hand back the post-consent view of the
+    # session (new token, moved clock) as what callers work with.
+    payload.update(consent.json())
+    return payload
 
 
 def _rater_headers(session_payload: dict) -> dict[str, str]:
@@ -950,7 +960,11 @@ def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid:
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    payload = response.json()
+    consent = client.post("/api/raters/consent", headers=_rater_headers(payload))
+    assert consent.status_code == 200, consent.text
+    payload.update(consent.json())
+    return payload
 
 
 def test_preview_session_opens_the_requested_question(client: TestClient, sync_engine):
@@ -2293,6 +2307,9 @@ def test_prolific_recommendation_honors_include_preview(client: TestClient, enab
     )
     assert response.status_code == 200
     session_payload = response.json()
+    consent = client.post("/api/raters/consent", headers=_rater_headers(session_payload))
+    assert consent.status_code == 200
+    session_payload.update(consent.json())
 
     question = client.get(
         "/api/raters/next-question",
@@ -5416,7 +5433,11 @@ def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid:
         },
     )
     assert response.status_code == 200
-    return response.json()
+    payload = response.json()
+    consent = client.post("/api/raters/consent", headers=_rater_headers(payload))
+    assert consent.status_code == 200, consent.text
+    payload.update(consent.json())
+    return payload
 
 
 def test_preview_ratings_do_not_count_toward_target(client: TestClient):

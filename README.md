@@ -738,6 +738,10 @@ Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{con
 - A service-account key file, named by `GOOGLE_APPLICATION_CREDENTIALS` (on Render: a secret file). This is what production uses.
 - Keyless Workload Identity Federation: set `TERMS__GCS_WIF_AUDIENCE` to the provider's audience and, optionally, `TERMS__GCS_IMPERSONATE_SERVICE_ACCOUNT`. The host must leave an OIDC identity token in a file: Render writes one to `AWS_WEB_IDENTITY_TOKEN_FILE` once the service has `AWS_ROLE_ARN` set to any value (the ARN itself is unused, it only switches the token on); set `TERMS__GCS_WIF_TOKEN_FILE` on other hosts. This needs Render's managed OIDC, which is a paid-plan feature, so it is wired but not used today.
 
+### Rater consent
+
+Every rater agrees to the consent statement from the terms source before they see anything about a study (it comes before the intro screen). Study content endpoints refuse with 403 until then, so the screen cannot be skipped by calling the API directly. The agreement is recorded in `consent_records` with the Prolific ID, the time, the exact text shown (placeholders filled), and which source file and version it came from. With no terms source configured, raters see a placeholder statement saying so, recorded under the statement name `placeholder`. Preview runs start over, consent screen included, each time they restart. The session clock starts when the rater agrees, not when they open the link, so time spent reading the statement is not counted; the consent response carries the moved deadline and a reissued session token. Raters from before this feature have no record; reports should read that as "not recorded", never as declined. The ratings CSV export carries `rater_consent_version` ("standard v1") and `rater_consented_at`, and the analytics raters table shows the same.
+
 ## Supported Targets
 
 - **Local runtime:** Docker Compose

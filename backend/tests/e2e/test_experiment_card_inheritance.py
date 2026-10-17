@@ -444,6 +444,11 @@ def _first_question(client: TestClient, experiment_id: int, pid: str) -> tuple[d
         },
     ).json()
     headers = {"X-Rater-Session": session["rater_session_token"]}
+    # Questions are refused until the rater has agreed to the consent statement;
+    # consent reissues the token, so continue with that one.
+    consent = client.post("/api/raters/consent", headers=headers)
+    assert consent.status_code == 200
+    headers = {"X-Rater-Session": consent.json()["rater_session_token"]}
     return headers, client.get("/api/raters/next-question", headers=headers).json()
 
 
