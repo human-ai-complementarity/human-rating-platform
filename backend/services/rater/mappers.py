@@ -37,6 +37,7 @@ def build_rater_start_response(
     policy: SessionPolicy,
     terms: RaterTerms,
     consented_at: datetime | None,
+    study_flags: list[str] | None = None,
     assistance_method: str = "none",
     assistance_instructions: str | None = None,
 ) -> RaterStartResponse:
@@ -62,4 +63,6 @@ def build_rater_start_response(
         assistance_instructions=assistance_instructions,
         consent_statement_html=terms.consent_html,
         consented_at=consented_at,
+        study_flags=list(study_flags or []),
+        debrief_html=terms.debrief_html,
     )
