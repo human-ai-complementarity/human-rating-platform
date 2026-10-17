@@ -204,6 +204,10 @@ class Question(SQLModel, table=True):
             nullable=True,
         ),
     )
+    # Questions sharing a key are related (e.g. the vulnerable and patched
+    # versions of one function), so a rater is served at most one of them.
+    # NULL opts the question out.
+    exclusion_key: Optional[str] = Field(default=None, sa_column=Column(String(255), nullable=True))
 
 
 class Rater(SQLModel, table=True):
