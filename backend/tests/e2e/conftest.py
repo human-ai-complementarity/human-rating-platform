@@ -16,6 +16,8 @@ from session_policy import (
     DEFAULT_SESSION_DURATION_MINUTES,
 )
 
+from terms_helpers import write_terms_source
+
 _TEST_DB_NAME = "human_rating_platform_test"
 
 
@@ -146,3 +148,18 @@ def no_provider_calls(monkeypatch):
 
     client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)))
     monkeypatch.setattr("services.assistance.llm._get_client", lambda *_args: client)
+
+
+# ── Rater terms ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def terms_source(tmp_path: Path):
+    """A runtime-generated terms source, wired in as TERMS__SOURCE_URL."""
+    root = tmp_path / "terms"
+    write_terms_source(root)
+    settings = get_settings()
+    original = settings.terms.source_url
+    settings.terms.source_url = f"file://{root}"
+    yield root
+    settings.terms.source_url = original

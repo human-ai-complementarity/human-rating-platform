@@ -742,6 +742,20 @@ Files may use the placeholders `{{study_name}}`, `{{session_length}}` and `{{con
 
 Every rater agrees to the consent statement from the terms source before they see anything about a study (it comes before the intro screen). Study content endpoints refuse with 403 until then, so the screen cannot be skipped by calling the API directly. The agreement is recorded in `consent_records` with the Prolific ID, the time, the exact text shown (placeholders filled), and which source file and version it came from. With no terms source configured, raters see a placeholder statement saying so, recorded under the statement name `placeholder`. Preview runs start over, consent screen included, each time they restart. The session clock starts when the rater agrees, not when they open the link, so time spent reading the statement is not counted; the consent response carries the moved deadline and a reissued session token. Raters from before this feature have no record; reports should read that as "not recorded", never as declined. The ratings CSV export carries `rater_consent_version` ("standard v1") and `rater_consented_at`, and the analytics raters table shows the same.
 
+### Study flags
+
+An experiment's **Consent and content** section (on the instructions step) carries a set of study flags describing what raters are exposed to: `sensitive` (deeply personal or potentially distressing topics), `explicit` (graphic, violent, sexual or otherwise egregious material) and `deception` (raters are misled about some element of the study). Any combination is allowed. What each flag means is tabled once, in `backend/services/terms/flags.py`:
+
+| Flag | Prolific `content_warnings` | Prescreener forced on every round | Consent statement | Debrief |
+|---|---|---|---|---|
+| `sensitive` | `sensitive` | harmful-content | warned | no |
+| `explicit` | `explicit` | harmful-content | warned | no |
+| `deception` | none | deception | standard | yes |
+
+Sensitive or explicit studies require content-warning details, which go to Prolific as `content_warning_details`, are prepended to the study description, and are rendered into the warned consent statement (`{{content_warning_details}}`). Prolific accepts one content warning per study, so when both flags are set the stronger (`explicit`) is sent. A deception study ends on the debrief statement, with a manual link to Prolific instead of the automatic redirect, as Prolific requires.
+
+The first publish pins the experiment's consent (and debrief) versions by copying them into `terms_statements`; raters of a running study always see the pinned text, whatever changes at the source later, and the section becomes read-only. Publishing is refused if the source is unreadable, a version file was edited in place after another experiment pinned it (bump the version instead), or the study has flags set and no terms source is configured. With no terms source, an unflagged study publishes with the placeholder statement and pins nothing.
+
 ## Supported Targets
 
 - **Local runtime:** Docker Compose
