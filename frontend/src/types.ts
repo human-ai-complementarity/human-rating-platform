@@ -173,6 +173,8 @@ export type StudyLabel =
 export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate';
 
 export interface Question {
+  assignment_id?: number | null;
+  assignment_generation?: number | null;
   id: number;
   question_text: string;
   options: string | null;
@@ -237,6 +239,8 @@ export interface Session {
 }
 
 export interface RatingSubmit {
+  assignment_id?: number;
+  assignment_generation?: number;
   question_id: number;
   answer: string;
   confidence: number;

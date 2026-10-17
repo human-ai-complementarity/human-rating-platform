@@ -354,6 +354,18 @@ def test_reset_while_authenticated_request_waits_for_lock(
         ).scalar_one()
 
 
+def test_new_queue_works_at_depth_one_with_speculation_disabled(client, monkeypatch):
+    _, headers, _ = enable(client, monkeypatch)
+    monkeypatch.setattr(get_settings().prefetch, "lookahead_questions", 0)
+    state = reserve(client, headers)
+    assert len(state["items"]) == 1
+    assert not state["prefetch_enabled"]
+    payload = rating(state["items"][0])
+    first = client.post("/api/raters/submit", headers=headers, json=payload)
+    assert first.status_code == 200
+    assert client.post("/api/raters/submit", headers=headers, json=payload).json() == first.json()
+
+
 @pytest.mark.parametrize("lookahead", [0, 1, 3, 5])
 def test_configurable_lookahead_is_bounded_and_refills(client, monkeypatch, lookahead):
     _, headers, _ = enable(client, monkeypatch)

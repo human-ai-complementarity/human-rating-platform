@@ -144,3 +144,39 @@ an active assignment once the session enters queue mode.
 Legacy reservations inserted after the migration backfill are valid before
 queue enrollment. Enrollment marks those already-served reservations active,
 preventing assistance from getting stuck after a rolling deployment.
+## Browser ownership
+
+`useRaterQueue` owns the displayed question, assistance responses, and frozen
+retry inputs. It calls `/next-question` (or the preview question endpoint), then
+`/assistance/start`. Selection, activation, refill, and speculative demand belong
+to the server. No browser queue revision, refill promise, or prepared-ID cache is
+needed. `AssistancePanel` renders the supplied resource and submits human input.
+
+Fresh and restored sessions wait for intro acknowledgment before requesting a
+question. Submission transport failures freeze the exact request, including the
+assignment ID and generation returned with the question. Assistance advances
+retry the frozen input and turn counter. Submission conflicts offer an explicit
+refresh from saved progress. Explicit failed-step skipping remains a mutation;
+client-visible wait telemetry remains a separate best-effort observation.
+
+The server enrolls experiments enabled by the allowlist when serving
+questions. Disabling an experiment stops new enrollment and speculative work; existing queue sessions
+drain at depth one. Old tabs can still submit their active question without the
+new identity fields. A supplied identity is always checked.
+
+Initial assistance HTTP waits end after 90 seconds with a retryable 503; the
+180-second execution and 195-second claim budgets remain independent. The browser
+keeps the loading UI and reattaches to the same persisted job after network errors
+or HTTP 502/503/504, with up to six total requests and 1/2/4/5/5-second backoffs.
+Other errors surface immediately. Exhaustion exposes the existing manual retry;
+changing question/session or leaving the view cancels requests and retry timers.
+Human-input advances keep their existing explicit retry behavior.
+
+
+The runtime reuses the existing `turn` counter and assistance event history.
+Committed-turn retries must match the previous turn and its exact human input;
+other mismatches return 409. A concurrent request also receives retryable 409
+while the owner computes outside a transaction. There is no second assistance
+revision counter. Accepted background starts append their history atomically with
+session creation; their latency includes preparation and consumption, excluding
+queue residence. Retries of durable results add no event or provider call.
