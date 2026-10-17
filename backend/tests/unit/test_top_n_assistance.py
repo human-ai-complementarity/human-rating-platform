@@ -16,6 +16,7 @@ import httpx
 import openai
 import pytest
 from models import Question, StepType
+from services.assistance.llm import NoChoicesError
 from services.assistance.methods.top_n import (
     TopNAssistance,
     _SCHEMA_ACCEPTED_MODELS,
@@ -629,8 +630,17 @@ def _api_status_error(status: int) -> openai.APIStatusError:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [400, 404, 422])
-async def test_start_retries_without_schema_when_provider_rejects_it(status):
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        _api_status_error(400),
+        _api_status_error(404),
+        _api_status_error(422),
+        # OpenRouter's "no endpoints found" comes back as a 200 with an error body.
+        NoChoicesError("LLM returned no choices: No endpoints found", 404),
+    ],
+)
+async def test_start_retries_without_schema_when_provider_rejects_it(rejection):
     method = TopNAssistance()
     question = _make_question()
     llm_payload = _llm_response(
@@ -638,7 +648,7 @@ async def test_start_retries_without_schema_when_provider_rejects_it(status):
             {"option_index": 1, "confidence": 80, "rationale": "ok"},
         ]
     )
-    mock_complete = AsyncMock(side_effect=[_api_status_error(status), llm_payload])
+    mock_complete = AsyncMock(side_effect=[rejection, llm_payload])
 
     with patch("services.assistance.methods.top_n.complete", new=mock_complete):
         step = await method.start(question, {})
@@ -649,6 +659,22 @@ async def test_start_retries_without_schema_when_provider_rejects_it(status):
         multiple_choice=True, n=2, option_count=2
     )
     assert "response_format" not in mock_complete.call_args_list[1].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_keeps_what_the_provider_said_when_the_retry_also_fails():
+    """A refused option (not the schema) fails both calls; the detail survives."""
+    method = TopNAssistance()
+    rejected = NoChoicesError("LLM returned no choices: No endpoints found", 404)
+    mock_complete = AsyncMock(side_effect=[rejected, rejected])
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(_make_question(), {})
+
+    assert step.type == StepType.NONE
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == "NoChoicesError: LLM returned no choices: No endpoints found"
+    assert mock_complete.call_count == 2
 
 
 @pytest.mark.asyncio

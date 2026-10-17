@@ -155,6 +155,7 @@ class LLMSettings(_StrictModel):
     confidence_model: str = LLMModels.GEMINI_FLASH_LITE
     clustering_model: str = LLMModels.GEMINI_FLASH_LITE
     openrouter_api_key: str = ""
+    oai_api_key: str = ""
     max_tokens: int = 4096
     request_timeout: int = 60
     max_retries: int = 2

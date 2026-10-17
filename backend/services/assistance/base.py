@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from models import Question, StepType
 
-from .model_resolution import resolve_model
+from .model_resolution import AssistanceModel, resolve_model
 
 if TYPE_CHECKING:
     from .preparation import PreparationContext, PreparationSpec, QuestionSnapshot
@@ -39,12 +39,27 @@ class InteractionStep:
     is_terminal: bool = False
     # Research attribution only; never sent in the participant payload.
     failure_reason: FailureReason | None = None
+    # What the provider said when failure_reason is "provider_error", so a
+    # rejected parameter is readable in the event log rather than only in
+    # the server log. Never sent in the participant payload.
+    failure_detail: str | None = None
 
     @property
     def outcome(self) -> str:
         return self.failure_reason or (
             "no_assistance" if self.type == StepType.NONE else "provided"
         )
+
+    def error_text(self) -> str | None:
+        """What the event log records for a degraded step; None when it succeeded."""
+        if self.failure_reason and self.failure_detail:
+            return f"{self.failure_reason}: {self.failure_detail}"
+        return self.failure_reason
+
+
+def exception_text(exc: BaseException) -> str:
+    """The one spelling of an exception in the event log and in `failure_detail`."""
+    return f"{type(exc).__name__}: {exc}"
 
 
 class AssistanceMethod(ABC):
@@ -80,8 +95,9 @@ class AssistanceMethod(ABC):
         return (cls.primary_model_role,) if cls.primary_model_role else ()
 
     @classmethod
-    def role_models(cls, params: Mapping[str, object]) -> dict[str, str]:
-        """The model each of `model_roles` is called on under `params`.
+    def role_models(cls, params: Mapping[str, object]) -> dict[str, AssistanceModel]:
+        """What each of `model_roles` is called on under `params`: the model
+        and the request options it is sent with.
 
         The methods take their models from here and a session records this
         map, so what runs and what is recorded come from one place.

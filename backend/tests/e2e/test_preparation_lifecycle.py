@@ -242,7 +242,18 @@ def test_foreground_burst_uses_eight_workers_and_bounded_provider_fanout(client,
         assert peak_calls == 8
         assert total_calls == 96
         # Empty params stay empty apart from the models the session records.
-        recorded = json.dumps({"role_models": {"answer": get_settings().llm.default_model}})
+        recorded = json.dumps(
+            {
+                "role_models": {
+                    "answer": {
+                        "model": get_settings().llm.default_model,
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": 0,
+                    }
+                }
+            }
+        )
         assert all(
             result.params == recorded and result.payload is None and result.state is None
             for result in results

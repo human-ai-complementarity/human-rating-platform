@@ -100,7 +100,13 @@ What is expected to evolve:
 from __future__ import annotations
 
 from .base import AssistanceMethod
-from .model_resolution import ROLE_MODELS_KEY, ModelSource, resolve_model_and_source
+from .model_resolution import (
+    ROLE_MODELS_KEY,
+    AssistanceModel,
+    ModelSource,
+    resolve_model_and_source,
+    role_options,
+)
 from .methods.human_as_a_tool import HumanAsAToolMethod
 from .methods.none import NoAssistance
 from .methods.top_n import TopNAssistance
@@ -133,9 +139,20 @@ def assisted_methods() -> list[str]:
     return [name for name, _ in _assisted()]
 
 
-def resolved_models(params: dict) -> dict[str, tuple[str, ModelSource]]:
-    """Per assisted method, the model its primary role would run on under
-    `params`, and its source, resolved the same way as the call itself.
+def expand_bare_entry(name: str, model: str) -> dict:
+    """The entry a bare model id stands for on method `name`: that model with
+    the options its primary role sends when none are declared.
+
+    For exports written before entries carried options; the question upload
+    expands them so the stored map holds one shape.
+    """
+    role = _REGISTRY[name].primary_model_role
+    return AssistanceModel.from_entry(model, role_options(role or "")).to_dict()
+
+
+def resolved_models(params: dict) -> dict[str, tuple[AssistanceModel, ModelSource]]:
+    """Per assisted method, what its primary role would run on under `params`,
+    and its source, resolved the same way as the call itself.
 
     Primary roles only: a map entry runs the other roles too, unless
     overridden (#148). Each session's `role_models` records them all.
@@ -161,7 +178,7 @@ def record_role_models(name: str, params: dict | None) -> dict:
     cls = _REGISTRY.get(name)
     models = cls.role_models(recorded) if cls is not None else {}
     if models:
-        recorded[ROLE_MODELS_KEY] = models
+        recorded[ROLE_MODELS_KEY] = {role: entry.to_dict() for role, entry in models.items()}
     return recorded
 
 
