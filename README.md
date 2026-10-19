@@ -456,6 +456,7 @@ Upload questions as CSV or Parquet. Both formats accept the same columns; Parque
 | `options` | No | Comma-separated options for MC |
 | `question_type` | No | `MC` or `FT` (default `MC`) |
 | `metadata` | No | JSON string |
+| `exclusion_key` | No | Questions sharing a key (e.g. two versions of one item) are never served to the same rater in an experiment. Blank means no key. Included in the ratings export. |
 
 ```csv
 question_id,question_text,gt_answer,options,question_type

@@ -614,20 +614,16 @@ async def calculate_recommendation(
     for rating, question, _ in ratings:
         rating_counts[question.id] = rating_counts.get(question.id, 0) + 1
 
-    all_question_ids = (
-        (
-            await db.execute(
-                select(Question.id)
-                .where(Question.experiment_id == experiment_id)
-                .where(Question.id.notin_(parent_question_ids_subquery()))
-            )
+    all_questions = (
+        await db.execute(
+            select(Question.id, Question.exclusion_key)
+            .where(Question.experiment_id == experiment_id)
+            .where(Question.id.notin_(parent_question_ids_subquery()))
         )
-        .scalars()
-        .all()
-    )
+    ).all()
 
     target = experiment.num_ratings_per_question
-    deficits = [max(0, target - rating_counts.get(qid, 0)) for qid in all_question_ids]
+    deficits = [max(0, target - rating_counts.get(qid, 0)) for qid, _ in all_questions]
     remaining_actions = sum(deficits)
 
     is_complete = remaining_actions == 0
@@ -638,13 +634,18 @@ async def calculate_recommendation(
         recommended_places = 0
     else:
         # A place's useful output is capped twice: by session time, and by
-        # the number of distinct questions still needing ratings (a rater
-        # can rate each question at most once). And however fast raters
-        # are, a question needing K more ratings needs K distinct raters,
-        # so the max per-question deficit is a hard floor on places.
-        questions_needing_ratings = sum(1 for d in deficits if d > 0)
-        max_deficit = max(deficits)
-        per_place_capacity = float(questions_needing_ratings)
+        # the number of distinct units still needing ratings (a rater can
+        # rate each question at most once, and at most one question per
+        # exclusion_key, so a key's questions count as one unit). And
+        # however fast raters are, a unit needing K more ratings needs K
+        # distinct raters, so the max per-unit deficit is a hard floor.
+        unit_deficits: dict[int | str, int] = {}
+        for (qid, key), deficit in zip(all_questions, deficits):
+            unit = qid if key is None else key
+            unit_deficits[unit] = unit_deficits.get(unit, 0) + deficit
+        units_needing_ratings = sum(1 for d in unit_deficits.values() if d > 0)
+        max_deficit = max(unit_deficits.values())
+        per_place_capacity = float(units_needing_ratings)
         if avg_time > 0:
             per_place_capacity = min(per_place_capacity, session_seconds / avg_time)
         recommended_places = max(
