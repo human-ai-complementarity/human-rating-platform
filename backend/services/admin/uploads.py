@@ -58,6 +58,8 @@ _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
 _SEPARATOR_REJECT_PREVIEW = 5
+# Matches the Question.exclusion_key String(255) column.
+_EXCLUSION_KEY_MAX_LENGTH = 255
 
 
 def _configure_csv_field_limit() -> None:
@@ -388,11 +390,22 @@ def _build_questions_with_parent_refs(
     """Construct (un-flushed) Question rows and collect raw parent_question_id refs.
 
     Parent refs are returned alongside so the caller can resolve them once the
-    new rows have DB ids.
+    new rows have DB ids. Raises HTTPException(400) for an exclusion_key too
+    long for its column, which would otherwise fail the INSERT with a 500.
     """
     new_questions: list[Question] = []
     parent_refs: list[str] = []
     for row in rows:
+        exclusion_key = (row.get("exclusion_key") or "").strip() or None
+        if exclusion_key is not None and len(exclusion_key) > _EXCLUSION_KEY_MAX_LENGTH:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Question '{row['question_id']}' has an exclusion_key of "
+                    f"{len(exclusion_key)} characters; the limit is "
+                    f"{_EXCLUSION_KEY_MAX_LENGTH}"
+                ),
+            )
         new_questions.append(
             Question(
                 experiment_id=experiment_id,
@@ -402,6 +415,7 @@ def _build_questions_with_parent_refs(
                 options=row.get("options") or "",
                 question_type=row.get("question_type") or "MC",
                 extra_data=row.get("metadata") or "{}",
+                exclusion_key=exclusion_key,
             )
         )
         parent_refs.append((row.get("parent_question_id") or "").strip())

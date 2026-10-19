@@ -2004,7 +2004,7 @@ function QuestionsPanel({
               Required: <span style={{ fontFamily: 'var(--font-mono)' }}>question_id</span>,{' '}
               <span style={{ fontFamily: 'var(--font-mono)' }}>question_text</span>. Optional:{' '}
               <span style={{ fontFamily: 'var(--font-mono)' }}>
-                gt_answer, options, question_type, metadata, parent_question_id
+                gt_answer, options, question_type, metadata, parent_question_id, exclusion_key
               </span>
               . Supports long-context rows and files up to 200 MB. Optional dataset metadata:{' '}
               <span style={{ fontFamily: 'var(--font-mono)' }}>#META:</span> JSON line at the top of
