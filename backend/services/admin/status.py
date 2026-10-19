@@ -20,6 +20,8 @@ from models import (
     ExperimentStatus,
     ProlificStudyStatus,
 )
+from config import get_settings
+from services.assistance.llm import missing_key_env_var
 from services.assistance.model_resolution import pinned_model
 
 from .queries import fetch_total_questions_for_experiment
@@ -100,8 +102,21 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
     ]
     if experiment.assistance_method != "none":
         params = json.loads(experiment.assistance_params) if experiment.assistance_params else {}
-        if not pinned_model(params, experiment.assistance_method):
+        pinned = pinned_model(params, experiment.assistance_method)
+        try:
+            missing_key = missing_key_env_var(pinned.model, get_settings().llm) if pinned else None
+        except ValueError:
+            # A stored id the transport cannot parse (written before validation
+            # existed) would fail every call: as good as no model.
+            pinned = None
+            missing_key = None
+        if not pinned:
             blockers.append("assistance model")
+        elif missing_key:
+            # Validation accepts an id for any registered provider; the key
+            # that provider needs is checked here, where the fix is a config
+            # change, rather than failing every rater's first call.
+            blockers.append("assistance model key")
     return blockers
 
 
@@ -125,6 +140,11 @@ _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
     "internal study name": (
         "Internal study name: copied from the dataset card's template only when an "
         "experiment is created, so set it on this experiment with the pencil by its title."
+    ),
+    "assistance model key": (
+        "Assistance model key: the model's provider has no API key on the server. Set "
+        "LLM__OPENROUTER_API_KEY for an openrouter/ model or LLM__OAI_API_KEY for an "
+        "oai/ model, or pin a model on a provider that has one."
     ),
     "assistance model": (
         "Assistance model: part of the pipeline export's metadata, per method under "

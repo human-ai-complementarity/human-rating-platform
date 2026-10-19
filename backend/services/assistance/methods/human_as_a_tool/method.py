@@ -27,14 +27,18 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 
 import openai
 
 from models import Question
 
-from ...base import InteractionStep, StepType
+from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
+from ...model_resolution import AssistanceModel
 from ...confidence import (
+    CLUSTERING_TEMPERATURE,
+    SAMPLING_TEMPERATURE,
     ConfidenceEstimator,
     LLMConfidenceEstimator,
     SamplingConfidenceEstimator,
@@ -72,18 +76,32 @@ class HumanAsAToolMethod(InitialStepPreparation):
         roles = (cls.primary_model_role, "confidence")
         return (*roles, "clustering") if _confidence_method(params) == "sampling" else roles
 
+    @classmethod
+    def role_models(cls, params: Mapping[str, object]) -> dict[str, AssistanceModel]:
+        """The instruments' options are the estimator's, not the arm's: the
+        sampling estimators draw at `SAMPLING_TEMPERATURE`, clustering groups
+        at `CLUSTERING_TEMPERATURE`, self-report sends none. Filled in here,
+        from the same values `_get_estimator` passes on, so the session's
+        `role_models` records what runs."""
+        models = super().role_models(params)
+        if _confidence_method(params) in ("sampling", "self_consistency"):
+            models["confidence"] = replace(models["confidence"], temperature=SAMPLING_TEMPERATURE)
+        if "clustering" in models:
+            models["clustering"] = replace(models["clustering"], temperature=CLUSTERING_TEMPERATURE)
+        return models
+
     def preparation_params(self, params: dict) -> dict:
         models = self.role_models(params)
         prepared = {
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                self.method_key: models[self.primary_model_role],
+                self.method_key: models[self.primary_model_role].to_dict(),
             },
-            "confidence_model": models["confidence"],
+            "confidence_model": models["confidence"].model,
         }
         if "clustering" in models:
-            prepared["clustering_model"] = models["clustering"]
+            prepared["clustering_model"] = models["clustering"].model
         return prepared
 
     def __init__(self, confidence_estimator: ConfidenceEstimator | None = None) -> None:
@@ -138,10 +156,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 )
 
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("human_as_a_tool start() failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -162,7 +183,8 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 "confidence_threshold": confidence_threshold,
                 "subtasks": subtasks,
                 "history": [],
-                "model": model,
+                # Pinned for the session: a PATCH mid-session changes nothing.
+                "model": model.to_dict(),
             },
         )
 
@@ -175,8 +197,14 @@ class HumanAsAToolMethod(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         # `state` first: the model is pinned at session start so a multi-turn
-        # interaction cannot switch models mid-flight.
-        model = state.get("model") or self.role_models(params)[self.primary_model_role]
+        # interaction cannot switch models mid-flight. A session started before
+        # entries carried options pinned a bare id; it keeps running with none.
+        pinned = state.get("model")
+        model = (
+            AssistanceModel.from_entry(pinned)
+            if pinned
+            else self.role_models(params)[self.primary_model_role]
+        )
 
         try:
             raw_input: dict = json.loads(human_input)
@@ -226,10 +254,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 )
 
             subtasks = await self._score_subtasks(question_text, result.subtasks, params)
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("human_as_a_tool advance() failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         return InteractionStep(
@@ -250,7 +281,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 "confidence_threshold": confidence_threshold,
                 "subtasks": subtasks,
                 "history": history,
-                "model": model,
+                "model": model.to_dict(),
             },
         )
 
@@ -261,20 +292,26 @@ class HumanAsAToolMethod(InitialStepPreparation):
         # The map the session records: a role `model_roles` omits is a
         # KeyError here, not a model that runs unrecorded.
         models = self.role_models(params)
-        confidence_model = models["confidence"]
+        # Model and temperature from the recorded entries (`role_models`), so
+        # the estimator runs exactly what the session says it did.
+        confidence = models["confidence"]
         if method == "sampling":
+            clustering = models["clustering"]
             estimator: ConfidenceEstimator = SamplingConfidenceEstimator(
-                sampling_model=confidence_model,
-                clustering_model=models["clustering"],
+                sampling_model=confidence.model,
+                clustering_model=clustering.model,
                 num_samples=_num_samples(params),
+                temperature=confidence.temperature,
+                clustering_temperature=clustering.temperature,
             )
         elif method == "self_consistency":
             estimator = SelfConsistencyConfidenceEstimator(
-                sampling_model=confidence_model,
+                sampling_model=confidence.model,
                 num_samples=_num_samples(params),
+                temperature=confidence.temperature,
             )
         else:
-            estimator = LLMConfidenceEstimator(model=confidence_model)
+            estimator = LLMConfidenceEstimator(model=confidence.model)
         self._estimator = estimator
         return estimator
 

@@ -26,6 +26,18 @@ from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import TopNAssistance
 from services.assistance.model_resolution import instrument_model_keys
 
+
+def _entry(model: str, **options) -> dict:
+    """A model entry: `model` with the options given, the rest not sent."""
+    return {
+        "model": model,
+        "reasoning_effort": None,
+        "text_verbosity": None,
+        "temperature": None,
+        **options,
+    }
+
+
 _CARD = {
     "external_study_name": "Passage comprehension rating",
     "internal_study_name": "{dataset} {wave} {method}",
@@ -124,12 +136,17 @@ def test_an_explicit_payload_value_is_never_overridden(client: TestClient):
         group_id=group["id"],
         assistance_method="top_n",
         num_ratings_per_question=2,
-        assistance_params={"assistance_models": {"top_n": "openrouter/openai/gpt-4o"}, "n": 4},
+        assistance_params={
+            "assistance_models": {"top_n": _entry("openrouter/openai/gpt-4o", temperature=0)},
+            "n": 4,
+        },
     )
 
     assert exp["name"] == "Hand-picked name"
     assert exp["num_ratings_per_question"] == 2
-    assert exp["assistance_params"]["assistance_models"] == {"top_n": "openrouter/openai/gpt-4o"}
+    assert exp["assistance_params"]["assistance_models"] == {
+        "top_n": _entry("openrouter/openai/gpt-4o", temperature=0)
+    }
     assert exp["assistance_params"]["n"] == 4
 
 
@@ -406,8 +423,13 @@ def test_a_role_given_an_override_is_validated_with_no_other_edit(client: TestCl
 
 
 # Sentinel map entries, distinct from every settings default.
-_MAP_TOP_N = "openrouter/test/top-n-entry"
-_MAP_HAAT = "openrouter/test/human-as-a-tool-entry"
+_MAP_TOP_N = _entry("openrouter/test/top-n-entry", reasoning_effort="low", temperature=0.5)
+_MAP_HAAT = _entry("openrouter/test/human-as-a-tool-entry", text_verbosity="low")
+# An instrument runs the entry's model with its own options: none declared.
+_MAP_HAAT_INSTRUMENT = _entry(_MAP_HAAT["model"])
+# Under the sampling estimator the instruments send their own temperatures.
+_MAP_HAAT_SAMPLING = _entry(_MAP_HAAT["model"], temperature=0.7)
+_MAP_HAAT_CLUSTERING = _entry(_MAP_HAAT["model"], temperature=0)
 
 
 def _first_question(client: TestClient, experiment_id: int, pid: str) -> tuple[dict, dict]:
@@ -422,6 +444,11 @@ def _first_question(client: TestClient, experiment_id: int, pid: str) -> tuple[d
         },
     ).json()
     headers = {"X-Rater-Session": session["rater_session_token"]}
+    # Questions are refused until the rater has agreed to the consent statement;
+    # consent reissues the token, so continue with that one.
+    consent = client.post("/api/raters/consent", headers=headers)
+    assert consent.status_code == 200
+    headers = {"X-Rater-Session": consent.json()["rater_session_token"]}
     return headers, client.get("/api/raters/next-question", headers=headers).json()
 
 
@@ -512,14 +539,15 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
     # The prepared snapshot also pins the confidence model (#119): the map's (#148).
     snapshot = {
         **params,
-        "confidence_model": _MAP_HAAT,
-        "role_models": {"decomposition": _MAP_HAAT, "confidence": _MAP_HAAT},
+        "confidence_model": _MAP_HAAT["model"],
+        "role_models": {"decomposition": _MAP_HAAT, "confidence": _MAP_HAAT_INSTRUMENT},
     }
     assert advance.call_args.args[2] == snapshot
     assert _session_params(sync_engine) == snapshot
 
 
 _MAP_CONFIDENCE = "openrouter/test/confidence-override"
+_MAP_CONFIDENCE_SAMPLING = _entry(_MAP_CONFIDENCE, temperature=0.7)
 
 
 @pytest.mark.parametrize(
@@ -529,12 +557,16 @@ _MAP_CONFIDENCE = "openrouter/test/confidence-override"
         (
             "human_as_a_tool",
             {"assistance_models": {"human_as_a_tool": _MAP_HAAT}},
-            {"decomposition": _MAP_HAAT, "confidence": _MAP_HAAT},
+            {"decomposition": _MAP_HAAT, "confidence": _MAP_HAAT_INSTRUMENT},
         ),
         (
             "human_as_a_tool",
             {"assistance_models": {"human_as_a_tool": _MAP_HAAT}, "confidence_method": "sampling"},
-            dict.fromkeys(("decomposition", "confidence", "clustering"), _MAP_HAAT),
+            {
+                "decomposition": _MAP_HAAT,
+                "confidence": _MAP_HAAT_SAMPLING,
+                "clustering": _MAP_HAAT_CLUSTERING,
+            },
         ),
         (
             # No entry: each role's settings default. Preparation pins one for
@@ -553,14 +585,14 @@ _MAP_CONFIDENCE = "openrouter/test/confidence-override"
             },
             {
                 "decomposition": _MAP_HAAT,
-                "confidence": _MAP_CONFIDENCE,
-                "clustering": _MAP_HAAT,
+                "confidence": _MAP_CONFIDENCE_SAMPLING,
+                "clustering": _MAP_HAAT_CLUSTERING,
             },
         ),
         (
             "human_as_a_tool",
             {"confidence_method": "sampling", "confidence_model": _MAP_CONFIDENCE},
-            {"decomposition": None, "confidence": _MAP_CONFIDENCE, "clustering": None},
+            {"decomposition": None, "confidence": _MAP_CONFIDENCE_SAMPLING, "clustering": None},
         ),
     ],
 )
@@ -600,12 +632,13 @@ def test_prepared_and_foreground_sessions_record_the_same_role_models(
 
     assert paths == [runner_module.__name__, operations.__name__]
     llm = get_settings().llm
-    # None: the role's settings default.
+    # None: the role's settings default, with the options it always sent.
     defaults = {
-        "answer": llm.default_model,
-        "decomposition": llm.decomposition_model,
-        "confidence": llm.confidence_model,
-        "clustering": llm.clustering_model,
+        "answer": _entry(llm.default_model, temperature=0),
+        "decomposition": _entry(llm.decomposition_model),
+        # Every case leaving these to the default runs the sampling estimator.
+        "confidence": _entry(llm.confidence_model, temperature=0.7),
+        "clustering": _entry(llm.clustering_model, temperature=0),
     }
     expected = {role: model or defaults[role] for role, model in role_models.items()}
     with sync_engine.connect() as conn:
@@ -625,7 +658,7 @@ def test_prepared_and_foreground_sessions_record_the_same_role_models(
 # `resolve_model` for free. The map's own upload rules are covered in
 # test_upload_assistance_models.py.
 
-_UPLOADED_MODELS = {"top_n": "openrouter/anthropic/claude-sonnet-4.6"}
+_UPLOADED_MODELS = {"top_n": _entry("openrouter/anthropic/claude-sonnet-4.6", temperature=0)}
 
 
 def _pinned_models(client: TestClient, experiment_id: int) -> dict | None:

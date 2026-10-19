@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
     AssistanceSession,
+    ConsentRecord,
     ExperimentRound,
     ProlificStudyStatus,
     QuestionAssignment,
@@ -18,6 +19,7 @@ from models import (
 )
 from config import Settings, get_settings
 from schemas import (
+    ConsentResponse,
     QuestionResponse,
     RaterStartResponse,
     RatingResponse,
@@ -28,6 +30,7 @@ from services.admin.prolific import ProlificAPIError, add_participant_to_group, 
 from services.assistance.registry import get_rater_instructions
 from services.participant_groups import ensure_participant_group_and_commit
 from services.queries import fetch_remaining_rating_actions
+from services.terms import terms_for_rater
 from session_policy import SessionPolicy, resolve_session_policy
 from .mappers import (
     build_question_response,
@@ -36,6 +39,7 @@ from .mappers import (
 from .session_token import issue_rater_session_token
 from .queries import (
     fetch_assignment_for_question,
+    fetch_consent_record,
     fetch_eligible_questions_with_counts,
     fetch_existing_rater_for_experiment,
     fetch_existing_rating,
@@ -92,6 +96,9 @@ async def start_session(
     description_for_intro = round_description or experiment.description
 
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
+    # Read before anything is written: the terms source is read live, and if
+    # that fails the rater gets a clear 503 instead of a half-created session.
+    terms = await terms_for_rater(experiment)
     policy = resolve_session_policy(experiment)
 
     existing_rater = await fetch_existing_rater_for_experiment(
@@ -129,6 +136,11 @@ async def start_session(
             # preview idle past the deadline once would otherwise keep counting
             # towards "ran out of time" through every clean run afterwards.
             existing_rater.timed_out = False
+            # A preview is for seeing what raters see, and the consent screen
+            # is the first thing they see.
+            previous_consent = await fetch_consent_record(existing_rater.id, db)
+            if previous_consent is not None:
+                await db.delete(previous_consent)
             await db.commit()
             await db.refresh(existing_rater)
             logger.info(
@@ -157,10 +169,13 @@ async def start_session(
                 completion_url=experiment.prolific_completion_url,
                 rater_session_token=token,
                 policy=policy,
+                terms=terms,
+                consented_at=None,
                 assistance_method=experiment.assistance_method,
                 assistance_instructions=assistance_instructions,
             )
         validate_existing_rater_can_resume(existing_rater, policy)
+        existing_consent = await fetch_consent_record(existing_rater.id, db)
         token = issue_rater_session_token(
             settings,
             rater_id=existing_rater.id,
@@ -178,6 +193,8 @@ async def start_session(
             completion_url=experiment.prolific_completion_url,
             rater_session_token=token,
             policy=policy,
+            terms=terms,
+            consented_at=existing_consent.accepted_at if existing_consent else None,
             assistance_method=experiment.assistance_method,
             assistance_instructions=assistance_instructions,
         )
@@ -261,8 +278,77 @@ async def start_session(
         completion_url=experiment.prolific_completion_url,
         rater_session_token=token,
         policy=policy,
+        terms=terms,
+        consented_at=None,
         assistance_method=experiment.assistance_method,
         assistance_instructions=assistance_instructions,
+    )
+
+
+async def record_consent(*, settings: Settings, rater_id: int, db: AsyncSession) -> ConsentResponse:
+    """Record that the rater agreed to the consent statement, and start the clock.
+
+    Stores the text exactly as shown and which source file it came from.
+    The session timer starts here, not at `/start`: the consent screen shows
+    no timer, and time spent reading it must not count against the study.
+    So the rater's `session_start` moves to this moment and a fresh token is
+    minted from it (tokens expire relative to `session_start`).
+
+    Idempotent: a second call (a double click, a reload that replays it)
+    keeps the original record and clock rather than re-stamping.
+    """
+    rater = await fetch_rater_or_404(rater_id, db)
+    experiment = await fetch_experiment_or_404(rater.experiment_id, db)
+    policy = resolve_session_policy(experiment)
+    # Same gates as the other write paths: an ended or timed-out session
+    # cannot record consent after the fact.
+    validate_rater_marked_active(rater)
+    await validate_rater_session_not_over(rater, db, policy)
+
+    record = await fetch_consent_record(rater.id, db)
+    if record is None:
+        terms = await terms_for_rater(experiment)
+        now = datetime.now(UTC)
+        rater.session_start = now
+        record = ConsentRecord(
+            rater_id=rater.id,
+            experiment_id=rater.experiment_id,
+            prolific_id=rater.prolific_id,
+            statement=terms.label,
+            version=terms.version,
+            sha256=terms.sha256,
+            source_url=terms.source_url,
+            rendered_text=terms.consent_markdown,
+            accepted_at=now,
+            is_preview=rater.is_preview,
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        await db.refresh(rater)
+        logger.info(
+            "Rater consented",
+            extra={
+                "attributes": {
+                    "rater_id": rater.id,
+                    "experiment_id": rater.experiment_id,
+                    "statement": terms.ref,
+                }
+            },
+        )
+    token = issue_rater_session_token(
+        settings,
+        rater_id=rater.id,
+        experiment_id=rater.experiment_id,
+        session_start=rater.session_start,
+        policy=policy,
+    )
+    return ConsentResponse(
+        consented_at=record.accepted_at,
+        session_start=rater.session_start,
+        session_end_time=policy.deadline(rater.session_start),
+        session_grace_seconds=policy.grace_minutes * 60,
+        rater_session_token=token,
     )
 
 
