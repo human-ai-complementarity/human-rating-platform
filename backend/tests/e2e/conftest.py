@@ -132,3 +132,17 @@ def client():
         yield test_client
     settings.prolific.api_token = original_token
     settings.admin_auth_enabled = original_admin_auth
+
+
+@pytest.fixture(autouse=True)
+def no_provider_calls(monkeypatch):
+    """`.env.test` sets provider keys so the launch gate passes, so a test that
+    reaches `llm.complete` unmocked must still never call a provider: the
+    client is a stub whose every call raises, as a missing key used to."""
+    from types import SimpleNamespace
+
+    async def refuse(**_kwargs):
+        raise RuntimeError("LLM provider calls are disabled in tests")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)))
+    monkeypatch.setattr("services.assistance.llm._get_client", lambda *_args: client)

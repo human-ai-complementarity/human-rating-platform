@@ -15,7 +15,16 @@ type ExperimentRecord = {
   archived_at: string | null;
   is_markdown: boolean;
   assistance_method: string;
-  resolved_models?: Record<string, { model: string; source: 'assistance_models' | 'default' }>;
+  resolved_models?: Record<
+    string,
+    {
+      model: string;
+      reasoning_effort: string | null;
+      text_verbosity: string | null;
+      temperature: number | null;
+      source: 'assistance_models' | 'default';
+    }
+  >;
   needs_attention: boolean;
   attention_reason: string | null;
   spend_minor_units: number;
@@ -111,7 +120,24 @@ type RaterSessionRecord = {
   experiment_description_html?: string | null;
   completion_url: string | null;
   rater_session_token: string;
+  // Omitted: the mock serves a stub statement with consent not yet given, so
+  // every rater flow goes through the consent screen the way real ones do.
+  consent_statement_html?: string;
+  consented_at?: string | null;
 };
+
+const MOCK_CONSENT_HTML = '<h2>Purpose of the study</h2><p>Mock consent statement.</p>';
+
+// Ticks the box and agrees on the consent screen, the first thing every rater
+// sees. Waits for the screen to be gone so the caller can go straight to
+// asserting on whatever comes next (intro or first question).
+async function agreeToConsent(page: Page) {
+  const screen = page.getByTestId('consent-screen');
+  await expect(screen).toBeVisible();
+  await screen.getByRole('checkbox').check();
+  await screen.getByRole('button', { name: 'I agree' }).click();
+  await expect(screen).toHaveCount(0);
+}
 
 type RaterAnalyticsRecord = {
   prolific_id: string;
@@ -120,6 +146,8 @@ type RaterAnalyticsRecord = {
   session_end: string | null;
   is_active: boolean;
   timed_out: boolean;
+  consent_version: string | null;
+  consented_at: string | null;
   num_ratings: number;
   total_response_time_seconds: number;
   avg_response_time_seconds: number;
@@ -167,6 +195,7 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  consentSessionTokens: string[];
   pinnedQuestionRequests: number[];
   submittedRatings: Record<string, unknown>[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
@@ -247,6 +276,7 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    consentSessionTokens: [],
     pinnedQuestionRequests: [],
     submittedRatings: [],
     sessionsByExperimentId: {},
@@ -797,7 +827,28 @@ async function installApiMocks(
           rater_session_token: `token-exp-${experimentId || 'default'}`,
         };
       await fulfillJson(route, 200, {
+        consent_statement_html: MOCK_CONSENT_HTML,
+        consented_at: null,
         ...session,
+      });
+      return;
+    }
+
+    if (pathname === '/api/raters/consent' && method === 'POST') {
+      state.consentSessionTokens.push(request.headers()['x-rater-session'] || '');
+      // Mirrors the backend: the clock starts at consent and the token is
+      // reissued (unchanged here so token-based assertions keep working).
+      const token = request.headers()['x-rater-session'] || '';
+      const consentedSession = Object.values(state.sessionsByExperimentId).find(
+        (item) => item.rater_session_token === token,
+      );
+      await fulfillJson(route, 200, {
+        consented_at: '2026-03-09T00:02:30Z',
+        // Keep the mocked session's own window so intro timing assertions hold.
+        session_start: consentedSession?.session_start ?? '2026-03-09T00:02:30Z',
+        session_end_time: consentedSession?.session_end_time ?? '2099-03-09T01:02:30Z',
+        session_grace_seconds: consentedSession?.session_grace_seconds ?? 0,
+        rater_session_token: token,
       });
       return;
     }
@@ -962,6 +1013,7 @@ test('the rater intro states the session length before they commit', async ({ pa
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const expectations = page.getByTestId('session-expectations');
   await expect(expectations).toBeVisible();
@@ -1166,6 +1218,7 @@ test('preview participant link opens /rate with preview mode and starts one prev
   await expect(popup).toHaveURL(/preview=true/);
   await expect(popup.getByText('Preview mode')).toBeVisible();
   await expect(popup.getByText('Preview Experiment')).toBeVisible();
+  await agreeToConsent(popup);
   await expect(popup.getByText('Is this workflow ready for release?')).toBeVisible();
   await expect.poll(() => state.previewStartRequests.length).toBe(1);
   await expect(state.previewStartRequests[0]).toContain('preview=true');
@@ -1212,6 +1265,7 @@ test('the question in hand survives the deadline and can still be submitted', as
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
 
@@ -1282,6 +1336,7 @@ test('a long parent question moves the document behind the link, not into the ca
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const documentLink = page.getByRole('link', { name: 'Open document in new tab' });
   await expect(documentLink).toBeVisible();
@@ -1316,6 +1371,7 @@ test('a short parent question stays inline in the context box', async ({ page })
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.getByText('Context', { exact: true })).toBeVisible();
   await expect(page.getByText(preamble)).toBeVisible();
@@ -1337,6 +1393,7 @@ test('a --- QUESTION --- delimiter in question text is not treated as a document
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.getByRole('link', { name: 'Open document in new tab' })).toHaveCount(0);
   await expect(page.getByText('Document line one')).toBeVisible();
@@ -1370,6 +1427,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   await expect(page.locator('pre code')).toContainText('def f(n):');
   await expect(page.getByText('```python')).toHaveCount(0);
@@ -1413,6 +1471,7 @@ test('the markdown flag also applies to the long-context document window', async
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const popupPromise = context.waitForEvent('page');
   await page.getByRole('link', { name: 'Open document in new tab' }).click();
@@ -1443,6 +1502,7 @@ test('an MC question with no options submits the typed free-text answer', async 
   });
 
   await page.goto(RATER_URL);
+  await agreeToConsent(page);
 
   const answer = page.getByPlaceholder('Type your answer here...');
   await expect(answer).toBeVisible();
@@ -1531,6 +1591,7 @@ test('rater ignores a stored session from another experiment and starts a fresh 
 
   await installApiMocks(page, state);
   await page.goto('/rate?experiment_id=2&PROLIFIC_PID=pid-2&STUDY_ID=study-2&SESSION_ID=session-2');
+  await agreeToConsent(page);
 
   await expect(page.getByRole('heading', { name: 'Fresh Experiment' })).toBeVisible();
   await expect(page.getByText('Fresh experiment question')).toBeVisible();
@@ -1700,8 +1761,20 @@ test('opening an archived experiment resolves via the per-id fetch', async ({ pa
 test('the assistance config shows the model each method would run on', async ({ page }) => {
   const state = createMockState();
   const resolved_models = {
-    top_n: { model: 'openrouter/test/top-n-entry', source: 'assistance_models' as const },
-    human_as_a_tool: { model: 'openrouter/test/platform-default', source: 'default' as const },
+    top_n: {
+      model: 'oai/test/top-n-entry',
+      reasoning_effort: 'low',
+      text_verbosity: 'low',
+      temperature: null,
+      source: 'assistance_models' as const,
+    },
+    human_as_a_tool: {
+      model: 'openrouter/test/platform-default',
+      reasoning_effort: null,
+      text_verbosity: null,
+      temperature: 0.7,
+      source: 'default' as const,
+    },
   };
   state.experiments = [
     buildExperiment(state, { id: 1, assistance_method: 'top_n', resolved_models }),
@@ -1723,13 +1796,19 @@ test('the assistance config shows the model each method would run on', async ({ 
   await page.goto('/admin/experiments/1');
   await page.getByTestId('tab-assistance').click();
   await expect(page.getByTestId('resolved-model-top_n')).toHaveText(
-    'Model: openrouter/test/top-n-entry · from assistance_models',
+    'Model: oai/test/top-n-entry · from assistance_models',
+  );
+  await expect(page.getByTestId('resolved-model-options-top_n')).toHaveText(
+    'reasoning effort: low · verbosity: low · temperature: not sent',
   );
 
   await page.goto('/admin/experiments/2');
   await page.getByTestId('tab-assistance').click();
   await expect(page.getByTestId('resolved-model-human_as_a_tool')).toHaveText(
     'Model: openrouter/test/platform-default · platform default',
+  );
+  await expect(page.getByTestId('resolved-model-options-human_as_a_tool')).toHaveText(
+    'reasoning effort: not sent · verbosity: not sent · temperature: 0.7',
   );
   await expect(page.getByTestId('resolved-model-top_n')).toHaveCount(0);
 });
@@ -1864,6 +1943,8 @@ test.describe('analytics raters tab', () => {
           session_end: null,
           is_active: true,
           timed_out: false,
+          consent_version: null,
+          consented_at: null,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,
@@ -1937,6 +2018,7 @@ test.describe('analytics raters tab', () => {
     // Following it opens the rater view on that exact question, not whatever
     // next-question would have served.
     await page.goto(href as string);
+    await agreeToConsent(page);
     await expect(page.getByText('Pinned question 742')).toBeVisible();
     expect(state.pinnedQuestionRequests).toEqual([742]);
     expect(state.nextQuestionSessionTokens).toEqual([]);
@@ -1972,6 +2054,8 @@ test.describe('analytics raters tab', () => {
           session_end: null,
           is_active: true,
           timed_out: false,
+          consent_version: null,
+          consented_at: null,
           num_ratings: 3,
           total_response_time_seconds: 209.82,
           avg_response_time_seconds: 69.94,

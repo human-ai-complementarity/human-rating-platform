@@ -56,6 +56,8 @@ async def test_start_returns_none_step_on_decomposer_runtime_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == "RuntimeError: LLM unavailable"
 
 
 @pytest.mark.asyncio
@@ -89,6 +91,8 @@ async def test_advance_returns_none_step_on_decomposer_runtime_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == "RuntimeError: LLM unavailable"
 
 
 @pytest.mark.asyncio

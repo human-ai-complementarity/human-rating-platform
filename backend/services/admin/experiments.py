@@ -53,6 +53,7 @@ from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     RELOAD_HINT,
     instrument_model_keys,
+    validate_model_entry,
     reject_removed_model_key,
     reject_role_models_key,
     validate_model_id,
@@ -713,9 +714,11 @@ def _merged_assistance_params(experiment: Experiment, incoming: dict[str, Any]) 
     configured but ran on platform defaults.
 
     `assistance_models` merges one level deeper, per method, so PATCHing one
-    method's model keeps the others. An explicit `None` entry is stored rather
-    than dropped: a deliberate clear that a later upload will not re-pin.
-    Sending `"assistance_models": None` clears the whole map.
+    method's entry keeps the others. An entry is replaced whole, never merged
+    key by key: its model and options are one declaration. An explicit `None`
+    entry is stored rather than dropped: a deliberate clear that a later
+    upload will not re-pin. Sending `"assistance_models": None` clears the
+    whole map.
     """
     stored = _stored_assistance_params(experiment)
     merged = {**stored, **incoming}
@@ -734,13 +737,13 @@ def _check_model_id(value: Any, field: str) -> None:
 
 
 def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> None:
-    """400 on a model id the transport can't parse, here rather than at rater time.
+    """400 on a model the transport can't run, here rather than at rater time.
 
-    At rater time `_parse_model` raises, which the methods turn into a silent
-    no-assistance step (or a 500 for a non-string). Only values this request
-    changes are checked: the admin UI re-sends the stored params on every save,
-    so a legacy value it merely restates must not block an unrelated edit.
-    Covers every instrument role's override and `assistance_models`.
+    At rater time `parse_model` raises, which the methods turn into a silent
+    no-assistance step. Only values this request changes are checked: the
+    admin UI re-sends the stored params on every save, so a legacy value it
+    merely restates must not block an unrelated edit. Covers every instrument
+    role's override (a model id) and `assistance_models` (an entry per method).
     """
     for key in instrument_model_keys():
         value = merged.get(key)
@@ -754,7 +757,7 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
     if not isinstance(models, dict):
         raise HTTPException(
             status_code=400,
-            detail=f"{field} must be an object mapping assistance method to model.",
+            detail=f"{field} must be an object mapping assistance method to a model entry.",
         )
     previous = stored.get(ASSISTANCE_MODELS_KEY)
     previous = previous if isinstance(previous, dict) else {}
@@ -770,7 +773,7 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
                     f"Allowed: {', '.join(allowed)}."
                 ),
             )
-        _check_model_id(value, f"{field}.{method}")
+        validate_model_entry(value, field=f"{field}.{method}")
 
 
 async def update_experiment(

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from models import AssistanceEvent
 from services.queries import load_json_column
-from .base import InteractionStep, StepType
+from .base import InteractionStep, StepType, exception_text
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +48,12 @@ async def _call_method(
         return _MethodCall(
             step=InteractionStep(type=fallback, is_terminal=True),
             latency_ms=latency_ms,
-            error=f"{type(exc).__name__}: {exc}",
+            error=exception_text(exc),
         )
     latency_ms = _elapsed_ms(started)
     # A set failure_reason means the method caught its own failure and
     # returned a degraded step.
-    return _MethodCall(step, latency_ms, step.failure_reason)
+    return _MethodCall(step, latency_ms, step.error_text())
 
 
 def _elapsed_ms(started: float) -> int:

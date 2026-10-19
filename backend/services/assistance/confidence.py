@@ -102,6 +102,13 @@ Example: {{"cluster_ids": [0, 1, 0, 2]}}\
 # ---------------------------------------------------------------------------
 
 
+# The instruments' own request options. The sampling estimators need variety
+# across samples; clustering wants a deterministic grouping. Human-as-a-Tool
+# records these per role (`role_models`) from the same values it passes here.
+SAMPLING_TEMPERATURE = 0.7
+CLUSTERING_TEMPERATURE = 0
+
+
 async def _generate_samples(
     original_question: str,
     subtask_question: str,
@@ -235,12 +242,14 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
         sampling_model: str,
         clustering_model: str,
         num_samples: int = 5,
-        temperature: float = 0.7,
+        temperature: float = SAMPLING_TEMPERATURE,
+        clustering_temperature: float = CLUSTERING_TEMPERATURE,
     ) -> None:
         self._sampling_model = sampling_model
         self._clustering_model = clustering_model
         self._num_samples = num_samples
         self._temperature = temperature
+        self._clustering_temperature = clustering_temperature
 
     async def estimate_batch(self, question_text: str, subtasks: list[dict]) -> list[int]:
         if not subtasks:
@@ -320,7 +329,7 @@ class SamplingConfidenceEstimator(ConfidenceEstimator):
                 [{"role": "user", "content": prompt}],
                 model=self._clustering_model,
                 settings=settings.llm,
-                temperature=0,
+                temperature=self._clustering_temperature,
                 response_format={"type": "json_object"},
             )
         except Exception as e:
@@ -367,7 +376,7 @@ class SelfConsistencyConfidenceEstimator(ConfidenceEstimator):
         self,
         sampling_model: str,
         num_samples: int = 5,
-        temperature: float = 0.7,
+        temperature: float = SAMPLING_TEMPERATURE,
     ) -> None:
         self._sampling_model = sampling_model
         self._num_samples = num_samples

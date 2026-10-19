@@ -16,9 +16,10 @@ from models import Experiment, Question, Upload
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     reject_removed_model_key,
+    validate_model_entry,
     validate_model_id,
 )
-from services.assistance.registry import assisted_methods
+from services.assistance.registry import assisted_methods, expand_bare_entry
 from services.question_separator import separator_upload_offenders
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
@@ -40,7 +41,8 @@ DATASET_META_FIELDS = (
     "prolific_pool",
 )
 
-# The wave's model per assistance method, e.g. {"top_n": "openrouter/..."}.
+# The wave's model and request options per assistance method, e.g.
+# {"top_n": {"model": "openrouter/...", "reasoning_effort": null, ...}}.
 # Deliberately *not* in the tuple above: it has no Experiment column. It is
 # pinned into the JSON blob `Experiment.assistance_params`; see
 # `_apply_assistance_models_meta`. Reported per method as
@@ -81,18 +83,22 @@ def _get_upload_size(file: UploadFile) -> int:
     return size
 
 
-def _validate_assistance_models(value: Any) -> dict[str, str]:
-    """Validate the `assistance_models` meta value: {method: model id}.
+def _validate_assistance_models(value: Any) -> dict[str, dict[str, Any]]:
+    """Validate the `assistance_models` meta value: {method: entry object}.
 
     Unlike other keys' empty values, an empty or null entry is a 400, not
-    dropped: each method's model is set explicitly.
+    dropped: each method's model and options are set explicitly. A bare model
+    id is still accepted here, and only here, for exports written before
+    entries carried options: it is expanded to the entry it always stood for
+    (the model with its method's default options), so the stored map holds
+    one shape. Until the pipeline stamps entries (inference-pipeline#224), this is the grace.
     """
     if not isinstance(value, dict):
         raise HTTPException(
             status_code=400,
             detail=(
                 f"dataset metadata {ASSISTANCE_MODELS_META_FIELD!r} must be a JSON "
-                "object mapping assistance method to model"
+                "object mapping assistance method to a model entry"
             ),
         )
     allowed = assisted_methods()
@@ -106,15 +112,20 @@ def _validate_assistance_models(value: Any) -> dict[str, str]:
                 f"Allowed: {', '.join(allowed)}."
             ),
         )
-    for method, model in value.items():
+    entries: dict[str, dict[str, Any]] = {}
+    for method, entry in value.items():
         field = f"dataset metadata '{ASSISTANCE_MODELS_META_FIELD}.{method}'"
-        if not isinstance(model, str):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid model {model!r} in {field}. Expected a string.",
+        if isinstance(entry, str):
+            validate_model_id(entry, field=field)
+            entry = expand_bare_entry(method, entry)
+            logger.info(
+                "Expanded a bare assistance model id to an entry",
+                extra={"attributes": {"method": method, "entry": entry}},
             )
-        validate_model_id(model, field=field)
-    return dict(value)
+        else:
+            validate_model_entry(entry, field=field)
+        entries[method] = entry
+    return entries
 
 
 def _validate_meta_dict(parsed: Any) -> dict[str, Any]:

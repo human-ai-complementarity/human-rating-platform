@@ -1,7 +1,9 @@
-"""`assistance_models` as a dataset_meta key: the wave's model per method.
+"""`assistance_models` as a dataset_meta key: the wave's model entry per method.
 
-One export file usually serves both arms of a wave, so it declares a model per
-assisted method. The old single `model` key is refused.
+One export file usually serves both arms of a wave, so it declares an entry
+(model plus request options) per assisted method. The old single `model` key
+is refused. A bare model id is still accepted here, and only here, for
+exports written before entries existed: it expands to the entry it stood for.
 """
 
 from __future__ import annotations
@@ -17,9 +19,20 @@ from sqlalchemy import text
 
 from config import get_settings
 
-_TOP_N = "openrouter/anthropic/claude-sonnet-4.6"
-_HAAT = "openrouter/google/gemini-3-flash-preview"
-_OTHER = "openrouter/openai/gpt-4o"
+
+def _entry(model: str, **options) -> dict:
+    return {
+        "model": model,
+        "reasoning_effort": None,
+        "text_verbosity": None,
+        "temperature": None,
+        **options,
+    }
+
+
+_TOP_N = _entry("openrouter/anthropic/claude-sonnet-4.6", temperature=0)
+_HAAT = _entry("openrouter/google/gemini-3-flash-preview")
+_OTHER = _entry("oai/gpt-5.6-luna", reasoning_effort="low", text_verbosity="low")
 _MODELS = {"top_n": _TOP_N, "human_as_a_tool": _HAAT}
 _BOTH = ["assistance_models.human_as_a_tool", "assistance_models.top_n"]
 
@@ -81,7 +94,7 @@ def test_the_map_is_pinned_on_upload(client: TestClient, upload):
     assert uploads[0]["dataset_meta"] == {"assistance_models": _MODELS}
 
 
-@pytest.mark.parametrize("model", [_OTHER, None])
+@pytest.mark.parametrize("model", [_OTHER["model"], None])
 @pytest.mark.parametrize("upload", [_upload_csv, _upload_parquet])
 def test_the_removed_model_key_rejects_the_upload(client: TestClient, upload, model):
     exp = _experiment(client, assistance_params={"n": 4})
@@ -200,21 +213,19 @@ def test_the_map_inherits_the_config_lock(client: TestClient, sync_engine):
     assert "assistance_params" in changed.json()["detail"]
 
 
-def test_the_response_reports_the_model_each_method_would_run_on(client: TestClient):
+def test_the_response_reports_the_entry_each_method_would_run_on(client: TestClient):
     llm = get_settings().llm
-    entry = "openrouter/test/top-n-entry"
-    assert entry not in {llm.default_model, llm.decomposition_model}
-    haat_default = {"model": llm.decomposition_model, "source": "default"}
+    entry = _entry("oai/test/top-n-entry", reasoning_effort="high", temperature=0.3)
+    assert entry["model"] not in {llm.default_model, llm.decomposition_model}
+    haat_default = {**_entry(llm.decomposition_model), "source": "default"}
+    top_n_default = {**_entry(llm.default_model, temperature=0), "source": "default"}
 
     exp = _experiment(client, assistance_method="none")
-    assert exp["resolved_models"] == {
-        "human_as_a_tool": haat_default,
-        "top_n": {"model": llm.default_model, "source": "default"},
-    }
+    assert exp["resolved_models"] == {"human_as_a_tool": haat_default, "top_n": top_n_default}
 
     _upload_csv(client, exp["id"], {"assistance_models": {"top_n": entry}})
     pinned = {
-        "top_n": {"model": entry, "source": "assistance_models"},
+        "top_n": {**entry, "source": "assistance_models"},
         "human_as_a_tool": haat_default,
     }
     detail = client.get(f"/api/admin/experiments/{exp['id']}").json()
@@ -229,10 +240,7 @@ def test_the_response_reports_the_model_each_method_would_run_on(client: TestCli
             "assistance_params": {"assistance_models": {"top_n": None}},
         },
     )
-    assert resp.json()["resolved_models"]["top_n"] == {
-        "model": llm.default_model,
-        "source": "default",
-    }
+    assert resp.json()["resolved_models"]["top_n"] == top_n_default
 
 
 @pytest.mark.parametrize(
@@ -240,11 +248,16 @@ def test_the_response_reports_the_model_each_method_would_run_on(client: TestCli
     [
         ({"none": _TOP_N}, "none"),
         ({"isd": _HAAT}, "isd"),
-        ({"top_n": "claude-sonnet-4-6"}, "assistance_models.top_n"),
+        ({"top_n": "claude-sonnet-4.6"}, "assistance_models.top_n"),
+        ({"top_n": _entry("claude-sonnet-4-6")}, "assistance_models.top_n"),
         ({"human_as_a_tool": 3}, "assistance_models.human_as_a_tool"),
         ({"top_n": ""}, "assistance_models.top_n"),
         ({"top_n": None}, "assistance_models.top_n"),
-        (_TOP_N, "must be a JSON object"),
+        ({"top_n": {"model": _TOP_N["model"], "temperature": 0}}, "missing required key(s)"),
+        ({"top_n": _entry(_TOP_N["model"], tools=[])}, "unknown key(s) tools"),
+        ({"top_n": _entry(_TOP_N["model"], reasoning_effort="lots")}, "'reasoning_effort'"),
+        ({"top_n": _entry(_TOP_N["model"], temperature=2.5)}, "'temperature'"),
+        (_TOP_N["model"], "must be a JSON object"),
         ([_TOP_N], "must be a JSON object"),
     ],
 )
@@ -256,3 +269,20 @@ def test_a_bad_map_rejects_the_upload(client: TestClient, upload, assistance_mod
     assert resp.status_code == 400
     assert expected in resp.json()["detail"]
     assert _params(client, exp["id"]) is None
+
+
+@pytest.mark.parametrize("upload", [_upload_csv, _upload_parquet])
+def test_a_bare_id_is_expanded_to_its_entry_on_upload(client: TestClient, upload):
+    """One release's grace for exports written before entries existed: the id
+    becomes the entry it stood for, with its method's default options."""
+    exp = _experiment(client, assistance_method="none")
+    bare = {"top_n": "openrouter/anthropic/claude-sonnet-4.6", "human_as_a_tool": _HAAT["model"]}
+    resp = upload(client, exp["id"], {"assistance_models": bare})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["meta_applied"] == _BOTH
+    assert _params(client, exp["id"])["assistance_models"] == _MODELS
+
+    # The same file again agrees with what it was expanded to.
+    again = upload(client, exp["id"], {"assistance_models": bare}).json()
+    assert again["meta_applied"] == [] and again["meta_conflicts"] == []
