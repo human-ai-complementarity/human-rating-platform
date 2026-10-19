@@ -353,7 +353,16 @@ def test_queue_does_not_reserve_the_partner_behind_its_head(client, monkeypatch,
         f"/api/admin/experiments/{experiment['id']}",
         json={
             "assistance_method": "top_n",
-            "assistance_params": {"assistance_models": {"top_n": "openrouter/test"}},
+            "assistance_params": {
+                "assistance_models": {
+                    "top_n": {
+                        "model": "openrouter/test",
+                        "reasoning_effort": None,
+                        "text_verbosity": None,
+                        "temperature": None,
+                    }
+                }
+            },
         },
     )
     assert response.status_code == 200, response.text
