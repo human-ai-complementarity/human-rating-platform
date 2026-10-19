@@ -58,6 +58,8 @@ async def test_start_returns_none_step_on_decomposer_runtime_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == "RuntimeError: LLM unavailable"
 
 
 @pytest.mark.asyncio
@@ -91,6 +93,8 @@ async def test_advance_returns_none_step_on_decomposer_runtime_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == "RuntimeError: LLM unavailable"
 
 
 @pytest.mark.asyncio
@@ -135,3 +139,5 @@ async def test_start_reports_decomposition_cut_off_with_no_content_as_provider_e
 
     assert step.type == StepType.NONE
     assert step.failure_reason == "provider_error"
+    assert step.failure_detail.startswith("EmptyTruncatedReplyError: LLM reply from ")
+    assert "max_tokens=4096 with no content" in step.failure_detail

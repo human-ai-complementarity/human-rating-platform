@@ -33,9 +33,10 @@ import openai
 from config import LLMSettings, get_settings
 from models import Question
 
-from ..base import InteractionStep, StepType
+from ..base import InteractionStep, StepType, exception_text
 from ..preparation import InitialStepPreparation, QuestionSnapshot
-from ..llm import EmptyTruncatedReplyError, complete
+from ..llm import EmptyTruncatedReplyError, NoChoicesError, complete
+from ..model_resolution import AssistanceModel
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +44,16 @@ _DEFAULT_TOP_N = 3
 _MAX_TOP_N = 10
 _OPTION_LABEL_PATTERN = re.compile(r"(?:^|[,\r\n])\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+")
 _SCHEMA_REJECT_STATUS_CODES = (400, 404, 422)
-# Per-process json_schema verdicts, and the per-model lock that settles them.
-# A model is "rejected" once its provider refused the schema and the
+# Per-process json_schema verdicts, and the per-entry lock that settles them.
+# An entry is "rejected" once its provider refused the schema and the
 # unconstrained retry worked, "accepted" once a schema call came back 200.
-# Until one of those holds, exactly one coroutine probes the model and the
-# rest wait on its lock, so a wave start costs one rejection, not one per
-# concurrent rater.
-_SCHEMA_REJECTED_MODELS: set[str] = set()
-_SCHEMA_ACCEPTED_MODELS: set[str] = set()
-_SCHEMA_PROBE_LOCKS: dict[str, asyncio.Lock] = {}
+# Keyed by the whole entry, not the model: the verdict can depend on the
+# declared options too. Until one of those holds, exactly one coroutine
+# probes the entry and the rest wait on its lock, so a wave start costs one
+# rejection, not one per concurrent rater.
+_SCHEMA_REJECTED_MODELS: set[AssistanceModel] = set()
+_SCHEMA_ACCEPTED_MODELS: set[AssistanceModel] = set()
+_SCHEMA_PROBE_LOCKS: dict[AssistanceModel, asyncio.Lock] = {}
 
 _SYSTEM_PROMPT = """\
 You help human raters answer evaluation questions. Rank the most likely answers
@@ -188,72 +190,73 @@ def _none_step(parse_status: str) -> InteractionStep:
     )
 
 
-def _schema_probe_lock(model: str) -> asyncio.Lock:
-    return _SCHEMA_PROBE_LOCKS.setdefault(model, asyncio.Lock())
+def _schema_probe_lock(entry: AssistanceModel) -> asyncio.Lock:
+    return _SCHEMA_PROBE_LOCKS.setdefault(entry, asyncio.Lock())
 
 
-def _schema_verdict_settled(model: str) -> bool:
-    return model in _SCHEMA_REJECTED_MODELS or model in _SCHEMA_ACCEPTED_MODELS
+def _schema_verdict_settled(entry: AssistanceModel) -> bool:
+    return entry in _SCHEMA_REJECTED_MODELS or entry in _SCHEMA_ACCEPTED_MODELS
 
 
 async def _complete_with_schema(
     messages: list[dict[str, str]],
     *,
-    model: str,
+    entry: AssistanceModel,
     settings: LLMSettings,
     response_format: dict[str, Any],
 ) -> str:
     """Send the schema, falling back to an unconstrained retry if it is refused.
 
-    A reply cut off empty at max_tokens still came back 200, so it settles the
+    A reply cut off empty at the output cap still came back 200, so it settles the
     verdict like any other reply before the error goes up to the caller.
     """
     try:
         raw = await complete(
             messages,
-            model=model,
             settings=settings,
             response_format=response_format,
-            temperature=0,
+            **entry.to_dict(),
         )
     except EmptyTruncatedReplyError:
-        _SCHEMA_ACCEPTED_MODELS.add(model)
+        _SCHEMA_ACCEPTED_MODELS.add(entry)
         raise
-    except openai.APIStatusError as exc:
+    except (openai.APIStatusError, NoChoicesError) as exc:
+        # OpenRouter reports "no endpoint supports these parameters" as a 200
+        # with an error body, which `complete` raises as NoChoicesError.
         if exc.status_code not in _SCHEMA_REJECT_STATUS_CODES:
             raise
         logger.warning(
-            "Top-N json_schema rejected by the provider; retrying without response_format",
-            extra={"attributes": {"model": model, "status_code": exc.status_code}},
+            "Top-N request rejected by the provider; retrying without response_format",
+            extra={"attributes": {"model": entry.model, "status_code": exc.status_code}},
         )
         try:
-            raw = await complete(messages, model=model, settings=settings, temperature=0)
+            raw = await complete(messages, settings=settings, **entry.to_dict())
         except EmptyTruncatedReplyError:
-            _SCHEMA_REJECTED_MODELS.add(model)
+            _SCHEMA_REJECTED_MODELS.add(entry)
             raise
-        _SCHEMA_REJECTED_MODELS.add(model)
+        _SCHEMA_REJECTED_MODELS.add(entry)
         return raw
-    _SCHEMA_ACCEPTED_MODELS.add(model)
+    _SCHEMA_ACCEPTED_MODELS.add(entry)
     return raw
 
 
 async def _complete_with_schema_fallback(
     messages: list[dict[str, str]],
     *,
-    model: str,
+    entry: AssistanceModel,
     settings: LLMSettings,
     response_format: dict[str, Any],
 ) -> str:
     """Ask for json_schema; if the provider rejects it, skip it for this model.
 
-    OpenRouter's default without `require_parameters` is to drop unsupported
-    params, but a provider that *rejects* `strict` json_schema would otherwise
+    OpenRouter drops unsupported params, but a provider that *rejects*
+    `strict` json_schema (as OpenAI does for some options) would otherwise
     fail every question in the round. Retrying without `response_format` keeps
     the previous fail-soft behaviour; the model is remembered only once that
     unconstrained retry gets a reply (even one cut off empty), so a 404 for an
-    unknown id does not poison the memo. Later questions then skip the schema (one extra call per
-    process, not per question). The prompt examples are then the only
-    constraint.
+    unknown id does not poison the memo. Later questions then skip the schema
+    (one extra call per process, not per question). The prompt examples are
+    then the only constraint.
 
     A wave starts with many raters calling this at once for the same model, so
     the first schema attempt is gated by a per-model lock: whoever gets there
@@ -263,19 +266,19 @@ async def _complete_with_schema_fallback(
     routed to an endpoint that refuses the schema.
     """
     while True:
-        if model in _SCHEMA_REJECTED_MODELS:
-            return await complete(messages, model=model, settings=settings, temperature=0)
-        if model in _SCHEMA_ACCEPTED_MODELS:
+        if entry in _SCHEMA_REJECTED_MODELS:
+            return await complete(messages, settings=settings, **entry.to_dict())
+        if entry in _SCHEMA_ACCEPTED_MODELS:
             return await _complete_with_schema(
-                messages, model=model, settings=settings, response_format=response_format
+                messages, entry=entry, settings=settings, response_format=response_format
             )
 
-        async with _schema_probe_lock(model):
+        async with _schema_probe_lock(entry):
             # A probe we queued behind may have settled the verdict already; if
             # it did, fall out of the lock and re-dispatch without holding it.
-            if not _schema_verdict_settled(model):
+            if not _schema_verdict_settled(entry):
                 return await _complete_with_schema(
-                    messages, model=model, settings=settings, response_format=response_format
+                    messages, entry=entry, settings=settings, response_format=response_format
                 )
 
 
@@ -366,7 +369,7 @@ class TopNAssistance(InitialStepPreparation):
             **params,
             "assistance_models": {
                 **(params.get("assistance_models") or {}),
-                self.method_key: self.role_models(params)[self.primary_model_role],
+                self.method_key: self.role_models(params)[self.primary_model_role].to_dict(),
             },
         }
 
@@ -379,7 +382,8 @@ class TopNAssistance(InitialStepPreparation):
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
-        model = self.role_models(params)[self.primary_model_role]
+        entry = self.role_models(params)[self.primary_model_role]
+        model = entry.model
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
         options = _parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n
@@ -418,14 +422,17 @@ class TopNAssistance(InitialStepPreparation):
         try:
             raw = await _complete_with_schema_fallback(
                 messages,
-                model=model,
+                entry=entry,
                 settings=settings.llm,
                 response_format=response_format,
             )
-        except (RuntimeError, ValueError, openai.OpenAIError):
+        except (RuntimeError, ValueError, openai.OpenAIError) as exc:
             logger.exception("Top-N LLM call failed; returning no-assistance step")
             return InteractionStep(
-                type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
+                type=StepType.NONE,
+                is_terminal=True,
+                failure_reason="provider_error",
+                failure_detail=exception_text(exc),
             )
 
         try:
