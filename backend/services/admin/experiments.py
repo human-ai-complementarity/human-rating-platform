@@ -587,6 +587,7 @@ async def duplicate_experiment(
             options=question.options,
             question_type=question.question_type,
             extra_data=question.extra_data,
+            exclusion_key=question.exclusion_key,
         )
         for question in source_questions
     ]
