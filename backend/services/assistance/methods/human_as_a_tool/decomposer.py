@@ -240,7 +240,8 @@ class SubtaskDecomposer:
 
         parsed = _parse_response(raw, "start")
         if not parsed:
-            return DecompositionResult(done=True)
+            # Ending here would give the rater a COMPLETE step with a blank answer.
+            raise RuntimeError("LLM returned an unparseable response")
 
         if parsed.get("done"):
             return DecompositionResult(done=True, synthesis=parsed.get("synthesis", {}))

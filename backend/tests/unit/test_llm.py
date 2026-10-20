@@ -9,6 +9,7 @@ import pytest
 from config import LLMSettings
 from services.assistance.llm import (
     PROVIDERS,
+    EmptyTruncatedReplyError,
     NoChoicesError,
     complete,
     missing_key_env_var,
@@ -129,6 +130,53 @@ async def test_a_missing_key_names_the_provider_that_needs_it(model, settings, e
 
 def test_a_present_key_is_not_missing():
     assert missing_key_env_var("oai/y", _settings()) is None
+
+
+def _reply(content: str | None, finish_reason: str | None) -> SimpleNamespace:
+    choice = SimpleNamespace(message=SimpleNamespace(content=content), finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "cap"),
+    [("openrouter/openai/gpt-5", "max_tokens"), ("oai/gpt-5", "max_completion_tokens")],
+)
+@pytest.mark.parametrize("content", [None, "", " \n"])
+async def test_complete_raises_when_reply_is_cut_off_with_no_content(model, cap, content):
+    """Both providers: the message names the cap the way that provider was sent it."""
+    with (
+        patch(
+            "services.assistance.llm._get_client", return_value=_client(_reply(content, "length"))
+        ),
+        pytest.raises(
+            EmptyTruncatedReplyError, match=f"^LLM reply from {model} hit {cap}=4096 "
+        ) as info,
+    ):
+        await complete(_MESSAGES, model=model, settings=_settings())
+
+    assert "reasoning" in str(info.value)
+    # The methods' provider-error handlers catch RuntimeError.
+    assert isinstance(info.value, RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_complete_returns_truncated_reply_that_has_content():
+    client = _client(_reply('{"candidates": [', "length"))
+    with patch("services.assistance.llm._get_client", return_value=client):
+        raw = await complete(_MESSAGES, settings=_settings())
+
+    assert raw == '{"candidates": ['
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("finish_reason", ["stop", "content_filter", None])
+async def test_complete_returns_empty_reply_that_was_not_cut_off(finish_reason):
+    client = _client(_reply(None, finish_reason))
+    with patch("services.assistance.llm._get_client", return_value=client):
+        raw = await complete(_MESSAGES, settings=_settings())
+
+    assert raw == ""
 
 
 @pytest.mark.asyncio
