@@ -35,7 +35,7 @@ from models import Question
 
 from ..base import InteractionStep, StepType, exception_text
 from ..preparation import InitialStepPreparation, QuestionSnapshot
-from ..llm import NoChoicesError, complete
+from ..llm import EmptyTruncatedReplyError, NoChoicesError, complete
 from ..model_resolution import AssistanceModel
 
 logger = logging.getLogger(__name__)
@@ -205,7 +205,11 @@ async def _complete_with_schema(
     settings: LLMSettings,
     response_format: dict[str, Any],
 ) -> str:
-    """Send the schema, falling back to an unconstrained retry if it is refused."""
+    """Send the schema, falling back to an unconstrained retry if it is refused.
+
+    A reply cut off empty at the output cap still came back 200, so it settles the
+    verdict like any other reply before the error goes up to the caller.
+    """
     try:
         raw = await complete(
             messages,
@@ -213,6 +217,9 @@ async def _complete_with_schema(
             response_format=response_format,
             **entry.to_dict(),
         )
+    except EmptyTruncatedReplyError:
+        _SCHEMA_ACCEPTED_MODELS.add(entry)
+        raise
     except (openai.APIStatusError, NoChoicesError) as exc:
         # OpenRouter reports "no endpoint supports these parameters" as a 200
         # with an error body, which `complete` raises as NoChoicesError.
@@ -222,7 +229,11 @@ async def _complete_with_schema(
             "Top-N request rejected by the provider; retrying without response_format",
             extra={"attributes": {"model": entry.model, "status_code": exc.status_code}},
         )
-        raw = await complete(messages, settings=settings, **entry.to_dict())
+        try:
+            raw = await complete(messages, settings=settings, **entry.to_dict())
+        except EmptyTruncatedReplyError:
+            _SCHEMA_REJECTED_MODELS.add(entry)
+            raise
         _SCHEMA_REJECTED_MODELS.add(entry)
         return raw
     _SCHEMA_ACCEPTED_MODELS.add(entry)
@@ -242,10 +253,10 @@ async def _complete_with_schema_fallback(
     `strict` json_schema (as OpenAI does for some options) would otherwise
     fail every question in the round. Retrying without `response_format` keeps
     the previous fail-soft behaviour; the model is remembered only once that
-    unconstrained retry succeeds, so a 404 for an unknown id does not poison
-    the memo. Later questions then skip the schema (one extra call per
-    process, not per question). The prompt examples are then the only
-    constraint.
+    unconstrained retry gets a reply (even one cut off empty), so a 404 for an
+    unknown id does not poison the memo. Later questions then skip the schema
+    (one extra call per process, not per question). The prompt examples are
+    then the only constraint.
 
     A wave starts with many raters calling this at once for the same model, so
     the first schema attempt is gated by a per-model lock: whoever gets there

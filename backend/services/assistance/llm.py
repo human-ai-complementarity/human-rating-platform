@@ -158,6 +158,10 @@ class NoChoicesError(RuntimeError):
         self.status_code = status_code
 
 
+class EmptyTruncatedReplyError(RuntimeError):
+    """The reply was cut off at the output cap before any content was written."""
+
+
 @functools.lru_cache(maxsize=8)
 def _get_client(
     api_key: str, base_url: str | None, timeout: int, max_retries: int
@@ -234,7 +238,17 @@ async def complete(
         # OpenRouter sometimes returns HTTP 200 with an error body and no
         # choices; indexing [0] would 500 the rater's assistance fetch.
         raise NoChoicesError(_empty_choices_message(response), _error_status_code(response))
-    return response.choices[0].message.content or ""
+    choice = response.choices[0]
+    content = choice.message.content or ""
+    if not content.strip() and choice.finish_reason == "length":
+        # A reasoning model can spend the whole output cap on hidden reasoning.
+        # Raise so callers record a provider error, not an unparseable reply.
+        raise EmptyTruncatedReplyError(
+            f"LLM reply from {model or settings.default_model} hit "
+            f"{provider.max_tokens_key}={settings.max_tokens} with no content; "
+            "reasoning may have used the whole budget"
+        )
+    return content
 
 
 def _error_status_code(response: object) -> int | None:

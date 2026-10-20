@@ -10,13 +10,16 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import openai
 import pytest
+from config import LLMSettings
 from models import Question, StepType
-from services.assistance.llm import NoChoicesError
+from services.assistance.llm import EmptyTruncatedReplyError, NoChoicesError
+from services.assistance.model_resolution import AssistanceModel
 from services.assistance.methods.top_n import (
     TopNAssistance,
     _SCHEMA_ACCEPTED_MODELS,
@@ -617,6 +620,54 @@ async def test_start_returns_none_step_on_complete_runtime_error():
     assert step.payload == {}
 
 
+def _cut_off_client() -> MagicMock:
+    choice = SimpleNamespace(message=SimpleNamespace(content=None), finish_reason="length")
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(choices=[choice]))
+    return client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "cap"),
+    [("openrouter/openai/gpt-5", "max_tokens"), ("oai/gpt-5", "max_completion_tokens")],
+)
+async def test_start_reports_reply_cut_off_with_no_content_as_provider_error(caplog, model, cap):
+    # A reasoning model that spends the output cap on hidden reasoning comes
+    # back empty with finish_reason "length": a provider failure, not a bad reply.
+    method = TopNAssistance()
+    entry = {
+        "model": model,
+        "reasoning_effort": "high",
+        "text_verbosity": None,
+        "temperature": None,
+    }
+    llm = LLMSettings(openrouter_api_key="sk-test", oai_api_key="sk-test")
+
+    with (
+        caplog.at_level("ERROR", logger="services.assistance.methods.top_n"),
+        patch("services.assistance.llm._get_client", return_value=_cut_off_client()),
+        patch(
+            "services.assistance.methods.top_n.get_settings",
+            return_value=SimpleNamespace(llm=llm),
+        ),
+    ):
+        step = await method.start(_make_question(), {"assistance_models": {"top_n": entry}})
+
+    assert step.type == StepType.NONE
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == (
+        f"EmptyTruncatedReplyError: LLM reply from {model} hit {cap}=4096 with no content; "
+        "reasoning may have used the whole budget"
+    )
+    assert step.payload == {}
+    record = next(r for r in caplog.records if "Top-N LLM call failed" in r.getMessage())
+    assert isinstance(record.exc_info[1], EmptyTruncatedReplyError)
+    # The schema call came back 200, so the entry's verdict is settled, not re-probed.
+    assert _SCHEMA_ACCEPTED_MODELS == {AssistanceModel.from_entry(entry)}
+    assert not _SCHEMA_REJECTED_MODELS
+
+
 def _api_status_error(status: int) -> openai.APIStatusError:
     request = httpx.Request("POST", "https://example")
     response = httpx.Response(status, request=request)
@@ -767,6 +818,25 @@ async def test_start_does_not_remember_model_when_unconstrained_retry_fails():
     assert not _SCHEMA_REJECTED_MODELS
     assert mock_complete.call_count == 3
     assert "response_format" in mock_complete.call_args_list[2].kwargs
+
+
+@pytest.mark.asyncio
+async def test_start_remembers_rejection_when_retry_is_cut_off_with_no_content():
+    # The unconstrained retry came back 200, which settles the rejection even
+    # though the reply itself was empty.
+    method = TopNAssistance()
+    question = _make_question()
+    mock_complete = AsyncMock(
+        side_effect=[_api_status_error(400), EmptyTruncatedReplyError("cut off")]
+    )
+
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {})
+
+    assert step.failure_reason == "provider_error"
+    assert step.failure_detail == "EmptyTruncatedReplyError: cut off"
+    assert _SCHEMA_REJECTED_MODELS == {method.role_models({})["answer"]}
+    assert not _SCHEMA_ACCEPTED_MODELS
 
 
 @pytest.mark.asyncio
