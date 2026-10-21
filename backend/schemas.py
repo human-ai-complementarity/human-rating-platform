@@ -3,7 +3,7 @@ from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from models import ExperimentStatus, ProlificStudyStatus, StepType
+from models import ExperimentStatus, ProlificStudyStatus, StepType, StudyFlag
 from session_policy import (
     DEFAULT_SESSION_DURATION_MINUTES,
     MAX_SESSION_DURATION_MINUTES,
@@ -26,7 +26,7 @@ StudyLabel = Literal[
 
 # Pre-screener filter keys we apply to Prolific studies. Concrete filter IDs
 # and thresholds live in services.admin.prolific.SCREENER_FILTERS.
-Screener = Literal["ai_taskers", "fact_checkers", "approval_rate"]
+Screener = Literal["ai_taskers", "fact_checkers", "approval_rate", "harmful_content", "deception"]
 
 
 # Prolific schemas
@@ -219,6 +219,9 @@ class ExperimentCreate(BaseModel):
     # Optional — ungrouped experiments are valid (scratch / pilot).
     group_id: Optional[int] = None
     tags: list[TagName] = Field(default_factory=list)
+    # Rater terms; see ExperimentUpdate. Empty flags for an ordinary study.
+    study_flags: list[StudyFlag] = Field(default_factory=list)
+    content_warning_details: Optional[str] = None
 
 
 class ResolvedModel(BaseModel):
@@ -252,6 +255,12 @@ class ExperimentResponse(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
+    # Rater terms. The refs name the archived versions pinned at first
+    # publish ("standard v2"); None while the experiment is still DRAFT.
+    study_flags: list[StudyFlag] = Field(default_factory=list)
+    content_warning_details: Optional[str] = None
+    consent_statement_ref: Optional[str] = None
+    debrief_statement_ref: Optional[str] = None
     is_markdown: bool = False
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
@@ -323,6 +332,9 @@ class ExperimentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     human_prompt_prefix: Optional[str] = None
     human_prompt_suffix: Optional[str] = None
+    # Rater terms. None means "leave unchanged". Locked after the first publish.
+    study_flags: Optional[list[StudyFlag]] = None
+    content_warning_details: Optional[str] = None
     is_markdown: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # None means "leave unchanged". Locked once the experiment leaves DRAFT:
@@ -384,6 +396,11 @@ class RaterStartResponse(BaseModel):
     # None until the rater agrees. The frontend shows the consent screen while
     # this is None; the backend refuses questions until it is set.
     consented_at: Optional[datetime] = None
+    # The study's flags (sensitive, explicit, deception); empty for most.
+    study_flags: list[str] = Field(default_factory=list)
+    # Debrief shown on the completion screen. Only deception studies have
+    # one; when present the completion redirect is manual.
+    debrief_html: Optional[str] = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -404,6 +421,27 @@ class ConsentResponse(BaseModel):
     session_end_time: datetime
     session_grace_seconds: int
     rater_session_token: str
+
+
+# Rater terms (admin)
+class TermsStatusResponse(BaseModel):
+    """A live read of the terms manifest: the current version of each document."""
+
+    source_url: str
+    ok: bool
+    error: Optional[str] = None
+    # "consent/standard", "consent/warned", "debrief" -> current version.
+    documents: dict[str, int] = Field(default_factory=dict)
+
+
+class TermsPreviewResponse(BaseModel):
+    """What this experiment's raters see, rendered with its placeholders."""
+
+    pinned: bool
+    consent_ref: str
+    consent_html: str
+    debrief_ref: Optional[str] = None
+    debrief_html: Optional[str] = None
 
 
 # Rating schemas
@@ -538,6 +576,7 @@ class V1ExperimentResponse(BaseModel):
     question_count: int
     rating_count: int
     archived_at: Optional[datetime] = None
+    study_flags: list[StudyFlag] = Field(default_factory=list)
     assistance_method: str = "none"
     description: Optional[str] = None
 
