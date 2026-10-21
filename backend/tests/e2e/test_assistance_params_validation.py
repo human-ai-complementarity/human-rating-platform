@@ -1,9 +1,9 @@
-"""Model entries in `assistance_params` are validated on create and PATCH, and
-the removed `model` key is refused.
+"""Model entries and `num_samples` in `assistance_params` are validated on
+create and PATCH, and the removed `model` key is refused.
 
 Unvalidated, a bad entry fails only at rater time: `parse_model` raises or the
 provider rejects an option, which the methods turn into a silent no-assistance
-step.
+step. An unbounded `num_samples` is that many LLM calls per subtask per round.
 """
 
 from __future__ import annotations
@@ -198,3 +198,71 @@ def test_a_stored_bare_id_resolves_with_the_default_options(client: TestClient, 
         "temperature": 0,
         "source": "assistance_models",
     }
+
+
+_NUM_SAMPLES_RANGE = "assistance_params.num_samples must be an integer from 1 to 10"
+
+
+@pytest.mark.parametrize("num_samples", [1, 10])
+def test_num_samples_in_range_passes(client: TestClient, num_samples):
+    created = _create(client, {"num_samples": num_samples})
+    assert created.status_code == 200, created.text
+    assert _params(client, created.json()["id"]) == {"num_samples": num_samples}
+
+    exp = _create(client, {"n": 3}).json()
+    patched = _patch(client, exp["id"], {"num_samples": num_samples})
+    assert patched.status_code == 200, patched.text
+    assert _params(client, exp["id"]) == {"n": 3, "num_samples": num_samples}
+
+
+_BAD_NUM_SAMPLES = [0, 11, -1, 2.5, "5", True]
+
+
+@pytest.mark.parametrize("num_samples", _BAD_NUM_SAMPLES)
+def test_create_rejects_num_samples_out_of_range(client: TestClient, num_samples):
+    resp = _create(client, {"num_samples": num_samples})
+    assert resp.status_code == 400
+    assert _NUM_SAMPLES_RANGE in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("num_samples", _BAD_NUM_SAMPLES)
+def test_patch_rejects_num_samples_out_of_range_and_stores_nothing(client: TestClient, num_samples):
+    """Over a stored 1, so `True`, which equals 1, is refused too."""
+    exp = _create(client, {"num_samples": 1}).json()
+    resp = _patch(client, exp["id"], {"num_samples": num_samples})
+    assert resp.status_code == 400
+    assert _NUM_SAMPLES_RANGE in resp.json()["detail"]
+    assert _params(client, exp["id"]) == {"num_samples": 1}
+
+
+def test_a_restated_legacy_num_samples_does_not_block_an_unrelated_edit(
+    client: TestClient, sync_engine
+):
+    exp = _create(client).json()
+    legacy = {"num_samples": 50}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps(legacy), "id": exp["id"]},
+        )
+
+    renamed = _patch(client, exp["id"], legacy, name="Renamed")
+    assert renamed.status_code == 200, renamed.text
+    partial = _patch(client, exp["id"], {"n": 4})
+    assert partial.status_code == 200, partial.text
+
+    changed = _patch(client, exp["id"], {"num_samples": 60})
+    assert changed.status_code == 400
+    assert _params(client, exp["id"]) == {"num_samples": 50, "n": 4}
+
+
+def test_a_null_num_samples_clears_it_to_the_default(client: TestClient):
+    """Stored like a cleared model; the method reads it as the default."""
+    created = _create(client, {"num_samples": None})
+    assert created.status_code == 200, created.text
+    assert _params(client, created.json()["id"]) == {"num_samples": None}
+
+    exp = _create(client, {"num_samples": 7}).json()
+    cleared = _patch(client, exp["id"], {"num_samples": None})
+    assert cleared.status_code == 200, cleared.text
+    assert _params(client, exp["id"]) == {"num_samples": None}

@@ -49,6 +49,7 @@ from .tags import (
 from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
 from .status import assert_can_finish, compute_attention_reason, is_locked
+from services.assistance.methods.human_as_a_tool.method import MAX_NUM_SAMPLES
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     RELOAD_HINT,
@@ -203,6 +204,7 @@ async def create_experiment(
         reject_removed_model_key(assistance_params, where="assistance_params", hint=RELOAD_HINT)
         reject_role_models_key(assistance_params, where="assistance_params")
         _validate_changed_models({}, assistance_params)
+        _validate_changed_num_samples({}, assistance_params)
 
     db_experiment = Experiment(
         name=name,
@@ -776,6 +778,29 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
         validate_model_entry(value, field=f"{field}.{method}")
 
 
+def _validate_changed_num_samples(stored: dict[str, Any], merged: dict[str, Any]) -> None:
+    """400 on a `num_samples` that is not an integer from 1 to MAX_NUM_SAMPLES.
+
+    The sampling estimators make that many LLM calls per subtask per round, and
+    nothing else bounds it. Null is a clear back to the default. As with the
+    models, only a value this request changes is checked.
+    """
+    value = merged.get("num_samples")
+    previous = stored.get("num_samples")
+    # The same type too: `True == 1` and `5.0 == 5` are not a restated 1 or 5.
+    if value is None or (type(value) is type(previous) and value == previous):
+        return
+    # `type`, not `isinstance`: a bool is an int.
+    if type(value) is not int or not 1 <= value <= MAX_NUM_SAMPLES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "assistance_params.num_samples must be an integer from 1 to "
+                f"{MAX_NUM_SAMPLES}, got {value!r}."
+            ),
+        )
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -808,8 +833,10 @@ async def update_experiment(
 
     merged_params = None
     if payload.assistance_params is not None:
+        stored_params = _stored_assistance_params(experiment)
         merged_params = _merged_assistance_params(experiment, payload.assistance_params)
-        _validate_changed_models(_stored_assistance_params(experiment), merged_params)
+        _validate_changed_models(stored_params, merged_params)
+        _validate_changed_num_samples(stored_params, merged_params)
 
     experiment.assistance_method = payload.assistance_method
 
