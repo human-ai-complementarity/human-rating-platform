@@ -32,6 +32,7 @@ when the pipeline's export is uploaded, and land in `assistance_params`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
@@ -134,9 +135,14 @@ class AssistanceModel:
         """The keyword arguments for `llm.complete`.
 
         Not `tools` yet: until the transport sends them, validation refuses an
-        entry declaring any (`refuse_tools_until_supported`), so none is
-        dropped here.
+        entry declaring any (`refuse_tools_until_supported`). One that is
+        stored anyway (say, written by a later release) fails the call as a
+        provider error rather than running without its tools.
         """
+        if self.tools:
+            raise ValueError(
+                f"tools are not supported yet; {self.model} has {', '.join(self.tools)}"
+            )
         kwargs = asdict(self)
         del kwargs["tools"]
         return kwargs
@@ -159,15 +165,14 @@ def same_entry(stored: Any, declared: Any) -> bool:
     """Whether two stored values declare the same entry.
 
     An optional key left out is its default, so an entry without `tools` and
-    one with `"tools": []` are the same declaration, not a conflict.
+    one with `"tools": []` are the same declaration, not a conflict. Nothing
+    else is filled in.
     """
-    if stored == declared:
-        return True
     if not (isinstance(stored, Mapping) and isinstance(declared, Mapping)):
-        return False
-    if "model" not in stored or "model" not in declared:
-        return False
-    return AssistanceModel.from_entry(stored) == AssistanceModel.from_entry(declared)
+        return stored == declared
+    # Each optional default as stored JSON spells it: a tuple is a list.
+    defaults = {key: list(value) for key, value in OPTIONAL_OPTIONS.items()}
+    return {**defaults, **stored} == {**defaults, **declared}
 
 
 # Where a resolved model came from: the experiment's map, the role's own
@@ -350,7 +355,8 @@ def _validate_tools(tools: Any, field: str) -> None:
     if unknown:
         raise _reject(
             field,
-            f"'tools' has unknown tool(s) {', '.join(map(repr, unknown))}; allowed: {allowed}.",
+            f"'tools' has unknown tool(s) {', '.join(map(json.dumps, unknown))}; "
+            f"allowed: {allowed}.",
         )
     repeated = sorted({tool for tool in tools if tools.count(tool) > 1})
     if repeated:
