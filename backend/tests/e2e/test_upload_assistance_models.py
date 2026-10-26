@@ -256,7 +256,7 @@ def test_the_response_reports_the_entry_each_method_would_run_on(client: TestCli
         ({"top_n": {"model": _TOP_N["model"], "temperature": 0}}, "missing required key(s)"),
         ({"top_n": _entry(_TOP_N["model"], max_tokens=100)}, "unknown key(s) max_tokens"),
         ({"top_n": _entry(_TOP_N["model"], tools="web_search")}, "'tools' must be a list"),
-        ({"top_n": _entry(_TOP_N["model"], tools=["browser"])}, "unknown tool(s) 'browser'"),
+        ({"top_n": _entry(_TOP_N["model"], tools=["browser"])}, 'unknown tool(s) "browser"'),
         (
             {"top_n": _entry(_TOP_N["model"], tools=["web_search", "web_search"])},
             "'tools' lists web_search more than once",

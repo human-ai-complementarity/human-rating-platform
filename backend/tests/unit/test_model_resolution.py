@@ -331,10 +331,11 @@ _FIELD = "assistance_params.assistance_models.top_n"
         ({"web_search": True}, "'tools' must be a list"),
         (
             ["browser"],
-            "'tools' has unknown tool(s) 'browser'; allowed: web_search, code_interpreter",
+            "'tools' has unknown tool(s) \"browser\"; allowed: web_search, code_interpreter",
         ),
         (["web_search", 1], "'tools' has unknown tool(s) 1;"),
-        (["Web_Search"], "unknown tool(s) 'Web_Search'"),
+        (["Web_Search"], 'unknown tool(s) "Web_Search"'),
+        ([None, {"name": "web_search"}], 'unknown tool(s) null, {"name": "web_search"};'),
         (["web_search", "web_search"], "'tools' lists web_search more than once"),
     ],
 )
@@ -393,6 +394,10 @@ def test_a_left_out_tools_and_an_empty_one_are_the_same_entry():
     # As before: a bare id or a cleared entry is not the declared entry.
     assert not same_entry(_TOP_N.model, _TOP_N.to_dict())
     assert not same_entry(None, _TOP_N.to_dict())
+    # Only the optional keys are filled in: a missing temperature is not null.
+    partial = {"model": _TOP_N.model, "reasoning_effort": None, "text_verbosity": None}
+    assert not same_entry(partial, {**partial, "temperature": None})
+    assert not same_entry({**_TOP_N.to_dict(), "tools": 5}, _TOP_N.to_dict())
 
 
 def test_the_transport_is_given_the_entrys_tools():

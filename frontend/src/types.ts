@@ -8,8 +8,9 @@ export interface ResolvedModel {
   reasoning_effort: string | null;
   text_verbosity: string | null;
   temperature: number | null;
-  // The tools the model is given; empty for none.
-  tools: string[];
+  // The tools the model is given; empty or absent (an API older than tools)
+  // for none.
+  tools?: string[];
   source: 'assistance_models' | 'default';
 }
 

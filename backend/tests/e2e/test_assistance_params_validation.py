@@ -96,7 +96,7 @@ _BAD = [
     ),
     pytest.param(
         {"assistance_models": {"top_n": _entry(tools=["browser"])}},
-        f"{_FIELD}: 'tools' has unknown tool(s) 'browser'",
+        f"{_FIELD}: 'tools' has unknown tool(s) \"browser\"",
         id="unknown-tool",
     ),
     pytest.param(
@@ -194,6 +194,35 @@ def test_good_entries_and_clears_pass(client: TestClient, entry):
     }
     assert _patch(client, exp["id"], {"assistance_models": {"top_n": None}}).status_code == 200
     assert _patch(client, exp["id"], {"assistance_models": None}).status_code == 200
+
+
+def test_adding_tools_to_a_stored_entry_is_validated(client: TestClient):
+    """Only changed values are checked; the same entry with tools has changed."""
+    exp = _create(client, {"assistance_models": {"top_n": _GOOD}}).json()
+    refused = _patch(
+        client, exp["id"], {"assistance_models": {"top_n": _entry(tools=["code_interpreter"])}}
+    )
+    assert refused.status_code == 400
+    assert "OpenRouter can only do web search" in refused.json()["detail"]
+    assert _params(client, exp["id"]) == {"assistance_models": {"top_n": _GOOD}}
+
+    searching = _entry(tools=["web_search"])
+    resp = _patch(client, exp["id"], {"assistance_models": {"top_n": searching}})
+    assert resp.status_code == 200, resp.text
+    assert _params(client, exp["id"]) == {"assistance_models": {"top_n": searching}}
+
+
+def test_a_stored_entrys_tools_are_shown(client: TestClient, sync_engine):
+    """What the Assistance tab lists, for an entry holding tools."""
+    exp = _create(client).json()
+    stored = {**_OAI, "tools": ["web_search", "code_interpreter"]}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps({"assistance_models": {"top_n": stored}}), "id": exp["id"]},
+        )
+    detail = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert detail["resolved_models"]["top_n"] == {**stored, "source": "assistance_models"}
 
 
 def test_a_good_override_passes(client: TestClient):
