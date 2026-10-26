@@ -250,6 +250,7 @@ def test_foreground_burst_uses_eight_workers_and_bounded_provider_fanout(client,
                         "reasoning_effort": None,
                         "text_verbosity": None,
                         "temperature": 0,
+                        "tools": [],
                     }
                 }
             }

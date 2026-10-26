@@ -28,12 +28,14 @@ from services.assistance.model_resolution import instrument_model_keys
 
 
 def _entry(model: str, **options) -> dict:
-    """A model entry: `model` with the options given, the rest not sent."""
+    """A model entry: `model` with the options given, the rest not sent, and
+    no tools. Every key declared, as a session records it."""
     return {
         "model": model,
         "reasoning_effort": None,
         "text_verbosity": None,
         "temperature": None,
+        "tools": [],
         **options,
     }
 

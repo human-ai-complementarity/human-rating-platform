@@ -80,9 +80,41 @@ _BAD = [
         id="missing-options",
     ),
     pytest.param(
-        {"assistance_models": {"top_n": _entry(tools=["web_search"])}},
-        "unknown key(s) tools",
+        {"assistance_models": {"top_n": _entry(max_tokens=100)}},
+        "unknown key(s) max_tokens",
         id="unknown-key",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools="web_search")}},
+        f"{_FIELD}: 'tools' must be a list of tool names from web_search, code_interpreter",
+        id="tools-not-a-list",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=None)}},
+        "'tools' must be a list",
+        id="tools-null",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=["browser"])}},
+        f"{_FIELD}: 'tools' has unknown tool(s) 'browser'",
+        id="unknown-tool",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=["web_search", "web_search"])}},
+        f"{_FIELD}: 'tools' lists web_search more than once",
+        id="duplicate-tool",
+    ),
+    # Until the transport sends tools, an entry declaring any is refused
+    # rather than run without them.
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=["web_search"])}},
+        f"{_FIELD}: tools are not supported yet",
+        id="tools-not-supported-yet",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": {**_OAI, "tools": ["code_interpreter"]}}},
+        f"{_FIELD}: tools are not supported yet",
+        id="oai-tools-not-supported-yet",
     ),
     pytest.param(
         {"assistance_models": {"top_n": _entry(reasoning_effort="max")}},
@@ -146,11 +178,18 @@ def test_the_removed_model_key_hints_at_reloading_a_stale_page(client: TestClien
         assert "reload it" in resp.json()["detail"]
 
 
-@pytest.mark.parametrize("entry", [_GOOD, _OAI, _entry(temperature=0.5, reasoning_effort="high")])
+@pytest.mark.parametrize(
+    "entry",
+    [_GOOD, _OAI, _entry(temperature=0.5, reasoning_effort="high"), _entry(tools=[])],
+)
 def test_good_entries_and_clears_pass(client: TestClient, entry):
     exp = _create(client, {"assistance_models": {"top_n": entry}}).json()
     assert exp["assistance_params"] == {"assistance_models": {"top_n": entry}}
-    assert exp["resolved_models"]["top_n"] == {**entry, "source": "assistance_models"}
+    assert exp["resolved_models"]["top_n"] == {
+        "tools": [],
+        **entry,
+        "source": "assistance_models",
+    }
     assert _patch(client, exp["id"], {"assistance_models": {"top_n": None}}).status_code == 200
     assert _patch(client, exp["id"], {"assistance_models": None}).status_code == 200
 
@@ -196,6 +235,7 @@ def test_a_stored_bare_id_resolves_with_the_default_options(client: TestClient, 
         "reasoning_effort": None,
         "text_verbosity": None,
         "temperature": 0,
+        "tools": [],
         "source": "assistance_models",
     }
 

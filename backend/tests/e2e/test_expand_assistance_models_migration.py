@@ -94,8 +94,8 @@ def test_it_expands_strings_with_each_methods_options_and_leaves_the_rest(
     # The expanded rows resolve to exactly what the methods sent before.
     detail = client.get(f"/api/admin/experiments/{both}").json()
     assert detail["resolved_models"] == {
-        "top_n": {**_TOP_N_ENTRY, "source": "assistance_models"},
-        "human_as_a_tool": {**_HAAT_ENTRY, "source": "assistance_models"},
+        "top_n": {**_TOP_N_ENTRY, "tools": [], "source": "assistance_models"},
+        "human_as_a_tool": {**_HAAT_ENTRY, "tools": [], "source": "assistance_models"},
     }
 
 

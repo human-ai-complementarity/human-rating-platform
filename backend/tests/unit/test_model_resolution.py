@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -18,6 +20,7 @@ from services.assistance.model_resolution import (
     pinned_model,
     resolve_model,
     resolve_model_and_source,
+    same_entry,
     validate_model_entry,
     validate_model_id,
 )
@@ -294,14 +297,91 @@ def test_a_complete_entry_passes_and_a_bare_id_does_not():
     assert "bare model id" in exc.value.detail
 
 
-def test_a_key_added_later_is_optional_with_its_default(monkeypatch):
-    """Tool parity adds `tools`; an older export without it stays valid."""
-    monkeypatch.setattr(model_resolution, "OPTION_KEYS", (*model_resolution.OPTION_KEYS, "tools"))
-    monkeypatch.setattr(model_resolution, "ENTRY_KEYS", ("model", *model_resolution.OPTION_KEYS))
-    monkeypatch.setattr(model_resolution, "OPTIONAL_OPTIONS", {"tools": ()})
-    validate_model_entry(_TOP_N.to_dict(), field="x")
-    with pytest.raises(HTTPException):
-        validate_model_entry({"model": _TOP_N.model}, field="x")
+def _without_tools(entry: AssistanceModel) -> dict:
+    return {key: value for key, value in entry.to_dict().items() if key != "tools"}
+
+
+# What an entry with tools records and displays. Validation refuses it until
+# the transport sends tools, so it is built here, not written through the API.
+_TOOLED = replace(_HAAT, tools=("web_search", "code_interpreter"))
+
+
+def test_tools_are_optional_and_left_out_is_none():
+    """`tools` came after the other options: an entry from an older export,
+    declared without it, stays valid and has no tools. The rest stay required."""
+    validate_model_entry(_without_tools(_TOP_N), field="x")
+    validate_model_entry({**_TOP_N.to_dict(), "tools": []}, field="x")
+    assert AssistanceModel.from_entry(_without_tools(_TOP_N)) == _TOP_N
+    assert _TOP_N.tools == ()
+    with pytest.raises(HTTPException) as exc:
+        validate_model_entry({"model": _TOP_N.model, "tools": []}, field="x")
+    assert "missing required key(s) reasoning_effort, text_verbosity, temperature." in (
+        exc.value.detail
+    )
+
+
+_FIELD = "assistance_params.assistance_models.top_n"
+
+
+@pytest.mark.parametrize(
+    ("tools", "expected"),
+    [
+        (None, "'tools' must be a list of tool names from web_search, code_interpreter"),
+        ("web_search", "'tools' must be a list"),
+        ({"web_search": True}, "'tools' must be a list"),
+        (
+            ["browser"],
+            "'tools' has unknown tool(s) 'browser'; allowed: web_search, code_interpreter",
+        ),
+        (["web_search", 1], "'tools' has unknown tool(s) 1;"),
+        (["Web_Search"], "unknown tool(s) 'Web_Search'"),
+        (["web_search", "web_search"], "'tools' lists web_search more than once"),
+    ],
+)
+def test_bad_tools_are_a_400_naming_the_field(tools, expected):
+    with pytest.raises(HTTPException) as exc:
+        validate_model_entry({**_TOP_N.to_dict(), "tools": tools}, field=_FIELD)
+    assert exc.value.status_code == 400
+    assert exc.value.detail.startswith(f"Invalid model entry in {_FIELD}: ")
+    assert expected in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    "tools", [["web_search"], ["code_interpreter"], ["code_interpreter", "web_search"]]
+)
+def test_tools_are_refused_until_the_transport_sends_them(tools):
+    """Never accepted and then silently run without."""
+    with pytest.raises(HTTPException) as exc:
+        validate_model_entry({**_TOP_N.to_dict(), "tools": tools}, field=_FIELD)
+    assert exc.value.status_code == 400
+    assert f"in {_FIELD}: tools are not supported yet" in exc.value.detail
+
+
+def test_an_entry_with_tools_round_trips_and_stays_hashable():
+    """Stored, tools are a JSON list; read back, a tuple, so Top-N can keep
+    the entry in its schema memo's sets."""
+    stored = json.loads(json.dumps(_TOOLED.to_dict()))
+    assert stored["tools"] == ["web_search", "code_interpreter"]
+    assert AssistanceModel.from_entry(stored) == _TOOLED
+    assert {_TOOLED, AssistanceModel.from_entry(stored)} == {_TOOLED}
+    assert _TOOLED != _HAAT
+    # A stored null (never written by a validated path) reads as no tools.
+    assert AssistanceModel.from_entry({**_HAAT.to_dict(), "tools": None}) == _HAAT
+
+
+def test_a_left_out_tools_and_an_empty_one_are_the_same_entry():
+    """So a re-upload spelling it the other way is not reported as a conflict."""
+    assert same_entry(_without_tools(_TOP_N), _TOP_N.to_dict())
+    assert same_entry(_TOP_N.to_dict(), _without_tools(_TOP_N))
+    assert not same_entry(_HAAT.to_dict(), _TOOLED.to_dict())
+    assert not same_entry(_TOP_N.to_dict(), {**_TOP_N.to_dict(), "temperature": 1})
+    # As before: a bare id or a cleared entry is not the declared entry.
+    assert not same_entry(_TOP_N.model, _TOP_N.to_dict())
+    assert not same_entry(None, _TOP_N.to_dict())
+
+
+def test_tools_are_not_passed_to_the_transport_yet():
+    assert _TOOLED.call_kwargs() == _without_tools(_TOOLED)
 
 
 def _question() -> Question:
@@ -466,6 +546,27 @@ def test_a_role_models_key_in_the_params_is_never_recorded(name, expected):
     not copied into the session as if its models ran."""
     stale = {**_MAP, "role_models": {"answer": _SESSION.to_dict()}}
     assert record_role_models(name, stale).get("role_models") == expected
+
+
+@pytest.mark.parametrize("overrides", [{}, _INSTRUMENT], ids=["map", "overrides"])
+@pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])
+def test_a_session_records_each_roles_tools_and_the_instruments_get_none(
+    confidence_method, overrides
+):
+    """The model under test is recorded with its entry's tools; confidence
+    scoring and clustering never get tools, whatever the entry says."""
+    params = {
+        "assistance_models": {"human_as_a_tool": _TOOLED.to_dict()},
+        "confidence_method": confidence_method,
+        **overrides,
+    }
+    recorded = record_role_models("human_as_a_tool", params)["role_models"]
+    assert {role: entry["tools"] for role, entry in recorded.items()} == {
+        "decomposition": ["web_search", "code_interpreter"],
+        **dict.fromkeys(HumanAsAToolMethod.model_roles(params)[1:], []),
+    }
+    top_n = record_role_models("top_n", {"assistance_models": {"top_n": _TOOLED.to_dict()}})
+    assert top_n["role_models"] == {"answer": _TOOLED.to_dict()}
 
 
 @pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])

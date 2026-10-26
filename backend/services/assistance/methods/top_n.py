@@ -215,7 +215,7 @@ async def _complete_with_schema(
             messages,
             settings=settings,
             response_format=response_format,
-            **entry.to_dict(),
+            **entry.call_kwargs(),
         )
     except EmptyTruncatedReplyError:
         _SCHEMA_ACCEPTED_MODELS.add(entry)
@@ -230,7 +230,7 @@ async def _complete_with_schema(
             extra={"attributes": {"model": entry.model, "status_code": exc.status_code}},
         )
         try:
-            raw = await complete(messages, settings=settings, **entry.to_dict())
+            raw = await complete(messages, settings=settings, **entry.call_kwargs())
         except EmptyTruncatedReplyError:
             _SCHEMA_REJECTED_MODELS.add(entry)
             raise
@@ -267,7 +267,7 @@ async def _complete_with_schema_fallback(
     """
     while True:
         if entry in _SCHEMA_REJECTED_MODELS:
-            return await complete(messages, settings=settings, **entry.to_dict())
+            return await complete(messages, settings=settings, **entry.call_kwargs())
         if entry in _SCHEMA_ACCEPTED_MODELS:
             return await _complete_with_schema(
                 messages, entry=entry, settings=settings, response_format=response_format

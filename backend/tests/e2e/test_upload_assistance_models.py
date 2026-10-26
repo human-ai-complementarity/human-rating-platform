@@ -217,15 +217,15 @@ def test_the_response_reports_the_entry_each_method_would_run_on(client: TestCli
     llm = get_settings().llm
     entry = _entry("oai/test/top-n-entry", reasoning_effort="high", temperature=0.3)
     assert entry["model"] not in {llm.default_model, llm.decomposition_model}
-    haat_default = {**_entry(llm.decomposition_model), "source": "default"}
-    top_n_default = {**_entry(llm.default_model, temperature=0), "source": "default"}
+    haat_default = {**_entry(llm.decomposition_model), "tools": [], "source": "default"}
+    top_n_default = {**_entry(llm.default_model, temperature=0), "tools": [], "source": "default"}
 
     exp = _experiment(client, assistance_method="none")
     assert exp["resolved_models"] == {"human_as_a_tool": haat_default, "top_n": top_n_default}
 
     _upload_csv(client, exp["id"], {"assistance_models": {"top_n": entry}})
     pinned = {
-        "top_n": {**entry, "source": "assistance_models"},
+        "top_n": {**entry, "tools": [], "source": "assistance_models"},
         "human_as_a_tool": haat_default,
     }
     detail = client.get(f"/api/admin/experiments/{exp['id']}").json()
@@ -254,7 +254,17 @@ def test_the_response_reports_the_entry_each_method_would_run_on(client: TestCli
         ({"top_n": ""}, "assistance_models.top_n"),
         ({"top_n": None}, "assistance_models.top_n"),
         ({"top_n": {"model": _TOP_N["model"], "temperature": 0}}, "missing required key(s)"),
-        ({"top_n": _entry(_TOP_N["model"], tools=[])}, "unknown key(s) tools"),
+        ({"top_n": _entry(_TOP_N["model"], max_tokens=100)}, "unknown key(s) max_tokens"),
+        ({"top_n": _entry(_TOP_N["model"], tools="web_search")}, "'tools' must be a list"),
+        ({"top_n": _entry(_TOP_N["model"], tools=["browser"])}, "unknown tool(s) 'browser'"),
+        (
+            {"top_n": _entry(_TOP_N["model"], tools=["web_search", "web_search"])},
+            "'tools' lists web_search more than once",
+        ),
+        (
+            {"human_as_a_tool": _entry(_HAAT["model"], tools=["web_search"])},
+            "'assistance_models.human_as_a_tool': tools are not supported yet",
+        ),
         ({"top_n": _entry(_TOP_N["model"], reasoning_effort="lots")}, "'reasoning_effort'"),
         ({"top_n": _entry(_TOP_N["model"], temperature=2.5)}, "'temperature'"),
         (_TOP_N["model"], "must be a JSON object"),
@@ -281,8 +291,30 @@ def test_a_bare_id_is_expanded_to_its_entry_on_upload(client: TestClient, upload
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["meta_applied"] == _BOTH
-    assert _params(client, exp["id"])["assistance_models"] == _MODELS
+    expanded = {method: {**entry, "tools": []} for method, entry in _MODELS.items()}
+    assert _params(client, exp["id"])["assistance_models"] == expanded
 
     # The same file again agrees with what it was expanded to.
     again = upload(client, exp["id"], {"assistance_models": bare}).json()
     assert again["meta_applied"] == [] and again["meta_conflicts"] == []
+    # So does the same entry stamped in full, with or without its empty tools.
+    for spelled in (_MODELS, expanded):
+        full = upload(client, exp["id"], {"assistance_models": spelled}).json()
+        assert full["meta_applied"] == [] and full["meta_conflicts"] == []
+
+
+@pytest.mark.parametrize("upload", [_upload_csv, _upload_parquet])
+def test_an_empty_tools_list_is_pinned_and_agrees_with_none(client: TestClient, upload):
+    """`tools` is optional: an export that stamps `[]` declares the same entry
+    as one that leaves it out, so neither re-pins nor conflicts with the other."""
+    exp = _experiment(client, assistance_method="none")
+    with_tools = {"top_n": {**_TOP_N, "tools": []}}
+    resp = upload(client, exp["id"], {"assistance_models": with_tools})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["meta_applied"] == ["assistance_models.top_n"]
+    assert _params(client, exp["id"])["assistance_models"] == with_tools
+    again = upload(client, exp["id"], {"assistance_models": {"top_n": _TOP_N}}).json()
+    assert again["meta_applied"] == [] and again["meta_conflicts"] == []
+    other = upload(client, exp["id"], {"assistance_models": {"top_n": _OTHER}}).json()
+    assert other["meta_conflicts"] == ["assistance_models.top_n"]
