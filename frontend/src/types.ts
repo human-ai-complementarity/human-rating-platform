@@ -8,16 +8,20 @@ export interface ResolvedModel {
   reasoning_effort: string | null;
   text_verbosity: string | null;
   temperature: number | null;
+  // The tools the model is given; empty for none.
+  tools: string[];
   source: 'assistance_models' | 'default';
 }
 
 // One method's entry in `assistance_params.assistance_models`, as an upload
-// declares it. Every key is required; null means the option is not sent.
+// declares it. Every key but `tools` is required; null means the option is
+// not sent, and a missing `tools` means none.
 export interface AssistanceModelEntry {
   model: string;
   reasoning_effort: string | null;
   text_verbosity: string | null;
   temperature: number | null;
+  tools?: string[];
 }
 
 export interface Experiment {

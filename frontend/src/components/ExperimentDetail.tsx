@@ -2302,12 +2302,14 @@ function MetadataPanel({
 // ── Rater assistance panel ───────────────────────────────────────────────
 
 // The request options a resolved model is called with; "not sent" for null.
+// Its tools are listed only when it has any.
 function resolvedOptionsText(resolved: ResolvedModel): string {
   const show = (value: string | number | null) => (value === null ? 'not sent' : String(value));
   return [
     `reasoning effort: ${show(resolved.reasoning_effort)}`,
     `verbosity: ${show(resolved.text_verbosity)}`,
     `temperature: ${show(resolved.temperature)}`,
+    ...(resolved.tools.length ? [`tools: ${resolved.tools.join(', ')}`] : []),
   ].join(' · ');
 }
 

@@ -235,7 +235,7 @@ class SubtaskDecomposer:
         raw = await complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
             settings=settings.llm,
-            **model.to_dict(),
+            **model.call_kwargs(),
         )
 
         parsed = _parse_response(raw, "start")
@@ -281,7 +281,7 @@ class SubtaskDecomposer:
         raw = await complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
             settings=settings.llm,
-            **model.to_dict(),
+            **model.call_kwargs(),
         )
 
         parsed = _parse_response(raw, "advance")
@@ -348,7 +348,7 @@ class SubtaskDecomposer:
                 {"role": "user", "content": user_msg},
             ],
             settings=llm_settings,
-            **model.to_dict(),
+            **model.call_kwargs(),
         )
         result = _parse_response(raw, "fallback_synthesis")
         if not result or not result.get("answer"):
