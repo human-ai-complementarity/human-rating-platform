@@ -331,7 +331,7 @@ async def complete(
     client = _get_client(
         provider.api_key(settings),
         provider.base_url,
-        settings.request_timeout,
+        settings.tool_request_timeout if tools else settings.request_timeout,
         settings.max_retries,
     )
     options = dict(
@@ -384,6 +384,11 @@ def _response_text(response: Any, model: str, settings: LLMSettings) -> str:
         if messages
         else ""
     )
+    ended_on_message = bool(response.output) and response.output[-1].type == "message"
+    if response.status == "incomplete" and not ended_on_message:
+        # Cut off after its last message, mid tool call or reasoning: that
+        # message came before the answer, so there is none.
+        content = ""
     if content.strip() or response.status != "incomplete":
         return content
     details = response.incomplete_details

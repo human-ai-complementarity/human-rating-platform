@@ -17,9 +17,10 @@ config, the model plus the request options every call to it is sent with:
 Every option is declared and null means "do not send", so what assisted the
 raters is never left to a provider default. `tools` alone is optional: left
 out, it is no tools (an `openrouter/` model can only have web_search). The
-options belong to the method's primary role, the model under test. The instrument roles (confidence, clustering) run the
-entry's *model* but keep their own options, and never get its tools:
-sampling's temperature is an instrument setting, not the arm's.
+options belong to the method's primary role, the model under test. The
+instrument roles (confidence, clustering) run the entry's *model* but keep
+their own options, and never get its tools: sampling's temperature is an
+instrument setting, not the arm's.
 
 Confidence and clustering keep an override (`confidence_model`,
 `clustering_model`) that beats the map: an escape hatch for running them on

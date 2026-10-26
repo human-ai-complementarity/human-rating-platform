@@ -273,19 +273,62 @@ async def test_openrouter_refuses_code_interpreter_before_calling():
     client.chat.completions.create.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        (
+            "oai/gpt-5.6-luna",
+            {
+                "model": "gpt-5.6-luna",
+                "messages": _MESSAGES,
+                "max_completion_tokens": 4096,
+                "response_format": _SCHEMA,
+                "temperature": 0,
+                "reasoning_effort": "low",
+            },
+        ),
+        (
+            "openrouter/openai/gpt-6-luna",
+            {
+                "model": "openai/gpt-6-luna",
+                "messages": _MESSAGES,
+                "max_tokens": 4096,
+                "response_format": _SCHEMA,
+                "temperature": 0,
+                "extra_body": {"reasoning": {"effort": "low"}},
+            },
+        ),
+    ],
+)
+@pytest.mark.parametrize("no_tools", [{}, {"tools": ()}], ids=["omitted", "empty"])
+@pytest.mark.asyncio
+async def test_without_tools_both_providers_send_the_chat_completion_they_always_did(
+    model, expected, no_tools
+):
+    client = _client()
+    with patch("services.assistance.llm._get_client", return_value=client) as get_client:
+        await complete(
+            _MESSAGES,
+            settings=_settings(),
+            model=model,
+            reasoning_effort="low",
+            temperature=0,
+            response_format=_SCHEMA,
+            **no_tools,
+        )
+    client.responses.create.assert_not_called()
+    assert client.chat.completions.create.call_args.kwargs == expected
+    # The chat timeout, not the tool one.
+    assert get_client.call_args.args[2:] == (60, 2)
+
+
 @pytest.mark.parametrize("model", ["oai/gpt-5.6-luna", "openrouter/openai/gpt-6-luna"])
 @pytest.mark.asyncio
-async def test_without_tools_both_providers_send_the_chat_completion_they_always_did(model):
-    options = dict(model=model, reasoning_effort="low", temperature=0, response_format=_SCHEMA)
-    before, after = _client(), _client()
-    await _complete(before, **options)
-    await _complete(after, tools=(), **options)
-    after.responses.create.assert_not_called()
-    assert (
-        after.chat.completions.create.call_args.kwargs
-        == before.chat.completions.create.call_args.kwargs
-    )
-    assert "tools" not in after.chat.completions.create.call_args.kwargs.get("extra_body", {})
+async def test_a_call_with_tools_gets_the_longer_tool_timeout(model):
+    """It runs its searches or code before it answers, and sends nothing until then."""
+    with patch("services.assistance.llm._get_client", return_value=_client()) as get_client:
+        await complete(_MESSAGES, settings=_settings(), model=model, tools=["web_search"])
+    assert get_client.call_args.args[2:] == (120, 2)
 
 
 @pytest.mark.parametrize(
@@ -307,9 +350,18 @@ async def test_the_reply_is_the_last_messages_text(output, expected):
     assert text == expected
 
 
+@pytest.mark.parametrize(
+    "output",
+    [
+        [_REASONING, _WEB_SEARCH_CALL],
+        # Cut off after a message, mid tool call: that message was a preamble.
+        [_message("I'll search first."), _WEB_SEARCH_CALL, _REASONING],
+    ],
+    ids=["no-message", "after-a-preamble"],
+)
 @pytest.mark.asyncio
-async def test_a_reply_cut_off_at_the_cap_with_no_text_is_an_empty_truncated_reply():
-    response = _response([_REASONING, _WEB_SEARCH_CALL], **_CUT_OFF)
+async def test_a_reply_cut_off_at_the_cap_with_no_text_is_an_empty_truncated_reply(output):
+    response = _response(output, **_CUT_OFF)
     with pytest.raises(
         EmptyTruncatedReplyError,
         match=r"^LLM reply from oai/x hit max_output_tokens=4096 with no content; ",
@@ -389,6 +441,50 @@ async def test_top_n_keeps_its_schema_fallback_and_memo_per_entry_with_tools():
     assert _SCHEMA_ACCEPTED_MODELS == {_PLAIN}
 
 
+def _no_endpoints() -> SimpleNamespace:
+    """OpenRouter's 200 with no choices: no endpoint takes these parameters."""
+    return SimpleNamespace(choices=[], error={"message": "No endpoints found", "code": 404})
+
+
+@pytest.mark.parametrize(
+    ("entry", "api", "refusal", "schema_key", "sent_tools"),
+    [
+        (_TOOLED, "responses", _api_status_error(400), "text", _OPENAI_TOOLS),
+        (
+            AssistanceModel("openrouter/test/tooled", tools=("web_search",)),
+            "chat",
+            _no_endpoints(),
+            "response_format",
+            [{"type": "openrouter:web_search"}],
+        ),
+    ],
+    ids=["oai", "openrouter"],
+)
+@pytest.mark.asyncio
+async def test_top_n_falls_back_through_the_transport_with_its_tools(
+    keys, entry, api, refusal, schema_key, sent_tools
+):
+    """The provider refuses the schema with the tools on; the unconstrained
+    retry keeps the tools, and the verdict is remembered for the entry."""
+    reply = (
+        _response([_WEB_SEARCH_CALL, _message(_CANDIDATES)])
+        if api == "responses"
+        else _chat(_CANDIDATES)
+    )
+    client = _client()
+    create = client.responses.create if api == "responses" else client.chat.completions.create
+    create.side_effect = [refusal, reply]
+    with patch("services.assistance.llm._get_client", return_value=client):
+        step = await TopNAssistance().start(_question(), _top_n(entry))
+
+    assert step.type == StepType.DISPLAY
+    calls = [call.kwargs for call in create.call_args_list]
+    assert [schema_key in call for call in calls] == [True, False]
+    tools = [call["tools"] if api == "responses" else call["extra_body"]["tools"] for call in calls]
+    assert tools == [sent_tools] * 2
+    assert _SCHEMA_REJECTED_MODELS == {entry}
+
+
 @pytest.mark.parametrize(
     ("response", "detail"),
     [
@@ -441,39 +537,57 @@ _DECOMPOSITION = json.dumps(
 )
 
 
+def _tools_sent(call) -> list | None:
+    """The tools a call was sent, on either API."""
+    return call.kwargs.get("tools") or call.kwargs.get("extra_body", {}).get("tools")
+
+
+@pytest.mark.parametrize(
+    ("entry", "decomposition_tools"),
+    [
+        (_TOOLED, _OPENAI_TOOLS),
+        (
+            AssistanceModel("openrouter/test/tooled", tools=("web_search",)),
+            [{"type": "openrouter:web_search"}],
+        ),
+    ],
+    ids=["oai", "openrouter"],
+)
 @pytest.mark.parametrize("confidence_method", ["self_report", "self_consistency", "sampling"])
 @pytest.mark.asyncio
-async def test_only_the_model_under_test_gets_tools(keys, confidence_method):
-    """Decomposition runs the entry with its tools, on the Responses API.
-    Confidence scoring and clustering run the same model with none, as plain
-    chat completions, whatever the entry says; the session records exactly
-    that."""
+async def test_only_the_model_under_test_gets_tools(
+    keys, entry, decomposition_tools, confidence_method
+):
+    """Decomposition runs the entry with its tools. Confidence scoring and
+    clustering run the same model with none, whatever the entry says; the
+    session records exactly that."""
     params = {
-        "assistance_models": {"human_as_a_tool": _TOOLED.to_dict()},
+        "assistance_models": {"human_as_a_tool": entry.to_dict()},
         "confidence_method": confidence_method,
         "num_samples": 2,
     }
-    sample = "ANSWER: yes\nCONFIDENCE: 80"
-    client = _client(_response([_WEB_SEARCH_CALL, _message(_DECOMPOSITION)]), sample)
+
+    async def chat(**kwargs):
+        searching = "tools" in kwargs.get("extra_body", {})
+        return _chat(_DECOMPOSITION if searching else "ANSWER: yes\nCONFIDENCE: 80")
+
+    client = _client(_response([_WEB_SEARCH_CALL, _message(_DECOMPOSITION)]))
+    client.chat.completions.create.side_effect = chat
     with patch("services.assistance.llm._get_client", return_value=client):
         step = await HumanAsAToolMethod().start(_question(), params)
 
     assert step.type == StepType.ASK_INPUT
-    assert [call.kwargs["tools"] for call in client.responses.create.call_args_list] == [
-        _OPENAI_TOOLS
+    calls = [
+        *client.responses.create.call_args_list,
+        *client.chat.completions.create.call_args_list,
     ]
-    instruments = client.chat.completions.create.call_args_list
-    assert (
-        len(instruments)
-        == {"self_report": 1, "self_consistency": 2, "sampling": 3}[confidence_method]
-    )
-    for call in instruments:
-        assert call.kwargs["model"] == "test/tooled"
-        assert "tools" not in call.kwargs and "tools" not in call.kwargs.get("extra_body", {})
+    instruments = {"self_report": 1, "self_consistency": 2, "sampling": 3}[confidence_method]
+    assert [_tools_sent(call) for call in calls] == [decomposition_tools] + [None] * instruments
+    assert {call.kwargs["model"] for call in calls} == {"test/tooled"}
 
     recorded = record_role_models("human_as_a_tool", params)["role_models"]
-    assert {role: entry["tools"] for role, entry in recorded.items()} == {
-        "decomposition": list(_TOOLED.tools),
+    assert {role: sent["tools"] for role, sent in recorded.items()} == {
+        "decomposition": list(entry.tools),
         **dict.fromkeys(list(recorded)[1:], []),
     }
 

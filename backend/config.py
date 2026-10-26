@@ -179,6 +179,10 @@ class LLMSettings(_StrictModel):
     oai_api_key: str = ""
     max_tokens: int = 4096
     request_timeout: int = 60
+    # Seconds for a call with tools: it runs its searches or code before it
+    # answers and sends nothing until then. The inference pipeline's
+    # answerer allowed 120.
+    tool_request_timeout: int = 120
     max_retries: int = 2
 
 
