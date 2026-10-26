@@ -27,7 +27,8 @@ POLL_JITTER_SECONDS = 60
 MESSAGE_LOOKBACK_HOURS = 24
 # Must exceed MESSAGE_LOOKBACK_HOURS, or a message could be re-posted after its row is deleted.
 DEDUP_ROW_RETENTION_HOURS = 48
-SLACK_BODY_MAX_CHARS = 1500
+SLACK_BODY_MAX_CHARS = 4096
+PROLIFIC_APP_URL = "https://app.prolific.com"
 
 
 def forwarding_enabled(settings: Settings) -> bool:
@@ -54,14 +55,18 @@ async def _experiment_label_for_study(
     return f"<{url}|{escape_mrkdwn(row.name)}> ({round_label})"
 
 
-async def _format_slack_message(session: AsyncSession, settings: Settings, message: dict) -> str:
+async def _format_slack_message(
+    session: AsyncSession, settings: Settings, message: dict, workspace_id: str | None
+) -> str:
     data = message.get("data") or {}
     body = (message.get("body") or "")[:SLACK_BODY_MAX_CHARS]
     experiment = await _experiment_label_for_study(session, settings, data.get("study_id"))
-    # TODO: link the title to the thread in Prolific's inbox. Ask Sander for the
-    # URL of an open thread, to see whether the message's `channel_id` is in it.
     category = data.get("category") or "no category"
-    return f"*Prolific message* · {experiment} · {category}\n>>> {escape_mrkdwn(body)}"
+    if workspace_id:
+        url = f"{PROLIFIC_APP_URL}/researcher/workspaces/{workspace_id}/messages/{message['channel_id']}"
+    else:
+        url = f"{PROLIFIC_APP_URL}/messages/{message['channel_id']}"
+    return f"*<{url}|Prolific message>* · {experiment} · {category}\n>>> {escape_mrkdwn(body)}"
 
 
 async def _forward_new_messages(session: AsyncSession, settings: Settings) -> None:
@@ -85,7 +90,7 @@ async def _forward_new_messages(session: AsyncSession, settings: Settings) -> No
         try:
             await post_webhook_message(
                 settings=settings.slack,
-                text=await _format_slack_message(session, settings, message),
+                text=await _format_slack_message(session, settings, message, workspace_id),
             )
         except Exception:
             await session.execute(

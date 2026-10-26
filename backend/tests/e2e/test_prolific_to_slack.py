@@ -120,6 +120,10 @@ async def test_new_messages_forwarded_once(settings: Settings) -> None:
             f"<{settings.app.site_url}/admin/experiments/{experiment_id}|Fact check pilot> (round 1)"
             in m1_text
         )
+        assert (
+            "*<https://app.prolific.com/researcher/workspaces/workspace-1/messages/channel-m1"
+            "|Prolific message>*" in m1_text
+        )
         assert "payment-issues" in m1_text
         assert "hello from m1" in m1_text
         assert "no study" in bare_text

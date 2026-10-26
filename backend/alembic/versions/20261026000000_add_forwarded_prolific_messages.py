@@ -1,8 +1,8 @@
 """add_forwarded_prolific_messages
 
-Revision ID: 20261009000000
-Revises: 20260929054644
-Create Date: 2026-10-06 00:00:00.000000
+Revision ID: 20261026000000
+Revises: 20261016000000
+Create Date: 2026-10-26 00:00:00.000000
 
 """
 
@@ -12,8 +12,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20261009000000"
-down_revision: Union[str, Sequence[str], None] = "20260929054644"
+revision: str = "20261026000000"
+down_revision: Union[str, Sequence[str], None] = "20261016000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
