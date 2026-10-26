@@ -104,17 +104,12 @@ _BAD = [
         f"{_FIELD}: 'tools' lists web_search more than once",
         id="duplicate-tool",
     ),
-    # Until the transport sends tools, an entry declaring any is refused
-    # rather than run without them.
+    # Refused rather than run without it: OpenRouter only searches.
     pytest.param(
-        {"assistance_models": {"top_n": _entry(tools=["web_search"])}},
-        f"{_FIELD}: tools are not supported yet",
-        id="tools-not-supported-yet",
-    ),
-    pytest.param(
-        {"assistance_models": {"top_n": {**_OAI, "tools": ["code_interpreter"]}}},
-        f"{_FIELD}: tools are not supported yet",
-        id="oai-tools-not-supported-yet",
+        {"assistance_models": {"top_n": _entry(tools=["web_search", "code_interpreter"])}},
+        f"{_FIELD}: 'tools' has code_interpreter, which {_GOOD['model']} cannot use. "
+        "OpenRouter can only do web search; use an oai/ model for code_interpreter.",
+        id="openrouter-code-interpreter",
     ),
     pytest.param(
         {"assistance_models": {"top_n": _entry(reasoning_effort="max")}},
@@ -180,7 +175,14 @@ def test_the_removed_model_key_hints_at_reloading_a_stale_page(client: TestClien
 
 @pytest.mark.parametrize(
     "entry",
-    [_GOOD, _OAI, _entry(temperature=0.5, reasoning_effort="high"), _entry(tools=[])],
+    [
+        _GOOD,
+        _OAI,
+        _entry(temperature=0.5, reasoning_effort="high"),
+        _entry(tools=[]),
+        _entry(tools=["web_search"]),
+        {**_OAI, "tools": ["web_search", "code_interpreter"]},
+    ],
 )
 def test_good_entries_and_clears_pass(client: TestClient, entry):
     exp = _create(client, {"assistance_models": {"top_n": entry}}).json()

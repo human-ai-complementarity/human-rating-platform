@@ -16,8 +16,8 @@ config, the model plus the request options every call to it is sent with:
 
 Every option is declared and null means "do not send", so what assisted the
 raters is never left to a provider default. `tools` alone is optional: left
-out, it is no tools. The options belong to the method's primary role, the
-model under test. The instrument roles (confidence, clustering) run the
+out, it is no tools (an `openrouter/` model can only have web_search). The
+options belong to the method's primary role, the model under test. The instrument roles (confidence, clustering) run the
 entry's *model* but keep their own options, and never get its tools:
 sampling's temperature is an instrument setting, not the arm's.
 
@@ -131,15 +131,8 @@ class AssistanceModel:
         return {**asdict(self), "tools": list(self.tools)}
 
     def call_kwargs(self) -> dict[str, Any]:
-        """The keyword arguments for `llm.complete`.
-
-        Not `tools` yet: until the transport sends them, validation refuses an
-        entry declaring any (`refuse_tools_until_supported`), so none is
-        dropped here.
-        """
-        kwargs = asdict(self)
-        del kwargs["tools"]
-        return kwargs
+        """The keyword arguments for `llm.complete`, tools included."""
+        return asdict(self)
 
     @classmethod
     def from_entry(cls, entry: Any, options: Mapping[str, Any] = {}) -> AssistanceModel:
@@ -226,7 +219,8 @@ def resolve_model_and_source(
     if value is not None:
         entry = AssistanceModel.from_entry(value, options)
         if role in _OVERRIDE_ROLES:
-            # An instrument runs the model under test with its own options.
+            # An instrument runs the model under test with its own options,
+            # and never with its tools.
             entry = AssistanceModel.from_entry(entry.model, options)
         return entry, "assistance_models"
     return role_default(role), "default"
@@ -331,7 +325,14 @@ def validate_model_entry(value: Any, *, field: str) -> None:
         raise _reject(field, "'temperature' must be null or a number from 0 to 2.")
     tools = value.get("tools", [])
     _validate_tools(tools, field)
-    refuse_tools_until_supported(tools, field)
+    provider, _ = parse_model(value["model"])
+    unavailable = [tool for tool in tools if tool not in provider.tools]
+    if unavailable:
+        raise _reject(
+            field,
+            f"'tools' has {', '.join(unavailable)}, which {value['model']} cannot use. "
+            f"{provider.tool_limit}",
+        )
 
 
 def _validate_choice(value: Any, allowed: tuple[str, ...], field: str, key: str) -> None:
@@ -355,10 +356,3 @@ def _validate_tools(tools: Any, field: str) -> None:
     repeated = sorted({tool for tool in tools if tools.count(tool) > 1})
     if repeated:
         raise _reject(field, f"'tools' lists {', '.join(repeated)} more than once.")
-
-
-def refuse_tools_until_supported(tools: list[str], field: str) -> None:
-    """400 on any tool until the transport sends them: an entry's tools must
-    run, never be dropped. Remove once `llm.complete` takes `tools`."""
-    if tools:
-        raise _reject(field, "tools are not supported yet; leave 'tools' empty or omit it.")

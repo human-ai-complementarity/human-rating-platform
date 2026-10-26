@@ -550,6 +550,11 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
 
 _MAP_CONFIDENCE = "openrouter/test/confidence-override"
 _MAP_CONFIDENCE_SAMPLING = _entry(_MAP_CONFIDENCE, temperature=0.7)
+# An arm with tools: the model under test is recorded with them, while the
+# instruments run its model with none.
+_MAP_TOOLED = _entry(
+    "oai/test/tooled-entry", reasoning_effort="low", tools=["web_search", "code_interpreter"]
+)
 
 
 @pytest.mark.parametrize(
@@ -595,6 +600,19 @@ _MAP_CONFIDENCE_SAMPLING = _entry(_MAP_CONFIDENCE, temperature=0.7)
             "human_as_a_tool",
             {"confidence_method": "sampling", "confidence_model": _MAP_CONFIDENCE},
             {"decomposition": None, "confidence": _MAP_CONFIDENCE_SAMPLING, "clustering": None},
+        ),
+        ("top_n", {"assistance_models": {"top_n": _MAP_TOOLED}}, {"answer": _MAP_TOOLED}),
+        (
+            "human_as_a_tool",
+            {
+                "assistance_models": {"human_as_a_tool": _MAP_TOOLED},
+                "confidence_method": "sampling",
+            },
+            {
+                "decomposition": _MAP_TOOLED,
+                "confidence": _entry(_MAP_TOOLED["model"], temperature=0.7),
+                "clustering": _entry(_MAP_TOOLED["model"], temperature=0),
+            },
         ),
     ],
 )

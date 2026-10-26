@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -301,9 +300,10 @@ def _without_tools(entry: AssistanceModel) -> dict:
     return {key: value for key, value in entry.to_dict().items() if key != "tools"}
 
 
-# What an entry with tools records and displays. Validation refuses it until
-# the transport sends tools, so it is built here, not written through the API.
-_TOOLED = replace(_HAAT, tools=("web_search", "code_interpreter"))
+# An entry giving the model under test both tools, which only `oai/` runs.
+_TOOLED = AssistanceModel(
+    "oai/test/tooled-entry", text_verbosity="low", tools=("web_search", "code_interpreter")
+)
 
 
 def test_tools_are_optional_and_left_out_is_none():
@@ -347,14 +347,29 @@ def test_bad_tools_are_a_400_naming_the_field(tools, expected):
 
 
 @pytest.mark.parametrize(
-    "tools", [["web_search"], ["code_interpreter"], ["code_interpreter", "web_search"]]
+    ("model", "tools"),
+    [
+        ("oai/gpt-5.6-luna", ["web_search"]),
+        ("oai/gpt-5.6-luna", ["code_interpreter"]),
+        ("oai/gpt-5.6-luna", ["code_interpreter", "web_search"]),
+        ("openrouter/openai/gpt-6-luna", ["web_search"]),
+    ],
 )
-def test_tools_are_refused_until_the_transport_sends_them(tools):
-    """Never accepted and then silently run without."""
+def test_tools_the_provider_runs_pass(model, tools):
+    validate_model_entry({**_TOP_N.to_dict(), "model": model, "tools": tools}, field=_FIELD)
+
+
+@pytest.mark.parametrize("tools", [["code_interpreter"], ["web_search", "code_interpreter"]])
+def test_openrouter_cannot_have_code_interpreter(tools):
+    """Never accepted and then silently run without it."""
+    entry = {**_TOP_N.to_dict(), "model": "openrouter/openai/gpt-6-luna", "tools": tools}
     with pytest.raises(HTTPException) as exc:
-        validate_model_entry({**_TOP_N.to_dict(), "tools": tools}, field=_FIELD)
+        validate_model_entry(entry, field=_FIELD)
     assert exc.value.status_code == 400
-    assert f"in {_FIELD}: tools are not supported yet" in exc.value.detail
+    assert (
+        f"in {_FIELD}: 'tools' has code_interpreter, which openrouter/openai/gpt-6-luna cannot "
+        "use. OpenRouter can only do web search; use an oai/ model for code_interpreter."
+    ) in exc.value.detail
 
 
 def test_an_entry_with_tools_round_trips_and_stays_hashable():
@@ -380,8 +395,8 @@ def test_a_left_out_tools_and_an_empty_one_are_the_same_entry():
     assert not same_entry(None, _TOP_N.to_dict())
 
 
-def test_tools_are_not_passed_to_the_transport_yet():
-    assert _TOOLED.call_kwargs() == _without_tools(_TOOLED)
+def test_the_transport_is_given_the_entrys_tools():
+    assert _TOOLED.call_kwargs() == {**_without_tools(_TOOLED), "tools": _TOOLED.tools}
 
 
 def _question() -> Question:
