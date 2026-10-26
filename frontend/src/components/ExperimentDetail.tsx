@@ -2297,7 +2297,7 @@ function resolvedOptionsText(resolved: ResolvedModel): string {
     `reasoning effort: ${show(resolved.reasoning_effort)}`,
     `verbosity: ${show(resolved.text_verbosity)}`,
     `temperature: ${show(resolved.temperature)}`,
-    ...(resolved.tools.length ? [`tools: ${resolved.tools.join(', ')}`] : []),
+    ...(resolved.tools?.length ? [`tools: ${resolved.tools.join(', ')}`] : []),
   ].join(' · ');
 }
 

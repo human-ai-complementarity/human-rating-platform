@@ -331,10 +331,11 @@ _FIELD = "assistance_params.assistance_models.top_n"
         ({"web_search": True}, "'tools' must be a list"),
         (
             ["browser"],
-            "'tools' has unknown tool(s) 'browser'; allowed: web_search, code_interpreter",
+            "'tools' has unknown tool(s) \"browser\"; allowed: web_search, code_interpreter",
         ),
         (["web_search", 1], "'tools' has unknown tool(s) 1;"),
-        (["Web_Search"], "unknown tool(s) 'Web_Search'"),
+        (["Web_Search"], 'unknown tool(s) "Web_Search"'),
+        ([None, {"name": "web_search"}], 'unknown tool(s) null, {"name": "web_search"};'),
         (["web_search", "web_search"], "'tools' lists web_search more than once"),
     ],
 )
@@ -378,10 +379,17 @@ def test_a_left_out_tools_and_an_empty_one_are_the_same_entry():
     # As before: a bare id or a cleared entry is not the declared entry.
     assert not same_entry(_TOP_N.model, _TOP_N.to_dict())
     assert not same_entry(None, _TOP_N.to_dict())
+    # Only the optional keys are filled in: a missing temperature is not null.
+    partial = {"model": _TOP_N.model, "reasoning_effort": None, "text_verbosity": None}
+    assert not same_entry(partial, {**partial, "temperature": None})
+    assert not same_entry({**_TOP_N.to_dict(), "tools": 5}, _TOP_N.to_dict())
 
 
 def test_tools_are_not_passed_to_the_transport_yet():
-    assert _TOOLED.call_kwargs() == _without_tools(_TOOLED)
+    assert _HAAT.call_kwargs() == _without_tools(_HAAT)
+    # One stored anyway fails the call, rather than run without its tools.
+    with pytest.raises(ValueError, match="^tools are not supported yet; "):
+        _TOOLED.call_kwargs()
 
 
 def _question() -> Question:
@@ -414,6 +422,31 @@ async def test_top_n_sends_its_entry_options_to_the_client():
     assert sent["reasoning_effort"] == "low"
     assert sent["text_verbosity"] is None
     assert sent["temperature"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_a_stored_entry_with_tools_is_a_provider_error_not_a_call_without_them():
+    """Validation refuses tools; an entry holding some anyway is never run
+    without them, and the session says why it got no assistance."""
+    params = {
+        "assistance_models": {"top_n": _TOOLED.to_dict(), "human_as_a_tool": _TOOLED.to_dict()}
+    }
+    llm = AsyncMock(return_value="{}")
+    with (
+        patch("services.assistance.methods.top_n.complete", new=llm),
+        patch("services.assistance.methods.human_as_a_tool.decomposer.complete", new=llm),
+    ):
+        steps = [
+            await TopNAssistance().start(_question(), params),
+            await HumanAsAToolMethod().start(_question(), params),
+        ]
+    llm.assert_not_called()
+    for step in steps:
+        assert step.failure_reason == "provider_error"
+        assert step.failure_detail == (
+            f"ValueError: tools are not supported yet; {_TOOLED.model} has "
+            "web_search, code_interpreter"
+        )
 
 
 @pytest.mark.asyncio
