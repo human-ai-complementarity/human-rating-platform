@@ -96,17 +96,17 @@ class AdminSessionManager:
 
     def set_cookie(self, response: Response, email: str) -> None:
         value = self._encode(email)
-        # Use SameSite=None only when cookies are Secure (production, cross-site).
-        # In local dev, sending a Secure cookie over http://localhost is rejected by browsers,
-        # and SameSite=None without Secure is also rejected; use Lax for dev/proxy.
-        same_site = "none" if self._settings.cookie_secure else "lax"
+        # Lax everywhere. The web app and API share a site in production
+        # (platform. / api.platform.complementarities.org), so the app's own
+        # credentialed fetches still carry the cookie, while a cross-site page
+        # can no longer forge admin POSTs with it. SameSite=None allowed that.
         response.set_cookie(
             key=self.cookie_name,
             value=value,
             max_age=self._settings.hrp_session_max_age,
             httponly=True,
             secure=self._settings.cookie_secure,
-            samesite=same_site,
+            samesite="lax",
             path="/",
         )
 
