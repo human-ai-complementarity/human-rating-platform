@@ -98,6 +98,34 @@ def test_allowlisted_login_sets_cookie_and_unlocks_admin_routes(
         assert admin_resp.status_code == 200
 
 
+def test_production_session_cookie_is_samesite_lax(monkeypatch: pytest.MonkeyPatch) -> None:
+    # SameSite=None let any page an admin visited forge bodyless admin POSTs
+    # (publish, close, archive, revoke) with the session cookie attached.
+    monkeypatch.setenv("COOKIE_SECURE", "true")
+    with _build_app_with_admin_env(
+        monkeypatch,
+        admin_auth_enabled=True,
+        allowlist="admin@example.com",
+    ) as client:
+
+        async def fake_clerk_email_from_request() -> str:
+            return "admin@example.com"
+
+        client.app.dependency_overrides[admin_router.get_clerk_email_from_request] = (
+            fake_clerk_email_from_request
+        )
+
+        response = client.post(
+            "/api/admin/auth/login",
+            headers={"Authorization": "Bearer fake-token"},
+        )
+
+        assert response.status_code == 200
+        set_cookie = response.headers["set-cookie"].lower()
+        assert "samesite=lax" in set_cookie
+        assert "secure" in set_cookie
+
+
 def test_non_allowlisted_email_is_denied_and_cookie_not_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
