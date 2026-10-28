@@ -35,11 +35,10 @@ def verify_proxy_token(
     return hmac.compare_digest(_signature(secret, digest, expires), signature)
 
 
+# The pipeline's `sniff_mime`, so both sides read the same bytes the same way.
 _MAGIC = (
     (b"\x89PNG\r\n\x1a\n", "image/png"),
     (b"\xff\xd8\xff", "image/jpeg"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
 )
 
 

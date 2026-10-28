@@ -483,7 +483,7 @@ A row may carry its stimulus as `content`, an ordered JSON list of blocks in the
  {"type": "text", "text": "Should the next action be allowed?"}]
 ```
 
-`question_text` stays required as the text-only form (the text blocks joined, as the pipeline's `message_text` does) for exports, analytics and the v1 API. Blocks carry exactly their type's keys; `mime_type` is one of `image/png`, `image/jpeg`, `image/gif`, `image/webp`. A parent row can carry `content` too.
+`question_text` stays required as the text-only form (the text blocks joined, as the pipeline's `message_text` does) for exports, analytics and the v1 API. Blocks carry exactly their type's keys; `mime_type` is one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits). A parent row can carry `content` too.
 
 **Storage.** Image bytes are not uploaded with the file. They live in the media source, `MEDIA__SOURCE_URL`, under the object name `<prefix>/<sha256 hex digest>`, which is the pipeline's media store layout (`checkpoints/ingest_questions/media/`), so that directory syncs to the bucket as is:
 

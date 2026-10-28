@@ -112,7 +112,7 @@ def test_render_blocks_turns_refs_into_proxy_urls(file_source: MediaSettings):
     [
         (PNG, "image/png"),
         (b"\xff\xd8\xff\xe0rest", "image/jpeg"),
-        (b"GIF89a....", "image/gif"),
+        (b"GIF89a....", "application/octet-stream"),
         (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
         (b"<svg/>", "application/octet-stream"),
     ],

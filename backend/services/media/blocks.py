@@ -26,7 +26,9 @@ IMAGE = "image"
 BLOCK_TYPES = frozenset({TEXT, IMAGE})
 
 REF_PATTERN = re.compile(r"sha256:([0-9a-f]{64})")
-IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+# The types the pipeline's ingest admits (its `sniff_mime`), no more: an
+# export can only ever reference these.
+IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 
 _TEXT_KEYS = frozenset({"type", "text"})
 _IMAGE_KEYS = frozenset({"type", "ref", "mime_type"})

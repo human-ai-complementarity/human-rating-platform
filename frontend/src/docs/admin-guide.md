@@ -38,7 +38,7 @@ A row's `content` column holds the stimulus as an ordered list of blocks, the in
 ]
 ```
 
-- A text block is exactly `{"type": "text", "text": ...}`; an image block exactly `{"type": "image", "ref": "sha256:<64 hex>", "mime_type": ...}` with `mime_type` one of `image/png`, `image/jpeg`, `image/gif`, `image/webp`. Anything else fails the upload, naming the row.
+- A text block is exactly `{"type": "text", "text": ...}`; an image block exactly `{"type": "image", "ref": "sha256:<64 hex>", "mime_type": ...}` with `mime_type` one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits). Anything else fails the upload, naming the row.
 - `ref` is the SHA-256 of the image's bytes. The bytes themselves live in the platform's media source (`MEDIA__SOURCE_URL`, a bucket the team syncs the pipeline's media store to), each object named by that hex digest. The upload checks that every referenced image is there and refuses the file otherwise, so a rater never meets a broken image.
 - In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
 - Raters see the blocks in order, each image full width and openable at full size. Images reach the browser by an expiring URL minted for the session; nothing is public. The AI assistance methods send the same images, in the same places, to their model, so pick a vision-capable `assistance_models` entry for such a dataset.
