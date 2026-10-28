@@ -16,6 +16,7 @@ class NoAssistance(AssistanceMethod):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        parent_content: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         return InteractionStep(type=StepType.NONE, is_terminal=True)

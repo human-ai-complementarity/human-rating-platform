@@ -68,6 +68,7 @@ async def test_full_step_round_trip_uses_existing_start_once(name, step_type):
         snapshot.question,
         snapshot.params,
         parent_question_text=snapshot.parent_question_text,
+        parent_content=snapshot.parent_content,
         experiment_system_prompt=snapshot.experiment_system_prompt,
     )
     # Consumer mutation cannot mutate the durable artifact.

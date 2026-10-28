@@ -3,7 +3,8 @@ import type { CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Question } from '../types';
+import type { ContentBlock, Question } from '../types';
+import { resolveMediaUrl } from '../api';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
 import appCss from '../index.css?raw';
@@ -14,6 +15,9 @@ import appCss from '../index.css?raw';
 // of characters, a long-context document runs six figures), so the exact value
 // only matters if a dataset ever lands in between.
 const INLINE_CONTEXT_MAX_CHARS = 2000;
+// What an image in the parent counts for against that threshold: a few
+// screenshots are fine inline, a transcript's worth belongs in the document tab.
+const IMAGE_CONTEXT_CHARS = 500;
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
@@ -34,9 +38,12 @@ interface QuestionCardProps {
 type QuestionDisplay = {
   /** Rendered behind the "open document in new tab" link. */
   documentText: string | null;
+  documentBlocks: ContentBlock[] | null;
   /** Rendered inline in the "Context" box above the question. */
   inlineContext: string | null;
+  inlineContextBlocks: ContentBlock[] | null;
   questionText: string;
+  questionBlocks: ContentBlock[] | null;
 };
 
 function escapeHtml(value: string): string {
@@ -87,6 +94,62 @@ function QuestionBody({
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+function ContentImage({ url, index }: { url: string; index: number }) {
+  const src = resolveMediaUrl(url);
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      title="Open image in new tab"
+      style={{ display: 'block', margin: '12px 0' }}
+    >
+      <img
+        src={src}
+        alt={`Question image ${index}`}
+        loading="lazy"
+        style={{
+          display: 'block',
+          maxWidth: '100%',
+          height: 'auto',
+          border: '1px solid #e6e1d5',
+          borderRadius: 9,
+          background: '#ffffff',
+        }}
+      />
+    </a>
+  );
+}
+
+/**
+ * A stimulus with images: its blocks in order, text rendered as the plain
+ * question text would be, each image full width and opening at full size in
+ * a new tab. Inline styles throughout, so the same markup works in the
+ * standalone document popup.
+ */
+function ContentBlocks({
+  blocks,
+  markdown,
+  textStyle,
+}: {
+  blocks: ContentBlock[];
+  markdown: boolean;
+  textStyle?: CSSProperties;
+}) {
+  let imageIndex = 0;
+  return (
+    <div className="question-content">
+      {blocks.map((block, i) =>
+        block.type === 'image' ? (
+          <ContentImage key={i} url={block.url} index={++imageIndex} />
+        ) : (
+          <QuestionBody key={i} text={block.text} markdown={markdown} style={textStyle} />
+        ),
+      )}
     </div>
   );
 }
@@ -143,12 +206,19 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
  */
 function parseQuestionDisplay(question: Question): QuestionDisplay {
   const parent = question.parent_question_text?.trim() || null;
-  const parentIsDocument = parent !== null && parent.length > INLINE_CONTEXT_MAX_CHARS;
+  const parentBlocks = question.parent_content?.length ? question.parent_content : null;
+  const parentImages = parentBlocks?.filter((block) => block.type === 'image').length ?? 0;
+  const parentWeight = (parent?.length ?? 0) + parentImages * IMAGE_CONTEXT_CHARS;
+  const parentIsDocument = parent !== null && parentWeight > INLINE_CONTEXT_MAX_CHARS;
+  const questionBlocks = question.content?.length ? question.content : null;
 
   return {
     documentText: parentIsDocument ? parent : null,
+    documentBlocks: parentIsDocument ? parentBlocks : null,
     inlineContext: parentIsDocument ? null : parent,
+    inlineContextBlocks: parentIsDocument ? null : parentBlocks,
     questionText: question.question_text,
+    questionBlocks,
   };
 }
 
@@ -181,6 +251,7 @@ function parseOptions(rawOptions: string | null): string[] {
 // external question id would tell a rater which dataset the item came from.
 async function buildLongContextDocumentHtml(
   documentText: string,
+  documentBlocks: ContentBlock[] | null,
   isMarkdown: boolean,
 ): Promise<string> {
   const title = 'Document';
@@ -188,10 +259,20 @@ async function buildLongContextDocumentHtml(
   // pre-rendered into it and the stylesheets its classes need are inlined.
   let body = `<pre>${escapeHtml(documentText)}</pre>`;
   let appStyles = '';
-  if (isMarkdown) {
+  if (isMarkdown || documentBlocks) {
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
-    body = renderToStaticMarkup(<QuestionBody text={documentText} markdown />);
+    body = renderToStaticMarkup(
+      documentBlocks ? (
+        <ContentBlocks
+          blocks={documentBlocks}
+          markdown={isMarkdown}
+          textStyle={isMarkdown ? undefined : { font: '14px/1.6 "IBM Plex Mono", ui-monospace, monospace' }}
+        />
+      ) : (
+        <QuestionBody text={documentText} markdown />
+      ),
+    );
     appStyles = `<style>${tokensCss}${appCss}</style>`;
   }
 
@@ -222,6 +303,7 @@ async function buildLongContextDocumentHtml(
       letter-spacing: -0.01em;
     }
     main > pre,
+    .question-content,
     .question-markdown {
       box-sizing: border-box;
       width: 100%;
@@ -231,7 +313,12 @@ async function buildLongContextDocumentHtml(
       border-radius: 9px;
       background: #ffffff;
     }
-    main > pre {
+    .question-content .question-markdown {
+      border: 0;
+      padding: 0;
+    }
+    main > pre,
+    .question-content > p {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       font: 14px/1.6 "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -281,7 +368,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
 
     let url: string | null = null;
     let cancelled = false;
-    void buildLongContextDocumentHtml(display.documentText, question.is_markdown).then((html) => {
+    void buildLongContextDocumentHtml(
+      display.documentText,
+      display.documentBlocks,
+      question.is_markdown,
+    ).then((html) => {
       if (cancelled) return;
       url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       setDocumentUrl(url);
@@ -292,7 +383,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       if (url) URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
-  }, [display.documentText, question.is_markdown]);
+  }, [display.documentText, display.documentBlocks, question.is_markdown]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -365,11 +456,19 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           >
             Context
           </div>
-          <QuestionBody
-            text={display.inlineContext}
-            markdown={question.is_markdown}
-            style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
-          />
+          {display.inlineContextBlocks ? (
+            <ContentBlocks
+              blocks={display.inlineContextBlocks}
+              markdown={question.is_markdown}
+              textStyle={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
+            />
+          ) : (
+            <QuestionBody
+              text={display.inlineContext}
+              markdown={question.is_markdown}
+              style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
+            />
+          )}
         </div>
       )}
 
@@ -400,19 +499,36 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
-      <QuestionBody
-        text={display.questionText}
-        markdown={question.is_markdown}
-        style={{
-          fontFamily: 'var(--font-head)',
-          fontSize: 22,
-          lineHeight: 1.35,
-          letterSpacing: '-0.005em',
-          color: 'var(--ink)',
-          marginTop: 0,
-          marginBottom: 24,
-        }}
-      />
+      {display.questionBlocks ? (
+        <div style={{ marginBottom: 24 }}>
+          <ContentBlocks
+            blocks={display.questionBlocks}
+            markdown={question.is_markdown}
+            textStyle={{
+              fontFamily: 'var(--font-head)',
+              fontSize: 22,
+              lineHeight: 1.35,
+              letterSpacing: '-0.005em',
+              color: 'var(--ink)',
+              margin: 0,
+            }}
+          />
+        </div>
+      ) : (
+        <QuestionBody
+          text={display.questionText}
+          markdown={question.is_markdown}
+          style={{
+            fontFamily: 'var(--font-head)',
+            fontSize: 22,
+            lineHeight: 1.35,
+            letterSpacing: '-0.005em',
+            color: 'var(--ink)',
+            marginTop: 0,
+            marginBottom: 24,
+          }}
+        />
+      )}
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
         <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />

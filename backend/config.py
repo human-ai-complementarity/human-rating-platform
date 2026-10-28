@@ -168,6 +168,32 @@ class SlackSettings(_StrictModel):
         return bool(self.webhook_url.strip())
 
 
+class MediaSettings(_StrictModel):
+    # Where the images that question `content` blocks reference live:
+    # `gs://bucket/prefix` (a private bucket) or `file://folder` (local dev
+    # and tests; relative to the backend directory). Each object is named by
+    # the SHA-256 hex digest of its bytes, the layout of the inference
+    # pipeline's media store, so that store syncs to the bucket as is. Unset
+    # means uploads carrying image blocks are refused. Layout and delivery:
+    # services/media/source.py.
+    source_url: str = ""
+    # How a rater's browser fetches an image. True (the default) and a gs://
+    # source: the backend mints a V4 signed URL and GCS serves the bytes.
+    # False, or a file:// source: the backend serves the bytes itself from
+    # /api/raters/media, behind an HMAC token with the same expiry.
+    signed_urls: bool = True
+    # How long a minted URL stays valid. Long enough to cover a session, so a
+    # rater who opens a question late in theirs still sees its images.
+    url_ttl_minutes: int = Field(default=240, ge=5, le=7 * 24 * 60)
+    # Keyless gs:// access through Workload Identity Federation, as for
+    # TERMS__GCS_*. Signing a URL without a private key goes through the IAM
+    # signBlob API as the impersonated service account, which therefore has
+    # to be named here when signed_urls is on.
+    gcs_wif_audience: str = ""
+    gcs_wif_token_file: str = ""
+    gcs_impersonate_service_account: str = ""
+
+
 class LLMModels:
     CLAUDE_SONNET = "openrouter/anthropic/claude-sonnet-4-6"
     CLAUDE_HAIKU = "openrouter/anthropic/claude-haiku-4-5"
@@ -221,6 +247,7 @@ class Settings(BaseSettings):
     terms: TermsSettings = Field(default_factory=TermsSettings)
     slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)

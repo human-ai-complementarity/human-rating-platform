@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
+import time
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
@@ -23,11 +25,13 @@ from schemas import (
     RatingSubmit,
     SessionStatusResponse,
 )
-from services import assistance, rater
+from services import assistance, media, rater
 
 from .deps import RaterSession, require_consented_rater_session, require_rater_session
 
 router = APIRouter(prefix="/raters", tags=["raters"])
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 @router.post("/start", response_model=RaterStartResponse)
@@ -100,6 +104,38 @@ async def get_question(
         rater_id=session.rater_id, runner=request.app.state.preparation_runner, db=db
     )
     return question
+
+
+@router.get("/media/{digest}")
+async def get_media(
+    digest: str,
+    exp: int = Query(...),
+    sig: str = Query(...),
+    settings: Settings = Depends(get_settings),
+):
+    """One question image, for a URL `next-question` minted (services/media/urls).
+
+    The URL is the credential: an <img> tag sends no session header, so the
+    expiring HMAC in the query stands in for it, as a signed GCS URL would.
+    """
+    if _DIGEST.fullmatch(digest) is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not media.verify_proxy_token(settings.effective_rater_session_secret, digest, exp, sig):
+        raise HTTPException(status_code=403, detail="Media link expired or invalid")
+    try:
+        data = await media.read_bytes(settings.media, digest)
+    except media.MediaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except media.MediaSourceError as exc:
+        raise HTTPException(status_code=503, detail=f"Question media unavailable: {exc}") from exc
+    # Cacheable by this browser for as long as the link lives, so a reload
+    # or a second question over the same screenshot does not refetch it.
+    max_age = max(0, exp - int(time.time()))
+    return Response(
+        content=data,
+        media_type=media.sniff_mime(data),
+        headers={"Cache-Control": f"private, max-age={max_age}"},
+    )
 
 
 @router.post("/submit", response_model=RatingResponse)

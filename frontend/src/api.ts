@@ -187,6 +187,19 @@ function buildUrl(path: string, query?: QueryParams): string {
   return qs ? `${API_BASE}${normalized}?${qs}` : `${API_BASE}${normalized}`;
 }
 
+// A question image's URL as the browser should fetch it. The backend hands out
+// either a signed storage URL (absolute, used as is) or one of its own paths
+// under /api, which has to go to the API host like every other request. The
+// result is always absolute, so it also works from a blob: document (the
+// "open document in new tab" popup), where relative URLs do not resolve.
+export function resolveMediaUrl(url: string): string {
+  if (!url.startsWith(`${API_PREFIX}/`)) {
+    return url;
+  }
+  const rebased = `${API_BASE}${url.slice(API_PREFIX.length)}`;
+  return new URL(rebased, window.location.origin).href;
+}
+
 // ── Error handling ───────────────────────────────────────────────────────────
 // The most common failure mode in deployment is routing misconfiguration: the
 // SPA serves index.html for unknown paths, so API calls get HTML back instead

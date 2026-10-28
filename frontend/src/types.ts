@@ -253,6 +253,13 @@ export interface TermsPreview {
   debrief_html: string | null;
 }
 
+// One piece of a question's stimulus. Text blocks are rendered like
+// question_text; an image block's `url` is fetchable until it expires (a
+// signed GCS URL, or an API path the client prefixes with its API host).
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; mime_type: string };
+
 export interface Question {
   assignment_id?: number | null;
   assignment_generation?: number | null;
@@ -261,6 +268,10 @@ export interface Question {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  // The stimulus as blocks when it carries images; null means render the
+  // text fields. Same for the parent row.
+  content?: ContentBlock[] | null;
+  parent_content?: ContentBlock[] | null;
   is_markdown: boolean;
 }
 

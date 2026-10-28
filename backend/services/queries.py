@@ -157,3 +157,22 @@ async def fetch_parent_question_text(
     return (
         await db.execute(select(Question.question_text).where(Question.id == parent_question_id))
     ).scalar_one_or_none()
+
+
+async def fetch_parent_question_fields(
+    parent_question_id: int | None,
+    db: AsyncSession,
+) -> tuple[str | None, str | None]:
+    """The parent row's (question_text, content); (None, None) without a parent."""
+    if parent_question_id is None:
+        return None, None
+    row = (
+        await db.execute(
+            select(Question.question_text, Question.content).where(
+                Question.id == parent_question_id
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return None, None
+    return row[0], row[1]

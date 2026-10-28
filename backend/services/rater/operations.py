@@ -47,7 +47,7 @@ from .queries import (
     fetch_in_progress_parent_ids,
     fetch_live_assignment_for_rater,
     fetch_outstanding_assignment_for_rater,
-    fetch_parent_question_text,
+    fetch_parent_question_fields,
     fetch_question_or_404,
     fetch_rated_question_ids,
     fetch_rater_completed_count,
@@ -454,13 +454,14 @@ async def get_next_question(
             live_assignment = await fetch_outstanding_assignment_for_rater(rater_id=rater_id, db=db)
         if live_assignment is not None:
             question = await fetch_question_or_404(live_assignment.question_id, db)
-            parent_text = (
-                await fetch_parent_question_text(question.parent_question_id, db)
-                if question.parent_question_id is not None
-                else None
+            parent_text, parent_content = await fetch_parent_question_fields(
+                question.parent_question_id, db
             )
-            return build_question_response(
-                question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+            return await build_question_response(
+                question,
+                is_markdown=experiment.is_markdown,
+                parent_question_text=parent_text,
+                parent_content=parent_content,
             )
 
     # Past the deadline the rater keeps what they hold, but is served nothing new.
@@ -503,13 +504,14 @@ async def get_next_question(
     if not rater.is_preview:
         await _reserve_question(rater_id=rater_id, question_id=selected.id, policy=policy, db=db)
 
-    parent_text = (
-        await fetch_parent_question_text(selected.parent_question_id, db)
-        if selected.parent_question_id is not None
-        else None
+    parent_text, parent_content = await fetch_parent_question_fields(
+        selected.parent_question_id, db
     )
-    return build_question_response(
-        selected, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+    return await build_question_response(
+        selected,
+        is_markdown=experiment.is_markdown,
+        parent_question_text=parent_text,
+        parent_content=parent_content,
     )
 
 
@@ -550,13 +552,14 @@ async def get_question_by_id(
         rater_experiment_id=rater.experiment_id,
     )
 
-    parent_text = (
-        await fetch_parent_question_text(question.parent_question_id, db)
-        if question.parent_question_id is not None
-        else None
+    parent_text, parent_content = await fetch_parent_question_fields(
+        question.parent_question_id, db
     )
-    return build_question_response(
-        question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+    return await build_question_response(
+        question,
+        is_markdown=experiment.is_markdown,
+        parent_question_text=parent_text,
+        parent_content=parent_content,
     )
 
 

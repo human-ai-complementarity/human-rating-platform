@@ -22,7 +22,7 @@ from services.assistance.runner import log_preparation_event
 from services.queries import (
     fetch_experiment_or_404,
     fetch_question_or_404,
-    fetch_parent_question_text,
+    fetch_parent_question_fields,
 )
 from session_policy import resolve_session_policy
 from .mappers import build_question_response
@@ -108,19 +108,19 @@ async def snapshot(rater, experiment, assignments, db):
     items = []
     for assignment in assignments:
         question = await fetch_question_or_404(assignment.question_id, db)
-        parent = (
-            await fetch_parent_question_text(question.parent_question_id, db)
-            if question.parent_question_id
-            else None
+        parent, parent_content = await fetch_parent_question_fields(question.parent_question_id, db)
+        response = await build_question_response(
+            question,
+            is_markdown=experiment.is_markdown,
+            parent_question_text=parent,
+            parent_content=parent_content,
         )
         items.append(
             QueueItem(
                 assignment_id=assignment.id,
                 generation=assignment.generation,
                 activated=assignment.activated_at is not None,
-                question=build_question_response(
-                    question, is_markdown=experiment.is_markdown, parent_question_text=parent
-                ).model_copy(
+                question=response.model_copy(
                     update={
                         "assignment_id": assignment.id,
                         "assignment_generation": assignment.generation,
@@ -374,16 +374,15 @@ async def queue_action(*, rater_id, body: QueueRequest, db, serve=False):
                     break
                 method = get_method(experiment.assistance_method)
                 params = method.preparation_params(json.loads(experiment.assistance_params or "{}"))
-                parent = (
-                    await fetch_parent_question_text(selected.parent_question_id, db)
-                    if selected.parent_question_id
-                    else None
+                parent, parent_content = await fetch_parent_question_fields(
+                    selected.parent_question_id, db
                 )
                 context = PreparationContext(
                     QuestionSnapshot.capture(selected),
                     json.dumps(params),
                     parent,
                     experiment.system_prompt,
+                    parent_content=parent_content,
                 )
                 if method.plan_preparation(context) is None:
                     depth = 1

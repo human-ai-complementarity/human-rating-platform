@@ -32,6 +32,7 @@ from dataclasses import replace
 import openai
 
 from models import Question
+from services.media import Block, has_media, load_content, text_block
 
 from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
@@ -114,6 +115,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        parent_content: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         model = self.role_models(params)[self.primary_model_role]
@@ -132,6 +134,15 @@ class HumanAsAToolMethod(InitialStepPreparation):
         else:
             question_text = question.question_text
         options = question.options or ""
+        # When the question or its parent carries images, the same framing
+        # as blocks, images in place, pinned in state so every round of the
+        # decomposer sees them. The confidence estimators read only text.
+        stimulus = _stimulus_blocks(
+            question.question_text,
+            load_content(question.content),
+            parent_question_text,
+            load_content(parent_content),
+        )
 
         try:
             result = await self._decomposer.start(
@@ -140,6 +151,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 max_subtasks,
                 model,
                 experiment_system_prompt=experiment_system_prompt,
+                stimulus=stimulus,
             )
 
             if result.done:
@@ -177,6 +189,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
             state={
                 "question_text": question_text,
                 "options": options,
+                "stimulus": stimulus,
                 "iteration": 1,
                 "max_rounds": max_rounds,
                 "max_subtasks": max_subtasks,
@@ -223,6 +236,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         confidence_threshold = state.get("confidence_threshold", _CONFIDENCE_THRESHOLD)
         question_text = state.get("question_text", "")
         options = state.get("options", "")
+        stimulus = state.get("stimulus")
 
         history = [
             *state.get("history", []),
@@ -238,6 +252,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 max_rounds=max_rounds,
                 model=model,
                 experiment_system_prompt=experiment_system_prompt,
+                stimulus=stimulus,
             )
 
             if result.done:
@@ -275,6 +290,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
             state={
                 "question_text": question_text,
                 "options": options,
+                "stimulus": stimulus,
                 "iteration": iteration + 1,
                 "max_rounds": max_rounds,
                 "max_subtasks": max_subtasks,
@@ -324,6 +340,28 @@ class HumanAsAToolMethod(InitialStepPreparation):
             {**st, "confidence": _apply_evidence_penalty(st, int(score))}
             for st, score in zip(subtasks, scores)
         ]
+
+
+def _stimulus_blocks(
+    question_text: str,
+    content: list[Block] | None,
+    parent_text: str | None,
+    parent_content: list[Block] | None,
+) -> list[Block] | None:
+    """The question with its parent context as blocks; None when all text.
+
+    Mirrors the text framing ("Context:\n...\n\nQuestion: ...") so the
+    decomposer's message reads the same with images in place.
+    """
+    if not has_media(content) and not has_media(parent_content):
+        return None
+    blocks: list[Block] = []
+    if parent_text:
+        blocks.append(text_block("Context:\n"))
+        blocks.extend(parent_content or [text_block(parent_text)])
+        blocks.append(text_block("\n\nQuestion: "))
+    blocks.extend(content or [text_block(question_text)])
+    return blocks
 
 
 def _confidence_method(params: Mapping[str, object]) -> object:

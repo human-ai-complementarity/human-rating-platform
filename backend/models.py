@@ -236,6 +236,9 @@ class Question(SQLModel, table=True):
         sa_column=Column(String(16), nullable=False, server_default=text("'MC'")),
     )
     extra_data: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # The stimulus as a JSON list of text and image blocks (services/media),
+    # when it carries more than text. NULL means question_text is all there is.
+    content: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     parent_question_id: Optional[int] = Field(
         default=None,
         sa_column=Column(

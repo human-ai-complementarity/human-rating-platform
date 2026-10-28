@@ -134,6 +134,7 @@ class AssistanceMethod(ABC):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        parent_content: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         """Begin an assistance interaction for the given question.
@@ -145,6 +146,11 @@ class AssistanceMethod(ABC):
             context shown to the rater above the question. Methods that pass
             the question to an LLM should incorporate this; otherwise the
             model loses the context the rater can see.
+        parent_content:
+            The parent row's stored block JSON (services/media), when it
+            carries images; `question.content` is the question's own. A
+            method that drives a vision-capable model should send the blocks
+            (`services.media.prompt`) so the model sees what the rater sees.
         experiment_system_prompt:
             Dataset-level system prompt declared by the researcher (via the
             upload's dataset metadata or the admin UI). Methods that drive an LLM

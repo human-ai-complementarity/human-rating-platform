@@ -21,6 +21,8 @@ class QuestionSnapshot:
     question_text: str
     question_type: str
     options: str | None
+    # The stimulus as stored block JSON when it carries images (services/media).
+    content: str | None = None
 
     @classmethod
     def capture(cls, question: Question) -> QuestionSnapshot:
@@ -30,6 +32,7 @@ class QuestionSnapshot:
             question_text=question.question_text,
             question_type=question.question_type,
             options=question.options,
+            content=question.content,
         )
 
 
@@ -40,6 +43,8 @@ class PreparationContext:
     params_json: str
     parent_question_text: str | None = None
     experiment_system_prompt: str | None = None
+    # The parent row's stored block JSON, beside its text.
+    parent_content: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -102,6 +107,7 @@ class InitialStepPreparation(AssistanceMethod):
             context.question,
             context.params,
             parent_question_text=context.parent_question_text,
+            parent_content=context.parent_content,
             experiment_system_prompt=context.experiment_system_prompt,
         )
         return InitialStepArtifact(**asdict(step)).model_dump(mode="json")

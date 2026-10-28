@@ -31,7 +31,13 @@ class _TwoTurn(AssistanceMethod):
     """ASK_INPUT on start, COMPLETE on the first advance."""
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         return InteractionStep(
             type=StepType.ASK_INPUT,
@@ -51,7 +57,13 @@ class _RaisesOnStart(AssistanceMethod):
     calls = 0
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         type(self).calls += 1
         raise RuntimeError("provider exploded")
@@ -61,7 +73,13 @@ class _DegradesOnStart(AssistanceMethod):
     """Catches its own failure and returns a NONE step with a failure_reason."""
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         return InteractionStep(
             type=StepType.NONE, is_terminal=True, failure_reason="provider_error"
@@ -72,7 +90,13 @@ class _DegradesWithDetail(AssistanceMethod):
     """Caught a provider rejection and kept what the provider said."""
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         return InteractionStep(
             type=StepType.NONE,
@@ -98,7 +122,13 @@ class _AlwaysFailsSlowly(AssistanceMethod):
     calls = 0
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         type(self).calls += 1
         await asyncio.sleep(0.5)
@@ -109,7 +139,13 @@ class _RaisesValueErrorOnStart(AssistanceMethod):
     """An exception the method did not anticipate and the service never documented."""
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         raise ValueError("corrupt state")
 
@@ -120,7 +156,13 @@ class _FailsThenSlow(AssistanceMethod):
     calls = 0
 
     async def start(
-        self, question, params, *, parent_question_text=None, experiment_system_prompt=None
+        self,
+        question,
+        params,
+        *,
+        parent_question_text=None,
+        parent_content=None,
+        experiment_system_prompt=None,
     ):
         type(self).calls += 1
         if type(self).calls == 1:

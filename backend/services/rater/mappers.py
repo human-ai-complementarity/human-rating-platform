@@ -2,24 +2,49 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from fastapi import HTTPException
+
+from config import get_settings
 from models import Question
 from schemas import QuestionResponse, RaterStartResponse
+from services import media
 from services.prolific_markdown import to_prolific_html
 from services.terms import RaterTerms
 from session_policy import SessionPolicy
 
 
-def build_question_response(
+async def build_question_response(
     question: Question,
     is_markdown: bool,
     parent_question_text: str | None = None,
+    parent_content: str | None = None,
 ) -> QuestionResponse:
+    """The question as a rater sees it.
+
+    ``parent_content`` is the parent row's stored block JSON, like
+    ``question.content``. Each image block is rendered to a URL the browser
+    can fetch; a media source that cannot mint one is a 503, since the
+    question would otherwise be served with its images missing.
+    """
+    settings = get_settings()
+    secret = settings.effective_rater_session_secret
+    try:
+        content = await media.render_blocks(
+            settings.media, secret, media.load_content(question.content)
+        )
+        rendered_parent = await media.render_blocks(
+            settings.media, secret, media.load_content(parent_content)
+        )
+    except media.MediaSourceError as exc:
+        raise HTTPException(status_code=503, detail=f"Question media unavailable: {exc}") from exc
     return QuestionResponse(
         id=question.id,
         question_text=question.question_text,
         options=question.options,
         question_type=question.question_type,
         parent_question_text=parent_question_text,
+        content=content,
+        parent_content=rendered_parent,
         is_markdown=is_markdown,
     )
 

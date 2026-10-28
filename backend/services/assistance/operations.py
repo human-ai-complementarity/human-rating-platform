@@ -23,7 +23,7 @@ from services.rater.validators import validate_rater_session_not_over
 from schemas import AssistanceStepResponse
 from services.queries import (
     fetch_experiment_or_404,
-    fetch_parent_question_text,
+    fetch_parent_question_fields,
     fetch_question_or_404,
     load_json_column,
 )
@@ -161,10 +161,8 @@ async def start_assistance(
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
-    parent_question_text = (
-        await fetch_parent_question_text(question.parent_question_id, db)
-        if question.parent_question_id is not None
-        else None
+    parent_question_text, parent_content = await fetch_parent_question_fields(
+        question.parent_question_id, db
     )
 
     if runner is not None and existing is None:
@@ -175,6 +173,7 @@ async def start_assistance(
                 json.dumps(params, sort_keys=True),
                 parent_question_text,
                 experiment.system_prompt,
+                parent_content=parent_content,
             )
         )
         if spec is not None:
@@ -236,6 +235,7 @@ async def start_assistance(
                         question_snapshot,
                         params,
                         parent_question_text=parent_question_text,
+                        parent_content=parent_content,
                         experiment_system_prompt=system_prompt,
                     )
 
@@ -458,17 +458,14 @@ async def prepare_assistance(*, rater_id, assignment_id, generation, runner, db)
     question = await fetch_question_or_404(assignment.question_id, db)
     method = get_method(experiment.assistance_method)
     params = method.preparation_params(load_json_column(experiment.assistance_params))
-    parent = (
-        await fetch_parent_question_text(question.parent_question_id, db)
-        if question.parent_question_id
-        else None
-    )
+    parent, parent_content = await fetch_parent_question_fields(question.parent_question_id, db)
     spec = method.plan_preparation(
         PreparationContext(
             QuestionSnapshot.capture(question),
             json.dumps(params, sort_keys=True),
             parent,
             experiment.system_prompt,
+            parent_content=parent_content,
         )
     )
     if spec is None:

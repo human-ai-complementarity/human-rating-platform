@@ -155,6 +155,36 @@ class RenderValidator(ProviderValidator):
                 "accepts gs://, https:// or file://."
             )
 
+    def check_media_source(self, settings: Settings, result: ValidationResult) -> None:
+        # Optional: only datasets with image content need it. When set, it
+        # has to be a scheme the reader accepts, and a gs:// source minting
+        # signed URLs has to have something to sign with.
+        media = settings.media
+        source = media.source_url.strip()
+        if not source:
+            return
+        if source.startswith("file://"):
+            result.add_warning(
+                "MEDIA__SOURCE_URL is a file:// path; on Render that is a folder inside the "
+                "deployed image. Use the team's bucket (gs://) for production."
+            )
+        elif not source.startswith("gs://"):
+            result.add_error(
+                f"MEDIA__SOURCE_URL has an unsupported scheme ({source!r}); the media reader "
+                "accepts gs:// or file://."
+            )
+        elif (
+            media.signed_urls
+            and media.gcs_wif_audience
+            and not media.gcs_impersonate_service_account
+        ):
+            result.add_error(
+                "MEDIA__SIGNED_URLS is on with federated credentials but no "
+                "MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT: signing goes through IAM signBlob as "
+                "that account. Name it, or set MEDIA__SIGNED_URLS=false to serve images "
+                "through the API."
+            )
+
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 

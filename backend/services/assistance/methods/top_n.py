@@ -32,6 +32,8 @@ import openai
 
 from config import LLMSettings, get_settings
 from models import Question
+from services.media import load_content, text_block
+from services.media.prompt import collapse, parts_for
 
 from ..base import InteractionStep, StepType, exception_text
 from ..preparation import InitialStepPreparation, QuestionSnapshot
@@ -379,6 +381,7 @@ class TopNAssistance(InitialStepPreparation):
         params: dict,
         *,
         parent_question_text: str | None = None,
+        parent_content: str | None = None,
         experiment_system_prompt: str | None = None,
     ) -> InteractionStep:
         settings = get_settings()
@@ -393,33 +396,46 @@ class TopNAssistance(InitialStepPreparation):
             if options
             else "(free-response question; propose concise candidate answers)"
         )
-        context_block = (
-            f"Parent question/context:\n{parent_question_text}\n\n" if parent_question_text else ""
-        )
         return_instruction = (
             f"Return exactly the top {n} candidate(s) as option_index values "
             f"(1-based, matching the numbering above), ordered best first."
             if options
             else f"Return exactly the top {n} candidate answer(s) as free text, ordered best first."
         )
-        user_prompt = (
-            f"{context_block}"
-            f"Question:\n{question.question_text}\n\n"
-            f"Question type: {question.question_type}\n"
-            f"Options:\n{option_block}\n\n"
-            f"{return_instruction}"
-        )
-
-        messages = [
-            {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
-            {"role": "user", "content": user_prompt},
-        ]
         response_format = _top_n_response_format(
             multiple_choice=bool(options),
             n=n,
             option_count=len(options) if options else None,
         )
         try:
+            # The stimulus in the order the rater sees it, images in place; a
+            # text-only question collapses to the one string it always was.
+            parts: list[dict] = []
+            if parent_question_text:
+                parts.append(text_block("Parent question/context:\n"))
+                parts.extend(
+                    await parts_for(
+                        settings.media, parent_question_text, load_content(parent_content)
+                    )
+                )
+                parts.append(text_block("\n\n"))
+            parts.append(text_block("Question:\n"))
+            parts.extend(
+                await parts_for(
+                    settings.media, question.question_text, load_content(question.content)
+                )
+            )
+            parts.append(
+                text_block(
+                    f"\n\nQuestion type: {question.question_type}\n"
+                    f"Options:\n{option_block}\n\n"
+                    f"{return_instruction}"
+                )
+            )
+            messages = [
+                {"role": "system", "content": _compose_system_prompt(experiment_system_prompt)},
+                {"role": "user", "content": collapse(parts)},
+            ]
             raw = await _complete_with_schema_fallback(
                 messages,
                 entry=entry,
