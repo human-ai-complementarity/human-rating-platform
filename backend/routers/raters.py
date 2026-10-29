@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import time
 from typing import Optional
 
@@ -30,8 +29,6 @@ from services import assistance, media, rater
 from .deps import RaterSession, require_consented_rater_session, require_rater_session
 
 router = APIRouter(prefix="/raters", tags=["raters"])
-
-_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 @router.post("/start", response_model=RaterStartResponse)
@@ -118,7 +115,7 @@ async def get_media(
     The URL is the credential: an <img> tag sends no session header, so the
     expiring HMAC in the query stands in for it, as a signed GCS URL would.
     """
-    if _DIGEST.fullmatch(digest) is None:
+    if media.DIGEST_PATTERN.fullmatch(digest) is None:
         raise HTTPException(status_code=404, detail="Not found")
     if not media.verify_proxy_token(settings.effective_rater_session_secret, digest, exp, sig):
         raise HTTPException(status_code=403, detail="Media link expired or invalid")

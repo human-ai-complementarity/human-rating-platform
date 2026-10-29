@@ -1,6 +1,7 @@
 """Question media: content blocks, their source, and how raters and models get them."""
 
 from .blocks import (
+    DIGEST_PATTERN,
     IMAGE,
     IMAGE_MIME_TYPES,
     TEXT,
@@ -25,11 +26,13 @@ from .source import (
     missing_digests,
     read_bytes,
     render_blocks,
+    sniff_mime,
     url_for,
 )
-from .urls import MEDIA_PATH, proxy_url, sniff_mime, verify_proxy_token
+from .urls import MEDIA_PATH, proxy_url, verify_proxy_token
 
 __all__ = [
+    "DIGEST_PATTERN",
     "IMAGE",
     "IMAGE_MIME_TYPES",
     "MEDIA_PATH",

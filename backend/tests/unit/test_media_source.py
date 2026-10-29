@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -140,13 +141,22 @@ class _Bucket:
 
 
 class _Client:
-    def __init__(self, credentials, calls: list[dict]) -> None:
-        self._credentials = credentials
+    def __init__(self, calls: list[dict], held: list[str] = ()) -> None:
         self.calls = calls
+        self.held = list(held)
 
     def bucket(self, name: str) -> _Bucket:
         self.calls.append({"bucket": name})
         return _Bucket(self.calls)
+
+    def list_blobs(self, bucket_name: str, prefix: str):
+        self.calls.append({"list": (bucket_name, prefix)})
+        return [SimpleNamespace(name=f"{prefix}{digest}") for digest in self.held]
+
+
+def _fake_gcs(monkeypatch: pytest.MonkeyPatch, credentials, calls: list[dict], held=()) -> None:
+    monkeypatch.setattr(media_source, "_client", lambda settings: _Client(calls, held))
+    monkeypatch.setattr(media_source, "_credentials", lambda settings: credentials)
 
 
 class _KeyCredentials:
@@ -161,7 +171,7 @@ class _FederatedCredentials:
 
 def test_signed_url_with_a_key_signs_locally(monkeypatch: pytest.MonkeyPatch):
     calls: list[dict] = []
-    monkeypatch.setattr(media_source, "_client", lambda settings: _Client(_KeyCredentials(), calls))
+    _fake_gcs(monkeypatch, _KeyCredentials(), calls)
     settings = MediaSettings(source_url="gs://bucket/datasets/media", url_ttl_minutes=30)
     url = asyncio.run(media.url_for(settings, SECRET, DIGEST, "image/png"))
     assert url == "https://storage.googleapis.com/signed/3"
@@ -171,7 +181,8 @@ def test_signed_url_with_a_key_signs_locally(monkeypatch: pytest.MonkeyPatch):
     assert signed["version"] == "v4"
     assert signed["method"] == "GET"
     assert signed["response_type"] == "image/png"
-    assert signed["expiration"].total_seconds() == 30 * 60
+    # Minted for twice the TTL: a reused URL still has the whole TTL left.
+    assert signed["expiration"].total_seconds() == 2 * 30 * 60
     assert "service_account_email" not in signed
 
 
@@ -179,9 +190,7 @@ def test_signed_url_without_a_key_signs_as_the_impersonated_account(
     monkeypatch: pytest.MonkeyPatch,
 ):
     calls: list[dict] = []
-    monkeypatch.setattr(
-        media_source, "_client", lambda settings: _Client(_FederatedCredentials(), calls)
-    )
+    _fake_gcs(monkeypatch, _FederatedCredentials(), calls)
     settings = MediaSettings(
         source_url="gs://bucket",
         gcs_impersonate_service_account="hrp-media@example.iam.gserviceaccount.com",
@@ -194,25 +203,52 @@ def test_signed_url_without_a_key_signs_as_the_impersonated_account(
 
 
 def test_signed_url_without_any_signer_says_what_to_configure(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        media_source, "_client", lambda settings: _Client(_FederatedCredentials(), [])
-    )
+    _fake_gcs(monkeypatch, _FederatedCredentials(), [])
     settings = MediaSettings(source_url="gs://bucket/p")
     with pytest.raises(media.MediaSourceError, match="MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT"):
         asyncio.run(media.url_for(settings, SECRET, DIGEST, "image/png"))
 
 
-def test_signed_urls_are_reused_while_most_of_their_life_remains(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_signed_urls_are_reused_while_a_full_ttl_remains(monkeypatch: pytest.MonkeyPatch):
     calls: list[dict] = []
-    monkeypatch.setattr(media_source, "_client", lambda settings: _Client(_KeyCredentials(), calls))
+    _fake_gcs(monkeypatch, _KeyCredentials(), calls)
     settings = MediaSettings(source_url="gs://bucket/p", url_ttl_minutes=60)
     first = asyncio.run(media.url_for(settings, SECRET, DIGEST, "image/png"))
     second = asyncio.run(media.url_for(settings, SECRET, DIGEST, "image/png"))
     assert first == second
     assert sum(1 for c in calls if "version" in c) == 1
-    # Past half its life a fresh one is minted.
-    media_source._signed_cache[DIGEST].expires_at -= 31 * 60
+    # Once less than the TTL is left, a fresh one is minted.
+    media_source._signed_cache[DIGEST].expires_at -= 61 * 60
     third = asyncio.run(media.url_for(settings, SECRET, DIGEST, "image/png"))
     assert third != first
+
+
+def test_many_digests_are_checked_against_one_listing(monkeypatch: pytest.MonkeyPatch):
+    calls: list[dict] = []
+    digests = [f"{i:064x}" for i in range(media_source._LIST_INSTEAD_OF_HEAD_ABOVE + 1)]
+    _fake_gcs(monkeypatch, _KeyCredentials(), calls, held=digests[1:])
+    settings = MediaSettings(source_url="gs://bucket/media")
+    missing = asyncio.run(media.missing_digests(settings, digests))
+    assert missing == [digests[0]]
+    assert calls == [{"list": ("bucket", "media/")}]
+
+
+def test_a_few_digests_are_headed_one_by_one(monkeypatch: pytest.MonkeyPatch):
+    class _ExistsBlob:
+        def __init__(self, present: bool) -> None:
+            self.present = present
+
+        def exists(self) -> bool:
+            return self.present
+
+    class _ExistsBucket:
+        def blob(self, name: str) -> _ExistsBlob:
+            return _ExistsBlob(name.endswith(DIGEST))
+
+    class _ExistsClient:
+        def bucket(self, name: str) -> _ExistsBucket:
+            return _ExistsBucket()
+
+    monkeypatch.setattr(media_source, "_client", lambda settings: _ExistsClient())
+    settings = MediaSettings(source_url="gs://bucket/media")
+    assert asyncio.run(media.missing_digests(settings, [DIGEST, "0" * 64])) == ["0" * 64]

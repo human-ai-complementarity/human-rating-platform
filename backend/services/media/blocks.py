@@ -25,6 +25,7 @@ TEXT = "text"
 IMAGE = "image"
 BLOCK_TYPES = frozenset({TEXT, IMAGE})
 
+DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 REF_PATTERN = re.compile(r"sha256:([0-9a-f]{64})")
 # The types the pipeline's ingest admits (its `sniff_mime`), no more: an
 # export can only ever reference these.

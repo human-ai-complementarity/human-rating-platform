@@ -14,8 +14,8 @@ This is the inference pipeline's media store layout
 bucket as is. A read re-hashes the bytes, so a replaced object is refused
 rather than shown under the old reference.
 
-Two deliveries to a rater's browser, both a bearer URL that expires after
-``MEDIA__URL_TTL_MINUTES``:
+Two deliveries to a rater's browser, both a bearer URL with at least
+``MEDIA__URL_TTL_MINUTES`` of life left when handed out:
 
 * a gs:// source with ``MEDIA__SIGNED_URLS`` on: a V4 signed URL, so GCS
   serves the bytes and the API never proxies them;
@@ -29,6 +29,8 @@ import asyncio
 import hashlib
 import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -43,13 +45,20 @@ logger = logging.getLogger(__name__)
 
 # Existence checks and reads fan out to the bucket; keep the fan-out bounded.
 _GCS_CONCURRENCY = 8
+# Above this many digests one listing of the prefix beats one HEAD each.
+_LIST_INSTEAD_OF_HEAD_ABOVE = 64
 
 SIGNED_URL = "signed_url"
 PROXY = "proxy"
 
 
 class MediaSourceError(RuntimeError):
-    """The media source is unset, misconfigured, or unavailable right now."""
+    """The media source is unset, misconfigured, or unavailable right now.
+
+    A RuntimeError on purpose: that is the assistance methods' documented
+    "give up" signal, so an unreadable image degrades a session to
+    no-assistance the way a provider outage does.
+    """
 
 
 class MediaNotFound(MediaSourceError):
@@ -85,78 +94,94 @@ def _file_root(source: str) -> Path:
     return root if root.is_absolute() else BASE_DIR / root
 
 
-def _bucket(settings: MediaSettings, source: str) -> tuple[str, str]:
+def _bucket(source: str) -> tuple[str, str]:
     try:
         return gcs.split_gs_url(source, setting="MEDIA__SOURCE_URL")
     except gcs.GcsAccessError as exc:
         raise MediaSourceError(str(exc)) from exc
 
 
-def _scopes(settings: MediaSettings) -> tuple[str, ...]:
+def _scopes(settings: MediaSettings) -> gcs.Scopes:
     # Signing through IAM signBlob needs the iam scope; a key signs locally
     # and ignores the scopes. Harmless to ask for it either way.
     if settings.signed_urls:
         return (gcs.GCS_READ_SCOPE, gcs.IAM_SCOPE)
-    return (gcs.GCS_READ_SCOPE,)
+    return gcs.READ_SCOPES
 
 
 def _client(settings: MediaSettings):
     try:
-        return gcs.gcs_client(
-            settings.gcs_wif_audience,
-            gcs.wif_token_file(settings),
-            settings.gcs_impersonate_service_account,
-            _scopes(settings),
-            setting_prefix="MEDIA",
-        )
+        return gcs.gcs_client(*gcs.access_key(settings), _scopes(settings), setting_prefix="MEDIA")
     except gcs.GcsAccessError as exc:
         raise MediaSourceError(str(exc)) from exc
 
 
-def _wrap_gcs_errors(uri: str):
-    """Translate the storage client's failures into ``MediaSourceError``."""
+def _credentials(settings: MediaSettings):
+    try:
+        credentials, _ = gcs.gcs_credentials(
+            *gcs.access_key(settings), _scopes(settings), setting_prefix="MEDIA"
+        )
+    except gcs.GcsAccessError as exc:
+        raise MediaSourceError(str(exc)) from exc
+    return credentials
+
+
+@contextmanager
+def _translating_gcs_errors(uri: str) -> Iterator[None]:
+    """Map the storage client's failures onto ``MediaSourceError``.
+
+    Everything the client can raise means "the source is unavailable right
+    now", which callers turn into a 503, never a 500; a missing object is
+    ``MediaNotFound``.
+    """
     from google.api_core import exceptions as gcs_exceptions
     from google.auth import exceptions as auth_exceptions
 
-    class _Translate:
-        def __enter__(self):
-            return self
+    try:
+        yield
+    except MediaSourceError:
+        raise
+    except auth_exceptions.DefaultCredentialsError as exc:
+        gcs.clear_cached_clients()
+        raise MediaSourceError(
+            "No Google credentials for the gs:// media source: configure Workload Identity "
+            "Federation (MEDIA__GCS_WIF_AUDIENCE) or set GOOGLE_APPLICATION_CREDENTIALS"
+        ) from exc
+    except auth_exceptions.RefreshError as exc:
+        gcs.clear_cached_clients()
+        raise MediaSourceError(f"Google credentials for {uri} were refused: {exc}") from exc
+    except gcs_exceptions.NotFound as exc:
+        raise MediaNotFound(f"{uri} not found") from exc
+    except gcs_exceptions.Forbidden as exc:
+        raise MediaSourceError(
+            f"No permission to read {uri}: grant the platform's service account "
+            "roles/storage.objectViewer on the bucket"
+        ) from exc
+    except (
+        gcs_exceptions.GoogleAPIError,
+        auth_exceptions.GoogleAuthError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise MediaSourceError(f"Could not read {uri}: {exc}") from exc
 
-        def __exit__(self, exc_type, exc, tb):
-            if exc is None:
-                return False
-            if isinstance(exc, MediaSourceError):
-                return False
-            if isinstance(exc, auth_exceptions.DefaultCredentialsError):
-                gcs.gcs_client.cache_clear()
-                raise MediaSourceError(
-                    "No Google credentials for the gs:// media source: configure Workload "
-                    "Identity Federation (MEDIA__GCS_WIF_AUDIENCE) or set "
-                    "GOOGLE_APPLICATION_CREDENTIALS"
-                ) from exc
-            if isinstance(exc, auth_exceptions.RefreshError):
-                gcs.gcs_client.cache_clear()
-                raise MediaSourceError(f"Google credentials for {uri} were refused: {exc}") from exc
-            if isinstance(exc, gcs_exceptions.NotFound):
-                raise MediaNotFound(f"{uri} not found") from exc
-            if isinstance(exc, gcs_exceptions.Forbidden):
-                raise MediaSourceError(
-                    f"No permission to read {uri}: grant the platform's service account "
-                    "roles/storage.objectViewer on the bucket"
-                ) from exc
-            if isinstance(
-                exc,
-                (
-                    gcs_exceptions.GoogleAPIError,
-                    auth_exceptions.GoogleAuthError,
-                    OSError,
-                    ValueError,
-                ),
-            ):
-                raise MediaSourceError(f"Could not read {uri}: {exc}") from exc
-            return False
 
-    return _Translate()
+# The pipeline's `sniff_mime`, so both sides read the same bytes the same way.
+_MAGIC = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+)
+
+
+def sniff_mime(data: bytes) -> str:
+    """The image type by its first bytes; the stored mime_type is not trusted
+    to describe the object, the object is."""
+    for magic, mime in _MAGIC:
+        if data.startswith(magic):
+            return mime
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
 
 
 def _verify(digest: str, data: bytes, where: str) -> bytes:
@@ -184,7 +209,7 @@ def _read_file(root: Path, digest: str) -> bytes:
 def _read_gcs(settings: MediaSettings, bucket_name: str, prefix: str, digest: str) -> bytes:
     blob_name = gcs.blob_name_under(prefix, digest)
     uri = f"gs://{bucket_name}/{blob_name}"
-    with _wrap_gcs_errors(uri):
+    with _translating_gcs_errors(uri):
         data = _client(settings).bucket(bucket_name).blob(blob_name).download_as_bytes()
     return _verify(digest, data, uri)
 
@@ -194,22 +219,32 @@ async def read_bytes(settings: MediaSettings, digest: str) -> bytes:
     source = _source(settings)
     if source.startswith("file://"):
         return await asyncio.to_thread(_read_file, _file_root(source), digest)
-    bucket_name, prefix = _bucket(settings, source)
+    bucket_name, prefix = _bucket(source)
     # The storage client is synchronous; keep the event loop free.
     return await asyncio.to_thread(_read_gcs, settings, bucket_name, prefix, digest)
 
 
 def _exists_gcs(settings: MediaSettings, bucket_name: str, prefix: str, digest: str) -> bool:
     blob_name = gcs.blob_name_under(prefix, digest)
-    with _wrap_gcs_errors(f"gs://{bucket_name}/{blob_name}"):
+    with _translating_gcs_errors(f"gs://{bucket_name}/{blob_name}"):
         return bool(_client(settings).bucket(bucket_name).blob(blob_name).exists())
+
+
+def _list_gcs(settings: MediaSettings, bucket_name: str, prefix: str) -> set[str]:
+    """The digests the prefix holds: every direct child named like one."""
+    folder = f"{prefix}/" if prefix else ""
+    with _translating_gcs_errors(f"gs://{bucket_name}/{folder}"):
+        blobs = _client(settings).list_blobs(bucket_name, prefix=folder)
+        return {name for blob in blobs if (name := blob.name[len(folder) :]) and "/" not in name}
 
 
 async def missing_digests(settings: MediaSettings, digests: list[str]) -> list[str]:
     """The digests the source holds no object for, in the order given.
 
     An upload calls this before storing rows, so a dataset whose images were
-    never synced is refused at upload rather than shown broken to raters.
+    never synced is refused at upload rather than shown broken to raters. A
+    handful of digests are HEADed one by one; a dataset's worth is checked
+    against one listing of the prefix instead.
     """
     if not digests:
         return []
@@ -217,7 +252,10 @@ async def missing_digests(settings: MediaSettings, digests: list[str]) -> list[s
     if source.startswith("file://"):
         root = _file_root(source)
         return [d for d in digests if not (root / d).is_file()]
-    bucket_name, prefix = _bucket(settings, source)
+    bucket_name, prefix = _bucket(source)
+    if len(digests) > _LIST_INSTEAD_OF_HEAD_ABOVE:
+        held = await asyncio.to_thread(_list_gcs, settings, bucket_name, prefix)
+        return [d for d in digests if d not in held]
     limit = asyncio.Semaphore(_GCS_CONCURRENCY)
 
     async def check(digest: str) -> bool:
@@ -239,9 +277,10 @@ class _SignedUrl:
     expires_at: float
 
 
-# Minted URLs are reused while most of their life remains: through IAM
-# signBlob each mint is an API call, and the same screenshot is served to
-# every rater of the question.
+# A URL is minted for twice the TTL and reused until only the TTL is left,
+# so every URL handed out has at least the TTL of life, and each image is
+# signed once per TTL however many raters reach it: through IAM signBlob a
+# mint is an API call.
 _signed_cache: dict[str, _SignedUrl] = {}
 _SIGNED_CACHE_LIMIT = 4096
 
@@ -251,10 +290,9 @@ def _sign_gcs(
 ) -> str:
     blob_name = gcs.blob_name_under(prefix, digest)
     uri = f"gs://{bucket_name}/{blob_name}"
-    with _wrap_gcs_errors(uri):
-        client = _client(settings)
-        blob = client.bucket(bucket_name).blob(blob_name)
-        credentials = client._credentials
+    with _translating_gcs_errors(uri):
+        blob = _client(settings).bucket(bucket_name).blob(blob_name)
+        credentials = _credentials(settings)
         kwargs: dict = {}
         if not hasattr(credentials, "sign_bytes"):
             # Federated credentials carry no private key: the storage client
@@ -278,7 +316,7 @@ def _sign_gcs(
             }
         return blob.generate_signed_url(
             version="v4",
-            expiration=timedelta(minutes=settings.url_ttl_minutes),
+            expiration=timedelta(minutes=2 * settings.url_ttl_minutes),
             method="GET",
             response_type=mime_type,
             **kwargs,
@@ -289,19 +327,18 @@ async def _signed_url(settings: MediaSettings, digest: str, mime_type: str) -> s
     now = time.time()
     ttl = settings.url_ttl_minutes * 60
     cached = _signed_cache.get(digest)
-    if cached is not None and cached.expires_at - now > ttl / 2:
+    if cached is not None and cached.expires_at - now >= ttl:
         return cached.url
-    source = _source(settings)
-    bucket_name, prefix = _bucket(settings, source)
+    bucket_name, prefix = _bucket(_source(settings))
     url = await asyncio.to_thread(_sign_gcs, settings, bucket_name, prefix, digest, mime_type)
     if len(_signed_cache) >= _SIGNED_CACHE_LIMIT:
         _signed_cache.clear()
-    _signed_cache[digest] = _SignedUrl(url, now + ttl)
+    _signed_cache[digest] = _SignedUrl(url, now + 2 * ttl)
     return url
 
 
 async def url_for(settings: MediaSettings, secret: str, digest: str, mime_type: str) -> str:
-    """A URL a rater's browser can fetch ``digest`` from until the TTL runs out."""
+    """A URL a rater's browser can fetch ``digest`` from for at least the TTL."""
     if delivery(settings) == SIGNED_URL:
         return await _signed_url(settings, digest, mime_type)
     return proxy_url(secret, digest, ttl_seconds=settings.url_ttl_minutes * 60)

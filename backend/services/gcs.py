@@ -1,9 +1,9 @@
 """One way into a private Google Cloud Storage bucket, shared by every reader.
 
 Two readers exist: rater terms (``TERMS__*``) and question media
-(``MEDIA__*``). Each carries its own copy of the three Workload Identity
-Federation fields, so the identities can differ, and both build their client
-here. Two ways in, in order of preference:
+(``MEDIA__*``). Each settings model carries the same ``GcsAccessSettings``
+fields, so the identities can differ, and both build their credentials and
+client here. Two ways in, in order of preference:
 
 1. Workload Identity Federation (keyless), when the WIF audience is set and
    the host provides an OIDC token file (Render writes one per service and
@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Protocol
+
+from config import GcsAccessSettings
 
 GCS_READ_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only"
 # Signing a URL without a private key calls the IAM credentials API
@@ -28,27 +29,20 @@ IAM_SCOPE = "https://www.googleapis.com/auth/iam"
 _STS_TOKEN_URL = "https://sts.googleapis.com/v1/token"
 _RENDER_TOKEN_FILE_ENV = "AWS_WEB_IDENTITY_TOKEN_FILE"
 
-
-class GcsAccess(Protocol):
-    """The three WIF fields a settings model carries."""
-
-    gcs_wif_audience: str
-    gcs_wif_token_file: str
-    gcs_impersonate_service_account: str
+Scopes = tuple[str, ...]
+READ_SCOPES: Scopes = (GCS_READ_SCOPE,)
 
 
 class GcsAccessError(Exception):
     """The bucket cannot be reached with the configured identity."""
 
 
-def wif_token_file(settings: GcsAccess) -> str:
+def wif_token_file(settings: GcsAccessSettings) -> str:
     """Where the host leaves the OIDC identity token for federation."""
     return settings.gcs_wif_token_file or os.environ.get(_RENDER_TOKEN_FILE_ENV, "")
 
 
-def wif_credentials(
-    settings: GcsAccess, token_file: str, scopes: tuple[str, ...] = (GCS_READ_SCOPE,)
-):
+def wif_credentials(settings: GcsAccessSettings, token_file: str, scopes: Scopes = READ_SCOPES):
     """Workload Identity Federation credentials: no key anywhere."""
     from google.auth import identity_pool
 
@@ -69,15 +63,15 @@ def wif_credentials(
 
 
 @lru_cache(maxsize=8)
-def gcs_client(
+def gcs_credentials(
     wif_audience: str,
     wif_token_file: str,
     impersonate: str,
-    scopes: tuple[str, ...] = (GCS_READ_SCOPE,),
+    scopes: Scopes = READ_SCOPES,
     *,
     setting_prefix: str = "TERMS",
 ):
-    """A storage client for one credential configuration.
+    """The credentials for one access configuration, and their project.
 
     Cached per configuration, so a caller's settings decide the identity
     rather than the process-wide ones. Imported lazily so the dependency is
@@ -85,7 +79,6 @@ def gcs_client(
     the env vars in the error a caller sees.
     """
     import google.auth
-    from google.cloud import storage
 
     project = os.environ.get("GOOGLE_CLOUD_PROJECT")
     if wif_audience:
@@ -95,12 +88,31 @@ def gcs_client(
                 f"found: set {setting_prefix}__GCS_WIF_TOKEN_FILE or let the host set "
                 f"{_RENDER_TOKEN_FILE_ENV}"
             )
-        credentials = wif_credentials(
-            _Access(wif_audience, wif_token_file, impersonate), wif_token_file, scopes
+        settings = GcsAccessSettings(
+            gcs_wif_audience=wif_audience,
+            gcs_wif_token_file=wif_token_file,
+            gcs_impersonate_service_account=impersonate,
         )
-    else:
-        credentials, adc_project = google.auth.default()
-        project = project or adc_project
+        return wif_credentials(settings, wif_token_file, scopes), project
+    credentials, adc_project = google.auth.default()
+    return credentials, project or adc_project
+
+
+@lru_cache(maxsize=8)
+def gcs_client(
+    wif_audience: str,
+    wif_token_file: str,
+    impersonate: str,
+    scopes: Scopes = READ_SCOPES,
+    *,
+    setting_prefix: str = "TERMS",
+):
+    """A storage client for one access configuration (see ``gcs_credentials``)."""
+    from google.cloud import storage
+
+    credentials, project = gcs_credentials(
+        wif_audience, wif_token_file, impersonate, scopes, setting_prefix=setting_prefix
+    )
     # The client insists on a project, but reading objects never uses it:
     # federated and user credentials carry none (and in a container there is
     # no gcloud binary to ask). Fall back to a placeholder rather than failing
@@ -108,11 +120,19 @@ def gcs_client(
     return storage.Client(project=project or "rater-terms-reader", credentials=credentials)
 
 
-class _Access:
-    def __init__(self, audience: str, token_file: str, impersonate: str) -> None:
-        self.gcs_wif_audience = audience
-        self.gcs_wif_token_file = token_file
-        self.gcs_impersonate_service_account = impersonate
+def clear_cached_clients() -> None:
+    """Forget cached credentials and clients, after one of them was refused."""
+    gcs_credentials.cache_clear()
+    gcs_client.cache_clear()
+
+
+def access_key(settings: GcsAccessSettings) -> tuple[str, str, str]:
+    """The positional cache key for ``settings``' identity."""
+    return (
+        settings.gcs_wif_audience,
+        wif_token_file(settings),
+        settings.gcs_impersonate_service_account,
+    )
 
 
 def split_gs_url(url: str, *, setting: str) -> tuple[str, str]:

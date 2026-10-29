@@ -20,7 +20,7 @@ DIGEST = hashlib.sha256(PNG).hexdigest()
 @pytest.fixture
 def file_source(tmp_path: Path) -> MediaSettings:
     (tmp_path / DIGEST).write_bytes(PNG)
-    prompt._encoded.clear()
+    prompt.clear_cache()
     return MediaSettings(source_url=f"file://{tmp_path}")
 
 
@@ -60,3 +60,22 @@ def test_collapse_joins_text_and_returns_a_string_when_all_text():
     mixed = prompt.collapse([text_block("A"), text_block("B"), image, text_block("C")])
     assert mixed == [text_block("AB"), image, text_block("C")]
     assert prompt.collapse([]) == ""
+
+
+def test_the_encoded_cache_is_bounded_by_bytes(
+    file_source: MediaSettings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import hashlib
+
+    monkeypatch.setattr(prompt, "_ENCODED_BUDGET_BYTES", 2 * len(PNG) * 2)
+    blocks = []
+    for i in range(3):
+        data = PNG + bytes([i])
+        digest = hashlib.sha256(data).hexdigest()
+        (tmp_path / digest).write_bytes(data)
+        blocks.append({"type": "image", "ref": f"sha256:{digest}", "mime_type": "image/png"})
+    asyncio.run(prompt.parts_for(file_source, "", blocks))
+    assert len(prompt._encoded) < 3
+    assert prompt._encoded_bytes <= prompt._ENCODED_BUDGET_BYTES
+    # The newest image is the one kept.
+    assert blocks[-1]["ref"].removeprefix("sha256:") in prompt._encoded

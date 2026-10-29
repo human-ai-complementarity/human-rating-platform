@@ -889,7 +889,7 @@ def media_source(tmp_path, monkeypatch):
     (tmp_path / digest).write_bytes(_PNG)
     settings = get_settings()
     monkeypatch.setattr(settings.media, "source_url", f"file://{tmp_path}")
-    media_prompt._encoded.clear()
+    media_prompt.clear_cache()
     return digest
 
 

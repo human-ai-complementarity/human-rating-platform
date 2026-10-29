@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -355,6 +355,22 @@ class ExperimentUpdate(BaseModel):
 
 
 # Question schemas
+class TextBlockOut(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ImageBlockOut(BaseModel):
+    """An image a rater's browser can fetch at `url` until it expires."""
+
+    type: Literal["image"]
+    url: str
+    mime_type: str
+
+
+ContentBlockOut = Annotated[TextBlockOut | ImageBlockOut, Field(discriminator="type")]
+
+
 class QuestionResponse(BaseModel):
     assignment_id: Optional[int] = None
     assignment_generation: Optional[int] = None
@@ -365,11 +381,10 @@ class QuestionResponse(BaseModel):
     options: Optional[str] = None
     question_type: str
     parent_question_text: Optional[str] = None
-    # The stimulus as blocks when it carries images: text blocks as stored,
-    # each image as {"type": "image", "url", "mime_type"} with a URL the
-    # browser can fetch until it expires. None means render question_text.
-    content: Optional[list[dict[str, Any]]] = None
-    parent_content: Optional[list[dict[str, Any]]] = None
+    # The stimulus as blocks when it carries images, text blocks as stored
+    # and each image by a URL. None means render question_text.
+    content: Optional[list[ContentBlockOut]] = None
+    parent_content: Optional[list[ContentBlockOut]] = None
     is_markdown: bool = False
 
     model_config = ConfigDict(from_attributes=True)

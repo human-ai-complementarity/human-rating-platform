@@ -206,7 +206,7 @@ def media_source(tmp_path, monkeypatch):
     digest = hashlib.sha256(_PNG).hexdigest()
     (tmp_path / digest).write_bytes(_PNG)
     monkeypatch.setattr(get_settings().media, "source_url", f"file://{tmp_path}")
-    media_prompt._encoded.clear()
+    media_prompt.clear_cache()
     return digest
 
 
@@ -214,20 +214,24 @@ def _image_block(digest: str) -> dict:
     return {"type": "image", "ref": f"sha256:{digest}", "mime_type": "image/png"}
 
 
-def test_stimulus_blocks_is_none_for_text_only_questions():
-    from services.assistance.methods.human_as_a_tool.method import _stimulus_blocks
+def test_frame_gives_the_text_form_and_no_blocks_for_text_only_questions():
+    from services.assistance.methods.human_as_a_tool.method import _frame
 
-    assert _stimulus_blocks("Q?", None, None, None) is None
-    assert _stimulus_blocks("Q?", [{"type": "text", "text": "Q?"}], "ctx", None) is None
+    assert _frame("Q?", None, None, None) == ("Q?", None)
+    assert _frame("Q?", [{"type": "text", "text": "Q?"}], "ctx", None) == (
+        "Context:\nctx\n\nQuestion: Q?",
+        None,
+    )
 
 
-def test_stimulus_blocks_mirror_the_text_framing_with_images_in_place():
-    from services.assistance.methods.human_as_a_tool.method import _stimulus_blocks
+def test_frame_mirrors_the_text_framing_with_images_in_place():
+    from services.assistance.methods.human_as_a_tool.method import _frame
 
     image = _image_block("a" * 64)
-    blocks = _stimulus_blocks(
+    text, blocks = _frame(
         "Allowed?", [{"type": "text", "text": "Screen:"}, image], "Task: do X", None
     )
+    assert text == "Context:\nTask: do X\n\nQuestion: Allowed?"
     assert blocks == [
         {"type": "text", "text": "Context:\n"},
         {"type": "text", "text": "Task: do X"},
@@ -236,7 +240,8 @@ def test_stimulus_blocks_mirror_the_text_framing_with_images_in_place():
         image,
     ]
     # A parent with images and a text-only question.
-    blocks = _stimulus_blocks("Allowed?", None, "Task", [image])
+    text, blocks = _frame("Allowed?", None, "Task", [image])
+    assert text == "Context:\nTask\n\nQuestion: Allowed?"
     assert blocks[1] == image and blocks[-1] == {"type": "text", "text": "Allowed?"}
 
 

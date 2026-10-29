@@ -27,22 +27,35 @@ from .source import read_bytes
 Part = dict[str, Any]
 
 # Encoded images kept for the calls that follow: a question's images are
-# asked for again by its own retries and by every rater who reaches it.
-_ENCODED_LIMIT = 32
+# asked for again by its own retries and by every rater who reaches it. The
+# budget is bytes, not entries, since one screenshot is a few MB and the API
+# process is small.
+_ENCODED_BUDGET_BYTES = 32 * 1024 * 1024
 _encoded: OrderedDict[str, str] = OrderedDict()
+_encoded_bytes = 0
 
 
 async def _data_url(settings: MediaSettings, digest: str, mime_type: str) -> str:
+    global _encoded_bytes
     cached = _encoded.get(digest)
-    if cached is None:
-        data = await read_bytes(settings, digest)
-        cached = f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
-        _encoded[digest] = cached
-        while len(_encoded) > _ENCODED_LIMIT:
-            _encoded.popitem(last=False)
-    else:
+    if cached is not None:
         _encoded.move_to_end(digest)
+        return cached
+    data = await read_bytes(settings, digest)
+    cached = f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
+    if len(cached) <= _ENCODED_BUDGET_BYTES:
+        _encoded[digest] = cached
+        _encoded_bytes += len(cached)
+        while _encoded_bytes > _ENCODED_BUDGET_BYTES:
+            _, evicted = _encoded.popitem(last=False)
+            _encoded_bytes -= len(evicted)
     return cached
+
+
+def clear_cache() -> None:
+    global _encoded_bytes
+    _encoded.clear()
+    _encoded_bytes = 0
 
 
 def image_part(data_url: str) -> Part:

@@ -10,7 +10,6 @@ from models import ConsentRecord, ExperimentRound, Question, QuestionAssignment,
 from services.queries import (  # noqa: F401 — re-exported for backwards compat
     fetch_experiment_or_404,
     fetch_parent_question_fields,
-    fetch_parent_question_text,
     fetch_question_or_404,
     fetch_rater_or_404,
     parent_question_ids_subquery,

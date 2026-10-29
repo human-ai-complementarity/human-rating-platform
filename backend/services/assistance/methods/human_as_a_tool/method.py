@@ -126,23 +126,17 @@ class HumanAsAToolMethod(InitialStepPreparation):
         # When the row is a sub-question, prepend the parent's text as Context so the
         # LLM sees the same framing the rater does. We bake this into the effective
         # question_text once here so it flows into decomposer.start, _score_subtasks,
-        # and into state for advance() to reuse.
-        if parent_question_text:
-            question_text = (
-                f"Context:\n{parent_question_text}\n\nQuestion: {question.question_text}"
-            )
-        else:
-            question_text = question.question_text
-        options = question.options or ""
-        # When the question or its parent carries images, the same framing
-        # as blocks, images in place, pinned in state so every round of the
-        # decomposer sees them. The confidence estimators read only text.
-        stimulus = _stimulus_blocks(
+        # and into state for advance() to reuse. `stimulus` is that framing as
+        # blocks, images in place, when the question or its parent carries
+        # any; pinned in state so every round of the decomposer sees them.
+        # The confidence estimators read only the text form.
+        question_text, stimulus = _frame(
             question.question_text,
             load_content(question.content),
             parent_question_text,
             load_content(parent_content),
         )
+        options = question.options or ""
 
         try:
             result = await self._decomposer.start(
@@ -342,26 +336,31 @@ class HumanAsAToolMethod(InitialStepPreparation):
         ]
 
 
-def _stimulus_blocks(
+def _frame(
     question_text: str,
     content: list[Block] | None,
     parent_text: str | None,
     parent_content: list[Block] | None,
-) -> list[Block] | None:
-    """The question with its parent context as blocks; None when all text.
+) -> tuple[str, list[Block] | None]:
+    """The question with its parent context, as text and as blocks.
 
-    Mirrors the text framing ("Context:\n...\n\nQuestion: ...") so the
-    decomposer's message reads the same with images in place.
+    One framing ("Context:\n...\n\nQuestion: ...") in both forms: the text
+    is what the confidence estimators and the session state read, the blocks
+    (None when nothing carries images) are what the decomposer is sent.
     """
-    if not has_media(content) and not has_media(parent_content):
-        return None
-    blocks: list[Block] = []
+    segments: list[tuple[str, list[Block] | None]] = []
     if parent_text:
-        blocks.append(text_block("Context:\n"))
-        blocks.extend(parent_content or [text_block(parent_text)])
-        blocks.append(text_block("\n\nQuestion: "))
-    blocks.extend(content or [text_block(question_text)])
-    return blocks
+        segments.append(("Context:\n", None))
+        segments.append((parent_text, parent_content))
+        segments.append(("\n\nQuestion: ", None))
+    segments.append((question_text, content))
+    text = "".join(segment_text for segment_text, _ in segments)
+    blocks = [
+        block
+        for segment_text, segment_blocks in segments
+        for block in (segment_blocks or [text_block(segment_text)])
+    ]
+    return text, blocks if has_media(blocks) else None
 
 
 def _confidence_method(params: Mapping[str, object]) -> object:

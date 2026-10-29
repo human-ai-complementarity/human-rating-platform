@@ -134,24 +134,19 @@ def _download_gcs_text(settings: TermsSettings, bucket_name: str, blob_name: str
     from google.auth import exceptions as auth_exceptions
 
     uri = f"gs://{bucket_name}/{blob_name}"
-    client_key = (
-        settings.gcs_wif_audience,
-        wif_token_file(settings),
-        settings.gcs_impersonate_service_account,
-    )
     try:
-        client = _gcs_client(*client_key)
+        client = _gcs_client(*gcs.access_key(settings))
         return client.bucket(bucket_name).blob(blob_name).download_as_text(encoding="utf-8")
     except gcs.GcsAccessError as exc:
         raise TermsSourceError(str(exc)) from exc
     except auth_exceptions.DefaultCredentialsError as exc:
-        gcs.gcs_client.cache_clear()
+        gcs.clear_cached_clients()
         raise TermsSourceError(
             "No Google credentials for the gs:// terms source: configure Workload Identity "
             "Federation (TERMS__GCS_WIF_AUDIENCE) or set GOOGLE_APPLICATION_CREDENTIALS"
         ) from exc
     except auth_exceptions.RefreshError as exc:
-        gcs.gcs_client.cache_clear()
+        gcs.clear_cached_clients()
         raise TermsSourceError(f"Google credentials for {uri} were refused: {exc}") from exc
     except gcs_exceptions.NotFound as exc:
         raise TermsSourceError(f"{uri} not found") from exc

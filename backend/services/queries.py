@@ -150,15 +150,6 @@ async def fetch_remaining_rating_actions(
     return int(remaining or 0)
 
 
-async def fetch_parent_question_text(
-    parent_question_id: int,
-    db: AsyncSession,
-) -> str | None:
-    return (
-        await db.execute(select(Question.question_text).where(Question.id == parent_question_id))
-    ).scalar_one_or_none()
-
-
 async def fetch_parent_question_fields(
     parent_question_id: int | None,
     db: AsyncSession,

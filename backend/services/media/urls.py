@@ -33,21 +33,3 @@ def verify_proxy_token(
     if expires <= (time.time() if now is None else now):
         return False
     return hmac.compare_digest(_signature(secret, digest, expires), signature)
-
-
-# The pipeline's `sniff_mime`, so both sides read the same bytes the same way.
-_MAGIC = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-)
-
-
-def sniff_mime(data: bytes) -> str:
-    """The image type by its first bytes; the stored mime_type is not trusted
-    to describe the object, the object is."""
-    for magic, mime in _MAGIC:
-        if data.startswith(magic):
-            return mime
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return "application/octet-stream"
