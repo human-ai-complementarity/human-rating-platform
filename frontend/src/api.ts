@@ -841,6 +841,9 @@ export const api = {
   ): Promise<TermsPreview> {
     const params = new URLSearchParams();
     if (selection) {
+      // The sentinel lets an empty selection (no flags) differ from "use
+      // what is saved", which repeated query fields alone cannot express.
+      params.set('selection', 'true');
       for (const flag of selection.study_flags) params.append('study_flags', flag);
       params.set('content_warning_details', selection.content_warning_details);
     }

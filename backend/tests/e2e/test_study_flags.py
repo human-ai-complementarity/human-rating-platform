@@ -259,6 +259,31 @@ def test_preview_renders_an_unsaved_selection_until_pinned(client: TestClient, t
     assert unknown.status_code == 422
 
 
+def test_preview_selection_can_be_empty(client: TestClient, terms_source):
+    """Unticking every flag before saving previews the standard consent, not
+    the saved flags: `selection=true` with no `study_flags` means none, which
+    a repeated query field alone cannot say."""
+    experiment_id = _create_experiment(client)
+    _flag(client, experiment_id, "sensitive")
+
+    saved = client.get(f"/api/admin/experiments/{experiment_id}/terms/preview").json()
+    assert saved["consent_ref"] == "warned v1"
+    assert DETAILS in saved["consent_html"]
+
+    cleared = client.get(
+        f"/api/admin/experiments/{experiment_id}/terms/preview",
+        params={"selection": "true", "content_warning_details": ""},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["consent_ref"] == "standard v1"
+    assert DETAILS not in cleared.json()["consent_html"]
+    # Without the sentinel, omitted flags still mean "as saved".
+    assert (
+        client.get(f"/api/admin/experiments/{experiment_id}/terms/preview").json()["consent_ref"]
+        == "warned v1"
+    )
+
+
 def test_unset_source_reports_not_ok_and_previews_the_placeholder(client: TestClient):
     assert get_settings().terms.source_url == ""
     status = client.get("/api/admin/terms").json()
@@ -580,3 +605,32 @@ def test_failed_publish_pins_nothing_and_leaves_flags_editable(
     detail = client.get(f"/api/admin/experiments/{experiment_id}").json()
     assert detail["consent_statement_ref"] == "standard v1"
     assert detail["debrief_statement_ref"] == "debrief v1"
+
+
+def test_pin_failure_after_publish_leaves_the_study_live_and_unpinned(
+    client: TestClient, enable_prolific, terms_source: Path, monkeypatch
+):
+    """`prepare_terms_pin` gates the publish; if archiving still fails once the
+    study is live on Prolific (a version edited in place under a concurrent
+    publish), the publish must not roll back and strand the round. The study
+    goes live unpinned and serves the live text until the next publish."""
+    from services.terms import service as terms_service
+    from services.terms.source import TermsSourceError
+
+    experiment_id = _create_experiment(client)
+    _upload(client, experiment_id)
+    _flag(client, experiment_id, "sensitive")
+    _mock_prolific_study()
+    pilot = _run_pilot(client, experiment_id)
+
+    async def changed_under_us(*_args, **_kwargs):
+        raise TermsSourceError("consent/warned v1 has changed at the source since it was archived")
+
+    monkeypatch.setattr(terms_service, "archive_statement", changed_under_us)
+    published = _publish(client, experiment_id, pilot["id"])
+    assert published.status_code == 200, published.text
+
+    detail = client.get(f"/api/admin/experiments/{experiment_id}").json()
+    assert detail["status"] == "LAUNCH"
+    assert detail["consent_statement_ref"] is None
+    assert detail["debrief_statement_ref"] is None

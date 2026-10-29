@@ -80,7 +80,6 @@ function parseStoredSession(raw: string): StoredSession | null {
       rater_session_token: token,
       experiment_description_html: sessionPayload.experiment_description_html ?? null,
       assistance_instructions: sessionPayload.assistance_instructions ?? null,
-      study_flags: sessionPayload.study_flags ?? [],
       debrief_html: sessionPayload.debrief_html ?? null,
     };
 

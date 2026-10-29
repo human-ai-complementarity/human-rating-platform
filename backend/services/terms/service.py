@@ -343,15 +343,27 @@ async def apply_terms_pin(
     Called once the study is live, in the same transaction that flips the
     experiment out of DRAFT, so a publish that fails at Prolific leaves
     nothing pinned and the terms still editable. Flushes but does not commit.
+
+    `prepare_terms_pin` already gated the publish on these versions, so a
+    failure here (a version edited in place between the two, under a
+    concurrent publish) is logged rather than raised: raising would roll
+    back the status flip while the study is already live on Prolific and
+    strand the round. The experiment stays unpinned, serving the live text,
+    and the next publish tries again.
     """
     if pending is None or experiment.consent_statement_id is not None:
         return
     try:
-        experiment.consent_statement_id = (await archive_statement(pending.consent, db)).id
-        if pending.debrief is not None:
-            experiment.debrief_statement_id = (await archive_statement(pending.debrief, db)).id
+        consent_id = (await archive_statement(pending.consent, db)).id
+        debrief_id = (await archive_statement(pending.debrief, db)).id if pending.debrief else None
     except TermsSourceError as exc:
-        raise _unavailable(exc) from exc
+        logger.error(
+            "Rater terms could not be pinned after publish; the study is live unpinned",
+            extra={"attributes": {"experiment_id": experiment.id, "error": str(exc)}},
+        )
+        return
+    experiment.consent_statement_id = consent_id
+    experiment.debrief_statement_id = debrief_id
     await db.flush()
     logger.info(
         "Pinned rater terms",

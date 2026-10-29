@@ -182,6 +182,7 @@ async def get_terms_status():
 )
 async def preview_experiment_terms(
     experiment_id: int,
+    selection: bool = Query(default=False),
     study_flags: Optional[list[StudyFlag]] = Query(default=None),
     content_warning_details: Optional[str] = None,
     db: AsyncSession = Depends(get_session),
@@ -189,20 +190,19 @@ async def preview_experiment_terms(
     """The consent (and debrief) this experiment's raters see, placeholders
     filled: archived once published, live from the source before that.
 
-    The optional query fields preview a selection the admin has not saved
-    yet; they are ignored once the experiment has pinned its versions."""
+    `selection=true` previews a selection the admin has not saved yet, taken
+    from the other query fields; `study_flags` omitted then means no flags,
+    which a repeated query field alone cannot express. The selection is
+    ignored once the experiment has pinned its versions."""
     experiment = await fetch_experiment_or_404(experiment_id, db)
-    selection = {
-        key: value
-        for key, value in {
-            "study_flags": [flag.value for flag in study_flags]
-            if study_flags is not None
-            else None,
-            "content_warning_details": content_warning_details,
-        }.items()
-        if value is not None
-    }
-    return await terms_service.terms_preview(experiment, db, selection=selection)
+    if selection:
+        unsaved = {
+            "study_flags": [flag.value for flag in study_flags or []],
+            "content_warning_details": content_warning_details or "",
+        }
+    else:
+        unsaved = {}
+    return await terms_service.terms_preview(experiment, db, selection=unsaved)
 
 
 @secure_router.get("/tags", response_model=list[TagResponse])

@@ -396,8 +396,6 @@ class RaterStartResponse(BaseModel):
     # None until the rater agrees. The frontend shows the consent screen while
     # this is None; the backend refuses questions until it is set.
     consented_at: Optional[datetime] = None
-    # The study's flags (sensitive, explicit, deception); empty for most.
-    study_flags: list[str] = Field(default_factory=list)
     # Debrief shown on the completion screen. Only deception studies have
     # one; when present the completion redirect is manual.
     debrief_html: Optional[str] = None

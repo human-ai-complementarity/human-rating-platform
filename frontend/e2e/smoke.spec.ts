@@ -135,7 +135,6 @@ type RaterSessionRecord = {
   // every rater flow goes through the consent screen the way real ones do.
   consent_statement_html?: string;
   consented_at?: string | null;
-  study_flags?: Array<'sensitive' | 'explicit' | 'deception'>;
   debrief_html?: string | null;
 };
 
@@ -668,11 +667,12 @@ async function installApiMocks(
       // Mirrors the backend: an unsaved selection in the query wins while
       // nothing is pinned.
       const pinned = experiment?.consent_statement_ref != null;
-      const queryFlags = url.searchParams.getAll('study_flags');
+      const unsaved = !pinned && url.searchParams.get('selection') === 'true';
       const selected = {
-        study_flags: !pinned && url.searchParams.has('study_flags') ? queryFlags : experiment?.study_flags ?? [],
-        content_warning_details:
-          (!pinned && url.searchParams.get('content_warning_details')) || experiment?.content_warning_details || null,
+        study_flags: unsaved ? url.searchParams.getAll('study_flags') : experiment?.study_flags ?? [],
+        content_warning_details: unsaved
+          ? url.searchParams.get('content_warning_details') || null
+          : experiment?.content_warning_details || null,
       };
       const warned = selected.study_flags.some((flag) => flag === 'sensitive' || flag === 'explicit');
       const debrief = selected.study_flags.includes('deception');
@@ -887,7 +887,6 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         consent_statement_html: MOCK_CONSENT_HTML,
         consented_at: null,
-        study_flags: [],
         debrief_html: null,
         ...session,
       });
@@ -3387,7 +3386,6 @@ test('a deception study ends on the debrief and never auto-redirects', async ({ 
     experiment_name: 'Deception Experiment',
     completion_url: 'https://app.prolific.com/submissions/complete?cc=DEC1234',
     rater_session_token: 'token-deception',
-    study_flags: ['deception'],
     consent_statement_html: '<h2>Purpose of the study</h2><p>Mock consent.</p>',
     debrief_html: '<h2>Thank you</h2><p>Some of what you were told was not accurate.</p>',
   };
@@ -3442,7 +3440,6 @@ test('a sensitive study shows the warning in its consent and ends normally', asy
     experiment_name: 'Sensitive Experiment',
     completion_url: null,
     rater_session_token: 'token-sensitive',
-    study_flags: ['sensitive'],
     consent_statement_html:
       '<h2>Content warning</h2><p>Some passages describe violence.</p><p>Mock consent.</p>',
     debrief_html: null,
@@ -3530,6 +3527,12 @@ test('the consent section saves the flags and details, and previews the statemen
   await page.getByTestId('ethics-flag-sensitive').uncheck();
   await page.getByTestId('ethics-flag-deception').uncheck();
   await expect(page.getByTestId('ethics-details')).toHaveCount(0);
+  // An empty unsaved selection previews as such, not as the saved flags.
+  await page.getByTestId('ethics-preview-consent').click();
+  const cleared = page.getByTestId('ethics-preview-dialog');
+  await expect(cleared).toContainText('standard v1');
+  await expect(cleared).not.toContainText('Some passages describe violence.');
+  await cleared.getByRole('button', { name: 'Close' }).click();
   await page.getByTestId('ethics-save').click();
   await expect(page.getByText('Consent settings saved.')).toBeVisible();
   expect(state.experimentPatches[1]).toMatchObject({ study_flags: [], content_warning_details: '' });

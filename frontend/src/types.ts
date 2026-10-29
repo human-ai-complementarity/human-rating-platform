@@ -314,7 +314,6 @@ export interface Session {
   // Shown until `consented_at` is set.
   consent_statement_html: string;
   consented_at: string | null;
-  study_flags: StudyFlag[];
   // Only deception studies have a debrief; when present the completion
   // screen shows it and the redirect to Prolific is manual.
   debrief_html: string | null;
