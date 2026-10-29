@@ -6,9 +6,9 @@ first publish. `terms_statements` archives every pinned version so a
 published experiment keeps serving the text it went live with. Existing
 experiments become unflagged studies with nothing pinned until they publish.
 
-Revision ID: 20261017000000
-Revises: 20261016000000
-Create Date: 2026-10-17 00:00:00.000000
+Revision ID: 20261027000000
+Revises: 20261026000000
+Create Date: 2026-10-27 00:00:00.000000
 """
 
 from typing import Sequence, Union
@@ -16,8 +16,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20261017000000"
-down_revision: Union[str, Sequence[str], None] = "20261016000000"
+revision: str = "20261027000000"
+down_revision: Union[str, Sequence[str], None] = "20261026000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
