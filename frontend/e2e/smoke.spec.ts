@@ -679,7 +679,7 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         pinned,
         consent_ref: warned ? 'warned v1' : 'standard v1',
-        consent_html: `<h2>Preview consent</h2><p>${selected.content_warning_details ?? 'No warning.'}</p>`,
+        consent_html: `<h2>Preview consent</h2><p>${(warned && selected.content_warning_details) || 'No warning.'}</p>`,
         debrief_ref: debrief ? 'debrief v1' : null,
         debrief_html: debrief ? '<h2>Preview debrief</h2><p>Continue to Prolific.</p>' : null,
       });

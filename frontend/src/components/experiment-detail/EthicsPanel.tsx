@@ -117,9 +117,11 @@ export function EthicsPanel({
   const openPreview = async (kind: 'consent' | 'debrief') => {
     setPreviewError(null);
     try {
+      // The same selection a save would send, so the preview and the saved
+      // result never differ: details only travel with a warning flag.
       const result = await api.getTermsPreview(experiment.id, {
         study_flags: flags,
-        content_warning_details: details,
+        content_warning_details: warned ? details : '',
       });
       setPreview(result);
       setPreviewKind(kind);
