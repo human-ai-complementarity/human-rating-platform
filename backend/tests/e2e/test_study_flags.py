@@ -172,7 +172,6 @@ def test_sensitive_study_serves_the_warned_consent_and_no_debrief(
     _flag(client, experiment_id, "sensitive")
 
     payload = _start(client, experiment_id, "PID_SENSITIVE")
-    assert payload["study_flags"] == ["sensitive"]
     consent_html = payload["consent_statement_html"]
     assert "<h2>Content warning</h2>" in consent_html
     assert DETAILS in consent_html
@@ -193,7 +192,6 @@ def test_deception_study_serves_the_standard_consent_and_a_debrief(
     _flag(client, experiment_id, "deception", details=None)
 
     payload = _start(client, experiment_id, "PID_DECEPTION")
-    assert payload["study_flags"] == ["deception"]
     assert "<h2>Content warning</h2>" not in payload["consent_statement_html"]
     assert payload["debrief_html"] is not None
     assert "Continue to Prolific" in payload["debrief_html"]
@@ -208,7 +206,8 @@ def test_ordinary_study_has_no_debrief(client: TestClient, terms_source):
     experiment_id = _create_experiment(client)
     _upload(client, experiment_id)
     payload = _start(client, experiment_id, "PID_PLAIN")
-    assert payload["study_flags"] == []
+    # Flags are an admin concern; the rater payload carries only their effects.
+    assert "study_flags" not in payload
     assert payload["debrief_html"] is None
 
 
@@ -240,6 +239,7 @@ def test_preview_renders_an_unsaved_selection_until_pinned(client: TestClient, t
     preview = client.get(
         f"/api/admin/experiments/{experiment_id}/terms/preview",
         params=[
+            ("selection", "true"),
             ("study_flags", "explicit"),
             ("study_flags", "deception"),
             ("content_warning_details", "Graphic descriptions."),
@@ -607,6 +607,7 @@ def test_failed_publish_pins_nothing_and_leaves_flags_editable(
     assert detail["debrief_statement_ref"] == "debrief v1"
 
 
+@respx.mock
 def test_pin_failure_after_publish_leaves_the_study_live_and_unpinned(
     client: TestClient, enable_prolific, terms_source: Path, monkeypatch
 ):
