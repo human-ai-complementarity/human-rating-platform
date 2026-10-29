@@ -320,11 +320,11 @@ def test_preparation_captures_per_method_model_before_defaults_change(
     captured = method.preparation_params(source)
     monkeypatch.setattr(settings, default_field, "openrouter/changed-default")
     expected = "openrouter/researcher-choice" if explicit else "openrouter/original-default"
-    assert resolve_model(captured, method_name, method.primary_model_role) == expected
+    assert resolve_model(captured, method_name, method.primary_model_role).model == expected
     assert captured["assistance_models"]["other_method"] == "openrouter/other"
     assert "model" not in captured
     source["assistance_models"][method_name] = "openrouter/later-edit"
-    assert captured["assistance_models"][method_name] == expected
+    assert captured["assistance_models"][method_name]["model"] == expected
 
 
 @pytest.mark.parametrize(
