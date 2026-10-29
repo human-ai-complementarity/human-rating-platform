@@ -195,7 +195,6 @@ async def start_session(
             policy=policy,
             terms=terms,
             consented_at=existing_consent.accepted_at if existing_consent else None,
-            study_flags=experiment.study_flags,
             assistance_method=experiment.assistance_method,
             assistance_instructions=assistance_instructions,
         )
@@ -281,7 +280,6 @@ async def start_session(
         policy=policy,
         terms=terms,
         consented_at=None,
-        study_flags=experiment.study_flags,
         assistance_method=experiment.assistance_method,
         assistance_instructions=assistance_instructions,
     )
