@@ -40,6 +40,13 @@ export interface Experiment {
   system_prompt: string | null;
   human_prompt_prefix: string | null;
   human_prompt_suffix: string | null;
+  // Rater terms: the study's flags (any combination) and, for sensitive or
+  // explicit studies, the content-warning details. The refs name the archived
+  // statement versions pinned at first publish ("standard v2"); null while DRAFT.
+  study_flags: StudyFlag[];
+  content_warning_details: string | null;
+  consent_statement_ref: string | null;
+  debrief_statement_ref: string | null;
   is_markdown: boolean;
   prolific_pool: string | null;
   status: ExperimentStatus;
@@ -170,7 +177,76 @@ export type StudyLabel =
   | 'interview'
   | 'other';
 
-export type Screener = 'ai_taskers' | 'fact_checkers' | 'approval_rate';
+export type Screener =
+  | 'ai_taskers'
+  | 'fact_checkers'
+  | 'approval_rate'
+  | 'harmful_content'
+  | 'deception';
+
+// What a study exposes raters to. Any combination. What each flag means for
+// Prolific, prescreeners, consent and debrief is tabled in
+// backend/services/terms/flags.py; STUDY_FLAG_EFFECTS mirrors the parts the
+// UI needs.
+export type StudyFlag = 'sensitive' | 'explicit' | 'deception';
+
+export const STUDY_FLAGS: StudyFlag[] = ['sensitive', 'explicit', 'deception'];
+
+export const STUDY_FLAG_EFFECTS: Record<
+  StudyFlag,
+  { label: string; hint: string; prescreener: Screener; warned: boolean; debrief: boolean }
+> = {
+  sensitive: {
+    label: 'Sensitive content',
+    hint: "Deeply personal or potentially distressing topics (Prolific's 'sensitive' warning).",
+    prescreener: 'harmful_content',
+    warned: true,
+    debrief: false,
+  },
+  explicit: {
+    label: 'Explicit content',
+    hint: "Graphic, violent, sexual or otherwise egregious material (Prolific's 'explicit' warning).",
+    prescreener: 'harmful_content',
+    warned: true,
+    debrief: false,
+  },
+  deception: {
+    label: 'Deception',
+    hint: 'Raters are misled about some element of the study. Prolific requires its deception prescreener and a debrief at the end.',
+    prescreener: 'deception',
+    warned: false,
+    debrief: true,
+  },
+};
+
+// The prescreeners a flag set forces onto every round.
+export function forcedScreeners(flags: StudyFlag[]): Screener[] {
+  return Array.from(new Set(flags.map((flag) => STUDY_FLAG_EFFECTS[flag].prescreener)));
+}
+
+export function flagsWarn(flags: StudyFlag[]): boolean {
+  return flags.some((flag) => STUDY_FLAG_EFFECTS[flag].warned);
+}
+
+export function flagsDebrief(flags: StudyFlag[]): boolean {
+  return flags.some((flag) => STUDY_FLAG_EFFECTS[flag].debrief);
+}
+
+// A live read of the terms manifest: the current version of each document.
+export interface TermsStatus {
+  source_url: string;
+  ok: boolean;
+  error: string | null;
+  documents: Record<string, number>;
+}
+
+export interface TermsPreview {
+  pinned: boolean;
+  consent_ref: string;
+  consent_html: string;
+  debrief_ref: string | null;
+  debrief_html: string | null;
+}
 
 export interface Question {
   id: number;
@@ -238,6 +314,9 @@ export interface Session {
   // Shown until `consented_at` is set.
   consent_statement_html: string;
   consented_at: string | null;
+  // Only deception studies have a debrief; when present the completion
+  // screen shows it and the redirect to Prolific is manual.
+  debrief_html: string | null;
 }
 
 export interface ConsentResponse {

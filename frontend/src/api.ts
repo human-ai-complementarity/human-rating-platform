@@ -10,7 +10,10 @@ import type {
   ApiKeyCreated,
   AssistanceStep,
   ConsentResponse,
+  StudyFlag,
   ExperimentRound,
+  TermsPreview,
+  TermsStatus,
   ExperimentRoundUpdate,
   Dataset,
   DatasetCardFields,
@@ -107,6 +110,9 @@ const routes = {
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/publish`,
     prolificRoundClose: (experimentId: number, roundId: number) =>
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/close`,
+    terms: '/admin/terms',
+    experimentTermsPreview: (experimentId: number) =>
+      `/admin/experiments/${experimentId}/terms/preview`,
   },
   rater: {
     start: '/raters/start',
@@ -588,6 +594,9 @@ export const api = {
       system_prompt?: string;
       human_prompt_prefix?: string;
       human_prompt_suffix?: string;
+      // Rater terms. Undefined means "leave unchanged"; locked after publish.
+      study_flags?: StudyFlag[];
+      content_warning_details?: string;
       is_markdown?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
@@ -818,6 +827,28 @@ export const api = {
       headers: { 'X-Rater-Session': sessionToken },
       json: data,
     });
+  },
+
+  async getTermsStatus(): Promise<TermsStatus> {
+    return requestJson<TermsStatus>(routes.admin.terms);
+  },
+
+  // `selection` previews settings as chosen in the form, saved or not; the
+  // backend ignores it once the experiment has pinned its versions.
+  async getTermsPreview(
+    experimentId: number,
+    selection?: { study_flags: StudyFlag[]; content_warning_details: string },
+  ): Promise<TermsPreview> {
+    const params = new URLSearchParams();
+    if (selection) {
+      // The sentinel lets an empty selection (no flags) differ from "use
+      // what is saved", which repeated query fields alone cannot express.
+      params.set('selection', 'true');
+      for (const flag of selection.study_flags) params.append('study_flags', flag);
+      params.set('content_warning_details', selection.content_warning_details);
+    }
+    const query = selection ? `?${params.toString()}` : '';
+    return requestJson<TermsPreview>(`${routes.admin.experimentTermsPreview(experimentId)}${query}`);
   },
 
   async recordConsent(sessionToken: string): Promise<ConsentResponse> {
