@@ -1,7 +1,7 @@
 """assistance_turn_claim
 
 Revision ID: 20260929072607
-Revises: 20261007010000
+Revises: 20261027000000
 Create Date: 2026-09-29 07:26:08.740501
 
 """
@@ -14,7 +14,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "20260929072607"
-down_revision: Union[str, Sequence[str], None] = "20261007010000"
+down_revision: Union[str, Sequence[str], None] = "20261027000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

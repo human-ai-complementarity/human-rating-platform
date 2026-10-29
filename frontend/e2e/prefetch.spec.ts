@@ -6,6 +6,7 @@ const item = (id: number, activated = false) => ({ assignment_id: id, generation
 
 async function mockQueue(page: Page, method = 'top_n', intro = false) {
   const state = {
+    needsConsent: false, assistanceTokens: [] as (string | undefined)[],
     revision: 1, items: [item(1), item(2)], starts: [] as number[], prepares: [] as number[],
     submissions: [] as Record<string, unknown>[], actions: [] as string[],
     activationGate: null as Promise<void> | null, loseSubmit: false,
@@ -19,10 +20,12 @@ async function mockQueue(page: Page, method = 'top_n', intro = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/raters/start')) return json(route, {
+      consent_statement_html: '<p>Agree to participate.</p>', consented_at: state.needsConsent ? null : '2026-09-29T00:00:00Z',
       rater_id: 1, session_start: '2026-09-29T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds,
       experiment_name: 'Prefetch study', experiment_description_html: intro ? '<p>Read these study instructions.</p>' : null,
       assistance_method: method, assistance_instructions: null, queue_enabled: false, rater_session_token: 'token', completion_url: null,
     });
+    if (path.endsWith('/raters/consent')) return json(route, { consented_at: '2026-10-28T00:00:00Z', session_start: '2026-10-28T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds, rater_session_token: 'consented-token' });
     if (path.endsWith('/raters/session-status')) return json(route, { is_active: true, questions_completed: state.submissions.length, time_remaining_seconds: 3600, grace_seconds_remaining: 3900 });
     if (path.endsWith('/raters/next-question')) {
       state.actions.push('next-question');
@@ -46,6 +49,7 @@ async function mockQueue(page: Page, method = 'top_n', intro = false) {
     if (path.endsWith('/assistance/start')) {
       const id = route.request().postDataJSON().question_id;
       state.starts.push(id);
+      state.assistanceTokens.push(route.request().headers()['x-rater-session']);
       if (state.skipInitial && id === 1) return json(route, { session_id: id, turn: 1, type: 'skip', is_terminal: true, payload: {} });
       const failure = state.startFailures.shift();
       if (failure === -1) return route.abort('failed');
@@ -309,4 +313,17 @@ test('failed-step skip uses the served assignment even for a restored legacy ses
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   expect(state.actions).toEqual(['next-question', 'skip', 'next-question']);
   expect(state.prepares).toEqual([]);
+});
+
+
+test('consent refreshes the token used by assistance requests', async ({ page }) => {
+  const state = await mockQueue(page);
+  state.needsConsent = true;
+  await page.goto(url);
+  await expect(page.getByTestId('consent-screen')).toBeVisible();
+  expect(state.starts).toEqual([]);
+  await page.getByRole('checkbox').check();
+  await page.getByTestId('consent-screen').getByRole('button').click();
+  await expect(page.getByText('Prepared guidance')).toBeVisible();
+  expect(state.assistanceTokens).toEqual(['consented-token']);
 });

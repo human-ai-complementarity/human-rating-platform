@@ -325,6 +325,7 @@ function RaterView() {
         rater_session_token: consent.rater_session_token,
       };
       const needsIntro = hasIntroContent(consented);
+      configure(consented);
       setSession(consented);
       setSessionToken(consent.rater_session_token);
       persistSession(consented, !needsIntro);
@@ -339,7 +340,7 @@ function RaterView() {
     } finally {
       setConsentSubmitting(false);
     }
-  }, [session, sessionToken, persistSession, loadNextQuestion]);
+  }, [session, sessionToken, persistSession, loadNextQuestion, configure]);
 
   const handleIntroContinue = useCallback(() => {
     if (!sessionToken) return;
