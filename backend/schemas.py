@@ -636,11 +636,17 @@ class ExperimentGroupResponse(BaseModel):
 
 
 # --- API key management (dashboard, cookie-authed) -------------------------
+# `read` keys reach /api/v1 only; `admin` keys also pass the /api/admin gate.
+ApiKeyScope = Literal["read", "admin"]
+
+
 class ApiKeyCreate(BaseModel):
     # Strip before length validation so a whitespace-only name (" ") is rejected
     # as empty rather than stored as a blank, unlabeled key.
     model_config = ConfigDict(str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=255)
+    # Least privilege by default: write access is asked for, never assumed.
+    scope: ApiKeyScope = "read"
 
 
 class ApiKeyResponse(BaseModel):
@@ -653,6 +659,7 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
     created_by: Optional[str] = None
+    scope: ApiKeyScope = "read"
     is_active: bool
 
 

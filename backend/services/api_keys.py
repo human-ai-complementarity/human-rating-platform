@@ -1,4 +1,7 @@
-"""Issuance, storage, and verification of /api/v1 bearer keys.
+"""Issuance, storage, and verification of programmatic bearer keys.
+
+Every key reads /api/v1; an ``admin``-scoped key also passes the /api/admin
+gate (``auth.require_admin``).
 
 Keys look like ``hrp_<43 url-safe random chars>``. Only the SHA-256 hash and a
 non-secret ``prefix`` (``hrp_`` + 8 chars) are stored; the raw key is returned
@@ -47,9 +50,21 @@ def _hash_key(plaintext: str) -> str:
     return sha256(plaintext.encode("utf-8")).hexdigest()
 
 
-async def create_api_key(name: str, db: AsyncSession, *, created_by: str | None) -> IssuedApiKey:
+async def create_api_key(
+    name: str,
+    db: AsyncSession,
+    *,
+    created_by: str | None,
+    scope: str = "read",
+) -> IssuedApiKey:
     plaintext, prefix, key_hash = _generate_key()
-    record = ApiKey(name=name.strip(), prefix=prefix, key_hash=key_hash, created_by=created_by)
+    record = ApiKey(
+        name=name.strip(),
+        prefix=prefix,
+        key_hash=key_hash,
+        created_by=created_by,
+        scope=scope,
+    )
     db.add(record)
     await db.commit()
     await db.refresh(record)
@@ -120,6 +135,11 @@ async def _touch_last_used(record: ApiKey, db: AsyncSession) -> None:
     record.last_used_at = now
     db.add(record)
     await db.commit()
+
+
+def is_api_key(token: str) -> bool:
+    """Whether a bearer token is shaped like one of our keys (vs. e.g. a Clerk JWT)."""
+    return token.startswith(KEY_SCHEME)
 
 
 def mask(record: ApiKey) -> str:

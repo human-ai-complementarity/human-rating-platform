@@ -37,10 +37,23 @@ def _sign(secret: str, payload: str) -> str:
 
 
 class AdminSession:
-    def __init__(self, email: str, issued_at: int, expires_at: int | None = None):
+    def __init__(
+        self,
+        email: str,
+        issued_at: int,
+        expires_at: int | None = None,
+        api_key_id: int | None = None,
+    ):
         self.email = email
         self.issued_at = issued_at
         self.expires_at = expires_at
+        # Set when the caller presented an admin-scoped API key instead of a
+        # signed-in browser's cookie; `email` then names the key.
+        self.api_key_id = api_key_id
+
+    @property
+    def via_api_key(self) -> bool:
+        return self.api_key_id is not None
 
 
 class AdminSessionManager:
@@ -170,22 +183,89 @@ async def require_api_key(
     raise HTTPException(status_code=401, detail="Invalid API key")
 
 
+def _allowlist(settings: Settings) -> set[str]:
+    return {e.strip().lower() for e in settings.admin_allowlist}
+
+
+async def _admin_session_from_api_key(
+    request: Request, settings: Settings, db: AsyncSession
+) -> AdminSession | None:
+    """An admin session for a request bearing an admin-scoped API key.
+
+    ``None`` when there is no bearer, or the bearer is not one of our keys
+    (the dashboard's Clerk JWT, say), so the caller falls back to the cookie
+    error the dashboard knows how to handle. A key that is ours but unknown,
+    revoked or read-only is refused outright: the client meant to use it.
+
+    The key acts for the admin who minted it, so it stops working when they
+    leave the allowlist, as their own session would.
+    """
+    from services import api_keys as api_key_service
+
+    auth = request.headers.get("authorization") or ""
+    if not auth.lower().startswith("bearer "):
+        return None
+    token = auth.split(" ", 1)[1].strip()
+    if not api_key_service.is_api_key(token):
+        return None
+
+    record = await api_key_service.verify_api_key(token, db)
+    if record is None:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if record.scope != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="This API key is read-only (/api/v1); /api/admin needs an admin-scoped key",
+        )
+    if (record.created_by or "").strip().lower() not in _allowlist(settings):
+        raise HTTPException(
+            status_code=403,
+            detail="This API key's creator is no longer allowlisted for admin access",
+        )
+    return AdminSession(email=f"api-key:{record.name}", issued_at=0, api_key_id=record.id)
+
+
 async def require_admin(
     request: Request,
     settings: Settings = Depends(get_settings),
     manager: AdminSessionManager = Depends(get_admin_manager),
+    db: AsyncSession = Depends(get_session),
 ) -> AdminSession:
+    """Gate for /api/admin: a signed-in allowlisted browser, or an admin-scoped key.
+
+    The cookie wins when both are sent. Static ``api_keys`` env entries are
+    never admin: they have no scope and no audit row.
+    """
     # Allow bypass in test/dev when explicitly disabled
     if not settings.admin_auth_enabled:
         return AdminSession(email="dev@local", issued_at=0)
 
     session = manager.get_session(request)
     if not session:
+        key_session = await _admin_session_from_api_key(request, settings, db)
+        if key_session is not None:
+            return key_session
         raise HTTPException(status_code=403, detail="Admin session required")
 
     email = session.email.lower().strip()
-    allow = {e.strip().lower() for e in settings.admin_allowlist}
-    if not email or email not in allow:
+    if not email or email not in _allowlist(settings):
         raise HTTPException(status_code=403, detail="Not allowlisted for admin access")
 
     return session
+
+
+async def require_signed_in_admin(
+    admin: AdminSession = Depends(require_admin),
+) -> AdminSession:
+    """`require_admin`, minus API keys: for what only a person should do.
+
+    That is managing the keys themselves (a leaked key must not be able to
+    mint, rotate or revive keys, or it could outlive its own revocation) and
+    Prolific writes, as publishing spends money.
+    """
+    if admin.via_api_key:
+        raise HTTPException(
+            status_code=403,
+            detail="This needs a signed-in dashboard session; an API key cannot do it",
+        )
+    return admin

@@ -125,6 +125,8 @@ curl -H "Authorization: Bearer <your-key>" \
 
 Available endpoints: list/batch experiments, single experiment detail, and paginated raw ratings (with full question text and ground truth). Treat keys like passwords — anyone with a key can read all experiment data.
 
+A key is **Read only** unless you pick **Admin** under **Access** when you create it. An admin key also works on the `/api/admin` routes the dashboard itself uses, so a CLI can create datasets, groups and experiments and upload questions — the inference pipeline's `scripts/create_human_rating_study.py` needs one. It can't manage API keys or do anything on Prolific (create a pilot or round, publish, close), so it never spends money. A key's access is fixed when it is created: regenerating keeps it.
+
 ---
 
 # Assistance methods

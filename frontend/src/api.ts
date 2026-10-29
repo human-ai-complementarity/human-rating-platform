@@ -8,6 +8,7 @@ import type {
   Analytics,
   ApiKey,
   ApiKeyCreated,
+  ApiKeyScope,
   AssistanceStep,
   ConsentResponse,
   ExperimentRound,
@@ -638,17 +639,17 @@ export const api = {
     return requestJson<PlatformStatus>(routes.admin.platformStatus);
   },
 
-  // ── API keys (bearer credentials for the /api/v1 programmatic API) ─────────
+  // ── API keys (bearer credentials for /api/v1, and /api/admin when admin) ───
 
   async listApiKeys(): Promise<ApiKey[]> {
     return requestJson<ApiKey[]>(routes.admin.apiKeys);
   },
 
   // Returns the full plaintext key — surface it to the user once, then discard.
-  async createApiKey(name: string): Promise<ApiKeyCreated> {
+  async createApiKey(name: string, scope: ApiKeyScope = 'read'): Promise<ApiKeyCreated> {
     return requestJson<ApiKeyCreated>(routes.admin.apiKeys, {
       method: 'POST',
-      json: { name },
+      json: { name, scope },
     });
   },
 
