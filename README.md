@@ -276,6 +276,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under. If unset, Prolific uses the API user's `current_project_id`, which can land studies in the wrong workspace on multi-workspace accounts. The project's workspace and currency are derived automatically.
 - `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
+- `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
 
 Top‑level convenience envs (not nested):
 
