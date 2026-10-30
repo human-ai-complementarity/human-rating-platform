@@ -406,7 +406,8 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
           {analytics.raters.length === 0 ? (
             <div style={styles.emptyState}>No raters yet.</div>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
+            // Shows Prolific IDs: PostHog must not capture clicks here.
+            <div className="ph-no-capture" style={{ overflowX: 'auto' }}>
               <table style={styles.table}>
                 <thead>
                   <tr>

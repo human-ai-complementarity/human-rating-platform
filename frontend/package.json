@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.1",
+    "posthog-js": "^1.438.9",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^10.1.0",
