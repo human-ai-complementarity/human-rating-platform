@@ -14,7 +14,7 @@ function redactProlificIds(event: CaptureResult | null): CaptureResult | null {
 
 // Cookieless: PostHog stores nothing in the browser and never identifies raters.
 export async function startTracking(): Promise<void> {
-  if (!KEY) return;
+  if (!KEY || navigator.webdriver) return; // Ignore automated browsers (`navigator.webdriver`)
   const { default: posthog } = await import('posthog-js');
   posthog.init(KEY, {
     api_host: (import.meta.env.VITE_PUBLIC_POSTHOG_HOST as string | undefined) || 'https://us.i.posthog.com',
@@ -22,7 +22,7 @@ export async function startTracking(): Promise<void> {
     cookieless_mode: 'always',
     person_profiles: 'never',
     autocapture: true,
-    mask_all_text: false,
+    mask_all_text: true,
     mask_all_element_attributes: false,
     capture_performance: { web_vitals: true },
     capture_exceptions: true,
