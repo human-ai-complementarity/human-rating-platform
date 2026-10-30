@@ -249,6 +249,8 @@ export interface TermsPreview {
 }
 
 export interface Question {
+  assignment_id?: number | null;
+  assignment_generation?: number | null;
   id: number;
   question_text: string;
   options: string | null;
@@ -330,6 +332,8 @@ export interface ConsentResponse {
 }
 
 export interface RatingSubmit {
+  assignment_id?: number;
+  assignment_generation?: number;
   question_id: number;
   answer: string;
   confidence: number;

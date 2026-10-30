@@ -7,7 +7,8 @@ import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
 import RaterConsent from './RaterConsent';
 import RaterDebrief from './RaterDebrief';
-import type { Session, Question, AssistanceStep } from '../types';
+import type { Session } from '../types';
+import { useRaterQueue } from '../hooks/useRaterQueue';
 import { minutesBetween } from '../time';
 
 const STORAGE_KEY = 'hrp_rater_session';
@@ -132,7 +133,11 @@ function RaterView() {
   const [searchParams] = useSearchParams();
   const [session, setSession] = useState<Session | null>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [question, setQuestion] = useState<Question | null>(null);
+  const queue = useRaterQueue();
+  const { configure, clear, load, skip } = queue;
+  const question = queue.question;
+  const assistanceStep = queue.step;
+  const assistanceSessionId = assistanceStep?.session_id ?? null;
   const [questionsCompleted, setQuestionsCompleted] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -141,8 +146,6 @@ function RaterView() {
   // one already on screen can still be finished and submitted.
   const [deadlinePassed, setDeadlinePassed] = useState(false);
   const [allDone, setAllDone] = useState(false);
-  const [assistanceSessionId, setAssistanceSessionId] = useState<number | null>(null);
-  const [assistanceStep, setAssistanceStep] = useState<AssistanceStep | null>(null);
   const [showIntro, setShowIntro] = useState(false);
   // Consent comes before everything else, the intro included. Driven by
   // `session.consented_at`; the backend refuses questions until it is set.
@@ -209,24 +212,19 @@ function RaterView() {
 
   const fetchNextQuestion = useCallback(async (token: string) => {
     try {
-      setAssistanceSessionId(null);
-      setAssistanceStep(null);
       // Marked consumed before the await, not after: a failed pinned fetch
       // surfaces its error once rather than re-firing on every reload.
       const pinToLoad = pinnedConsumedRef.current ? null : pinnedQuestionId;
       if (pinToLoad !== null) {
         pinnedConsumedRef.current = true;
       }
-      const q =
-        pinToLoad !== null
-          ? await api.getQuestion(token, pinToLoad)
-          : await api.getNextQuestion(token);
+      const q = await load(token, pinToLoad);
+      if (q === undefined) return;
       if (q === null || (typeof q === 'object' && Object.keys(q).length === 0)) {
         setAllDone(true);
-        setQuestion(null);
+        clear();
       } else {
         setAllDone(false);
-        setQuestion(q);
         try {
           const stored = sessionStorage.getItem(STORAGE_KEY);
           if (stored) {
@@ -236,13 +234,14 @@ function RaterView() {
         } catch { /* ignore */ }
       }
     } catch (err) {
+      if (err instanceof Error && err.message === 'Session changed') return;
       if (err instanceof Error && err.message === 'Session expired') {
         setSessionExpired(true);
       } else {
         setError(err instanceof Error ? err.message : 'Unknown error');
       }
     }
-  }, [pinnedQuestionId]);
+  }, [pinnedQuestionId, load, clear]);
 
   const loadNextQuestion = useCallback(async (token: string) => {
     setLoading(true);
@@ -254,6 +253,7 @@ function RaterView() {
   }, [fetchNextQuestion]);
 
   const restoreStoredSession = useCallback(async (storedSession: StoredSession) => {
+    configure(storedSession.session);
     setSession(storedSession.session);
     setSessionToken(storedSession.token);
 
@@ -268,29 +268,16 @@ function RaterView() {
     setLoading(true);
 
     try {
-      const [status] = await Promise.all([
-        api.getSessionStatus(storedSession.token).catch(() => null),
-        fetchNextQuestion(storedSession.token),
-      ]);
-
-      if (status) {
-        setQuestionsCompleted(status.questions_completed);
-      }
-
-      // Re-show intro only if it was never acknowledged AND no questions
-      // completed yet — otherwise a refresh mid-rating shouldn't replay it.
-      const completed = status?.questions_completed ?? 0;
-      if (
-        !storedSession.introAcknowledged &&
-        completed === 0 &&
-        hasIntroContent(storedSession.session)
-      ) {
-        setShowIntro(true);
-      }
+      const status = await api.getSessionStatus(storedSession.token).catch(() => null);
+      if (status) setQuestionsCompleted(status.questions_completed);
+      const needsIntro = !storedSession.introAcknowledged &&
+        (status?.questions_completed ?? 0) === 0 && hasIntroContent(storedSession.session);
+      if (needsIntro) setShowIntro(true);
+      else await fetchNextQuestion(storedSession.token);
     } finally {
       setLoading(false);
     }
-  }, [fetchNextQuestion]);
+  }, [fetchNextQuestion, configure]);
 
   const startRaterSession = useCallback(async (params: ProlificSessionParams) => {
     try {
@@ -301,6 +288,7 @@ function RaterView() {
         params.sessionId,
         isPreview
       );
+      configure(nextSession);
       setSession(nextSession);
       setSessionToken(nextSession.rater_session_token);
       const needsIntro = hasIntroContent(nextSession);
@@ -318,7 +306,7 @@ function RaterView() {
       setError(err instanceof Error ? err.message : 'Unknown error');
       setLoading(false);
     }
-  }, [isPreview, persistSession, loadNextQuestion]);
+  }, [isPreview, persistSession, loadNextQuestion, configure]);
 
   const handleConsentAgree = useCallback(async () => {
     if (!session || !sessionToken) return;
@@ -337,6 +325,7 @@ function RaterView() {
         rater_session_token: consent.rater_session_token,
       };
       const needsIntro = hasIntroContent(consented);
+      configure(consented);
       setSession(consented);
       setSessionToken(consent.rater_session_token);
       persistSession(consented, !needsIntro);
@@ -351,7 +340,7 @@ function RaterView() {
     } finally {
       setConsentSubmitting(false);
     }
-  }, [session, sessionToken, persistSession, loadNextQuestion]);
+  }, [session, sessionToken, persistSession, loadNextQuestion, configure]);
 
   const handleIntroContinue = useCallback(() => {
     if (!sessionToken) return;
@@ -403,6 +392,8 @@ function RaterView() {
 
   useEffect(() => {
     if (!(sessionExpired || allDone)) return;
+    clear();
+    if (sessionToken) void api.endSession(sessionToken).catch(() => {});
     const completionUrl = session?.completion_url;
 
     // Clear persisted session once we're done or expired (always)
@@ -418,34 +409,38 @@ function RaterView() {
       window.location.href = completionUrl;
     }, 3000);
     return () => clearTimeout(timer);
-  }, [sessionExpired, allDone, session?.completion_url, session?.debrief_html, clearStoredSession]);
+  }, [sessionExpired, allDone, session?.completion_url, session?.debrief_html, sessionToken, clearStoredSession, clear]);
+
+  const afterSubmitted = async () => {
+    setQuestionsCompleted(prev => prev + 1);
+    if (deadlinePassed) {
+      clear();
+      setSessionExpired(true);
+    } else if (sessionToken) {
+      await loadNextQuestion(sessionToken);
+    }
+  };
 
   const handleSubmit = async (answer: string, confidence: number, timeStarted: string) => {
     if (!session || !question || !sessionToken) return;
-
     try {
-      await api.submitRating(sessionToken, {
-        question_id: question.id,
-        answer,
-        confidence,
-        time_started: timeStarted,
+      await queue.submit({
+        question_id: question.id, answer, confidence, time_started: timeStarted,
         ...(assistanceSessionId !== null ? { assistance_session_id: assistanceSessionId } : {}),
       });
-      setQuestionsCompleted(prev => prev + 1);
-      if (deadlinePassed) {
-        // That was the last one the grace window allowed.
-        setQuestion(null);
-        setSessionExpired(true);
-        return;
-      }
-      await loadNextQuestion(sessionToken);
+      await afterSubmitted();
     } catch (err) {
-      if (err instanceof Error && err.message === 'Session expired') {
-        setSessionExpired(true);
-      } else {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-      }
+      if (err instanceof Error && err.message === 'Session changed') return;
+      if (err instanceof Error && err.message === 'Session expired') setSessionExpired(true);
+      // The queue preserves the answer and exposes a retry for uncertain saves.
     }
+  };
+
+  const retrySubmission = async () => {
+    try {
+      await queue.retrySubmission();
+      await afterSubmitted();
+    } catch { /* The queue retains the frozen submission and its explanation. */ }
   };
 
   const handleSessionExpired = useCallback(() => {
@@ -465,12 +460,12 @@ function RaterView() {
     }
   }, [deadlinePassed, question]);
 
-  // Auto-skip question when decomposition fails mid-session — question stays unrated and may reappear
+  // Queue skips are explicit server mutations; legacy sessions can answer without assistance.
   useEffect(() => {
-    if (assistanceStep?.type === 'skip' && sessionToken) {
-      void loadNextQuestion(sessionToken);
+    if (assistanceStep?.type === 'skip' && sessionToken && question?.assignment_id != null) {
+      void skip(sessionToken).then(() => loadNextQuestion(sessionToken)).catch(err => setError(err instanceof Error ? err.message : 'Could not skip question'));
     }
-  }, [assistanceStep?.type, sessionToken, loadNextQuestion]);
+  }, [assistanceStep?.type, sessionToken, question?.assignment_id, skip, loadNextQuestion]);
 
   const hasAssistance = session?.assistance_method && session.assistance_method !== 'none';
   const assistanceBlocksRating = Boolean(
@@ -624,6 +619,7 @@ function RaterView() {
       <div style={styles.container}>
         <div style={styles.errorCard}>
           <p style={styles.errorText}>{error}</p>
+          {sessionToken && <button type="button" onClick={() => { setError(null); void loadNextQuestion(sessionToken); }}>Retry</button>}
         </div>
       </div>
     );
@@ -740,6 +736,14 @@ function RaterView() {
         onExpire={handleSessionExpired}
       />
 
+      {queue.submissionError && (
+        <div role="alert" style={graceBannerStyle}>
+          {queue.submissionError}
+          {queue.submissionConflict && <button type="button" onClick={() => { if (sessionToken) void loadNextQuestion(sessionToken); }}>Continue from saved progress</button>}
+          {queue.submissionPending && <button type="button" onClick={() => void retrySubmission()}>Retry saving answer</button>}
+        </div>
+      )}
+
       {deadlinePassed && question && (
         <div style={graceBannerStyle} data-testid="grace-banner">
           Your time is up. Submit this last answer and we&rsquo;ll wrap up — anything you have
@@ -758,6 +762,7 @@ function RaterView() {
       {hasAssistance && question && sessionToken ? (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', alignItems: 'start' }}>
           <div>
+            <fieldset disabled={queue.submissionPending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <QuestionCard
               question={question}
               onSubmit={handleSubmit}
@@ -766,23 +771,21 @@ function RaterView() {
               humanPromptPrefix={session?.human_prompt_prefix ?? null}
               humanPromptSuffix={session?.human_prompt_suffix ?? null}
             />
+            </fieldset>
           </div>
-          <AssistancePanel
-            sessionToken={sessionToken}
-            questionId={question.id}
-            onSessionId={setAssistanceSessionId}
-            onStepChange={setAssistanceStep}
-          />
+          <AssistancePanel key={question.id} resource={queue.assistance} />
         </div>
       ) : (
         <>
           {question && (
+            <fieldset disabled={queue.submissionPending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             <QuestionCard
               question={question}
               onSubmit={handleSubmit}
               humanPromptPrefix={session?.human_prompt_prefix ?? null}
               humanPromptSuffix={session?.human_prompt_suffix ?? null}
             />
+            </fieldset>
           )}
         </>
       )}
