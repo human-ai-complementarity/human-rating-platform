@@ -57,6 +57,7 @@ from services.assistance.model_resolution import (
     validate_model_entry,
     reject_removed_model_key,
     reject_role_models_key,
+    same_entry,
     validate_model_id,
 )
 from services.assistance.registry import assisted_methods, get_method
@@ -765,7 +766,7 @@ def _validate_changed_models(stored: dict[str, Any], merged: dict[str, Any]) -> 
     previous = previous if isinstance(previous, dict) else {}
     allowed = assisted_methods()
     for method, value in models.items():
-        if value is None or value == previous.get(method):
+        if value is None or same_entry(previous.get(method), value):
             continue
         if method not in allowed:
             raise HTTPException(
