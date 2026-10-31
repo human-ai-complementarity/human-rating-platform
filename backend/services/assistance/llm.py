@@ -25,12 +25,14 @@ A call without tools is a chat completion on either, as it always was.
 from __future__ import annotations
 
 import functools
+import logging
+import time
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from copy import deepcopy
 from weakref import WeakKeyDictionary
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
@@ -38,12 +40,25 @@ import openai
 
 from config import LLMSettings
 
+logger = logging.getLogger(__name__)
+
 Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": "..."}
 
 # Shared by foreground calls and preparation fan-out on the same event loop.
 # Speculation uses at most half the slots, leaving capacity for visible work.
 speculative_call: ContextVar[bool] = ContextVar("speculative_call", default=False)
 _call_limits: WeakKeyDictionary = WeakKeyDictionary()
+_provider_context: ContextVar[dict | None] = ContextVar("provider_context", default=None)
+
+
+@contextmanager
+def provider_context(**attributes):
+    """Attach non-content identifiers to provider events, including fan-out tasks."""
+    token = _provider_context.set({**(_provider_context.get() or {}), **attributes})
+    try:
+        yield
+    finally:
+        _provider_context.reset(token)
 
 
 @asynccontextmanager
@@ -345,14 +360,22 @@ async def complete(
     )
     if tools and provider.tools_use_responses_api:
         kwargs = provider.responses_request(model_id, messages, settings, tools=tools, **options)
-        async with provider_slot():
-            response = await client.responses.create(**kwargs)
+        response = await _provider_call(
+            client.responses.create,
+            kwargs,
+            model_id,
+            lambda reply: "success" if reply.status == "completed" else str(reply.status),
+        )
         return _response_text(response, name, settings)
     if tools:
         options["tools"] = tools
     kwargs = provider.request(model_id, messages, settings, **options)
-    async with provider_slot():
-        response = await client.chat.completions.create(**kwargs)
+    response = await _provider_call(
+        client.chat.completions.create,
+        kwargs,
+        model_id,
+        lambda reply: "success" if reply.choices else "empty",
+    )
     if not response.choices:
         # OpenRouter sometimes returns HTTP 200 with an error body and no
         # choices; indexing [0] would 500 the rater's assistance fetch.
@@ -368,6 +391,43 @@ async def complete(
             "reasoning may have used the whole budget"
         )
     return content
+
+
+async def _provider_call(
+    create: Callable[..., Awaitable[Any]],
+    kwargs: dict[str, Any],
+    model_id: str,
+    outcome_of: Callable[[Any], str],
+) -> Any:
+    """One gateway invocation in a provider slot, logged as a `provider_call`
+    event (docs/assistance-prefetch.md) on either API."""
+    started = time.monotonic()
+    response = None
+    outcome = "error"
+    try:
+        async with provider_slot():
+            response = await create(**kwargs)
+        outcome = outcome_of(response)
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        raise
+    finally:
+        usage = getattr(response, "usage", None)
+        logger.info(
+            "Assistance provider call",
+            extra={
+                "attributes": {
+                    **(_provider_context.get() or {}),
+                    "prefetch.event": "provider_call",
+                    "model": model_id,
+                    "speculative": speculative_call.get(),
+                    "outcome": outcome,
+                    "duration_ms": round((time.monotonic() - started) * 1000, 1),
+                    "total_tokens": getattr(usage, "total_tokens", None),
+                }
+            },
+        )
+    return response
 
 
 def _response_text(response: Any, model: str, settings: LLMSettings) -> str:

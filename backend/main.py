@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import logging
 import os
 import time
@@ -16,6 +17,7 @@ from config import get_settings
 from database import build_database
 from logging_config import configure_logging
 from routers import admin, raters, v1
+from services import prolific_to_slack
 from services.assistance.runner import PreparationRunner
 
 logger = logging.getLogger(__name__)
@@ -127,6 +129,7 @@ def create_app() -> FastAPI:
             "attributes": {
                 "log_level": settings.app.log_level,
                 "prolific_enabled": settings.prolific.enabled,
+                "prolific_to_slack_enabled": prolific_to_slack.forwarding_enabled(settings),
             }
         },
     )
@@ -139,11 +142,21 @@ def create_app() -> FastAPI:
         app.state.database = database
         runner = PreparationRunner(database)
         app.state.preparation_runner = runner
+        prolific_to_slack_task: asyncio.Task | None = None
+        if prolific_to_slack.forwarding_enabled(settings):
+            prolific_to_slack_task = asyncio.create_task(
+                prolific_to_slack.run_forwarding_loop(database.session, settings),
+                name="prolific-to-slack",
+            )
         try:
             runner.start()
             await runner.wait_ready()
             yield
         finally:
+            if prolific_to_slack_task is not None:
+                prolific_to_slack_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await prolific_to_slack_task
             try:
                 await runner.close()
             finally:

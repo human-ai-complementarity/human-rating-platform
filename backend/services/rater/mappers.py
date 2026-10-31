@@ -62,4 +62,5 @@ def build_rater_start_response(
         assistance_instructions=assistance_instructions,
         consent_statement_html=terms.consent_html,
         consented_at=consented_at,
+        debrief_html=terms.debrief_html,
     )

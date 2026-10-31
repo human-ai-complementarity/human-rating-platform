@@ -18,6 +18,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -57,6 +58,19 @@ class ProlificStudyStatus(str, Enum):
 ROUND_TERMINAL_STATUSES = frozenset(
     {ProlificStudyStatus.AWAITING_REVIEW, ProlificStudyStatus.COMPLETED}
 )
+
+
+class StudyFlag(str, Enum):
+    """What a study exposes raters to. Any combination is allowed; what each
+    one means for Prolific, prescreeners, consent and debrief is tabled in
+    services/terms/flags.py."""
+
+    # Deeply personal or potentially distressing topics (Prolific: "sensitive").
+    SENSITIVE = "sensitive"
+    # Graphic, violent, sexual or otherwise egregious material (Prolific: "explicit").
+    EXPLICIT = "explicit"
+    # Raters are misled about some element of the study, which a debrief must undo.
+    DECEPTION = "deception"
 
 
 class ExperimentStatus(str, Enum):
@@ -131,6 +145,32 @@ class Experiment(SQLModel, table=True):
     # the system message append handled via `system_prompt`.
     human_prompt_prefix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     human_prompt_suffix: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # Rater terms. `study_flags` is a JSON list of StudyFlag values (any
+    # combination); what each flag means for Prolific, prescreeners, consent
+    # and debrief is tabled in services/terms/flags.py. The details are
+    # required for a sensitive or explicit study: sent to Prolific, prepended
+    # to the study description, and rendered into the warned consent text.
+    # The two ids pin the archived statement versions from the first publish
+    # on, so every rater in a study saw the same text.
+    study_flags: list[str] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, server_default=text("'[]'")),
+    )
+    content_warning_details: Optional[str] = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    consent_statement_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("terms_statements.id", ondelete="RESTRICT"), nullable=True
+        ),
+    )
+    debrief_statement_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer, ForeignKey("terms_statements.id", ondelete="RESTRICT"), nullable=True
+        ),
+    )
     # Render question text and context as Markdown on the rater card.
     is_markdown: bool = Field(
         default=False,
@@ -515,6 +555,14 @@ class AssistanceSession(SQLModel, table=True):
         default=None,
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded snapshot of experiment.assistance_params at session creation
+    # NULL identifies sessions created before context snapshots were supported.
+    # Null means historical/unknown, never an inferred success.
+    outcome: Optional[str] = Field(default=None, sa_column=Column(String(32), nullable=True))
+    context_snapshot: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    advance_token: Optional[str] = Field(default=None, sa_column=Column(String(32)))
+    advance_expires_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True))
+    )
     step_type: str = Field(sa_column=Column(String(32), nullable=False))
     state: Optional[str] = Field(
         default=None,
@@ -828,6 +876,7 @@ class AssistancePreparation(SQLModel, table=True):
     method_name: str = Field(sa_column=Column(String(64), nullable=False))
     spec_json: str = Field(sa_column=Column(Text, nullable=False))
     params_json: str = Field(sa_column=Column(Text, nullable=False))
+    context_snapshot: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     status: str = Field(default="queued", sa_column=Column(String(16), nullable=False, index=True))
     demanded: bool = Field(default=False)
     artifact_json: Optional[str] = Field(default=None, sa_column=Column(Text))
@@ -835,8 +884,10 @@ class AssistancePreparation(SQLModel, table=True):
     claim_expires_at: Optional[datetime] = Field(
         default=None, sa_column=Column(DateTime(timezone=True))
     )
-    deadline_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
     execution_ms: int = Field(default=0)
+    deadline_at: datetime = Field(
+        sa_column=Column(DateTime(timezone=True), nullable=False, index=True)
+    )
     attempts: int = Field(default=0)
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),
@@ -891,4 +942,54 @@ class ConsentRecord(SQLModel, table=True):
     is_preview: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+
+
+class ForwardedProlificMessage(SQLModel, table=True):
+    """Dedup ledger for Prolific messages forwarded to Slack.
+
+    Ephemeral, not a record: a row exists only so each message is posted once,
+    and is deleted after the retention window.
+    """
+
+    __tablename__ = "forwarded_prolific_messages"
+
+    prolific_message_id: str = Field(sa_column=Column(String(128), primary_key=True))
+    forwarded_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+
+
+class TermsStatement(SQLModel, table=True):
+    """An archived copy of one consent or debrief statement version.
+
+    Rows are written when an experiment pins its terms (first publish), never
+    edited, and never deleted while an experiment references them. The source
+    of truth for *current* text is the terms source (see services/terms); this
+    table exists so a published experiment keeps serving the exact version it
+    went live with, whatever happens at the source afterwards.
+    """
+
+    __tablename__ = "terms_statements"
+    __table_args__ = (UniqueConstraint("document", "version", name="uq_terms_statement_version"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # "consent/standard", "consent/warned" or "debrief" (services/terms/source.py).
+    document: str = Field(sa_column=Column(String(64), nullable=False))
+    version: int = Field(sa_column=Column(Integer, nullable=False))
+    body_markdown: str = Field(sa_column=Column(Text, nullable=False))
+    sha256: str = Field(sa_column=Column(String(64), nullable=False))
+    source_url: str = Field(sa_column=Column(Text, nullable=False))
+    imported_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
     )

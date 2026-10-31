@@ -16,6 +16,8 @@ from session_policy import (
     DEFAULT_SESSION_DURATION_MINUTES,
 )
 
+from terms_helpers import write_terms_source
+
 _TEST_DB_NAME = "human_rating_platform_test"
 
 
@@ -64,7 +66,7 @@ def reset_database(sync_engine):
             text(
                 "TRUNCATE TABLE experiment_rounds, ratings, raters, questions, uploads, "
                 "experiments, api_keys, experiment_groups, datasets, "
-                "experiment_tags, tags RESTART IDENTITY CASCADE"
+                "experiment_tags, tags, forwarded_prolific_messages RESTART IDENTITY CASCADE"
             )
         )
 
@@ -144,5 +146,24 @@ def no_provider_calls(monkeypatch):
     async def refuse(**_kwargs):
         raise RuntimeError("LLM provider calls are disabled in tests")
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)))
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)),
+        # A call with tools on oai/ goes to the Responses API instead.
+        responses=SimpleNamespace(create=refuse),
+    )
     monkeypatch.setattr("services.assistance.llm._get_client", lambda *_args: client)
+
+
+# ── Rater terms ───────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def terms_source(tmp_path: Path):
+    """A runtime-generated terms source, wired in as TERMS__SOURCE_URL."""
+    root = tmp_path / "terms"
+    write_terms_source(root)
+    settings = get_settings()
+    original = settings.terms.source_url
+    settings.terms.source_url = f"file://{root}"
+    yield root
+    settings.terms.source_url = original

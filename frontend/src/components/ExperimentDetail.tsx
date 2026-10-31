@@ -4,6 +4,7 @@ import { api, UploadAbortedError } from '../api';
 import { buildRaterPreviewUrl } from '../raterPreview';
 import StatusLabel from './StatusLabel';
 import type {
+  StudyFlag,
   DatasetMetaField,
   DuplicateNavState,
   Experiment,
@@ -21,6 +22,7 @@ import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
+import { EthicsPanel } from './experiment-detail/EthicsPanel';
 import {
   StepperTabs,
   type StepDef,
@@ -1318,6 +1320,7 @@ function ExperimentDetail({
             savingMeta={savingMeta}
             isLocked={isLocked}
             lockedHint={lockedHint}
+            onRefresh={onRefresh}
             onBack={() => setTab('questions')}
             onNext={() => setTab('assistance')}
           />
@@ -2078,6 +2081,7 @@ function MetadataPanel({
   savingMeta,
   isLocked,
   lockedHint,
+  onRefresh,
   onBack,
   onNext,
 }: {
@@ -2091,6 +2095,7 @@ function MetadataPanel({
   savingMeta: boolean;
   isLocked: boolean;
   lockedHint: string;
+  onRefresh: () => void;
   onBack: () => void;
   onNext: () => void;
 }) {
@@ -2274,6 +2279,13 @@ function MetadataPanel({
           </div>
         );
       })}
+
+      <EthicsPanel
+        experiment={experiment}
+        isLocked={isLocked}
+        lockedHint={lockedHint}
+        onSaved={onRefresh}
+      />
 
       <StepNav
         stepIndex={2}
@@ -2775,6 +2787,7 @@ function LaunchPanel(props: {
                     <RoundCard
                       key={round.id}
                       round={round}
+                      studyFlags={experiment.study_flags}
                       sessionDurationMinutes={experiment.session_duration_minutes}
                       currencyCode={currencyCode}
                       currencySymbol={currencySymbol}
@@ -2844,6 +2857,7 @@ function LaunchPanel(props: {
 
               {rounds.length === 0 && (
                 <PilotForm
+                  studyFlags={experiment.study_flags}
                   sessionDurationMinutes={experiment.session_duration_minutes}
                   pilotForm={pilotForm}
                   onPilotChange={onPilotChange}
@@ -3013,6 +3027,7 @@ function RoundCard(props: {
   onClose: () => void;
   onDiscard: () => void;
   otherExperiments: Experiment[];
+  studyFlags: StudyFlag[];
 }) {
   const {
     round,
@@ -3262,6 +3277,7 @@ function RoundCard(props: {
               value={editForm.screeners}
               onChange={(next) => onEditFormChange({ ...editForm, screeners: next })}
               testIdPrefix={`edit-round-screener-${round.round_number}`}
+              studyFlags={props.studyFlags}
             />
           </Field>
           <Field
@@ -3390,6 +3406,7 @@ function PilotForm(props: {
   pricing: ProlificPricing | null;
   onSubmit: (e: React.FormEvent) => void;
   otherExperiments: Experiment[];
+  studyFlags: StudyFlag[];
   datasetDescription: string | null;
   sessionDurationMinutes: number;
   launchBlockers: string[];
@@ -3479,6 +3496,7 @@ function PilotForm(props: {
             value={pilotForm.screeners}
             onChange={(next) => onPilotChange({ ...pilotForm, screeners: next })}
             testIdPrefix="pilot-screener"
+            studyFlags={props.studyFlags}
           />
         </Field>
         <Field

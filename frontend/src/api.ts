@@ -10,7 +10,10 @@ import type {
   ApiKeyCreated,
   AssistanceStep,
   ConsentResponse,
+  StudyFlag,
   ExperimentRound,
+  TermsPreview,
+  TermsStatus,
   ExperimentRoundUpdate,
   Dataset,
   DatasetCardFields,
@@ -61,6 +64,7 @@ type RequestOptions = {
   json?: unknown; // mutually exclusive with formData
   formData?: FormData; // mutually exclusive with json
   headers?: Record<string, string>;
+  signal?: AbortSignal;
 };
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -107,6 +111,9 @@ const routes = {
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/publish`,
     prolificRoundClose: (experimentId: number, roundId: number) =>
       `/admin/experiments/${experimentId}/prolific/rounds/${roundId}/close`,
+    terms: '/admin/terms',
+    experimentTermsPreview: (experimentId: number) =>
+      `/admin/experiments/${experimentId}/terms/preview`,
   },
   rater: {
     start: '/raters/start',
@@ -117,6 +124,8 @@ const routes = {
     sessionStatus: '/raters/session-status',
     endSession: '/raters/end-session',
     assistanceStart: '/raters/assistance/start',
+    queue: '/raters/queue',
+    assistanceObservation: '/raters/assistance/observation',
     assistanceAdvance: '/raters/assistance/advance',
   },
 } as const;
@@ -219,9 +228,13 @@ function httpErrorMessage(status: number, statusText: string, body: string, url:
   return `Request failed (${status}) for ${url}: ${fallback}`;
 }
 
+export class ApiError extends Error {
+  constructor(public readonly status: number, message: string) { super(message); }
+}
+
 async function throwHttpError(response: Response, url: string): Promise<never> {
   const body = await readText(response);
-  throw new Error(httpErrorMessage(response.status, response.statusText, body, url));
+  throw new ApiError(response.status, httpErrorMessage(response.status, response.statusText, body, url));
 }
 
 // FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
@@ -232,6 +245,7 @@ function extractDetail(body: string): string | null {
   if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
   try {
     const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed.detail?.message === 'string') return parsed.detail.message;
     if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
       return parsed.detail.trim();
     }
@@ -310,7 +324,7 @@ async function request(
     throw new Error('Invalid request options: provide either json or formData, not both.');
   }
 
-  const init: RequestInit = { method, credentials: 'include' };
+  const init: RequestInit = { method, credentials: 'include', signal: options.signal };
 
   if (formData !== undefined) {
     init.body = formData;
@@ -588,6 +602,9 @@ export const api = {
       system_prompt?: string;
       human_prompt_prefix?: string;
       human_prompt_suffix?: string;
+      // Rater terms. Undefined means "leave unchanged"; locked after publish.
+      study_flags?: StudyFlag[];
+      content_warning_details?: string;
       is_markdown?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
@@ -820,6 +837,28 @@ export const api = {
     });
   },
 
+  async getTermsStatus(): Promise<TermsStatus> {
+    return requestJson<TermsStatus>(routes.admin.terms);
+  },
+
+  // `selection` previews settings as chosen in the form, saved or not; the
+  // backend ignores it once the experiment has pinned its versions.
+  async getTermsPreview(
+    experimentId: number,
+    selection?: { study_flags: StudyFlag[]; content_warning_details: string },
+  ): Promise<TermsPreview> {
+    const params = new URLSearchParams();
+    if (selection) {
+      // The sentinel lets an empty selection (no flags) differ from "use
+      // what is saved", which repeated query fields alone cannot express.
+      params.set('selection', 'true');
+      for (const flag of selection.study_flags) params.append('study_flags', flag);
+      params.set('content_warning_details', selection.content_warning_details);
+    }
+    const query = selection ? `?${params.toString()}` : '';
+    return requestJson<TermsPreview>(`${routes.admin.experimentTermsPreview(experimentId)}${query}`);
+  },
+
   async recordConsent(sessionToken: string): Promise<ConsentResponse> {
     return requestJson<ConsentResponse>(routes.rater.consent, {
       method: 'POST',
@@ -840,9 +879,24 @@ export const api = {
     });
   },
 
-  async startAssistance(sessionToken: string, questionId: number): Promise<AssistanceStep> {
+  async skipQuestion(sessionToken: string, assignmentId: number, generation: number): Promise<void> {
+    await requestJson(routes.rater.queue, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken },
+      json: { action: 'skip', assignment_id: assignmentId, generation },
+    });
+  },
+
+  async observeAssistance(sessionToken: string, sessionId: number, waitMs: number): Promise<void> {
+    await requestJson(routes.rater.assistanceObservation, {
+      method: 'POST', headers: { 'X-Rater-Session': sessionToken },
+      json: { session_id: sessionId, wait_ms: Math.min(600_000, Math.max(0, waitMs)) },
+    });
+  },
+
+  async startAssistance(sessionToken: string, questionId: number, signal?: AbortSignal): Promise<AssistanceStep> {
     return requestJson<AssistanceStep>(routes.rater.assistanceStart, {
       method: 'POST',
+      signal,
       headers: { 'X-Rater-Session': sessionToken },
       json: { question_id: questionId },
     });

@@ -159,6 +159,15 @@ class TermsSettings(_StrictModel):
     gcs_impersonate_service_account: str = ""
 
 
+class SlackSettings(_StrictModel):
+    # Incoming webhook for admin alerts
+    webhook_url: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.webhook_url.strip())
+
+
 class LLMModels:
     CLAUDE_SONNET = "openrouter/anthropic/claude-sonnet-4-6"
     CLAUDE_HAIKU = "openrouter/anthropic/claude-haiku-4-5"
@@ -188,11 +197,16 @@ class LLMSettings(_StrictModel):
 
 
 class PrefetchSettings(_StrictModel):
+    enable_all: bool = False
     worker_count: int = Field(default=8, ge=2, le=64)
     # Empty by default. Existing queue sessions remain drainable after removal.
     experiment_ids: list[int] = Field(default_factory=list)
     # Number ahead of the active question. Zero enables queue-only comparison.
     lookahead_questions: int = Field(default=1, ge=0, le=5)
+
+    def enabled_for(self, experiment_id: int) -> bool:
+        """Enroll globally or by allowlist; lookahead separately controls speculation."""
+        return self.enable_all or experiment_id in self.experiment_ids
 
 
 class Settings(BaseSettings):
@@ -205,6 +219,7 @@ class Settings(BaseSettings):
     seeding: SeedingSettings = Field(default_factory=SeedingSettings)
     prolific: ProlificSettings = Field(default_factory=ProlificSettings)
     terms: TermsSettings = Field(default_factory=TermsSettings)
+    slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 

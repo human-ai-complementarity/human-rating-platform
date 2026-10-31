@@ -10,9 +10,10 @@ and the confidence and clustering instruments never get any.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import httpx
 import openai
@@ -21,7 +22,12 @@ from openai.types.responses import Response
 
 from config import LLMSettings, get_settings
 from models import Question, StepType
-from services.assistance.llm import EmptyTruncatedReplyError, FailedResponseError, complete
+from services.assistance.llm import (
+    EmptyTruncatedReplyError,
+    FailedResponseError,
+    complete,
+    provider_context,
+)
 from services.assistance.methods.human_as_a_tool import HumanAsAToolMethod
 from services.assistance.methods.top_n import (
     TopNAssistance,
@@ -402,6 +408,46 @@ async def test_a_failed_or_filtered_response_is_a_provider_error(response, detai
     assert str(info.value).startswith(detail)
     # The methods' provider-error handlers catch RuntimeError.
     assert isinstance(info.value, RuntimeError)
+
+
+_USAGE = {
+    "input_tokens": 9,
+    "input_tokens_details": {"cached_tokens": 0},
+    "output_tokens": 3,
+    "output_tokens_details": {"reasoning_tokens": 1},
+    "total_tokens": 12,
+}
+
+
+@pytest.mark.parametrize(
+    ("fields", "outcome"),
+    [({}, "success"), (_CUT_OFF, "incomplete")],
+    ids=["completed", "cut-off"],
+)
+@pytest.mark.asyncio
+async def test_a_responses_call_is_a_provider_call_event_like_a_chat_one(caplog, fields, outcome):
+    """docs/assistance-prefetch.md's `provider_call`: the same event on either API."""
+    caplog.set_level(logging.INFO, logger="services.assistance.llm")
+    response = _response([_message("partial")], usage=_USAGE, **fields)
+    with provider_context(rater_id=7, method="top_n"):
+        await _complete(_client(response), model="oai/x", tools=["web_search"])
+    events = [
+        record.attributes
+        for record in caplog.records
+        if getattr(record, "attributes", {}).get("prefetch.event") == "provider_call"
+    ]
+    assert events == [
+        {
+            "rater_id": 7,
+            "method": "top_n",
+            "prefetch.event": "provider_call",
+            "model": "x",
+            "speculative": False,
+            "outcome": outcome,
+            "duration_ms": ANY,
+            "total_tokens": 12,
+        }
+    ]
 
 
 # --- Top-N --------------------------------------------------------------------

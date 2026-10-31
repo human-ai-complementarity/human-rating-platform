@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
 from models import (
+    StudyFlag,
     Dataset,
     Experiment,
     ExperimentGroup,
@@ -62,6 +63,7 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, get_method
 from services.queries import parent_question_ids_subquery
+from services.terms import fetch_terms_refs, parse_flags, validate_terms_config
 from .study_names import (
     EXTERNAL_PLACEHOLDERS,
     numbered_variants,
@@ -216,7 +218,10 @@ async def create_experiment(
         assistance_method=payload.assistance_method,
         assistance_params=json.dumps(assistance_params) if assistance_params else None,
         group_id=group_id,
+        study_flags=_flag_values(payload.study_flags),
+        content_warning_details=(payload.content_warning_details or "").strip() or None,
     )
+    validate_terms_config(db_experiment)
     db.add(db_experiment)
     await db.flush()
     tag_names = await set_experiment_tags(db_experiment.id, payload.tags, db)
@@ -429,12 +434,22 @@ async def _build_experiment_responses(
         db,
     )
     tags_by_experiment = await fetch_tag_names_by_experiment(experiment_ids, db)
+    terms_refs = await fetch_terms_refs(
+        {
+            statement_id
+            for experiment, _, _ in rows
+            for statement_id in (experiment.consent_statement_id, experiment.debrief_statement_id)
+        },
+        db,
+    )
 
     return [
         build_experiment_response(
             experiment,
             question_count=int(question_count or 0),
             rating_count=int(rating_count or 0),
+            consent_statement_ref=terms_refs.get(experiment.consent_statement_id),
+            debrief_statement_ref=terms_refs.get(experiment.debrief_statement_id),
             dataset_filenames=filenames_by_experiment.get(experiment.id, []),
             attention_reason=compute_attention_reason(
                 status=experiment.status,
@@ -470,6 +485,7 @@ _LOCKED_META_FIELDS = (
     "system_prompt",
     "human_prompt_prefix",
     "human_prompt_suffix",
+    "content_warning_details",
     "prolific_pool",
 )
 
@@ -563,6 +579,8 @@ async def duplicate_experiment(
         system_prompt=source.system_prompt,
         human_prompt_prefix=source.human_prompt_prefix,
         human_prompt_suffix=source.human_prompt_suffix,
+        study_flags=list(source.study_flags or []),
+        content_warning_details=source.content_warning_details,
         is_markdown=source.is_markdown,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
@@ -697,6 +715,12 @@ def _collect_locked_field_changes(experiment: Experiment, payload: ExperimentUpd
             continue
         if proposed != getattr(experiment, field_name):
             changes.append(field_name)
+    # Rater terms lock with the rest: the consent version is pinned at first
+    # publish, and the content warning went out on the Prolific listing.
+    if payload.study_flags is not None and _flag_values(payload.study_flags) != _flag_values(
+        experiment.study_flags
+    ):
+        changes.append("study_flags")
     if "group_id" in payload.model_fields_set and payload.group_id != experiment.group_id:
         changes.append("group_id")
     return changes
@@ -802,6 +826,16 @@ def _validate_changed_num_samples(stored: dict[str, Any], merged: dict[str, Any]
         )
 
 
+async def _terms_ref_kwargs(experiment: Experiment, db: AsyncSession) -> dict[str, str | None]:
+    refs = await fetch_terms_refs(
+        {experiment.consent_statement_id, experiment.debrief_statement_id}, db
+    )
+    return {
+        "consent_statement_ref": refs.get(experiment.consent_statement_id),
+        "debrief_statement_ref": refs.get(experiment.debrief_statement_id),
+    }
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -864,6 +898,11 @@ async def update_experiment(
         if value is not None:
             setattr(experiment, field_name, value)
 
+    if payload.study_flags is not None:
+        experiment.study_flags = _flag_values(payload.study_flags)
+    if payload.study_flags is not None or payload.content_warning_details is not None:
+        validate_terms_config(experiment)
+
     if "group_id" in payload.model_fields_set:
         if payload.group_id is not None:
             await fetch_group_or_404(payload.group_id, db)
@@ -885,6 +924,7 @@ async def update_experiment(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=tag_names,
+        **(await _terms_ref_kwargs(experiment, db)),
     )
 
 
@@ -912,6 +952,7 @@ async def finish_experiment(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=await fetch_tag_names_for_experiment(experiment_id, db),
+        **(await _terms_ref_kwargs(experiment, db)),
     )
 
 
@@ -941,6 +982,7 @@ async def _set_archived(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=await fetch_tag_names_for_experiment(experiment_id, db),
+        **(await _terms_ref_kwargs(experiment, db)),
     )
 
 
@@ -1107,3 +1149,8 @@ async def get_experiment_stats(
         "total_raters": int(total_raters or 0),
         "target_ratings_per_question": experiment.num_ratings_per_question,
     }
+
+
+def _flag_values(flags: list[StudyFlag] | list[str] | None) -> list[str]:
+    """Stored form of a flag list: values, deduplicated, in declaration order."""
+    return [flag.value for flag in parse_flags([getattr(f, "value", f) for f in flags or []])]
