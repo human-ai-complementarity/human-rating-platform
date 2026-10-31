@@ -104,17 +104,12 @@ _BAD = [
         f"{_FIELD}: 'tools' lists web_search more than once",
         id="duplicate-tool",
     ),
-    # Until the transport sends tools, an entry declaring any is refused
-    # rather than run without them.
+    # Refused rather than run without it: OpenRouter only searches.
     pytest.param(
-        {"assistance_models": {"top_n": _entry(tools=["web_search"])}},
-        f"{_FIELD}: tools are not supported yet",
-        id="tools-not-supported-yet",
-    ),
-    pytest.param(
-        {"assistance_models": {"top_n": {**_OAI, "tools": ["code_interpreter"]}}},
-        f"{_FIELD}: tools are not supported yet",
-        id="oai-tools-not-supported-yet",
+        {"assistance_models": {"top_n": _entry(tools=["web_search", "code_interpreter"])}},
+        f"{_FIELD}: 'tools' has code_interpreter, which {_GOOD['model']} cannot use. "
+        "OpenRouter can only do web search; use an oai/ model for code_interpreter.",
+        id="openrouter-code-interpreter",
     ),
     pytest.param(
         {"assistance_models": {"top_n": _entry(reasoning_effort="max")}},
@@ -180,7 +175,14 @@ def test_the_removed_model_key_hints_at_reloading_a_stale_page(client: TestClien
 
 @pytest.mark.parametrize(
     "entry",
-    [_GOOD, _OAI, _entry(temperature=0.5, reasoning_effort="high"), _entry(tools=[])],
+    [
+        _GOOD,
+        _OAI,
+        _entry(temperature=0.5, reasoning_effort="high"),
+        _entry(tools=[]),
+        _entry(tools=["web_search"]),
+        {**_OAI, "tools": ["web_search", "code_interpreter"]},
+    ],
 )
 def test_good_entries_and_clears_pass(client: TestClient, entry):
     exp = _create(client, {"assistance_models": {"top_n": entry}}).json()
@@ -197,10 +199,17 @@ def test_good_entries_and_clears_pass(client: TestClient, entry):
 def test_adding_tools_to_a_stored_entry_is_validated(client: TestClient):
     """Only changed values are checked; the same entry with tools has changed."""
     exp = _create(client, {"assistance_models": {"top_n": _GOOD}}).json()
-    resp = _patch(client, exp["id"], {"assistance_models": {"top_n": _entry(tools=["web_search"])}})
-    assert resp.status_code == 400
-    assert f"{_FIELD}: tools are not supported yet" in resp.json()["detail"]
+    refused = _patch(
+        client, exp["id"], {"assistance_models": {"top_n": _entry(tools=["code_interpreter"])}}
+    )
+    assert refused.status_code == 400
+    assert "OpenRouter can only do web search" in refused.json()["detail"]
     assert _params(client, exp["id"]) == {"assistance_models": {"top_n": _GOOD}}
+
+    searching = _entry(tools=["web_search"])
+    resp = _patch(client, exp["id"], {"assistance_models": {"top_n": searching}})
+    assert resp.status_code == 200, resp.text
+    assert _params(client, exp["id"]) == {"assistance_models": {"top_n": searching}}
 
 
 def test_a_stored_entrys_tools_are_shown(client: TestClient, sync_engine):

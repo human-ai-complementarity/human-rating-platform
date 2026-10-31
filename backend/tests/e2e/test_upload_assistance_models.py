@@ -262,8 +262,9 @@ def test_the_response_reports_the_entry_each_method_would_run_on(client: TestCli
             "'tools' lists web_search more than once",
         ),
         (
-            {"human_as_a_tool": _entry(_HAAT["model"], tools=["web_search"])},
-            "'assistance_models.human_as_a_tool': tools are not supported yet",
+            {"human_as_a_tool": _entry(_HAAT["model"], tools=["code_interpreter"])},
+            "'assistance_models.human_as_a_tool': 'tools' has code_interpreter, which "
+            "openrouter/google/gemini-3-flash-preview cannot use. OpenRouter can only do web search",
         ),
         ({"top_n": _entry(_TOP_N["model"], reasoning_effort="lots")}, "'reasoning_effort'"),
         ({"top_n": _entry(_TOP_N["model"], temperature=2.5)}, "'temperature'"),
@@ -301,6 +302,29 @@ def test_a_bare_id_is_expanded_to_its_entry_on_upload(client: TestClient, upload
     for spelled in (_MODELS, expanded):
         full = upload(client, exp["id"], {"assistance_models": spelled}).json()
         assert full["meta_applied"] == [] and full["meta_conflicts"] == []
+
+
+@pytest.mark.parametrize("upload", [_upload_csv, _upload_parquet])
+def test_each_methods_tools_are_pinned_and_shown(client: TestClient, upload):
+    """The arm's tools ride in with its entry and are what the method runs on."""
+    tooled = {
+        "top_n": {**_OTHER, "tools": ["web_search", "code_interpreter"]},
+        "human_as_a_tool": {**_HAAT, "tools": ["web_search"]},
+    }
+    exp = _experiment(client, assistance_method="none")
+    resp = upload(client, exp["id"], {"assistance_models": tooled})
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["meta_applied"] == _BOTH
+    assert _params(client, exp["id"])["assistance_models"] == tooled
+    resolved = client.get(f"/api/admin/experiments/{exp['id']}").json()["resolved_models"]
+    assert resolved == {
+        method: {**entry, "source": "assistance_models"} for method, entry in tooled.items()
+    }
+    # Another file of the wave declaring other tools is a conflict, not a re-pin.
+    other = {"top_n": {**_OTHER, "tools": ["web_search"]}}
+    again = upload(client, exp["id"], {"assistance_models": other}).json()
+    assert again["meta_conflicts"] == ["assistance_models.top_n"]
 
 
 @pytest.mark.parametrize("upload", [_upload_csv, _upload_parquet])
