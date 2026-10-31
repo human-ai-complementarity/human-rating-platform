@@ -94,9 +94,10 @@ REMOVED_MODEL_KEY = "model"
 # model from it.
 ROLE_MODELS_KEY = "role_models"
 
-# An entry's option keys, every one declared. A key added later (`tools`,
-# `max_tokens`) goes in OPTIONAL_OPTIONS with the value an entry lacking it
-# gets, so an older export stays valid and the change is purely additive.
+# An entry's option keys, every one declared but those in OPTIONAL_OPTIONS:
+# a key added after entries existed (`tools`; next, say, `max_tokens`) goes
+# there with the value an entry lacking it gets, so an older export stays
+# valid and the change is purely additive.
 OPTION_KEYS = ("reasoning_effort", "text_verbosity", "temperature", "tools")
 OPTIONAL_OPTIONS: dict[str, Any] = {"tools": ()}
 ENTRY_KEYS = ("model", *OPTION_KEYS)
