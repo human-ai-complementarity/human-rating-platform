@@ -533,6 +533,10 @@ export interface RecommendationResponse {
   is_complete: boolean;
 }
 
+// `read` reaches /api/v1 only; `admin` also passes the /api/admin gate, for
+// CLIs that create studies and upload questions.
+export type ApiKeyScope = 'read' | 'admin';
+
 export interface ApiKey {
   id: number;
   name: string;
@@ -543,6 +547,7 @@ export interface ApiKey {
   last_used_at: string | null;
   revoked_at: string | null;
   created_by: string | null;
+  scope: ApiKeyScope;
   is_active: boolean;
 }
 

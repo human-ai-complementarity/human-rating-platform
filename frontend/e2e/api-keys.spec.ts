@@ -9,6 +9,7 @@ type KeyRecord = {
   revoked_at: string | null;
   created_by: string | null;
   is_active: boolean;
+  scope: 'read' | 'admin';
 };
 
 async function fulfillJson(route: Route, status: number, body: unknown) {
@@ -21,10 +22,16 @@ async function fulfillJson(route: Route, status: number, body: unknown) {
  * mints a new plaintext under the same id, revoke flips is_active.
  */
 async function installApiKeyMocks(page: Page) {
-  const state: { keys: KeyRecord[]; nextId: number; nextSecret: number } = {
+  const state: {
+    keys: KeyRecord[];
+    nextId: number;
+    nextSecret: number;
+    createBodies: Record<string, unknown>[];
+  } = {
     keys: [],
     nextId: 1,
     nextSecret: 1,
+    createBodies: [],
   };
 
   await page.context().route('**/api/**', async (route) => {
@@ -47,7 +54,11 @@ async function installApiKeyMocks(page: Page) {
     }
 
     if (pathname === '/api/admin/api-keys' && method === 'POST') {
-      const body = JSON.parse(request.postData() || '{}') as { name: string };
+      const body = JSON.parse(request.postData() || '{}') as {
+        name: string;
+        scope?: KeyRecord['scope'];
+      };
+      state.createBodies.push(body);
       const id = state.nextId++;
       const secret = `hrp_secret${state.nextSecret++}`;
       const record: KeyRecord = {
@@ -59,6 +70,7 @@ async function installApiKeyMocks(page: Page) {
         revoked_at: null,
         created_by: 'dev@local',
         is_active: true,
+        scope: body.scope ?? 'read',
       };
       state.keys.unshift(record);
       await fulfillJson(route, 200, { ...record, plaintext_key: secret });
@@ -88,10 +100,11 @@ async function installApiKeyMocks(page: Page) {
 
     await fulfillJson(route, 200, {});
   });
+  return state;
 }
 
 test('create, reveal, regenerate, and revoke an API key', async ({ page }) => {
-  await installApiKeyMocks(page);
+  const state = await installApiKeyMocks(page);
 
   await page.goto('/admin/api-keys');
   await expect(page.getByRole('heading', { name: 'API Keys' })).toBeVisible();
@@ -105,11 +118,13 @@ test('create, reveal, regenerate, and revoke an API key', async ({ page }) => {
   await expect(reveal).toBeVisible();
   await expect(page.getByTestId('api-key-plaintext')).toHaveText('hrp_secret1');
 
-  // The key appears in the list.
+  // The key appears in the list, read-only unless asked otherwise.
   const row = page.getByTestId('api-key-row');
   await expect(row).toHaveCount(1);
   await expect(row).toContainText('inference-pipeline');
   await expect(row).toContainText('Active');
+  expect(state.createBodies).toEqual([{ name: 'inference-pipeline', scope: 'read' }]);
+  await expect(page.getByTestId('api-key-admin-scope')).toHaveCount(0);
 
   // Dismiss the reveal.
   await page.getByRole('button', { name: 'Done' }).click();
@@ -127,4 +142,26 @@ test('create, reveal, regenerate, and revoke an API key', async ({ page }) => {
   await page.getByRole('dialog', { name: 'Revoke key' }).getByRole('button', { name: 'Revoke' }).click();
   await expect(page.getByTestId('api-key-row')).toContainText('Revoked');
   await expect(page.getByTestId('api-key-revoke')).toHaveCount(0);
+});
+
+test('an admin key is chosen deliberately, warned about, and badged', async ({ page }) => {
+  const state = await installApiKeyMocks(page);
+
+  await page.goto('/admin/api-keys');
+  await expect(page.getByTestId('api-key-scope-select')).toHaveValue('read');
+  await expect(page.getByText('An admin key can create, change and delete')).toHaveCount(0);
+
+  await page.getByTestId('api-key-scope-select').selectOption('admin');
+  await expect(page.getByText('An admin key can create, change and delete')).toBeVisible();
+
+  await page.getByTestId('api-key-name-input').fill('study-cli');
+  await page.getByTestId('api-key-create-button').click();
+  await expect(page.getByTestId('api-key-plaintext')).toHaveText('hrp_secret1');
+  await page.getByRole('button', { name: 'Done' }).click();
+
+  expect(state.createBodies).toEqual([{ name: 'study-cli', scope: 'admin' }]);
+  await expect(page.getByTestId('api-key-row')).toContainText('study-cli');
+  await expect(page.getByTestId('api-key-admin-scope')).toHaveCount(1);
+  // The form goes back to read-only for the next key.
+  await expect(page.getByTestId('api-key-scope-select')).toHaveValue('read');
 });

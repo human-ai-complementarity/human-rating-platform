@@ -812,7 +812,12 @@ class ExperimentTag(SQLModel, table=True):
 
 
 class ApiKey(SQLModel, table=True):
-    """A bearer credential for the programmatic /api/v1 read API.
+    """A bearer credential for programmatic clients.
+
+    Every key reads the /api/v1 API. An ``admin``-scoped key also passes the
+    /api/admin gate (`require_admin`), so a CLI such as the inference
+    pipeline's study creator can run the dashboard's workflows without a
+    browser session.
 
     The raw key is shown to the admin exactly once at creation/regeneration;
     only its SHA-256 hash is persisted. `prefix` is the leading, non-secret
@@ -851,6 +856,13 @@ class ApiKey(SQLModel, table=True):
     created_by: Optional[str] = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
+    )
+    # `read` (/api/v1 only) or `admin` (also /api/admin). Fixed at creation:
+    # regenerating rotates the secret, never the reach. Keys minted before
+    # scopes existed are `read`, so none gained write access by migrating.
+    scope: str = Field(
+        default="read",
+        sa_column=Column(String(16), nullable=False, server_default=text("'read'")),
     )
 
 

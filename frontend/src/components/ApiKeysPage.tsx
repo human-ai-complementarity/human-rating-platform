@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import type { ApiKey, ApiKeyCreated } from '../types';
+import type { ApiKey, ApiKeyCreated, ApiKeyScope } from '../types';
 import ConfirmDialog from './ConfirmDialog';
 import {
   Banner,
@@ -13,7 +13,8 @@ import {
 } from './experiment-detail/ui';
 
 /**
- * Manage bearer keys for the programmatic /api/v1 read API. Keys are minted
+ * Manage bearer keys for the programmatic /api/v1 read API (and, for an
+ * admin-scoped key, the /api/admin routes a study-creating CLI uses). Keys are minted
  * here (the raw secret is shown exactly once), then can be regenerated
  * (rotate the secret under the same name) or revoked. Mirrors the Experiments
  * tab: a create panel on the left, the existing keys on the right.
@@ -64,9 +65,9 @@ function ApiKeysPage() {
     toastTimer.current = setTimeout(() => setToast(null), 2600);
   };
 
-  const handleCreate = async (name: string) => {
+  const handleCreate = async (name: string, scope: ApiKeyScope) => {
     setError(null);
-    const created = await api.createApiKey(name);
+    const created = await api.createApiKey(name, scope);
     setRevealed({ key: created, action: 'created' });
     await loadKeys();
   };
@@ -121,7 +122,8 @@ function ApiKeysPage() {
         </h1>
         <p style={{ margin: '6px 0 0', fontSize: 15, color: 'var(--muted)' }}>
           Bearer keys for the programmatic <code>/api/v1</code> read API — used by CLIs and
-          inference pipelines to fetch experiment data. See the{' '}
+          inference pipelines to fetch experiment data. An admin key also reaches{' '}
+          <code>/api/admin</code>, for CLIs that create studies. See the{' '}
           <a
             href={DOCS_URL}
             target="_blank"
@@ -211,10 +213,12 @@ function CreatePanel({
   onCreate,
   onError,
 }: {
-  onCreate: (name: string) => Promise<void>;
+  onCreate: (name: string, scope: ApiKeyScope) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const [name, setName] = useState('');
+  // Read-only unless asked: an admin key can create, edit and delete studies.
+  const [scope, setScope] = useState<ApiKeyScope>('read');
   const [submitting, setSubmitting] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -223,8 +227,9 @@ function CreatePanel({
     if (!trimmed || submitting) return;
     setSubmitting(true);
     try {
-      await onCreate(trimmed);
+      await onCreate(trimmed, scope);
       setName('');
+      setScope('read');
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
@@ -250,7 +255,30 @@ function CreatePanel({
             required
           />
         </Field>
-        <div style={{ marginBottom: 18 }}>
+        <Field
+          id="api-key-scope"
+          label="Access"
+          hint="Read only covers the /api/v1 data API. Admin also reaches /api/admin, as a signed-in admin does, for CLIs that create studies."
+        >
+          <select
+            id="api-key-scope"
+            data-testid="api-key-scope-select"
+            value={scope}
+            onChange={(e) => setScope(e.target.value as ApiKeyScope)}
+            style={inputStyle}
+          >
+            <option value="read">Read only (/api/v1)</option>
+            <option value="admin">Admin (/api/v1 and /api/admin)</option>
+          </select>
+        </Field>
+        <div style={{ marginBottom: 18, display: 'grid', gap: 10 }}>
+          {scope === 'admin' && (
+            <Banner tone="warn">
+              An admin key can create, change and delete experiments and datasets. It cannot manage
+              API keys or create, publish or close Prolific studies. Give it to a CLI, never to a page
+              or a shared notebook.
+            </Banner>
+          )}
           <Banner tone="info">
             The full key is shown only once, right after you create it. Store it somewhere safe.
           </Banner>
@@ -454,6 +482,7 @@ function KeyRow({
             {apiKey.name}
           </span>
           {apiKey.is_active ? <ActivePill /> : <RevokedPill />}
+          {apiKey.scope === 'admin' && <AdminScopePill />}
         </div>
         <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <code style={{ font: '500 12.5px var(--font-mono)', color: 'var(--muted)' }}>
@@ -515,6 +544,25 @@ function ActivePill() {
     >
       <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--accent)' }} />
       Active
+    </span>
+  );
+}
+
+function AdminScopePill() {
+  return (
+    <span
+      data-testid="api-key-admin-scope"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '3px 9px',
+        borderRadius: 99,
+        background: 'var(--warn-soft)',
+        color: 'var(--warn)',
+        font: '600 11px var(--font-body)',
+      }}
+    >
+      Admin
     </span>
   );
 }
