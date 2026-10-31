@@ -80,9 +80,41 @@ _BAD = [
         id="missing-options",
     ),
     pytest.param(
-        {"assistance_models": {"top_n": _entry(tools=["web_search"])}},
-        "unknown key(s) tools",
+        {"assistance_models": {"top_n": _entry(max_tokens=100)}},
+        "unknown key(s) max_tokens",
         id="unknown-key",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools="web_search")}},
+        f"{_FIELD}: 'tools' must be a list of tool names from web_search, code_interpreter",
+        id="tools-not-a-list",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=None)}},
+        "'tools' must be a list",
+        id="tools-null",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=["browser"])}},
+        f"{_FIELD}: 'tools' has unknown tool(s) \"browser\"",
+        id="unknown-tool",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=["web_search", "web_search"])}},
+        f"{_FIELD}: 'tools' lists web_search more than once",
+        id="duplicate-tool",
+    ),
+    # Until the transport sends tools, an entry declaring any is refused
+    # rather than run without them.
+    pytest.param(
+        {"assistance_models": {"top_n": _entry(tools=["web_search"])}},
+        f"{_FIELD}: tools are not supported yet",
+        id="tools-not-supported-yet",
+    ),
+    pytest.param(
+        {"assistance_models": {"top_n": {**_OAI, "tools": ["code_interpreter"]}}},
+        f"{_FIELD}: tools are not supported yet",
+        id="oai-tools-not-supported-yet",
     ),
     pytest.param(
         {"assistance_models": {"top_n": _entry(reasoning_effort="max")}},
@@ -146,13 +178,42 @@ def test_the_removed_model_key_hints_at_reloading_a_stale_page(client: TestClien
         assert "reload it" in resp.json()["detail"]
 
 
-@pytest.mark.parametrize("entry", [_GOOD, _OAI, _entry(temperature=0.5, reasoning_effort="high")])
+@pytest.mark.parametrize(
+    "entry",
+    [_GOOD, _OAI, _entry(temperature=0.5, reasoning_effort="high"), _entry(tools=[])],
+)
 def test_good_entries_and_clears_pass(client: TestClient, entry):
     exp = _create(client, {"assistance_models": {"top_n": entry}}).json()
     assert exp["assistance_params"] == {"assistance_models": {"top_n": entry}}
-    assert exp["resolved_models"]["top_n"] == {**entry, "source": "assistance_models"}
+    assert exp["resolved_models"]["top_n"] == {
+        "tools": [],
+        **entry,
+        "source": "assistance_models",
+    }
     assert _patch(client, exp["id"], {"assistance_models": {"top_n": None}}).status_code == 200
     assert _patch(client, exp["id"], {"assistance_models": None}).status_code == 200
+
+
+def test_adding_tools_to_a_stored_entry_is_validated(client: TestClient):
+    """Only changed values are checked; the same entry with tools has changed."""
+    exp = _create(client, {"assistance_models": {"top_n": _GOOD}}).json()
+    resp = _patch(client, exp["id"], {"assistance_models": {"top_n": _entry(tools=["web_search"])}})
+    assert resp.status_code == 400
+    assert f"{_FIELD}: tools are not supported yet" in resp.json()["detail"]
+    assert _params(client, exp["id"]) == {"assistance_models": {"top_n": _GOOD}}
+
+
+def test_a_stored_entrys_tools_are_shown(client: TestClient, sync_engine):
+    """What the Assistance tab lists, for an entry holding tools."""
+    exp = _create(client).json()
+    stored = {**_OAI, "tools": ["web_search", "code_interpreter"]}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps({"assistance_models": {"top_n": stored}}), "id": exp["id"]},
+        )
+    detail = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert detail["resolved_models"]["top_n"] == {**stored, "source": "assistance_models"}
 
 
 def test_a_good_override_passes(client: TestClient):
@@ -179,6 +240,39 @@ def test_a_restated_legacy_value_does_not_block_an_unrelated_edit(client: TestCl
     assert _params(client, exp["id"]) == legacy
 
 
+def test_a_restated_entry_spelling_out_empty_tools_is_not_a_change(client: TestClient, sync_engine):
+    """As on upload (`same_entry`): a stored entry re-sent with `"tools": []`
+    added is the same entry, so a value that predates validation does not
+    block the edit."""
+    exp = _create(client).json()
+    legacy = {"assistance_models": {"top_n": _entry(model="gpt-4o")}}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps(legacy), "id": exp["id"]},
+        )
+
+    restated = {"assistance_models": {"top_n": _entry(model="gpt-4o", tools=[])}}
+    assert _patch(client, exp["id"], restated, name="Renamed").status_code == 200
+
+
+def test_a_restated_entry_listing_its_tools_in_another_order_is_not_a_change(
+    client: TestClient, sync_engine
+):
+    """The same tools in another order are the same entry (`same_entry`), so
+    restating a stored entry that way is not validated as a new one."""
+    exp = _create(client).json()
+    stored = {"assistance_models": {"top_n": _entry(tools=["web_search", "code_interpreter"])}}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps(stored), "id": exp["id"]},
+        )
+
+    reordered = {"assistance_models": {"top_n": _entry(tools=["code_interpreter", "web_search"])}}
+    assert _patch(client, exp["id"], reordered, name="Renamed").status_code == 200
+
+
 def test_a_stored_bare_id_resolves_with_the_default_options(client: TestClient, sync_engine):
     """A row written before entries carried options runs as it did then."""
     exp = _create(client).json()
@@ -196,6 +290,7 @@ def test_a_stored_bare_id_resolves_with_the_default_options(client: TestClient, 
         "reasoning_effort": None,
         "text_verbosity": None,
         "temperature": 0,
+        "tools": [],
         "source": "assistance_models",
     }
 

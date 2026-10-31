@@ -232,6 +232,8 @@ class ResolvedModel(BaseModel):
     reasoning_effort: Optional[str] = None
     text_verbosity: Optional[str] = None
     temperature: Optional[float] = None
+    # The tools the model is given; empty for none.
+    tools: list[str] = Field(default_factory=list)
     # "assistance_models": the experiment's own entry. "default": the platform's.
     source: Literal["assistance_models", "default"]
 

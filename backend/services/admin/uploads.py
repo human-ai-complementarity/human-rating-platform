@@ -16,6 +16,7 @@ from models import Experiment, Question, Upload
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     reject_removed_model_key,
+    same_entry,
     validate_model_entry,
     validate_model_id,
 )
@@ -249,7 +250,8 @@ def _apply_assistance_models_meta(
     a deliberate clear, not re-pinned, and a stored map that is not an object
     (e.g. a PATCHed null) counts as set for every method. An admin's own model
     is usually a deliberate deviation; snapping it back silently would spoil
-    the comparison.
+    the comparison. Entries are compared as declarations (`same_entry`), so a
+    left-out `tools` agrees with an empty one.
 
     Merged into the blob (`n` and `confidence_method` live there too), and
     pinned whatever the experiment's method, so an arm switched on later finds
@@ -269,7 +271,7 @@ def _apply_assistance_models_meta(
         if method not in merged:
             merged[method] = model
             applied.append(key)
-        elif merged[method] != model:
+        elif not same_entry(merged[method], model):
             conflicts.append(key)
     if merged != stored:
         params[ASSISTANCE_MODELS_META_FIELD] = merged
