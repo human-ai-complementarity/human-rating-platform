@@ -321,7 +321,10 @@ def test_each_methods_tools_are_pinned_and_shown(client: TestClient, upload):
     assert resolved == {
         method: {**entry, "source": "assistance_models"} for method, entry in tooled.items()
     }
-    # Another file of the wave declaring other tools is a conflict, not a re-pin.
+    # The same tools in another order agree; other tools are a conflict, not a re-pin.
+    reordered = {"top_n": {**_OTHER, "tools": ["code_interpreter", "web_search"]}}
+    agreed = upload(client, exp["id"], {"assistance_models": reordered}).json()
+    assert agreed["meta_applied"] == [] and agreed["meta_conflicts"] == []
     other = {"top_n": {**_OTHER, "tools": ["web_search"]}}
     again = upload(client, exp["id"], {"assistance_models": other}).json()
     assert again["meta_conflicts"] == ["assistance_models.top_n"]

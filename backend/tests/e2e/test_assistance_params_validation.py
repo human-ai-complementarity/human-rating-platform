@@ -265,6 +265,23 @@ def test_a_restated_entry_spelling_out_empty_tools_is_not_a_change(client: TestC
     assert _patch(client, exp["id"], restated, name="Renamed").status_code == 200
 
 
+def test_a_restated_entry_listing_its_tools_in_another_order_is_not_a_change(
+    client: TestClient, sync_engine
+):
+    """The same tools in another order are the same entry (`same_entry`), so
+    restating a stored entry that way is not validated as a new one."""
+    exp = _create(client).json()
+    stored = {"assistance_models": {"top_n": _entry(tools=["web_search", "code_interpreter"])}}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps(stored), "id": exp["id"]},
+        )
+
+    reordered = {"assistance_models": {"top_n": _entry(tools=["code_interpreter", "web_search"])}}
+    assert _patch(client, exp["id"], reordered, name="Renamed").status_code == 200
+
+
 def test_a_stored_bare_id_resolves_with_the_default_options(client: TestClient, sync_engine):
     """A row written before entries carried options runs as it did then."""
     exp = _create(client).json()
