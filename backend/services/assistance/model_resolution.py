@@ -12,13 +12,14 @@ An entry is an object shaped like an arm in the inference pipeline's wave
 config, the model plus the request options every call to it is sent with:
 
     {"model": "oai/gpt-5.6-luna", "reasoning_effort": "low",
-     "text_verbosity": "low", "temperature": null}
+     "text_verbosity": "low", "temperature": null, "tools": ["web_search"]}
 
 Every option is declared and null means "do not send", so what assisted the
-raters is never left to a provider default. The options belong to the
-method's primary role, the model under test. The instrument roles (confidence,
-clustering) run the entry's *model* but keep their own options: sampling's
-temperature is an instrument setting, not the arm's.
+raters is never left to a provider default. `tools` alone is optional: left
+out, it is no tools. The options belong to the method's primary role, the
+model under test. The instrument roles (confidence, clustering) run the
+entry's *model* but keep their own options, and never get its tools:
+sampling's temperature is an instrument setting, not the arm's.
 
 Confidence and clustering keep an override (`confidence_model`,
 `clustering_model`) that beats the map: an escape hatch for running them on
@@ -31,6 +32,7 @@ when the pipeline's export is uploaded, and land in `assistance_params`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
@@ -92,12 +94,17 @@ REMOVED_MODEL_KEY = "model"
 # model from it.
 ROLE_MODELS_KEY = "role_models"
 
-# An entry's option keys, every one declared. A key added later (`tools`,
-# `max_tokens`) goes in OPTIONAL_OPTIONS with the value an entry lacking it
-# gets, so an older export stays valid and the change is purely additive.
-OPTION_KEYS = ("reasoning_effort", "text_verbosity", "temperature")
-OPTIONAL_OPTIONS: dict[str, Any] = {}
+# An entry's option keys, every one declared but those in OPTIONAL_OPTIONS:
+# a key added after entries existed (`tools`; next, say, `max_tokens`) goes
+# there with the value an entry lacking it gets, so an older export stays
+# valid and the change is purely additive.
+OPTION_KEYS = ("reasoning_effort", "text_verbosity", "temperature", "tools")
+OPTIONAL_OPTIONS: dict[str, Any] = {"tools": ()}
 ENTRY_KEYS = ("model", *OPTION_KEYS)
+
+# The tools an entry may give the model under test, named as the inference
+# pipeline's answerer names them.
+TOOLS = ("web_search", "code_interpreter")
 
 EXAMPLE_ENTRY = (
     '{"model": "openrouter/anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
@@ -113,10 +120,33 @@ class AssistanceModel:
     reasoning_effort: str | None = None
     text_verbosity: str | None = None
     temperature: float | None = None
+    # A tuple, not a list, so an entry stays hashable: Top-N memoizes its
+    # schema verdicts per entry.
+    tools: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Stored entries hold a JSON list; a null one reads as no tools.
+        object.__setattr__(self, "tools", tuple(self.tools or ()))
 
     def to_dict(self) -> dict[str, Any]:
-        """The stored entry shape; also the keyword arguments for `llm.complete`."""
-        return asdict(self)
+        """The stored entry shape, every key declared, `tools` as a JSON list."""
+        return {**asdict(self), "tools": list(self.tools)}
+
+    def call_kwargs(self) -> dict[str, Any]:
+        """The keyword arguments for `llm.complete`.
+
+        Not `tools` yet: until the transport sends them, validation refuses an
+        entry declaring any (`refuse_tools_until_supported`). One that is
+        stored anyway (say, written by a later release) fails the call as a
+        provider error rather than running without its tools.
+        """
+        if self.tools:
+            raise ValueError(
+                f"tools are not supported yet; {self.model} has {', '.join(self.tools)}"
+            )
+        kwargs = asdict(self)
+        del kwargs["tools"]
+        return kwargs
 
     @classmethod
     def from_entry(cls, entry: Any, options: Mapping[str, Any] = {}) -> AssistanceModel:
@@ -127,9 +157,23 @@ class AssistanceModel:
         and an object missing a key take `options` for what they lack.
         """
         if isinstance(entry, str):
-            return cls(model=entry, **{k: options.get(k) for k in OPTION_KEYS})
+            entry = {"model": entry}
         values = {k: entry.get(k, options.get(k, OPTIONAL_OPTIONS.get(k))) for k in OPTION_KEYS}
         return cls(model=str(entry["model"]), **values)
+
+
+def same_entry(stored: Any, declared: Any) -> bool:
+    """Whether two stored values declare the same entry.
+
+    An optional key left out is its default, so an entry without `tools` and
+    one with `"tools": []` are the same declaration, not a conflict. Nothing
+    else is filled in.
+    """
+    if not (isinstance(stored, Mapping) and isinstance(declared, Mapping)):
+        return stored == declared
+    # Each optional default as stored JSON spells it: a tuple is a list.
+    defaults = {key: list(value) for key, value in OPTIONAL_OPTIONS.items()}
+    return {**defaults, **stored} == {**defaults, **declared}
 
 
 # Where a resolved model came from: the experiment's map, the role's own
@@ -291,8 +335,37 @@ def validate_model_entry(value: Any, *, field: str) -> None:
         or not 0 <= temperature <= 2
     ):
         raise _reject(field, "'temperature' must be null or a number from 0 to 2.")
+    tools = value.get("tools", [])
+    _validate_tools(tools, field)
+    refuse_tools_until_supported(tools, field)
 
 
 def _validate_choice(value: Any, allowed: tuple[str, ...], field: str, key: str) -> None:
     if value is not None and value not in allowed:
         raise _reject(field, f"'{key}' must be null or one of {', '.join(allowed)}.")
+
+
+def _validate_tools(tools: Any, field: str) -> None:
+    allowed = ", ".join(TOOLS)
+    if not isinstance(tools, list):
+        raise _reject(
+            field,
+            f"'tools' must be a list of tool names from {allowed}; omit it or use [] for none.",
+        )
+    unknown = [tool for tool in tools if tool not in TOOLS]
+    if unknown:
+        raise _reject(
+            field,
+            f"'tools' has unknown tool(s) {', '.join(map(json.dumps, unknown))}; "
+            f"allowed: {allowed}.",
+        )
+    repeated = sorted({tool for tool in tools if tools.count(tool) > 1})
+    if repeated:
+        raise _reject(field, f"'tools' lists {', '.join(repeated)} more than once.")
+
+
+def refuse_tools_until_supported(tools: list[str], field: str) -> None:
+    """400 on any tool until the transport sends them: an entry's tools must
+    run, never be dropped. Remove once `llm.complete` takes `tools`."""
+    if tools:
+        raise _reject(field, "tools are not supported yet; leave 'tools' empty or omit it.")
