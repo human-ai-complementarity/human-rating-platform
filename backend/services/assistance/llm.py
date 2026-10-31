@@ -13,6 +13,13 @@ a copied id must not quietly change transport. Each provider has its own API
 key setting and its own spelling for the request options; callers only ever
 pass the neutral names. If no model is passed, settings.llm.default_model is
 used.
+
+Tools (`tools=["web_search"]`) are the inference arm's: what its answerer
+was given, run the way the pipeline runs them. On "oai" a call with tools
+goes to OpenAI's Responses API, which runs web_search and code_interpreter
+itself; on "openrouter" it stays a chat completion with OpenRouter's
+`openrouter:web_search` server tool, and code_interpreter is not available.
+A call without tools is a chat completion on either, as it always was.
 """
 
 from __future__ import annotations
@@ -21,11 +28,13 @@ import functools
 import logging
 import time
 import asyncio
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
+from copy import deepcopy
 from weakref import WeakKeyDictionary
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import openai
 
@@ -88,6 +97,14 @@ class Provider:
     # The output cap's name: OpenAI's reasoning models refuse `max_tokens`.
     max_tokens_key: str
 
+    # Entry tool name -> the tool as this transport's request spells it. An
+    # entry on this provider may declare only these; `tool_limit` says why.
+    tools: ClassVar[Mapping[str, Mapping[str, Any]]] = {}
+    tool_limit: ClassVar[str] = ""
+    # Whether a call with tools goes to the Responses API (`responses_request`)
+    # rather than staying a chat completion.
+    tools_use_responses_api: ClassVar[bool] = False
+
     def api_key(self, settings: LLMSettings) -> str:
         key = getattr(settings, self.key_setting)
         if not key:
@@ -120,8 +137,33 @@ class Provider:
     def reasoning_kwargs(self, effort: str | None, verbosity: str | None) -> dict[str, Any]:
         raise NotImplementedError
 
+    def tool_specs(self, tools: Sequence[str]) -> list[dict[str, Any]]:
+        """`tools` as this transport's request spells them."""
+        return [deepcopy(dict(self.tools[tool])) for tool in tools]
+
 
 class _OpenRouter(Provider):
+    # The server tool the inference pipeline's answerer sends; OpenRouter
+    # runs the search inside the request. Its `web` plugin and `:online`
+    # suffix are deprecated in favour of it. OpenRouter runs no code.
+    tools = {"web_search": {"type": "openrouter:web_search"}}
+    tool_limit = "OpenRouter can only do web search; use an oai/ model for code_interpreter."
+
+    def request(
+        self,
+        model_id: str,
+        messages: list[Message],
+        settings: LLMSettings,
+        *,
+        tools: Sequence[str] = (),
+        **options: Any,
+    ) -> dict[str, Any]:
+        kwargs = super().request(model_id, messages, settings, **options)
+        if tools:
+            # Not the SDK's `tools`: a server tool is not an OpenAI tool type.
+            kwargs.setdefault("extra_body", {})["tools"] = self.tool_specs(tools)
+        return kwargs
+
     def reasoning_kwargs(self, effort: str | None, verbosity: str | None) -> dict[str, Any]:
         # OpenRouter drops a parameter the routed endpoint does not support
         # rather than refusing it; the launch-time preflight is where a
@@ -135,6 +177,13 @@ class _OpenRouter(Provider):
 
 
 class _OpenAI(Provider):
+    # OpenAI's hosted tools, as the inference pipeline's answerer sends them.
+    tools = {
+        "web_search": {"type": "web_search"},
+        "code_interpreter": {"type": "code_interpreter", "container": {"type": "auto"}},
+    }
+    tools_use_responses_api = True
+
     def reasoning_kwargs(self, effort: str | None, verbosity: str | None) -> dict[str, Any]:
         kwargs: dict[str, Any] = {}
         if effort is not None:
@@ -142,6 +191,52 @@ class _OpenAI(Provider):
         if verbosity is not None:
             kwargs["verbosity"] = verbosity
         return kwargs
+
+    def responses_request(
+        self,
+        model_id: str,
+        messages: list[Message],
+        settings: LLMSettings,
+        *,
+        tools: Sequence[str],
+        response_format: dict | None,
+        temperature: float | None,
+        reasoning_effort: str | None,
+        text_verbosity: str | None,
+    ) -> dict[str, Any]:
+        """The Responses API kwargs: the same call as `request`, with tools.
+
+        The chat messages are the input as they are; the output cap is the
+        same setting; a chat `response_format` becomes `text.format`.
+        """
+        kwargs: dict[str, Any] = {
+            "model": model_id,
+            "input": messages,
+            "tools": self.tool_specs(tools),
+            "max_output_tokens": settings.max_tokens,
+            # Not kept on OpenAI's side, as a chat completion is not.
+            "store": False,
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if reasoning_effort is not None:
+            kwargs["reasoning"] = {"effort": reasoning_effort}
+        text: dict[str, Any] = {}
+        if text_verbosity is not None:
+            text["verbosity"] = text_verbosity
+        if response_format is not None:
+            text["format"] = _text_format(response_format)
+        if text:
+            kwargs["text"] = text
+        return kwargs
+
+
+def _text_format(response_format: dict) -> dict:
+    """A chat `response_format` as a Responses `text.format`: the json_schema
+    fields sit beside its type rather than under `json_schema`."""
+    if response_format.get("type") == "json_schema":
+        return {"type": "json_schema", **response_format["json_schema"]}
+    return dict(response_format)
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -175,6 +270,11 @@ class NoChoicesError(RuntimeError):
 
 class EmptyTruncatedReplyError(RuntimeError):
     """The reply was cut off at the output cap before any content was written."""
+
+
+class FailedResponseError(RuntimeError):
+    """A Responses API call came back failed, or stopped early with no text
+    for a reason other than the output cap (e.g. a content filter)."""
 
 
 @functools.lru_cache(maxsize=8)
@@ -216,8 +316,10 @@ async def complete(
     temperature: float | None = None,
     reasoning_effort: str | None = None,
     text_verbosity: str | None = None,
+    tools: Sequence[str] = (),
 ) -> str:
-    """Send a chat completion request and return the response text.
+    """Send a chat completion request (with tools on "oai", a Responses API
+    request) and return the response text.
 
     Args:
         messages:         List of {"role": ..., "content": ...} dicts.
@@ -230,30 +332,82 @@ async def complete(
         temperature:      Sent when not None.
         reasoning_effort: One of REASONING_EFFORTS; sent when not None.
         text_verbosity:   One of TEXT_VERBOSITIES; sent when not None.
+        tools:            Tools the model may use, from the provider's `tools`.
+                          With any, an "oai" call goes to the Responses API.
     """
-    provider, model_id = parse_model(model or settings.default_model)
-    client = _get_client(
-        provider.api_key(settings),
-        provider.base_url,
-        settings.request_timeout,
-        settings.max_retries,
+    name = model or settings.default_model
+    provider, model_id = parse_model(name)
+    unsupported = [tool for tool in tools if tool not in provider.tools]
+    if unsupported:
+        # Validation refuses these at write; never run the entry without them.
+        raise ValueError(
+            f"{name} cannot use tool(s) {', '.join(unsupported)}. {provider.tool_limit}".strip()
+        )
+    # A call with tools runs them before it answers, so it waits longer, and
+    # only once: a timed-out tool loop retried mostly times out again, paid
+    # again, and the retries would outlast a preparation's EXECUTION_SECONDS.
+    timeout, retries = (
+        (settings.tool_request_timeout, 0)
+        if tools
+        else (settings.request_timeout, settings.max_retries)
     )
-    kwargs = provider.request(
-        model_id,
-        messages,
-        settings,
+    client = _get_client(provider.api_key(settings), provider.base_url, timeout, retries)
+    options = dict(
         response_format=response_format,
         temperature=temperature,
         reasoning_effort=reasoning_effort,
         text_verbosity=text_verbosity,
     )
+    if tools and provider.tools_use_responses_api:
+        kwargs = provider.responses_request(model_id, messages, settings, tools=tools, **options)
+        response = await _provider_call(
+            client.responses.create,
+            kwargs,
+            model_id,
+            lambda reply: "success" if reply.status == "completed" else str(reply.status),
+        )
+        return _response_text(response, name, settings)
+    if tools:
+        options["tools"] = tools
+    kwargs = provider.request(model_id, messages, settings, **options)
+    response = await _provider_call(
+        client.chat.completions.create,
+        kwargs,
+        model_id,
+        lambda reply: "success" if reply.choices else "empty",
+    )
+    if not response.choices:
+        # OpenRouter sometimes returns HTTP 200 with an error body and no
+        # choices; indexing [0] would 500 the rater's assistance fetch.
+        raise NoChoicesError(_empty_choices_message(response), _error_status_code(response))
+    choice = response.choices[0]
+    content = choice.message.content or ""
+    if not content.strip() and choice.finish_reason == "length":
+        # A reasoning model can spend the whole output cap on hidden reasoning.
+        # Raise so callers record a provider error, not an unparseable reply.
+        raise EmptyTruncatedReplyError(
+            f"LLM reply from {name} hit "
+            f"{provider.max_tokens_key}={settings.max_tokens} with no content; "
+            "reasoning may have used the whole budget"
+        )
+    return content
+
+
+async def _provider_call(
+    create: Callable[..., Awaitable[Any]],
+    kwargs: dict[str, Any],
+    model_id: str,
+    outcome_of: Callable[[Any], str],
+) -> Any:
+    """One gateway invocation in a provider slot, logged as a `provider_call`
+    event (docs/assistance-prefetch.md) on either API."""
     started = time.monotonic()
     response = None
     outcome = "error"
     try:
         async with provider_slot():
-            response = await client.chat.completions.create(**kwargs)  # type: ignore[arg-type]
-        outcome = "success" if response.choices else "empty"
+            response = await create(**kwargs)
+        outcome = outcome_of(response)
     except asyncio.CancelledError:
         outcome = "cancelled"
         raise
@@ -273,21 +427,43 @@ async def complete(
                 }
             },
         )
-    if not response.choices:
-        # OpenRouter sometimes returns HTTP 200 with an error body and no
-        # choices; indexing [0] would 500 the rater's assistance fetch.
-        raise NoChoicesError(_empty_choices_message(response), _error_status_code(response))
-    choice = response.choices[0]
-    content = choice.message.content or ""
-    if not content.strip() and choice.finish_reason == "length":
-        # A reasoning model can spend the whole output cap on hidden reasoning.
-        # Raise so callers record a provider error, not an unparseable reply.
+    return response
+
+
+def _response_text(response: Any, model: str, settings: LLMSettings) -> str:
+    """The reply in a Responses API result: its last message's text.
+
+    With tools the output also holds the tool calls, and a model may write a
+    message before a call as well as after it; the last message is the
+    answer, as the inference pipeline reads it.
+    """
+    if response.status == "failed" or response.error is not None:
+        error = response.error
+        detail = f"{error.code}: {error.message}" if error is not None else "no error given"
+        raise FailedResponseError(f"LLM response from {model} failed: {detail}")
+    messages = [item for item in response.output if item.type == "message"]
+    content = (
+        "".join(part.text for part in messages[-1].content if part.type == "output_text")
+        if messages
+        else ""
+    )
+    ended_on_message = bool(response.output) and response.output[-1].type == "message"
+    if response.status == "incomplete" and not ended_on_message:
+        # Cut off after its last message, mid tool call or reasoning: that
+        # message came before the answer, so there is none.
+        content = ""
+    if content.strip() or response.status != "incomplete":
+        return content
+    details = response.incomplete_details
+    reason = details.reason if details is not None else None
+    if reason == "max_output_tokens":
+        # As on chat completions: reasoning (and here tool calls) can spend
+        # the whole output cap. Raise so callers record a provider error.
         raise EmptyTruncatedReplyError(
-            f"LLM reply from {model or settings.default_model} hit "
-            f"{provider.max_tokens_key}={settings.max_tokens} with no content; "
-            "reasoning may have used the whole budget"
+            f"LLM reply from {model} hit max_output_tokens={settings.max_tokens} with no "
+            "content; reasoning or tool calls may have used the whole budget"
         )
-    return content
+    raise FailedResponseError(f"LLM response from {model} is incomplete ({reason}) with no content")
 
 
 def _error_status_code(response: object) -> int | None:

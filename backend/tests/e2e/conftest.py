@@ -146,7 +146,11 @@ def no_provider_calls(monkeypatch):
     async def refuse(**_kwargs):
         raise RuntimeError("LLM provider calls are disabled in tests")
 
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)))
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=refuse)),
+        # A call with tools on oai/ goes to the Responses API instead.
+        responses=SimpleNamespace(create=refuse),
+    )
     monkeypatch.setattr("services.assistance.llm._get_client", lambda *_args: client)
 
 

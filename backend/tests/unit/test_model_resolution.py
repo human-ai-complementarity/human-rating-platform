@@ -301,9 +301,10 @@ def _without_tools(entry: AssistanceModel) -> dict:
     return {key: value for key, value in entry.to_dict().items() if key != "tools"}
 
 
-# What an entry with tools records and displays. Validation refuses it until
-# the transport sends tools, so it is built here, not written through the API.
-_TOOLED = replace(_HAAT, tools=("web_search", "code_interpreter"))
+# An entry giving the model under test both tools, which only `oai/` runs.
+_TOOLED = AssistanceModel(
+    "oai/test/tooled-entry", text_verbosity="low", tools=("web_search", "code_interpreter")
+)
 
 
 def test_tools_are_optional_and_left_out_is_none():
@@ -348,14 +349,29 @@ def test_bad_tools_are_a_400_naming_the_field(tools, expected):
 
 
 @pytest.mark.parametrize(
-    "tools", [["web_search"], ["code_interpreter"], ["code_interpreter", "web_search"]]
+    ("model", "tools"),
+    [
+        ("oai/gpt-5.6-luna", ["web_search"]),
+        ("oai/gpt-5.6-luna", ["code_interpreter"]),
+        ("oai/gpt-5.6-luna", ["code_interpreter", "web_search"]),
+        ("openrouter/openai/gpt-6-luna", ["web_search"]),
+    ],
 )
-def test_tools_are_refused_until_the_transport_sends_them(tools):
-    """Never accepted and then silently run without."""
+def test_tools_the_provider_runs_pass(model, tools):
+    validate_model_entry({**_TOP_N.to_dict(), "model": model, "tools": tools}, field=_FIELD)
+
+
+@pytest.mark.parametrize("tools", [["code_interpreter"], ["web_search", "code_interpreter"]])
+def test_openrouter_cannot_have_code_interpreter(tools):
+    """Never accepted and then silently run without it."""
+    entry = {**_TOP_N.to_dict(), "model": "openrouter/openai/gpt-6-luna", "tools": tools}
     with pytest.raises(HTTPException) as exc:
-        validate_model_entry({**_TOP_N.to_dict(), "tools": tools}, field=_FIELD)
+        validate_model_entry(entry, field=_FIELD)
     assert exc.value.status_code == 400
-    assert f"in {_FIELD}: tools are not supported yet" in exc.value.detail
+    assert (
+        f"in {_FIELD}: 'tools' has code_interpreter, which openrouter/openai/gpt-6-luna cannot "
+        "use. OpenRouter can only do web search; use an oai/ model for code_interpreter."
+    ) in exc.value.detail
 
 
 def test_an_entry_with_tools_round_trips_and_stays_hashable():
@@ -389,7 +405,7 @@ def test_the_same_tools_in_another_order_are_the_same_entry():
     """One set of tools is one entry: one order stored and sent, one Top-N
     schema verdict, and no conflict for a re-upload or PATCH listing them the
     other way."""
-    reordered = replace(_HAAT, tools=("code_interpreter", "web_search"))
+    reordered = replace(_TOOLED, tools=("code_interpreter", "web_search"))
     assert reordered == _TOOLED and hash(reordered) == hash(_TOOLED)
     assert reordered.to_dict()["tools"] == ["web_search", "code_interpreter"]
     declared = {**_TOOLED.to_dict(), "tools": ["code_interpreter", "web_search"]}
@@ -403,11 +419,8 @@ def test_the_same_tools_in_another_order_are_the_same_entry():
     assert AssistanceModel.from_entry(malformed).tools[0] == "web_search"
 
 
-def test_tools_are_not_passed_to_the_transport_yet():
-    assert _HAAT.call_kwargs() == _without_tools(_HAAT)
-    # One stored anyway fails the call, rather than run without its tools.
-    with pytest.raises(ValueError, match="^tools are not supported yet; "):
-        _TOOLED.call_kwargs()
+def test_the_transport_is_given_the_entrys_tools():
+    assert _TOOLED.call_kwargs() == {**_without_tools(_TOOLED), "tools": _TOOLED.tools}
 
 
 def _question() -> Question:
@@ -440,31 +453,6 @@ async def test_top_n_sends_its_entry_options_to_the_client():
     assert sent["reasoning_effort"] == "low"
     assert sent["text_verbosity"] is None
     assert sent["temperature"] == 0.5
-
-
-@pytest.mark.asyncio
-async def test_a_stored_entry_with_tools_is_a_provider_error_not_a_call_without_them():
-    """Validation refuses tools; an entry holding some anyway is never run
-    without them, and the session says why it got no assistance."""
-    params = {
-        "assistance_models": {"top_n": _TOOLED.to_dict(), "human_as_a_tool": _TOOLED.to_dict()}
-    }
-    llm = AsyncMock(return_value="{}")
-    with (
-        patch("services.assistance.methods.top_n.complete", new=llm),
-        patch("services.assistance.methods.human_as_a_tool.decomposer.complete", new=llm),
-    ):
-        steps = [
-            await TopNAssistance().start(_question(), params),
-            await HumanAsAToolMethod().start(_question(), params),
-        ]
-    llm.assert_not_called()
-    for step in steps:
-        assert step.failure_reason == "provider_error"
-        assert step.failure_detail == (
-            f"ValueError: tools are not supported yet; {_TOOLED.model} has "
-            "web_search, code_interpreter"
-        )
 
 
 @pytest.mark.asyncio
