@@ -42,7 +42,7 @@ from fastapi import HTTPException
 
 from config import get_settings
 
-from .llm import REASONING_EFFORTS, TEXT_VERBOSITIES, parse_model
+from .llm import PROVIDERS, REASONING_EFFORTS, TEXT_VERBOSITIES, parse_model
 
 # Role -> the LLMSettings attribute that backs it when nothing overrides.
 _ROLE_DEFAULTS: dict[str, str] = {
@@ -103,8 +103,8 @@ OPTIONAL_OPTIONS: dict[str, Any] = {"tools": ()}
 ENTRY_KEYS = ("model", *OPTION_KEYS)
 
 # The tools an entry may give the model under test, named as the inference
-# pipeline's answerer names them.
-TOOLS = ("web_search", "code_interpreter")
+# pipeline's answerer names them: every tool some provider runs.
+TOOLS = tuple(dict.fromkeys(tool for provider in PROVIDERS.values() for tool in provider.tools))
 
 EXAMPLE_ENTRY = (
     '{"model": "openrouter/anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
@@ -312,7 +312,7 @@ def validate_model_entry(value: Any, *, field: str) -> None:
     if not isinstance(value["model"], str):
         raise _reject(field, "'model' must be a string.")
     try:
-        parse_model(value["model"])
+        provider, _ = parse_model(value["model"])
     except ValueError as exc:
         raise _reject(field, str(exc)) from exc
     _validate_choice(value["reasoning_effort"], REASONING_EFFORTS, field, "reasoning_effort")
@@ -326,7 +326,6 @@ def validate_model_entry(value: Any, *, field: str) -> None:
         raise _reject(field, "'temperature' must be null or a number from 0 to 2.")
     tools = value.get("tools", [])
     _validate_tools(tools, field)
-    provider, _ = parse_model(value["model"])
     unavailable = [tool for tool in tools if tool not in provider.tools]
     if unavailable:
         raise _reject(

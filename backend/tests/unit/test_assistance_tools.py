@@ -32,6 +32,7 @@ from services.assistance.methods.top_n import (
 )
 from services.assistance.model_resolution import AssistanceModel
 from services.assistance.registry import record_role_models
+from services.assistance.runner import EXECUTION_SECONDS
 
 _MESSAGES = [{"role": "user", "content": "hi"}]
 
@@ -324,11 +325,17 @@ async def test_without_tools_both_providers_send_the_chat_completion_they_always
 
 @pytest.mark.parametrize("model", ["oai/gpt-5.6-luna", "openrouter/openai/gpt-6-luna"])
 @pytest.mark.asyncio
-async def test_a_call_with_tools_gets_the_longer_tool_timeout(model):
-    """It runs its searches or code before it answers, and sends nothing until then."""
+async def test_a_call_with_tools_waits_longer_but_once_inside_a_preparation(model):
+    """It runs its searches or code before it answers, and sends nothing until
+    then. It is not retried, so a timed-out call fails as a provider error
+    with its detail before the runner cancels the preparation."""
     with patch("services.assistance.llm._get_client", return_value=_client()) as get_client:
         await complete(_MESSAGES, settings=_settings(), model=model, tools=["web_search"])
-    assert get_client.call_args.args[2:] == (120, 2)
+    timeout, retries = get_client.call_args.args[2:]
+    assert (timeout, retries) == (120, 0)
+    # Top-N's schema retry follows a quick refusal, not a timeout: at most one
+    # slow call per preparation step.
+    assert timeout * (1 + retries) < EXECUTION_SECONDS
 
 
 @pytest.mark.parametrize(

@@ -328,12 +328,15 @@ async def complete(
         raise ValueError(
             f"{name} cannot use tool(s) {', '.join(unsupported)}. {provider.tool_limit}".strip()
         )
-    client = _get_client(
-        provider.api_key(settings),
-        provider.base_url,
-        settings.tool_request_timeout if tools else settings.request_timeout,
-        settings.max_retries,
+    # A call with tools runs them before it answers, so it waits longer, and
+    # only once: a timed-out tool loop retried mostly times out again, paid
+    # again, and the retries would outlast a preparation's EXECUTION_SECONDS.
+    timeout, retries = (
+        (settings.tool_request_timeout, 0)
+        if tools
+        else (settings.request_timeout, settings.max_retries)
     )
+    client = _get_client(provider.api_key(settings), provider.base_url, timeout, retries)
     options = dict(
         response_format=response_format,
         temperature=temperature,
@@ -360,7 +363,7 @@ async def complete(
         # A reasoning model can spend the whole output cap on hidden reasoning.
         # Raise so callers record a provider error, not an unparseable reply.
         raise EmptyTruncatedReplyError(
-            f"LLM reply from {model or settings.default_model} hit "
+            f"LLM reply from {name} hit "
             f"{provider.max_tokens_key}={settings.max_tokens} with no content; "
             "reasoning may have used the whole budget"
         )

@@ -181,7 +181,8 @@ class LLMSettings(_StrictModel):
     request_timeout: int = 60
     # Seconds for a call with tools: it runs its searches or code before it
     # answers and sends nothing until then. The inference pipeline's
-    # answerer allowed 120.
+    # answerer allowed 120. Such a call is not retried, so this must stay
+    # under a preparation's EXECUTION_SECONDS (services/assistance/runner.py).
     tool_request_timeout: int = 120
     max_retries: int = 2
 
