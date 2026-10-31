@@ -13,6 +13,7 @@ def optional_json(value: dict) -> str | None:
 def step_columns(step: InteractionStep, now: datetime) -> dict:
     return {
         "step_type": step.type,
+        "outcome": step.outcome,
         "payload": optional_json(step.payload),
         "state": optional_json(step.state),
         "is_complete": step.is_terminal,
