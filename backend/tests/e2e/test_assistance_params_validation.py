@@ -249,6 +249,22 @@ def test_a_restated_legacy_value_does_not_block_an_unrelated_edit(client: TestCl
     assert _params(client, exp["id"]) == legacy
 
 
+def test_a_restated_entry_spelling_out_empty_tools_is_not_a_change(client: TestClient, sync_engine):
+    """As on upload (`same_entry`): a stored entry re-sent with `"tools": []`
+    added is the same entry, so a value that predates validation does not
+    block the edit."""
+    exp = _create(client).json()
+    legacy = {"assistance_models": {"top_n": _entry(model="gpt-4o")}}
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text("UPDATE experiments SET assistance_params = :p WHERE id = :id"),
+            {"p": json.dumps(legacy), "id": exp["id"]},
+        )
+
+    restated = {"assistance_models": {"top_n": _entry(model="gpt-4o", tools=[])}}
+    assert _patch(client, exp["id"], restated, name="Renamed").status_code == 200
+
+
 def test_a_stored_bare_id_resolves_with_the_default_options(client: TestClient, sync_engine):
     """A row written before entries carried options runs as it did then."""
     exp = _create(client).json()
