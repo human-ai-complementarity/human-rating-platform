@@ -106,6 +106,14 @@ ENTRY_KEYS = ("model", *OPTION_KEYS)
 # pipeline's answerer names them.
 TOOLS = ("web_search", "code_interpreter")
 
+
+def _tool_rank(tool: Any) -> tuple[int, str]:
+    """A tool's place in `TOOLS` order, the one order an entry's tools take:
+    a set of tools is one entry whatever order it was declared in. Ranks
+    anything, so a malformed stored value sorts rather than raises."""
+    return (TOOLS.index(tool), "") if tool in TOOLS else (len(TOOLS), str(tool))
+
+
 EXAMPLE_ENTRY = (
     '{"model": "openrouter/anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
     '"text_verbosity": null, "temperature": 0}'
@@ -126,7 +134,7 @@ class AssistanceModel:
 
     def __post_init__(self) -> None:
         # Stored entries hold a JSON list; a null one reads as no tools.
-        object.__setattr__(self, "tools", tuple(self.tools or ()))
+        object.__setattr__(self, "tools", tuple(sorted(self.tools or (), key=_tool_rank)))
 
     def to_dict(self) -> dict[str, Any]:
         """The stored entry shape, every key declared, `tools` as a JSON list."""
@@ -166,14 +174,20 @@ def same_entry(stored: Any, declared: Any) -> bool:
     """Whether two stored values declare the same entry.
 
     An optional key left out is its default, so an entry without `tools` and
-    one with `"tools": []` are the same declaration, not a conflict. Nothing
-    else is filled in.
+    one with `"tools": []` are the same declaration, not a conflict, and so
+    are the same tools in another order. Nothing else is filled in.
     """
     if not (isinstance(stored, Mapping) and isinstance(declared, Mapping)):
         return stored == declared
+    return _as_declared(stored) == _as_declared(declared)
+
+
+def _as_declared(entry: Mapping[str, Any]) -> dict[str, Any]:
     # Each optional default as stored JSON spells it: a tuple is a list.
-    defaults = {key: list(value) for key, value in OPTIONAL_OPTIONS.items()}
-    return {**defaults, **stored} == {**defaults, **declared}
+    filled = {**{key: list(value) for key, value in OPTIONAL_OPTIONS.items()}, **entry}
+    if isinstance(filled["tools"], list):
+        filled["tools"] = sorted(filled["tools"], key=_tool_rank)
+    return filled
 
 
 # Where a resolved model came from: the experiment's map, the role's own

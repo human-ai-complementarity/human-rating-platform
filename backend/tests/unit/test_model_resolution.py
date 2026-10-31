@@ -385,6 +385,24 @@ def test_a_left_out_tools_and_an_empty_one_are_the_same_entry():
     assert not same_entry({**_TOP_N.to_dict(), "tools": 5}, _TOP_N.to_dict())
 
 
+def test_the_same_tools_in_another_order_are_the_same_entry():
+    """One set of tools is one entry: one order stored and sent, one Top-N
+    schema verdict, and no conflict for a re-upload or PATCH listing them the
+    other way."""
+    reordered = replace(_HAAT, tools=("code_interpreter", "web_search"))
+    assert reordered == _TOOLED and hash(reordered) == hash(_TOOLED)
+    assert reordered.to_dict()["tools"] == ["web_search", "code_interpreter"]
+    declared = {**_TOOLED.to_dict(), "tools": ["code_interpreter", "web_search"]}
+    assert AssistanceModel.from_entry(declared) == _TOOLED
+    assert same_entry(_TOOLED.to_dict(), declared)
+    assert same_entry(declared, _TOOLED.to_dict())
+    assert not same_entry(declared, {**declared, "tools": ["web_search"]})
+    # A malformed stored list still orders and compares; it never raises.
+    malformed = {**declared, "tools": [None, {"name": "x"}, "web_search"]}
+    assert not same_entry(malformed, declared)
+    assert AssistanceModel.from_entry(malformed).tools[0] == "web_search"
+
+
 def test_tools_are_not_passed_to_the_transport_yet():
     assert _HAAT.call_kwargs() == _without_tools(_HAAT)
     # One stored anyway fails the call, rather than run without its tools.
