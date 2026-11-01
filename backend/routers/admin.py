@@ -45,7 +45,7 @@ from services import terms as terms_service
 from services.admin.prolific import get_cached_workspace_currency
 from services.admin.queries import fetch_experiment_or_404
 from services.admin.waves import CURRENT_WAVE
-from auth import AdminSession, require_admin, get_admin_manager
+from auth import AdminSession, get_admin_manager, require_admin, require_signed_in_admin
 from services.authn import verify_clerk_token_and_get_email
 
 # Public admin router (for auth endpoints)
@@ -385,9 +385,13 @@ async def get_experiment_analytics(
     )
 
 
+# Prolific writes need a signed-in admin, not an API key: publishing spends
+# money, and the drafts, edits and closes around it are the same workflow. An
+# admin-scoped key stops at drafts and uploads; the reads below stay open to it.
 @secure_router.post(
     "/experiments/{experiment_id}/prolific/pilot",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def run_pilot_study(
     experiment_id: int,
@@ -400,6 +404,7 @@ async def run_pilot_study(
 @secure_router.post(
     "/experiments/{experiment_id}/launch",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def launch_from_card(
     experiment_id: int,
@@ -443,6 +448,7 @@ async def get_prolific_recommendation(
 @secure_router.post(
     "/experiments/{experiment_id}/prolific/rounds",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def run_experiment_round(
     experiment_id: int,
@@ -479,6 +485,7 @@ async def sync_experiment_spend(
 @secure_router.patch(
     "/experiments/{experiment_id}/prolific/rounds/{round_id}",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def update_experiment_round(
     experiment_id: int,
@@ -494,7 +501,10 @@ async def update_experiment_round(
     )
 
 
-@secure_router.post("/experiments/{experiment_id}/prolific/rounds/{round_id}/publish")
+@secure_router.post(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}/publish",
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def publish_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -507,7 +517,10 @@ async def publish_experiment_round(
     )
 
 
-@secure_router.post("/experiments/{experiment_id}/prolific/rounds/{round_id}/close")
+@secure_router.post(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}/close",
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def close_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -520,7 +533,10 @@ async def close_experiment_round(
     )
 
 
-@secure_router.delete("/experiments/{experiment_id}/prolific/rounds/{round_id}")
+@secure_router.delete(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}",
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def discard_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -642,7 +658,8 @@ async def delete_experiment_group(
     return {"ok": True}
 
 
-# ── API keys (bearer credentials for the /api/v1 programmatic API) ──────────
+# ── API keys (bearer credentials for /api/v1, and /api/admin when admin-scoped)
+# Managed only from a signed-in session: a key cannot manage keys.
 
 
 def _api_key_response(record: ApiKey) -> ApiKeyResponse:
@@ -654,6 +671,7 @@ def _api_key_response(record: ApiKey) -> ApiKeyResponse:
         last_used_at=record.last_used_at,
         revoked_at=record.revoked_at,
         created_by=record.created_by,
+        scope=record.scope,
         is_active=record.revoked_at is None,
     )
 
@@ -670,7 +688,11 @@ async def _get_api_key_or_404(key_id: int, db: AsyncSession) -> ApiKey:
     return record
 
 
-@secure_router.get("/api-keys", response_model=list[ApiKeyResponse])
+@secure_router.get(
+    "/api-keys",
+    response_model=list[ApiKeyResponse],
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def list_api_keys(db: AsyncSession = Depends(get_session)):
     records = await api_key_service.list_api_keys(db)
     return [_api_key_response(record) for record in records]
@@ -679,14 +701,20 @@ async def list_api_keys(db: AsyncSession = Depends(get_session)):
 @secure_router.post("/api-keys", response_model=ApiKeyCreated)
 async def create_api_key(
     payload: ApiKeyCreate,
-    admin: AdminSession = Depends(require_admin),
+    admin: AdminSession = Depends(require_signed_in_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    issued = await api_key_service.create_api_key(payload.name, db, created_by=admin.email)
+    issued = await api_key_service.create_api_key(
+        payload.name, db, created_by=admin.email, scope=payload.scope
+    )
     return _api_key_created(issued)
 
 
-@secure_router.post("/api-keys/{key_id}/regenerate", response_model=ApiKeyCreated)
+@secure_router.post(
+    "/api-keys/{key_id}/regenerate",
+    response_model=ApiKeyCreated,
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def regenerate_api_key(
     key_id: int,
     db: AsyncSession = Depends(get_session),
@@ -696,7 +724,11 @@ async def regenerate_api_key(
     return _api_key_created(issued)
 
 
-@secure_router.post("/api-keys/{key_id}/revoke", response_model=ApiKeyResponse)
+@secure_router.post(
+    "/api-keys/{key_id}/revoke",
+    response_model=ApiKeyResponse,
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def revoke_api_key(
     key_id: int,
     db: AsyncSession = Depends(get_session),
