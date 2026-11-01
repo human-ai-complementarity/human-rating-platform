@@ -188,15 +188,25 @@ class LLMSettings(_StrictModel):
     oai_api_key: str = ""
     max_tokens: int = 4096
     request_timeout: int = 60
+    # Seconds for a call with tools: it runs its searches or code before it
+    # answers and sends nothing until then. The inference pipeline's
+    # answerer allowed 120. Such a call is not retried, so this must stay
+    # under a preparation's EXECUTION_SECONDS (services/assistance/runner.py).
+    tool_request_timeout: int = 120
     max_retries: int = 2
 
 
 class PrefetchSettings(_StrictModel):
+    enable_all: bool = False
     worker_count: int = Field(default=8, ge=2, le=64)
     # Empty by default. Existing queue sessions remain drainable after removal.
     experiment_ids: list[int] = Field(default_factory=list)
     # Number ahead of the active question. Zero enables queue-only comparison.
     lookahead_questions: int = Field(default=1, ge=0, le=5)
+
+    def enabled_for(self, experiment_id: int) -> bool:
+        """Enroll globally or by allowlist; lookahead separately controls speculation."""
+        return self.enable_all or experiment_id in self.experiment_ids
 
 
 class Settings(BaseSettings):

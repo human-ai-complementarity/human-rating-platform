@@ -130,6 +130,11 @@ def test_expired_turn_owner_cannot_overwrite_recovered_result(client, monkeypatc
         == second.json()
     )
     assert second.json()["payload"] == {"owner": "new"}
+    from test_assistance_events import _events
+
+    events = _events(sync_engine, body["session_id"])
+    assert len(events) == 2
+    assert events[-1]["payload"]["response"]["payload"] == {"owner": "new"}
 
 
 def test_end_during_advance_prevents_publication(client, monkeypatch, sync_engine):

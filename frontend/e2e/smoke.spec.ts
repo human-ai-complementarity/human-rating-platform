@@ -22,6 +22,7 @@ type ExperimentRecord = {
       reasoning_effort: string | null;
       text_verbosity: string | null;
       temperature: number | null;
+      tools: string[];
       source: 'assistance_models' | 'default';
     }
   >;
@@ -1825,6 +1826,7 @@ test('the assistance config shows the model each method would run on', async ({ 
       reasoning_effort: 'low',
       text_verbosity: 'low',
       temperature: null,
+      tools: ['web_search', 'code_interpreter'],
       source: 'assistance_models' as const,
     },
     human_as_a_tool: {
@@ -1832,6 +1834,7 @@ test('the assistance config shows the model each method would run on', async ({ 
       reasoning_effort: null,
       text_verbosity: null,
       temperature: 0.7,
+      tools: [],
       source: 'default' as const,
     },
   };
@@ -1858,7 +1861,7 @@ test('the assistance config shows the model each method would run on', async ({ 
     'Model: oai/test/top-n-entry · from assistance_models',
   );
   await expect(page.getByTestId('resolved-model-options-top_n')).toHaveText(
-    'reasoning effort: low · verbosity: low · temperature: not sent',
+    'reasoning effort: low · verbosity: low · temperature: not sent · tools: web_search, code_interpreter',
   );
 
   await page.goto('/admin/experiments/2');
@@ -1866,6 +1869,7 @@ test('the assistance config shows the model each method would run on', async ({ 
   await expect(page.getByTestId('resolved-model-human_as_a_tool')).toHaveText(
     'Model: openrouter/test/platform-default · platform default',
   );
+  // No tools, so none are listed.
   await expect(page.getByTestId('resolved-model-options-human_as_a_tool')).toHaveText(
     'reasoning effort: not sent · verbosity: not sent · temperature: 0.7',
   );
