@@ -9,6 +9,7 @@ import {
   primaryButton,
   secondaryButton,
   SectionCard,
+  selectStyle,
   Toast,
 } from './experiment-detail/ui';
 
@@ -266,7 +267,7 @@ function CreatePanel({
             data-testid="api-key-scope-select"
             value={scope}
             onChange={(e) => setScope(e.target.value as ApiKeyScope)}
-            style={inputStyle}
+            style={selectStyle}
           >
             <option value="read">Read only (/api/v1)</option>
             <option value="admin">Admin (/api/v1 and /api/admin)</option>
