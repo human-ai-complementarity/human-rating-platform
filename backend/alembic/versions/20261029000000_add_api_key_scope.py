@@ -1,7 +1,7 @@
 """add_api_key_scope
 
 Revision ID: 20261029000000
-Revises: 20261026000000
+Revises: 20260929061959
 Create Date: 2026-10-29 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 
 
 revision: str = "20261029000000"
-down_revision: Union[str, Sequence[str], None] = "20261026000000"
+down_revision: Union[str, Sequence[str], None] = "20260929061959"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
