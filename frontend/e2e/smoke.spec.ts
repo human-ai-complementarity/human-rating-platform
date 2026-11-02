@@ -821,7 +821,12 @@ async function installApiMocks(
     }
 
     if (pathname.endsWith('/launch/preview') && method === 'GET') {
-      await fulfillJson(route, 200, { excluded_experiments: state.launchExcluded });
+      const experiment = state.experiments.find((exp) => exp.id === extractExperimentId(url));
+      await fulfillJson(route, 200, {
+        excluded_experiments: state.launchExcluded,
+        launch_blockers: experiment?.launch_blockers ?? [],
+        launch_blocker_fixes: experiment?.launch_blocker_fixes ?? [],
+      });
       return;
     }
 
@@ -2822,6 +2827,43 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
   expect(state.experiments[0].tags).toEqual(['needs-review', 'client-x']);
 });
 
+
+test('a testing preview cannot start a pilot, and the banner says why', async ({ page }) => {
+  // #174: a `preview-testing` draft isn't missing anything, so the banner
+  // doesn't say it is; it names what is missing after that.
+  const fixes = [
+    'Testing preview only: this experiment is tagged preview-testing.',
+    'Questions: upload questions on the Questions tab.',
+  ];
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Passages fall25 control-TESTONLY',
+      question_count: 0,
+      tags: ['preview-testing'],
+      launch_ready: false,
+      launch_blockers: ['testing preview', 'questions'],
+      launch_blocker_fixes: fixes,
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  const banner = page.getByTestId('launch-blockers');
+  await expect(banner).toContainText(
+    "This study can't launch yet — it's a testing preview and it's missing questions.",
+  );
+  for (const fix of fixes) {
+    await expect(banner).toContainText(fix);
+  }
+  await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
+});
 
 test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
   // Served by the API (status.py), one per blocker; the page renders them as given.

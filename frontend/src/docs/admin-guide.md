@@ -82,6 +82,8 @@ Keep the **estimated completion time** at or under the session length. It is the
 
 The pilot can't be created until the experiment has at least one uploaded question, rater instructions, an internal study name, and (when assisted) an assistance model. The prompt prefix and suffix are optional. The pilot form lists anything missing and how to fix it.
 
+`preview-testing` is a reserved tag. The inference pipeline's `scripts/create_human_rating_study.py --mode testing` sets it on its `-TESTONLY` drafts, which hold a subsample of the real questions for clicking through. An experiment with that tag can't go to Prolific at all: no pilot, no one-click pilot, no new round and no publish, and the Launch tab says so. Create the real study with `--mode prod`. If an experiment carries the tag by mistake, remove the tag to launch it.
+
 ### Dataset cards and the one-click pilot
 
 A grouped experiment's dataset has a **card**: a public study name, an internal name template, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. Edit it from the **card** chip on any of the dataset's groups in the Experiments page's **Grouped** view; the chip and the editor show whether it's complete. A new experiment copies the card's names and ratings target when it's created; the create form shows them as placeholders, and anything you type there wins.

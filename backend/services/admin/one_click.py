@@ -34,7 +34,7 @@ from .dataset_card import card_readiness
 from .experiments import fetch_card_for_group
 from .queries import fetch_experiment_or_404
 from .rounds import run_pilot_study
-from .status import assert_launch_ready
+from .status import assert_launch_ready, fetch_launch_blockers, launch_blocker_fixes
 
 DEFAULT_PILOT_PLACES = 5
 
@@ -69,9 +69,15 @@ async def dataset_exclusions(experiment: Experiment, db: AsyncSession) -> list[E
 
 
 async def preview_launch_from_card(experiment_id: int, db: AsyncSession) -> OneClickLaunchPreview:
-    """What `launch_from_card` would exclude, for the admin to see first."""
+    """What `launch_from_card` would exclude, and what stops it, for the admin
+    to see first."""
     experiment = await fetch_experiment_or_404(experiment_id, db)
-    return OneClickLaunchPreview(excluded_experiments=await dataset_exclusions(experiment, db))
+    blockers = await fetch_launch_blockers(experiment, db)
+    return OneClickLaunchPreview(
+        excluded_experiments=await dataset_exclusions(experiment, db),
+        launch_blockers=blockers,
+        launch_blocker_fixes=launch_blocker_fixes(blockers),
+    )
 
 
 async def launch_from_card(

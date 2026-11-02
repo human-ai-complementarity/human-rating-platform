@@ -21,6 +21,7 @@ import type {
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
+import { launchBlockerSummary } from './experiment-detail/launchBlockers';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import { EthicsPanel } from './experiment-detail/EthicsPanel';
 import {
@@ -3622,7 +3623,7 @@ function PilotForm(props: {
         {launchBlockers.length > 0 && (
           <div data-testid="launch-blockers" style={{ marginBottom: 12 }}>
             <Banner tone="warn">
-              This study can't launch yet — it's missing {launchBlockers.join(', ')}.
+              This study can't launch yet — {launchBlockerSummary(launchBlockers)}.
               {launchBlockerFixes.map((fix) => (
                 <div key={fix} style={{ marginTop: 6 }}>
                   {fix}

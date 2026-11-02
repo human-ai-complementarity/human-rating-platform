@@ -21,10 +21,12 @@ from models import (
     ProlificStudyStatus,
 )
 from config import get_settings
+from schemas import PREVIEW_TESTING_TAG
 from services.assistance.llm import missing_key_env_var
 from services.assistance.model_resolution import pinned_model
 
 from .queries import fetch_total_questions_for_experiment
+from .tags import fetch_tag_names_for_experiment
 
 
 def is_locked(experiment: Experiment) -> bool:
@@ -80,12 +82,28 @@ _ROW_REQUIRED_TEXT: tuple[tuple[str, str], ...] = (
 )
 
 
-def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -> list[str]:
+# The blocker a `preview-testing` tag raises. Not something the experiment is
+# missing, so it reads apart from the rest (`launch_blocker_summary`).
+TESTING_PREVIEW_BLOCKER = "testing preview"
+
+
+def is_preview_testing(tags: list[str]) -> bool:
+    """True when the tags mark a preview-only draft (`PREVIEW_TESTING_TAG`)."""
+    return any(tag.lower() == PREVIEW_TESTING_TAG for tag in tags)
+
+
+def experiment_launch_blockers(
+    experiment: Experiment, *, question_count: int, tags: list[str]
+) -> list[str]:
     """What still stops this experiment launching a study, in report order.
+
+    A `preview-testing` tag comes first: it marks a preview-only draft holding
+    a subsample of the questions, which no amount of filling in makes
+    launchable (#174).
 
     `question_count` is `ExperimentResponse.question_count`, which skips parent
     rows (header-only, never served). Publishing with none would move the
-    experiment to LAUNCH, which blocks uploads. Reported first, since the
+    experiment to LAUNCH, which blocks uploads. First of what is missing, since the
     upload also brings the rater instructions and, when assisted, the model.
 
     `name` is not checked: it is required at create, so it is always present.
@@ -96,7 +114,9 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
     `pinned_model` finds one for the current method, the resolver's own test,
     so the gate and the model that runs cannot disagree.
     """
-    blockers = [] if question_count > 0 else ["questions"]
+    blockers = [TESTING_PREVIEW_BLOCKER] if is_preview_testing(tags) else []
+    if question_count == 0:
+        blockers.append("questions")
     blockers += [
         label for attr, label in _ROW_REQUIRED_TEXT if not (getattr(experiment, attr) or "").strip()
     ]
@@ -127,6 +147,12 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
 # card afterwards cannot fix an existing one. Served to the admin UI too
 # (`ExperimentResponse.launch_blocker_fixes`), so the wording names its fields.
 _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
+    TESTING_PREVIEW_BLOCKER: (
+        f"Testing preview only: this experiment is tagged {PREVIEW_TESTING_TAG}, which the "
+        "pipeline's create_human_rating_study.py --mode testing sets on drafts holding a "
+        "subsample of the questions, for clicking through. Create the study with --mode "
+        f"prod, or remove the {PREVIEW_TESTING_TAG} tag if this experiment really should run."
+    ),
     "questions": (
         "Questions: upload questions on the Questions tab. The pipeline export's metadata "
         "brings the rater instructions with them (and the model, on an assisted arm), so "
@@ -160,6 +186,28 @@ def launch_blocker_fixes(blockers: list[str]) -> list[str]:
     return [_LAUNCH_BLOCKER_FIXES[blocker] for blocker in blockers]
 
 
+def launch_blocker_summary(blockers: list[str]) -> str:
+    """The blockers as a clause: "is a testing preview and is missing questions".
+
+    Every blocker but the testing preview is something the experiment lacks.
+    The admin UI words its banner the same way (`launchBlockerSummary`).
+    """
+    missing = [blocker for blocker in blockers if blocker != TESTING_PREVIEW_BLOCKER]
+    parts = ["is a testing preview"] if TESTING_PREVIEW_BLOCKER in blockers else []
+    if missing:
+        parts.append(f"is missing {', '.join(missing)}")
+    return " and ".join(parts)
+
+
+async def fetch_launch_blockers(experiment: Experiment, db: AsyncSession) -> list[str]:
+    """`experiment_launch_blockers`, reading its inputs from the database."""
+    return experiment_launch_blockers(
+        experiment,
+        question_count=await fetch_total_questions_for_experiment(experiment.id, db),
+        tags=await fetch_tag_names_for_experiment(experiment.id, db),
+    )
+
+
 async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
     """Refuse to create a study for an experiment that isn't fully onboarded.
 
@@ -167,17 +215,38 @@ async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
     object and real money exist. Not at experiment create (per Joshua on #96,
     headroom analysis must keep working on an unfinished card) and not at
     publish, where refusing would leave an orphan draft study to discard.
+    The testing-preview blocker alone also bites later on
+    (`assert_not_preview_testing`).
     """
-    question_count = await fetch_total_questions_for_experiment(experiment.id, db)
-    blockers = experiment_launch_blockers(experiment, question_count=question_count)
+    blockers = await fetch_launch_blockers(experiment, db)
     if blockers:
         raise HTTPException(
             status_code=400,
             detail=" ".join(
                 [
-                    f"Cannot launch: this experiment is missing {', '.join(blockers)}.",
+                    f"Cannot launch: this experiment {launch_blocker_summary(blockers)}.",
                     *launch_blocker_fixes(blockers),
                 ]
+            ),
+        )
+
+
+async def assert_not_preview_testing(experiment: Experiment, db: AsyncSession, action: str) -> None:
+    """Refuse `action`, a Prolific write, on a `preview-testing` experiment (#174).
+
+    The launch gate stops the pilot. This covers what comes after it: a round
+    created, or a draft published, once the tag is on, whenever it went on.
+    The rest of the gate is not re-run here, since an experiment that passed
+    it at pilot time should not be stranded mid-collection by, say, a model
+    key rotated out since. Closing and discarding a round stay open: they
+    take a study off Prolific, which is the way out.
+    """
+    if is_preview_testing(await fetch_tag_names_for_experiment(experiment.id, db)):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot {action}: this experiment is a testing preview. "
+                + _LAUNCH_BLOCKER_FIXES[TESTING_PREVIEW_BLOCKER]
             ),
         )
 

@@ -83,9 +83,13 @@ class ExperimentRef(BaseModel):
 
 class OneClickLaunchPreview(BaseModel):
     """What a one-click launch would do beyond the card: the experiments
-    whose participants it excludes."""
+    whose participants it excludes, and anything that stops it launching."""
 
     excluded_experiments: list[ExperimentRef] = Field(default_factory=list)
+    # The launch gate's verdict, as on `ExperimentResponse`: one-click refuses
+    # while any blocker remains.
+    launch_blockers: list[str] = Field(default_factory=list)
+    launch_blocker_fixes: list[str] = Field(default_factory=list)
 
 
 class ExperimentRoundCreate(BaseModel):
@@ -187,6 +191,12 @@ TagName = Annotated[str, Field(min_length=1, max_length=64)]
 # under different casing is not over the limit. Enforced in set_experiment_tags,
 # after normalization and before any tag rows are touched.
 MAX_TAGS_PER_EXPERIMENT = 20
+# Reserved tag: a preview-only draft that must never reach Prolific (#174).
+# A contract with the inference pipeline's `scripts/create_human_rating_study.py`,
+# whose `--mode testing` sets it on `-TESTONLY` drafts holding a subsample of
+# the questions. Matched case-insensitively, like every tag name. The launch
+# gate lists it as a blocker, and the round routes refuse it too.
+PREVIEW_TESTING_TAG = "preview-testing"
 
 
 class TagResponse(BaseModel):

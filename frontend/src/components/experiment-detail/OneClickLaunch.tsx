@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { Dataset, LaunchPreview } from '../../types';
+import { launchBlockerSummary } from './launchBlockers';
 import { formatMinorUnits } from './reward';
 import { SectionCard, fieldLabel, primaryButton } from './ui';
 
@@ -164,8 +165,8 @@ export function OneClickLaunch({
             data-testid="one-click-blockers"
             style={{ fontSize: 13, color: 'var(--warn)', marginBottom: 10 }}
           >
-            Can't launch yet — missing {launchBlockers.join(', ')}. The pilot form below says how to
-            fix each.
+            Can't launch yet — {launchBlockerSummary(launchBlockers)}. The pilot form below says
+            how to fix each.
           </div>
         )}
         {errorLine}
