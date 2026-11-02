@@ -17,18 +17,23 @@ from main import create_app
 from routers import admin as admin_router
 
 ADMIN_EMAIL = "admin@example.com"
+OTHER_ADMIN_EMAIL = "other-admin@example.com"
+
+# Who the faked Clerk login signs in as; `_sign_in` sets it.
+_clerk = {"email": ADMIN_EMAIL}
 
 
 @pytest.fixture
 def admin_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
-    monkeypatch.setenv("ADMIN_ALLOWLIST", ADMIN_EMAIL)
+    monkeypatch.setenv("ADMIN_ALLOWLIST", f"{ADMIN_EMAIL},{OTHER_ADMIN_EMAIL}")
     monkeypatch.setenv("ADMIN_AUTH_ENABLED", "true")
     get_settings.cache_clear()  # type: ignore[attr-defined]
+    _clerk["email"] = ADMIN_EMAIL
     with TestClient(create_app()) as client:
 
         async def fake_clerk_email_from_request() -> str:
-            return ADMIN_EMAIL
+            return _clerk["email"]
 
         client.app.dependency_overrides[admin_router.get_clerk_email_from_request] = (
             fake_clerk_email_from_request
@@ -36,7 +41,8 @@ def admin_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         yield client
 
 
-def _sign_in(client: TestClient) -> None:
+def _sign_in(client: TestClient, email: str = ADMIN_EMAIL) -> None:
+    _clerk["email"] = email
     resp = client.post("/api/admin/auth/login", headers={"Authorization": "Bearer clerk-jwt"})
     assert resp.status_code == 200, resp.text
 
@@ -175,3 +181,24 @@ def test_key_stops_when_its_creator_leaves_the_allowlist(
     resp = admin_client.get("/api/admin/experiments", headers=_bearer(key))
     assert resp.status_code == 403
     assert "no longer allowlisted" in resp.json()["detail"]
+
+
+def test_an_admin_sees_and_manages_only_their_own_keys(admin_client: TestClient) -> None:
+    """Otherwise another admin could regenerate this key, take the new secret,
+    and go on acting as its owner after losing their own admin access."""
+    mine = _mint(admin_client, "mine", "admin")
+
+    _sign_in(admin_client, OTHER_ADMIN_EMAIL)
+    assert admin_client.get("/api/admin/api-keys").json() == []
+    for action in ("regenerate", "revoke"):
+        resp = admin_client.post(f"/api/admin/api-keys/{mine['id']}/{action}")
+        assert resp.status_code == 404, action
+    theirs = admin_client.post("/api/admin/api-keys", json={"name": "theirs"}).json()
+
+    _sign_in(admin_client)
+    assert [k["name"] for k in admin_client.get("/api/admin/api-keys").json()] == ["mine"]
+    assert admin_client.post(f"/api/admin/api-keys/{theirs['id']}/revoke").status_code == 404
+    admin_client.cookies.clear()
+    # The owner's key was never touched.
+    resp = admin_client.get("/api/admin/experiments", headers=_bearer(mine["plaintext_key"]))
+    assert resp.status_code == 200

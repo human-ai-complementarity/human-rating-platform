@@ -618,7 +618,8 @@ async def delete_experiment_group(
 
 
 # ── API keys (bearer credentials for /api/v1, and /api/admin when admin-scoped)
-# Managed only from a signed-in session: a key cannot manage keys.
+# Managed only from a signed-in session: a key cannot manage keys. Each admin
+# sees and manages only the keys they minted (see services.api_keys).
 
 
 def _api_key_response(record: ApiKey) -> ApiKeyResponse:
@@ -640,20 +641,19 @@ def _api_key_created(issued: api_key_service.IssuedApiKey) -> ApiKeyCreated:
     return ApiKeyCreated(**base.model_dump(), plaintext_key=issued.plaintext)
 
 
-async def _get_api_key_or_404(key_id: int, db: AsyncSession) -> ApiKey:
-    record = await api_key_service.get_api_key_or_none(key_id, db)
+async def _get_own_api_key_or_404(key_id: int, admin: AdminSession, db: AsyncSession) -> ApiKey:
+    record = await api_key_service.get_owned_api_key_or_none(key_id, admin.email, db)
     if record is None:
         raise HTTPException(status_code=404, detail="API key not found")
     return record
 
 
-@secure_router.get(
-    "/api-keys",
-    response_model=list[ApiKeyResponse],
-    dependencies=[Depends(require_signed_in_admin)],
-)
-async def list_api_keys(db: AsyncSession = Depends(get_session)):
-    records = await api_key_service.list_api_keys(db)
+@secure_router.get("/api-keys", response_model=list[ApiKeyResponse])
+async def list_api_keys(
+    admin: AdminSession = Depends(require_signed_in_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    records = await api_key_service.list_api_keys(admin.email, db)
     return [_api_key_response(record) for record in records]
 
 
@@ -669,29 +669,23 @@ async def create_api_key(
     return _api_key_created(issued)
 
 
-@secure_router.post(
-    "/api-keys/{key_id}/regenerate",
-    response_model=ApiKeyCreated,
-    dependencies=[Depends(require_signed_in_admin)],
-)
+@secure_router.post("/api-keys/{key_id}/regenerate", response_model=ApiKeyCreated)
 async def regenerate_api_key(
     key_id: int,
+    admin: AdminSession = Depends(require_signed_in_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    record = await _get_api_key_or_404(key_id, db)
+    record = await _get_own_api_key_or_404(key_id, admin, db)
     issued = await api_key_service.regenerate_api_key(record, db)
     return _api_key_created(issued)
 
 
-@secure_router.post(
-    "/api-keys/{key_id}/revoke",
-    response_model=ApiKeyResponse,
-    dependencies=[Depends(require_signed_in_admin)],
-)
+@secure_router.post("/api-keys/{key_id}/revoke", response_model=ApiKeyResponse)
 async def revoke_api_key(
     key_id: int,
+    admin: AdminSession = Depends(require_signed_in_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    record = await _get_api_key_or_404(key_id, db)
+    record = await _get_own_api_key_or_404(key_id, admin, db)
     record = await api_key_service.revoke_api_key(record, db)
     return _api_key_response(record)

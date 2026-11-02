@@ -132,7 +132,8 @@ function ApiKeysPage() {
           >
             API docs
           </a>{' '}
-          for the endpoints and how to authenticate.
+          for the endpoints and how to authenticate. You see only the keys you created, and
+          only you can regenerate or revoke them.
         </p>
       </div>
 
@@ -489,8 +490,7 @@ function KeyRow({
             {apiKey.masked_key}
           </code>
           <span style={{ fontSize: 12.5, color: 'var(--muted)' }}>
-            Created {formatDate(apiKey.created_at)}
-            {apiKey.created_by ? ` by ${apiKey.created_by}` : ''} · Last used{' '}
+            Created {formatDate(apiKey.created_at)} · Last used{' '}
             {formatDate(apiKey.last_used_at)}
           </span>
         </div>

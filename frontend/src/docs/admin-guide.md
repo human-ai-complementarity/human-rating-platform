@@ -114,7 +114,7 @@ The **Overview** section shows live progress. From there you can open analytics 
 
 Besides the CSV export, there's a read-only **`/api/v1`** API for scripts and inference pipelines that need to pull experiment data directly (e.g. running a model over your questions and comparing against human ratings).
 
-Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time.
+Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time. You see only the keys you created; other admins can't see, regenerate or revoke yours.
 
 Use it as a bearer token:
 
