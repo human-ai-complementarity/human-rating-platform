@@ -600,6 +600,11 @@ A versioned, read-only API for programmatic clients (CLIs, inference pipelines
 that fetch experiment data directly). It's separate from the cookie-authed
 dashboard routes so a script can use it without a browser.
 
+A key minted with **Admin** access also passes the `/api/admin` gate, so a CLI
+can drive the dashboard's own workflows (create a dataset, group and
+experiments, upload questions) without a browser session. See
+[Key scopes](#key-scopes).
+
 ### Auth
 
 Send a bearer key: `Authorization: Bearer <key>`. Keys are matched against
@@ -614,7 +619,9 @@ plaintext on the wire.
 2. Go to the **API Keys** tab in the top nav (next to Experiments and Documentation). It also links to the interactive API docs.
 3. Click **Create key**, give it a name, and **copy the full `hrp_…` secret from the reveal card**. It is shown only once; afterwards only a masked prefix remains.
 
-Manage existing keys from the same tab:
+Manage existing keys from the same tab. Each admin sees only the keys they
+created, and only they can regenerate or revoke them, so no admin can take over
+another's key (and with it, act as them after losing their own access):
 
 - **Regenerate** rotates the secret in place (same name), and the old one stops working immediately.
 - **Revoke** disables a key (kept for audit). Regenerating a revoked key reactivates it under a fresh secret.
@@ -622,6 +629,24 @@ Manage existing keys from the same tab:
 Only the SHA-256 hash is stored server-side, so keep the raw key somewhere safe and out of committed code (pass it via an env var). If it leaks, hit Regenerate.
 
 For local dev or automation you can skip the dashboard and set a static fallback key: `API_KEYS=local-dev-key` in `backend/.env` (recreate the api container to pick up `.env` changes).
+
+### Key scopes
+
+Each dashboard key has a scope, chosen under **Access** when it is created and
+fixed for its life (regenerating rotates the secret, not the scope):
+
+- `read` (the default) — `/api/v1` only.
+- `admin` — `/api/v1`, plus every `/api/admin` route except two groups that
+  always need a signed-in session (`require_signed_in_admin`): API key
+  management, so a leaked key cannot mint or revive keys, and Prolific writes
+  (pilot, one-click launch, creating, editing, publishing, closing or
+  discarding a round), so a key cannot spend money. Send it the same way:
+  `Authorization: Bearer hrp_…`.
+
+`require_admin` tries the session cookie first, then an `hrp_` bearer. An
+unknown or revoked key is a 401, a `read` key on `/api/admin` a 403. Static
+`API_KEYS` entries are always `read`. Keys minted before scopes existed are
+`read`.
 
 ### Using the key
 
@@ -673,10 +698,10 @@ contributors.
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/publish` — publish an unpublished round
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/close` — close an active round
 - `DELETE /api/admin/experiments/{id}` — delete experiment (+ Prolific study if linked)
-- `GET /api/admin/api-keys` — list programmatic API keys (masked)
-- `POST /api/admin/api-keys` — mint a key; returns the full secret once
-- `POST /api/admin/api-keys/{id}/regenerate` — rotate a key's secret in place
-- `POST /api/admin/api-keys/{id}/revoke` — revoke a key (soft; kept for audit)
+- `GET /api/admin/api-keys` — list your programmatic API keys (masked)
+- `POST /api/admin/api-keys` — mint a key (`scope`: `read` or `admin`); returns the full secret once
+- `POST /api/admin/api-keys/{id}/regenerate` — rotate one of your keys' secret in place (someone else's key is a 404)
+- `POST /api/admin/api-keys/{id}/revoke` — revoke one of your keys (soft; kept for audit)
 
 ### Programmatic API (`/api/v1`)
 

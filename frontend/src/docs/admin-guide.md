@@ -114,7 +114,7 @@ The **Overview** section shows live progress. From there you can open analytics 
 
 Besides the CSV export, there's a read-only **`/api/v1`** API for scripts and inference pipelines that need to pull experiment data directly (e.g. running a model over your questions and comparing against human ratings).
 
-Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time.
+Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time. You see only the keys you created; other admins can't see, regenerate or revoke yours.
 
 Use it as a bearer token:
 
@@ -124,6 +124,8 @@ curl -H "Authorization: Bearer <your-key>" \
 ```
 
 Available endpoints: list/batch experiments, single experiment detail, and paginated raw ratings (with full question text and ground truth). Treat keys like passwords — anyone with a key can read all experiment data.
+
+A key is **Read only** unless you pick **Admin** under **Access** when you create it. An admin key also works on the `/api/admin` routes the dashboard itself uses, so a CLI can create datasets, groups and experiments and upload questions — the inference pipeline's `scripts/create_human_rating_study.py` needs one. It can't manage API keys or do anything on Prolific (create a pilot or round, publish, close), so it never spends money. A key's access is fixed when it is created: regenerating keeps it.
 
 ---
 
