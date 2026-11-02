@@ -28,3 +28,9 @@ base_url = "https://api.prolific.com/api/v1"
 [prefetch]
 # One worker is reserved for foreground demand. Limits are per API process.
 worker_count = 8
+# Enable every current/future experiment, or use the allowlist for a pilot.
+# To disable all new enrollment/speculation: enable_all=false AND experiment_ids=[].
+enable_all = false
+# Set lookahead_questions = 0 for queue-only comparison without speculation.
+experiment_ids = []
+lookahead_questions = 1

@@ -15,7 +15,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -25,18 +24,6 @@ from terms_helpers import write_terms_source
 _CSV_ROWS = (
     "question_id,question_text,gt_answer,options,question_type\nq1,Is this useful?,Yes,Yes|No,MC\n"
 )
-
-
-@pytest.fixture
-def terms_source(tmp_path: Path):
-    """A runtime-generated terms source, wired in as TERMS__SOURCE_URL."""
-    root = tmp_path / "terms"
-    write_terms_source(root)
-    settings = get_settings()
-    original = settings.terms.source_url
-    settings.terms.source_url = f"file://{root}"
-    yield root
-    settings.terms.source_url = original
 
 
 def _create_experiment(client: TestClient) -> int:

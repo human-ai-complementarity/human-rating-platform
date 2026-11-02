@@ -15,6 +15,7 @@ export default defineConfig({
     env: {
       ...process.env,
       VITE_E2E_BYPASS_AUTH: 'true',
+      VITE_PUBLIC_POSTHOG_KEY: '',
     },
   },
   projects: [

@@ -1,5 +1,6 @@
 import React from 'react';
-import type { Screener, StudyLabel } from '../../types';
+import type { Screener, StudyFlag, StudyLabel } from '../../types';
+import { forcedScreeners } from '../../types';
 
 /**
  * Small styled primitives shared across the experiment-detail panels. Kept
@@ -396,15 +397,23 @@ export function ScreenerCheckboxes({
   value,
   onChange,
   testIdPrefix,
+  studyFlags = [],
 }: {
   value: Screener[];
   onChange: (next: Screener[]) => void;
   testIdPrefix: string;
+  // The study's flags force their prescreeners on; the backend adds them
+  // regardless, so the boxes are shown ticked and locked rather than
+  // pretending they are optional.
+  studyFlags?: StudyFlag[];
 }) {
+  const forced = forcedScreeners(studyFlags);
   const items: [Screener, string, string][] = [
     ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
     ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
     ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
+    ['harmful_content', 'Comfortable with harmful content', "Prolific's Harmful Content prescreener; required for sensitive or explicit studies."],
+    ['deception', 'Comfortable with deception', "Prolific's Deception prescreener; required for studies that mislead raters."],
   ];
   return (
     <div
@@ -419,7 +428,8 @@ export function ScreenerCheckboxes({
       }}
     >
       {items.map(([key, label, hint]) => {
-        const checked = value.includes(key);
+        const isForced = forced.includes(key);
+        const checked = isForced || value.includes(key);
         return (
           <label
             key={key}
@@ -429,6 +439,7 @@ export function ScreenerCheckboxes({
               type="checkbox"
               data-testid={`${testIdPrefix}-${key}`}
               checked={checked}
+              disabled={isForced}
               onChange={(e) => {
                 const next = e.target.checked
                   ? Array.from(new Set([...value, key]))

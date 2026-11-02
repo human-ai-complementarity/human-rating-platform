@@ -98,7 +98,7 @@ async def start_session(
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
     # Read before anything is written: the terms source is read live, and if
     # that fails the rater gets a clear 503 instead of a half-created session.
-    terms = await terms_for_rater(experiment)
+    terms = await terms_for_rater(experiment, db)
     policy = resolve_session_policy(experiment)
 
     existing_rater = await fetch_existing_rater_for_experiment(
@@ -307,17 +307,17 @@ async def record_consent(*, settings: Settings, rater_id: int, db: AsyncSession)
 
     record = await fetch_consent_record(rater.id, db)
     if record is None:
-        terms = await terms_for_rater(experiment)
+        terms = await terms_for_rater(experiment, db)
         now = datetime.now(UTC)
         rater.session_start = now
         record = ConsentRecord(
             rater_id=rater.id,
             experiment_id=rater.experiment_id,
             prolific_id=rater.prolific_id,
-            statement=terms.label,
-            version=terms.version,
-            sha256=terms.sha256,
-            source_url=terms.source_url,
+            statement=terms.consent.label,
+            version=terms.consent.version,
+            sha256=terms.consent.sha256,
+            source_url=terms.consent.source_url,
             rendered_text=terms.consent_markdown,
             accepted_at=now,
             is_preview=rater.is_preview,
@@ -332,7 +332,7 @@ async def record_consent(*, settings: Settings, rater_id: int, db: AsyncSession)
                 "attributes": {
                     "rater_id": rater.id,
                     "experiment_id": rater.experiment_id,
-                    "statement": terms.ref,
+                    "statement": terms.consent.ref,
                 }
             },
         )

@@ -12,13 +12,15 @@ An entry is an object shaped like an arm in the inference pipeline's wave
 config, the model plus the request options every call to it is sent with:
 
     {"model": "oai/gpt-5.6-luna", "reasoning_effort": "low",
-     "text_verbosity": "low", "temperature": null}
+     "text_verbosity": "low", "temperature": null, "tools": ["web_search"]}
 
 Every option is declared and null means "do not send", so what assisted the
-raters is never left to a provider default. The options belong to the
-method's primary role, the model under test. The instrument roles (confidence,
-clustering) run the entry's *model* but keep their own options: sampling's
-temperature is an instrument setting, not the arm's.
+raters is never left to a provider default. `tools` alone is optional: left
+out, it is no tools (an `openrouter/` model can only have web_search). The
+options belong to the method's primary role, the model under test. The
+instrument roles (confidence, clustering) run the entry's *model* but keep
+their own options, and never get its tools: sampling's temperature is an
+instrument setting, not the arm's.
 
 Confidence and clustering keep an override (`confidence_model`,
 `clustering_model`) that beats the map: an escape hatch for running them on
@@ -31,6 +33,7 @@ when the pipeline's export is uploaded, and land in `assistance_params`.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
@@ -39,7 +42,7 @@ from fastapi import HTTPException
 
 from config import get_settings
 
-from .llm import REASONING_EFFORTS, TEXT_VERBOSITIES, parse_model
+from .llm import PROVIDERS, REASONING_EFFORTS, TEXT_VERBOSITIES, parse_model
 
 # Role -> the LLMSettings attribute that backs it when nothing overrides.
 _ROLE_DEFAULTS: dict[str, str] = {
@@ -92,12 +95,25 @@ REMOVED_MODEL_KEY = "model"
 # model from it.
 ROLE_MODELS_KEY = "role_models"
 
-# An entry's option keys, every one declared. A key added later (`tools`,
-# `max_tokens`) goes in OPTIONAL_OPTIONS with the value an entry lacking it
-# gets, so an older export stays valid and the change is purely additive.
-OPTION_KEYS = ("reasoning_effort", "text_verbosity", "temperature")
-OPTIONAL_OPTIONS: dict[str, Any] = {}
+# An entry's option keys, every one declared but those in OPTIONAL_OPTIONS:
+# a key added after entries existed (`tools`; next, say, `max_tokens`) goes
+# there with the value an entry lacking it gets, so an older export stays
+# valid and the change is purely additive.
+OPTION_KEYS = ("reasoning_effort", "text_verbosity", "temperature", "tools")
+OPTIONAL_OPTIONS: dict[str, Any] = {"tools": ()}
 ENTRY_KEYS = ("model", *OPTION_KEYS)
+
+# The tools an entry may give the model under test, named as the inference
+# pipeline's answerer names them: every tool some provider runs.
+TOOLS = tuple(dict.fromkeys(tool for provider in PROVIDERS.values() for tool in provider.tools))
+
+
+def _tool_rank(tool: Any) -> tuple[int, str]:
+    """A tool's place in `TOOLS` order, the one order an entry's tools take:
+    a set of tools is one entry whatever order it was declared in. Ranks
+    anything, so a malformed stored value sorts rather than raises."""
+    return (TOOLS.index(tool), "") if tool in TOOLS else (len(TOOLS), str(tool))
+
 
 EXAMPLE_ENTRY = (
     '{"model": "openrouter/anthropic/claude-sonnet-4-6", "reasoning_effort": null, '
@@ -113,9 +129,20 @@ class AssistanceModel:
     reasoning_effort: str | None = None
     text_verbosity: str | None = None
     temperature: float | None = None
+    # A tuple, not a list, so an entry stays hashable: Top-N memoizes its
+    # schema verdicts per entry.
+    tools: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Stored entries hold a JSON list; a null one reads as no tools.
+        object.__setattr__(self, "tools", tuple(sorted(self.tools or (), key=_tool_rank)))
 
     def to_dict(self) -> dict[str, Any]:
-        """The stored entry shape; also the keyword arguments for `llm.complete`."""
+        """The stored entry shape, every key declared, `tools` as a JSON list."""
+        return {**asdict(self), "tools": list(self.tools)}
+
+    def call_kwargs(self) -> dict[str, Any]:
+        """The keyword arguments for `llm.complete`, tools included."""
         return asdict(self)
 
     @classmethod
@@ -127,9 +154,29 @@ class AssistanceModel:
         and an object missing a key take `options` for what they lack.
         """
         if isinstance(entry, str):
-            return cls(model=entry, **{k: options.get(k) for k in OPTION_KEYS})
+            entry = {"model": entry}
         values = {k: entry.get(k, options.get(k, OPTIONAL_OPTIONS.get(k))) for k in OPTION_KEYS}
         return cls(model=str(entry["model"]), **values)
+
+
+def same_entry(stored: Any, declared: Any) -> bool:
+    """Whether two stored values declare the same entry.
+
+    An optional key left out is its default, so an entry without `tools` and
+    one with `"tools": []` are the same declaration, not a conflict, and so
+    are the same tools in another order. Nothing else is filled in.
+    """
+    if not (isinstance(stored, Mapping) and isinstance(declared, Mapping)):
+        return stored == declared
+    return _as_declared(stored) == _as_declared(declared)
+
+
+def _as_declared(entry: Mapping[str, Any]) -> dict[str, Any]:
+    # Each optional default as stored JSON spells it: a tuple is a list.
+    filled = {**{key: list(value) for key, value in OPTIONAL_OPTIONS.items()}, **entry}
+    if isinstance(filled["tools"], list):
+        filled["tools"] = sorted(filled["tools"], key=_tool_rank)
+    return filled
 
 
 # Where a resolved model came from: the experiment's map, the role's own
@@ -188,7 +235,8 @@ def resolve_model_and_source(
     if value is not None:
         entry = AssistanceModel.from_entry(value, options)
         if role in _OVERRIDE_ROLES:
-            # An instrument runs the model under test with its own options.
+            # An instrument runs the model under test with its own options,
+            # and never with its tools.
             entry = AssistanceModel.from_entry(entry.model, options)
         return entry, "assistance_models"
     return role_default(role), "default"
@@ -279,7 +327,7 @@ def validate_model_entry(value: Any, *, field: str) -> None:
     if not isinstance(value["model"], str):
         raise _reject(field, "'model' must be a string.")
     try:
-        parse_model(value["model"])
+        provider, _ = parse_model(value["model"])
     except ValueError as exc:
         raise _reject(field, str(exc)) from exc
     _validate_choice(value["reasoning_effort"], REASONING_EFFORTS, field, "reasoning_effort")
@@ -291,8 +339,36 @@ def validate_model_entry(value: Any, *, field: str) -> None:
         or not 0 <= temperature <= 2
     ):
         raise _reject(field, "'temperature' must be null or a number from 0 to 2.")
+    tools = value.get("tools", [])
+    _validate_tools(tools, field)
+    unavailable = [tool for tool in tools if tool not in provider.tools]
+    if unavailable:
+        raise _reject(
+            field,
+            f"'tools' has {', '.join(unavailable)}, which {value['model']} cannot use. "
+            f"{provider.tool_limit}",
+        )
 
 
 def _validate_choice(value: Any, allowed: tuple[str, ...], field: str, key: str) -> None:
     if value is not None and value not in allowed:
         raise _reject(field, f"'{key}' must be null or one of {', '.join(allowed)}.")
+
+
+def _validate_tools(tools: Any, field: str) -> None:
+    allowed = ", ".join(TOOLS)
+    if not isinstance(tools, list):
+        raise _reject(
+            field,
+            f"'tools' must be a list of tool names from {allowed}; omit it or use [] for none.",
+        )
+    unknown = [tool for tool in tools if tool not in TOOLS]
+    if unknown:
+        raise _reject(
+            field,
+            f"'tools' has unknown tool(s) {', '.join(map(json.dumps, unknown))}; "
+            f"allowed: {allowed}.",
+        )
+    repeated = sorted({tool for tool in tools if tools.count(tool) > 1})
+    if repeated:
+        raise _reject(field, f"'tools' lists {', '.join(repeated)} more than once.")

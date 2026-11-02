@@ -14,6 +14,7 @@ async def test_close_stops_worker_woken_in_same_iteration(monkeypatch):
     runner = PreparationRunner(database=None)
     claim = AsyncMock(return_value=None)
     monkeypatch.setattr(runner, "_claim", claim)
+    monkeypatch.setattr(runner, "cleanup", AsyncMock(return_value=0))
     runner._listening.set()
     wake = runner._worker_events[0]
     worker = asyncio.create_task(runner._loop(foreground_only=True, wake=wake))

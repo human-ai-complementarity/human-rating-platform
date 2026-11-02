@@ -4,6 +4,10 @@ import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { AppAuthProvider } from './auth';
 import './index.css';
+import { startTracking } from './tracking';
+
+// Analytics must never break the app.
+startTracking().catch(() => {});
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

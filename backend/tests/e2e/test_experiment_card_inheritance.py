@@ -28,12 +28,14 @@ from services.assistance.model_resolution import instrument_model_keys
 
 
 def _entry(model: str, **options) -> dict:
-    """A model entry: `model` with the options given, the rest not sent."""
+    """A model entry: `model` with the options given, the rest not sent, and
+    no tools. Every key declared, as a session records it."""
     return {
         "model": model,
         "reasoning_effort": None,
         "text_verbosity": None,
         "temperature": None,
+        "tools": [],
         **options,
     }
 
@@ -313,7 +315,9 @@ def test_export_carries_the_assistance_session_id(client: TestClient):
         assert response.status_code == 200
         header = "".join(response.iter_text()).splitlines()[0]
 
-    assert "counts_toward_target,assistance_session_id" in header
+    assert header.endswith(
+        "counts_toward_target,assistance_session_id,exclusion_key,assistance_method,assistance_outcome"
+    )
 
 
 _LEGACY_PARAMS = {"assistance_models": {"top_n": "gpt-4o"}, "n": 3}
@@ -548,6 +552,11 @@ def test_advance_gets_a_snapshot_without_the_removed_model_key(
 
 _MAP_CONFIDENCE = "openrouter/test/confidence-override"
 _MAP_CONFIDENCE_SAMPLING = _entry(_MAP_CONFIDENCE, temperature=0.7)
+# An arm with tools: the model under test is recorded with them, while the
+# instruments run its model with none.
+_MAP_TOOLED = _entry(
+    "oai/test/tooled-entry", reasoning_effort="low", tools=["web_search", "code_interpreter"]
+)
 
 
 @pytest.mark.parametrize(
@@ -593,6 +602,19 @@ _MAP_CONFIDENCE_SAMPLING = _entry(_MAP_CONFIDENCE, temperature=0.7)
             "human_as_a_tool",
             {"confidence_method": "sampling", "confidence_model": _MAP_CONFIDENCE},
             {"decomposition": None, "confidence": _MAP_CONFIDENCE_SAMPLING, "clustering": None},
+        ),
+        ("top_n", {"assistance_models": {"top_n": _MAP_TOOLED}}, {"answer": _MAP_TOOLED}),
+        (
+            "human_as_a_tool",
+            {
+                "assistance_models": {"human_as_a_tool": _MAP_TOOLED},
+                "confidence_method": "sampling",
+            },
+            {
+                "decomposition": _MAP_TOOLED,
+                "confidence": _entry(_MAP_TOOLED["model"], temperature=0.7),
+                "clustering": _entry(_MAP_TOOLED["model"], temperature=0),
+            },
         ),
     ],
 )
