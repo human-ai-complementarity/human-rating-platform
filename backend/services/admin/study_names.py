@@ -20,6 +20,10 @@ from fastapi import HTTPException
 # ("{0.__class__}"), and a typo like "{waves}" must be a clean 400 rather than
 # a 500.
 PLACEHOLDERS = ("dataset", "wave", "method")
+# What {method} renders as. The unassisted arm's method value, "none", reads as
+# a missing value ("medqa fall25 none"), so it is named "unassisted", as the
+# inference pipeline's create_human_rating_study.py also names it.
+METHOD_NAMES = {"none": "unassisted"}
 # The public name takes none. Participants read it in the Prolific title and
 # the rater header, so it must not tell them the dataset, wave or arm.
 EXTERNAL_PLACEHOLDERS: tuple[str, ...] = ()
@@ -75,6 +79,11 @@ def check_template(
             known = ", ".join(f"{{{p}}}" for p in allowed)
             detail = f'Unknown placeholder "{{{key}}}" in {field}. Available here: {known}.'
         raise HTTPException(status_code=400, detail=detail)
+
+
+def method_name(method: str) -> str:
+    """The assistance method as a name's {method} shows it."""
+    return METHOD_NAMES.get(method, method)
 
 
 def render_study_name(

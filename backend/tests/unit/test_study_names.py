@@ -13,6 +13,7 @@ from services.admin.study_names import (
     ROUND_SUFFIX_RESERVE,
     TEMPLATE_MAX_LENGTH,
     check_card_templates,
+    method_name,
     numbered_variants,
     render_study_name,
 )
@@ -26,6 +27,11 @@ def _render(template: str, **kwargs) -> str:
 
 def test_whitelisted_placeholders_substitute():
     assert _render("{dataset} {wave} {method}") == "gpqa_diamond fall25 top_n"
+
+
+def test_the_unassisted_arm_is_named_unassisted_not_none():
+    assert method_name("none") == "unassisted"
+    assert method_name("top_n") == "top_n"
 
 
 def test_literal_template_passes_through():

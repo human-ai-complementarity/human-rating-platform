@@ -101,7 +101,7 @@ def test_the_dashboard_create_forms_blank_payload_takes_the_card(client: TestCli
     )
 
     assert exp["name"] == "Passage comprehension rating"
-    assert exp["internal_name"] == "medqa fall25 none"
+    assert exp["internal_name"] == "medqa fall25 unassisted"
     assert exp["num_ratings_per_question"] == 5
 
 
@@ -203,7 +203,7 @@ def test_internal_names_differing_on_the_arm_are_not_numbered(client: TestClient
     first = _create(client, group_id=group["id"], assistance_method="none")
     second = _create(client, group_id=group["id"], assistance_method="top_n")
 
-    assert first["internal_name"] == "medqa fall25 none"
+    assert first["internal_name"] == "medqa fall25 unassisted"
     assert second["internal_name"] == "medqa fall25 top_n"
 
 

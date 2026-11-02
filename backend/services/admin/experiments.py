@@ -66,6 +66,7 @@ from services.queries import parent_question_ids_subquery
 from services.terms import fetch_terms_refs, parse_flags, validate_terms_config
 from .study_names import (
     EXTERNAL_PLACEHOLDERS,
+    method_name,
     numbered_variants,
     render_study_name,
 )
@@ -152,7 +153,7 @@ async def _resolve_names(
     name = (payload.name or "").strip()
     internal_name = (payload.internal_name or "").strip() or None
     context = dict(card.context) if card else {}
-    context["method"] = payload.assistance_method
+    context["method"] = method_name(payload.assistance_method)
 
     if not name and card and card.values.get("external_study_name"):
         name = render_study_name(
