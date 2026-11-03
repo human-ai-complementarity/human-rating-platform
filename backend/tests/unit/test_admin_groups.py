@@ -11,9 +11,9 @@ from config import Settings
 from services import admin_groups
 from services.admin_groups import API, GroupReadError, read_group_emails
 
-G = "hrp-admins@sampura.org"
-COHORT = "spar-fall26@sampura.org"
-SA = "human-rating-platform@complementarities-gcs.iam.gserviceaccount.com"
+G = "team@example.com"
+COHORT = "cohort@example.com"
+SA = "platform@example.iam.gserviceaccount.com"
 
 
 class FakeResponse:
@@ -59,7 +59,7 @@ def test_nested_groups_are_walked_and_service_accounts_skipped() -> None:
             lookup(G): {"name": "groups/top"},
             members("groups/top"): {
                 "memberships": [
-                    person("Owner@sampura.org"),
+                    person("Owner@example.com"),
                     person(COHORT, "GROUP"),
                     person(SA, "SERVICE_ACCOUNT"),
                 ]
@@ -67,14 +67,14 @@ def test_nested_groups_are_walked_and_service_accounts_skipped() -> None:
             lookup(COHORT): {"name": "groups/cohort"},
             members("groups/cohort"): {
                 "memberships": [
-                    person("vol@gmail.com"),
-                    person("owner@sampura.org"),
+                    person("vol@example.org"),
+                    person("owner@example.com"),
                     person(G, "GROUP"),
                 ]
             },
         }
     )
-    assert read_group_emails([G], session) == {"owner@sampura.org", "vol@gmail.com"}
+    assert read_group_emails([G], session) == {"owner@example.com", "vol@example.org"}
     # The cycle back to the top group is not re-read.
     assert sum(1 for url, _ in session.calls if url.endswith("groups:lookup")) == 2
 
@@ -104,7 +104,7 @@ def test_unreadable_nested_group_fails_the_whole_read_naming_it() -> None:
 
 def test_unknown_group_is_a_404_pointing_at_the_setting() -> None:
     with pytest.raises(GroupReadError, match="not found.*ADMIN_GROUPS"):
-        read_group_emails(["nope@sampura.org"], FakeSession({}))
+        read_group_emails(["nope@example.com"], FakeSession({}))
 
 
 @pytest.mark.asyncio
@@ -126,14 +126,14 @@ async def test_refresh_replaces_on_success_and_keeps_on_failure(monkeypatch) -> 
 
 
 def test_allowed_emails_is_the_union(monkeypatch) -> None:
-    monkeypatch.setattr(admin_groups, "_emails", frozenset({"vol@gmail.com"}))
-    settings = SimpleNamespace(admin_allowlist=[" Break@Glass.org "])
-    assert allowed_emails(settings) == {"break@glass.org", "vol@gmail.com"}
+    monkeypatch.setattr(admin_groups, "_emails", frozenset({"vol@example.org"}))
+    settings = SimpleNamespace(admin_allowlist=[" Break-Glass@example.com "])
+    assert allowed_emails(settings) == {"break-glass@example.com", "vol@example.org"}
 
 
 def test_admin_groups_setting_parses_like_the_allowlist(monkeypatch) -> None:
     monkeypatch.setenv("APP_SECRET_KEY", "test-secret")
     monkeypatch.delenv("ADMIN_GROUPS", raising=False)
     assert Settings(_env_file=None).admin_groups == []
-    monkeypatch.setenv("ADMIN_GROUPS", " a@sampura.org, b@sampura.org ")
-    assert Settings(_env_file=None).admin_groups == ["a@sampura.org", "b@sampura.org"]
+    monkeypatch.setenv("ADMIN_GROUPS", " a@example.com, b@example.com ")
+    assert Settings(_env_file=None).admin_groups == ["a@example.com", "b@example.com"]

@@ -1,7 +1,7 @@
 """Read ADMIN_GROUPS from Google and print who the platform would admit. Writes nothing.
 
     uv run python scripts/admin_groups_check.py                      # groups from ADMIN_GROUPS
-    uv run python scripts/admin_groups_check.py hrp-admins@sampura.org
+    uv run python scripts/admin_groups_check.py team@example.com
 
 Credentials: GOOGLE_APPLICATION_CREDENTIALS (the platform's key) or your
 gcloud login, which needs a quota project where the Cloud Identity API is
