@@ -64,6 +64,28 @@ export const textareaStyle: React.CSSProperties = {
   fontFamily: 'var(--font-body)',
 };
 
+/**
+ * Standard native <select> styling. Drops the browser's own arrow, which sits
+ * flush against the right edge, for a drawn caret with room around it.
+ * Override `padding` only with a right padding of at least 30px.
+ */
+export const selectStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '11px 38px 11px 13px',
+  border: '1px solid var(--faint)',
+  borderRadius: 'var(--radius-sm)',
+  backgroundColor: 'var(--surface)',
+  backgroundImage:
+    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23736c60' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")",
+  backgroundRepeat: 'no-repeat',
+  backgroundPosition: 'right 13px center',
+  backgroundSize: '12px 8px',
+  appearance: 'none',
+  font: '400 15px var(--font-body)',
+  color: 'var(--ink)',
+  cursor: 'pointer',
+};
+
 /** Colored banner used for info/success/warning/error messages inside panels. */
 export function Banner({
   tone,
