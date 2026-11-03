@@ -105,7 +105,7 @@ Frontend (Render Static Site):
 - `VITE_CLERK_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_KEY`
 - `VITE_API_HOST=https://api.platform.complementarities.org`  (origin only; no path)
 - `VITE_PUBLIC_POSTHOG_KEY=<project API key>` (leave empty to disable PostHog)
-- `VITE_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com`
+- `VITE_PUBLIC_POSTHOG_HOST=https://api.platform.complementarities.org/e` (the backend's reverse proxy to PostHog; set `https://us.i.posthog.com` to bypass it)
 
 PostHog runs in cookieless mode, which must also be enabled in the [PostHog project settings](https://us.posthog.com/settings/project) or events are silently ignored.
 

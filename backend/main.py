@@ -16,7 +16,7 @@ from starlette.responses import Response
 from config import get_settings
 from database import build_database
 from logging_config import configure_logging
-from routers import admin, raters, v1
+from routers import admin, posthog, raters, v1
 from services import prolific_to_slack
 from services.assistance.runner import PreparationRunner
 
@@ -185,6 +185,7 @@ def create_app() -> FastAPI:
     api_router.include_router(v1.router)
     api_router.add_api_route("/health", health, methods=["GET"])
     app.include_router(api_router)
+    app.include_router(posthog.router)
 
     _configure_openapi(app, settings.app.expose_internal_docs)
 
