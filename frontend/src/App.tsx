@@ -15,6 +15,7 @@ import {
   SignedIn,
   SignedOut,
   useAuth,
+  useSignOut,
   useUser,
   UserButton,
 } from './auth';
@@ -253,7 +254,10 @@ function AdminShell({ children }: { children: React.ReactNode }) {
         <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
         <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
         <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14 }}>
+          <SignedIn>
+            <SignOutButton />
+          </SignedIn>
           <UserButton afterSignOutUrl="/" />
         </div>
       </header>
@@ -309,6 +313,46 @@ function NavTab({
           }}
         />
       )}
+    </button>
+  );
+}
+
+function SignOutButton() {
+  const signOut = useSignOut();
+  const [busy, setBusy] = React.useState(false);
+
+  const handleClick = async () => {
+    setBusy(true);
+    // Clear the backend admin cookie before ending the Clerk session so the
+    // session is gone even if the redirect beats BackendLogoutOnSignedOut.
+    if (!isE2eAuthBypassed()) {
+      await api.adminLogout().catch(() => {});
+    }
+    try {
+      await signOut('/');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={() => void handleClick()}
+      disabled={busy}
+      style={{
+        background: 'none',
+        border: '1px solid var(--line)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '6px 12px',
+        fontSize: 13,
+        fontFamily: 'var(--font-body)',
+        color: 'var(--ink)',
+        cursor: busy ? 'default' : 'pointer',
+        lineHeight: 1,
+      }}
+    >
+      {busy ? 'Signing out…' : 'Sign out'}
     </button>
   );
 }

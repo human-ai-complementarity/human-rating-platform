@@ -7,6 +7,7 @@ import {
   SignedOut as ClerkSignedOut,
   UserButton as ClerkUserButton,
   useAuth as useClerkAuth,
+  useClerk,
   useUser as useClerkUser,
 } from '@clerk/clerk-react';
 
@@ -152,4 +153,20 @@ export function useAuth(): FakeUseAuth | ReturnType<typeof useClerkAuth> {
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return useClerkAuth();
+}
+
+/**
+ * Returns a function that ends the Clerk session and sends the browser to
+ * `redirectUrl`. Under the e2e auth bypass there is no Clerk session to end,
+ * so it only navigates.
+ */
+export function useSignOut(): (redirectUrl?: string) => Promise<void> {
+  if (E2E_AUTH_BYPASS_ENABLED) {
+    return async (redirectUrl = '/') => {
+      window.location.assign(redirectUrl);
+    };
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const { signOut } = useClerk();
+  return (redirectUrl = '/') => signOut({ redirectUrl });
 }

@@ -974,6 +974,15 @@ test.beforeEach(async ({ page }) => {
   page.on('dialog', (dialog) => dialog.accept());
 });
 
+test('the admin header offers a sign out button', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+
+  await page.goto('/admin');
+
+  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+});
+
 test('a long-context experiment is created with its own session length', async ({ page }) => {
   const state = createMockState();
   await installApiMocks(page, state);
