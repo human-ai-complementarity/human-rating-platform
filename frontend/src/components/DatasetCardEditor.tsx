@@ -11,6 +11,7 @@ import {
   inputStyle,
   primaryButton,
   secondaryButton,
+  selectStyle,
   textareaStyle,
 } from './experiment-detail/ui';
 
@@ -331,7 +332,7 @@ export default function DatasetCardEditor({
                   data-testid="card-study-label-select"
                   value={draft.study_label}
                   onChange={(e) => set({ study_label: e.target.value as StudyLabel | '' })}
-                  style={{ ...inputStyle, cursor: 'pointer' }}
+                  style={selectStyle}
                 >
                   <option value="">Not set (Annotation)</option>
                   {STUDY_LABELS.map(([value, label]) => (
