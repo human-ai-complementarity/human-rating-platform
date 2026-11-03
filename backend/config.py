@@ -229,6 +229,13 @@ class Settings(BaseSettings):
         default_factory=list,
         description="Comma-separated list of allowlisted admin emails.",
     )
+    # Google Groups whose people (nested groups included) are admitted like
+    # admin_allowlist. Read as the platform's service account; see
+    # services/admin_groups.py. Empty => the allowlist is the only gate.
+    admin_groups: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Comma-separated list of Google Group emails whose members are admins.",
+    )
     # Bearer keys for the programmatic /api/v1 read API (CLI / inference
     # pipelines). Comma-separated or JSON array so keys can be rotated by
     # adding a new one before retiring the old. Empty => the v1 API is
@@ -276,7 +283,7 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("admin_allowlist", mode="before")
+    @field_validator("admin_allowlist", "admin_groups", mode="before")
     @classmethod
     def parse_admin_allowlist(cls, value: object) -> list[str]:
         if value is None:
