@@ -1,5 +1,9 @@
 """The pilot check end to end (docs/pilot-check.md): a run starts in the
-background and lands on a status, and the experiment read summarises it."""
+background and lands on a status, and the experiment read summarises it.
+
+Every provider call is stubbed to fail (conftest), which is itself a good
+fixture: an assisted arm's run must report that, not crash.
+"""
 
 from __future__ import annotations
 
@@ -148,6 +152,33 @@ def test_the_placeholder_consent_fails_the_run(client: TestClient):
     summary = client.get(f"/api/admin/experiments/{exp['id']}").json()["pilot_check"]
     assert summary["state"] == "failed"
     assert summary["counts"]["error"] == 1
+
+
+def test_an_assisted_arm_whose_provider_fails_is_reported(client: TestClient, terms_source):
+    exp = _ready_experiment(
+        client,
+        "top_n",
+        assistance_models={
+            "top_n": {
+                "model": "openrouter/anthropic/claude-sonnet-4-6",
+                "reasoning_effort": None,
+                "text_verbosity": None,
+                "temperature": 0,
+            }
+        },
+    )
+    run = _run_check(client, exp["id"])
+    assert run["status"] == "failed"
+    assert [stage["id"] for stage in run["stages"]] == ["sampling", "assistance", "checks", "done"]
+    assert run["stage"] == "done"
+    assert len(run["assistance_steps"]) == 3
+    assert all(step["step_type"] == "none" for step in run["assistance_steps"])
+    grouped = _by_check(run)
+    assert grouped["assistance_health"][0]["severity"] == "error"
+    assert "3 of 3" in grouped["assistance_health"][0]["message"]
+    assert {f["question_id"] for f in grouped["assistance_output"]} == set(
+        run["sample_question_ids"]
+    )
 
 
 def test_editing_the_experiment_makes_the_run_stale(client: TestClient, terms_source):

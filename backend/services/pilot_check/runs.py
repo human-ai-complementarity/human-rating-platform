@@ -2,8 +2,8 @@
 
 A run is one row in `pilot_check_runs`. The POST handler inserts it as
 `running` and hands the work to an asyncio task in the API process; the task
-gathers what a rater would see, applies the checks, and writes the result
-back, touching `updated_at` as it goes. A `running` row that has not been
+gathers what a rater would see, probes the assistance method, applies the
+checks, and writes the result back, touching `updated_at` as it goes. A `running` row that has not been
 touched for `STALE_AFTER` belongs to a process that is gone: it reads as
 aborted and can be re-run.
 """
@@ -28,6 +28,7 @@ from services.assistance.base import exception_text
 from services.queries import fetch_experiment_or_404
 from services.terms import terms_for_rater
 
+from .assistance import probe_all
 from .checks import CHECKS, CHECKS_BY_NAME, SEVERITY_RANK, CheckContext, CheckSpec, Finding
 from .checks import severity_of
 from .rater_view import build_views
@@ -45,6 +46,7 @@ _tasks: set[asyncio.Task] = set()
 
 _STAGE_LABELS = {
     "sampling": "Sample questions",
+    "assistance": "Probe assistance",
     "checks": "Check rendering",
     "done": "Result",
 }
@@ -165,11 +167,11 @@ def status_from(findings: list[Finding]) -> str:
 
 def plan_stages(experiment: Experiment, settings: PilotCheckSettings) -> list[PilotCheckStage]:
     """The stages a run of this experiment goes through, in order, for the
-    card's stepper: sampling, the checks as a group, done."""
-    return [
-        PilotCheckStage(id=stage_id, label=_STAGE_LABELS[stage_id])
-        for stage_id in ("sampling", "checks", "done")
-    ]
+    card's stepper: sampling, assistance (assisted arms), the checks as a
+    group, done."""
+    assisted = experiment.assistance_method != "none"
+    ids = ["sampling"] + (["assistance"] if assisted else []) + ["checks", "done"]
+    return [PilotCheckStage(id=stage_id, label=_STAGE_LABELS[stage_id]) for stage_id in ids]
 
 
 def build_run_response(
@@ -332,6 +334,16 @@ async def _perform(run_id: int, database: Database, settings: PilotCheckSettings
     ctx = await _gather(run_id, database, settings)
     if ctx is None:
         return  # deleted while starting
+    experiment = ctx.experiment
+
+    if experiment.assistance_method != "none":
+        total = len(ctx.views)
+
+        async def probed(done: int, of: int) -> None:
+            await _set_stage(run_id, database, "assistance", f"{done} of {of} questions probed")
+
+        await _set_stage(run_id, database, "assistance", f"0 of {total} questions probed")
+        ctx.probes, ctx.method_params = await probe_all(experiment, ctx.views, on_progress=probed)
 
     findings: list[Finding] = []
     await _set_stage(run_id, database, "checks")
@@ -344,6 +356,7 @@ async def _perform(run_id: int, database: Database, settings: PilotCheckSettings
         database,
         status=status_from(findings),
         findings=findings,
+        probes=ctx.probes,
         sample_ids=[view.question_id for view in ctx.views],
         terms_ref=f"{terms.consent.ref}:{terms.consent.sha256}" if terms else None,
     )
@@ -356,6 +369,7 @@ async def _finish(
     status: str,
     error: str | None = None,
     findings: list[Finding] | None = None,
+    probes=None,
     sample_ids: list[int] | None = None,
     terms_ref: str | None = None,
 ) -> None:
@@ -375,6 +389,8 @@ async def _finish(
             run.stage_detail = None
             if findings is not None:
                 run.findings = json.dumps([f.to_dict() for f in findings])
+            if probes is not None:
+                run.assistance_steps = json.dumps([p.to_dict() for p in probes])
             if sample_ids is not None:
                 run.sample_question_ids = json.dumps(sample_ids)
             run.terms_ref = terms_ref

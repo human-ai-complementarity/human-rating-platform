@@ -11,11 +11,14 @@ import pytest
 from config import PilotCheckSettings
 from models import Experiment, ExperimentStatus, PilotCheckRun, Question
 from schemas import QuestionResponse
+from services.pilot_check.assistance import AssistanceProbe
 from services.pilot_check.checks import (
     CHECKS,
     CHECKS_BY_NAME,
     CheckContext,
     CheckSpec,
+    assistance_health,
+    assistance_output,
     consent,
     markdown_mode,
     question_renders,
@@ -92,6 +95,17 @@ def _ctx(config, experiment: Experiment, views=None, **kwargs) -> CheckContext:
         question_count=kwargs.pop("question_count", 10),
         views=views if views is not None else [_view(experiment)],
         **kwargs,
+    )
+
+
+def _probe(qid: int, step_type: str = "ask_input", payload: dict | None = None, **kw):
+    return AssistanceProbe(
+        question_id=qid,
+        step_type=step_type,
+        payload=payload or {},
+        failure_reason=kw.get("failure_reason"),
+        failure_detail=kw.get("failure_detail"),
+        latency_ms=kw.get("latency_ms", 1200),
     )
 
 
@@ -215,6 +229,117 @@ async def test_a_choice_question_without_options_is_an_error(config):
     assert "duplicates" in by_question[2].message
     assert by_question[3].severity == "error"
     assert "parent" in by_question[4].message
+
+
+@pytest.mark.asyncio
+async def test_assistance_checks_skip_on_a_control_arm(config):
+    ctx = _ctx(config, _experiment(), probes=None)
+    for check in (assistance_output, assistance_health):
+        findings = await check.run(ctx, "error")
+        assert _severities(findings) == ["info"]
+        assert findings[0].message.startswith("Skipped")
+
+
+@pytest.mark.asyncio
+async def test_zero_confidence_empty_subtasks_are_an_error(config):
+    exp = _experiment(assistance_method="human_as_a_tool")
+    payload = {
+        "subtasks": [
+            {"index": 0, "question": "Is it true?", "my_answer": "", "confidence": 0},
+            {"index": 1, "question": "Is it cited?", "my_answer": "", "confidence": 0},
+        ],
+        "confidence_threshold": 75,
+    }
+    ctx = _ctx(config, exp, probes=[_probe(1, "ask_input", payload)])
+    findings = await assistance_output.run(ctx, "error")
+    messages = [f.message for f in findings]
+    assert any("0% confidence" in m for m in messages)
+    assert any("No subtask has an AI answer" in m for m in messages)
+    assert all(f.severity == "error" and f.question_id == 1 for f in findings)
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_subtask_list_passes(config):
+    exp = _experiment(assistance_method="human_as_a_tool")
+    payload = {
+        "subtasks": [
+            {"index": 0, "question": "Is it true?", "my_answer": "yes", "confidence": 90},
+            {"index": 1, "question": "Is it cited?", "my_answer": "no", "confidence": 40},
+        ],
+        "confidence_threshold": 75,
+    }
+    ctx = _ctx(config, exp, probes=[_probe(1, "ask_input", payload)])
+    assert await assistance_output.run(ctx, "error") == []
+
+
+@pytest.mark.asyncio
+async def test_top_n_without_candidates_is_an_error(config):
+    exp = _experiment(assistance_method="top_n")
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[
+            _probe(1, "display", {"kind": "top_n", "candidates": []}),
+            _probe(
+                2,
+                "none",
+                {"kind": "top_n", "parse_status": "no_candidates"},
+                failure_reason="invalid_response",
+            ),
+        ],
+    )
+    findings = await assistance_output.run(ctx, "error")
+    assert [(f.question_id, f.severity) for f in findings] == [(1, "error"), (2, "error")]
+    assert "invalid_response" in findings[1].message
+
+
+@pytest.mark.asyncio
+async def test_health_reports_failures_and_identical_output(config):
+    exp = _experiment(assistance_method="top_n")
+    same = {"kind": "top_n", "candidates": [{"rank": 1, "answer": "Yes"}]}
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[
+            _probe(1, "display", same),
+            _probe(2, "display", same),
+            _probe(3, "none", failure_reason="provider_error", failure_detail="401"),
+        ],
+    )
+    findings = await assistance_health.run(ctx, "error")
+    messages = [f.message for f in findings]
+    assert any("1 of 3" in m and "provider_error" in m for m in messages)
+    assert any("byte-identical" in m for m in messages)
+    assert findings[0].detail == "401"
+
+
+@pytest.mark.asyncio
+async def test_health_passes_with_an_info_line(config):
+    exp = _experiment(assistance_method="top_n")
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[
+            _probe(1, "display", {"candidates": [{"answer": "Yes"}]}),
+            _probe(2, "display", {"candidates": [{"answer": "No"}]}),
+        ],
+    )
+    findings = await assistance_health.run(ctx, "error")
+    assert _severities(findings) == ["info"]
+    assert "2 of 2" in findings[0].message
+
+
+@pytest.mark.asyncio
+async def test_slow_assistance_is_a_warning(config):
+    exp = _experiment(assistance_method="top_n")
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[_probe(1, "display", {"candidates": [{"answer": "Yes"}]}, latency_ms=45_000)],
+    )
+    findings = await assistance_health.run(ctx, "error")
+    assert _severities(findings) == ["warning"]
+    assert "45.0s" in findings[0].message
 
 
 # --- Summary and fingerprint ---------------------------------------------
