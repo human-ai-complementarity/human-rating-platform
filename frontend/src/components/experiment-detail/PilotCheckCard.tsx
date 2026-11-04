@@ -152,6 +152,16 @@ export function PilotCheckCard({
                   {run.requested_by && ` by ${run.requested_by}`}.
                 </span>
               )}
+              {summary?.needs_acknowledgement && summary.gate_mode === 'warn' && (
+                <div style={{ marginTop: 4, fontSize: 12.5 }}>
+                  Launching will ask you to acknowledge this.
+                </div>
+              )}
+              {summary?.needs_acknowledgement && summary.gate_mode === 'block' && (
+                <div style={{ marginTop: 4, fontSize: 12.5 }}>
+                  Launching is blocked until the check passes.
+                </div>
+              )}
             </div>
           </Banner>
         </div>

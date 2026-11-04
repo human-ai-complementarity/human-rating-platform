@@ -26,6 +26,7 @@ import type {
   ExperimentStats,
   ExperimentStatus,
   LaunchPreview,
+  PilotCheckRefusal,
   PilotCheckRun,
   PilotStudyCreate,
   PlatformStatus,
@@ -231,45 +232,82 @@ async function readText(response: Response): Promise<string> {
   }
 }
 
-function httpErrorMessage(status: number, statusText: string, body: string, url: string): string {
+function httpErrorMessage(
+  status: number,
+  statusText: string,
+  body: string,
+  detail: unknown,
+  url: string
+): string {
   if (body && looksLikeHtml(body)) {
     return buildRoutingHint(url);
   }
 
-  const detail = extractDetail(body);
-  if (detail) {
-    return detail;
+  const message = describeDetail(detail);
+  if (message) {
+    return message;
   }
   const fallback = body.trim() || `${status} ${statusText}`;
   return `Request failed (${status}) for ${url}: ${fallback}`;
 }
 
+/**
+ * A non-2xx response. `message` is what the UI shows; `status` and `detail`
+ * let a caller recognise a structured refusal, such as the pilot check's 409
+ * (docs/pilot-check.md), and act on it instead of only displaying it.
+ */
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); }
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+// FastAPI's `detail`, when the body is JSON that carries one.
+function parseDetail(body: string): unknown {
+  const trimmed = body.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return undefined;
+  try {
+    return (JSON.parse(trimmed) as { detail?: unknown }).detail;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The launch gate's refusal, when `err` is one. */
+export function pilotCheckRefusal(err: unknown): PilotCheckRefusal | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const detail = err.detail as Partial<PilotCheckRefusal> | undefined;
+  if (!detail || typeof detail !== 'object' || !detail.pilot_check) return null;
+  if (detail.code !== 'pilot_check' && detail.code !== 'pilot_check_blocked') return null;
+  return detail as PilotCheckRefusal;
 }
 
 async function throwHttpError(response: Response, url: string): Promise<never> {
   const body = await readText(response);
-  throw new ApiError(response.status, httpErrorMessage(response.status, response.statusText, body, url));
+  const detail = parseDetail(body);
+  throw new ApiError(
+    response.status,
+    httpErrorMessage(response.status, response.statusText, body, detail, url),
+    detail
+  );
 }
 
-// FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
-// list of `{loc, msg, ...}` from request validation (Pydantic). Unwrap both so
-// users see the message instead of escaped JSON.
-function extractDetail(body: string): string | null {
-  const trimmed = body.trim();
-  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed.detail?.message === 'string') return parsed.detail.message;
-    if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
-      return parsed.detail.trim();
-    }
-    if (parsed && Array.isArray(parsed.detail)) {
-      return formatValidationErrors(parsed.detail);
-    }
-  } catch {
-    // not JSON — fall through to raw body fallback in caller
+// FastAPI's `detail` comes in three shapes: a string from HTTPException, a
+// list of `{loc, msg, ...}` from request validation (Pydantic), and an object
+// with a `message` for a structured refusal such as the pilot check's 409.
+// Unwrap each so users see the sentence instead of escaped JSON.
+function describeDetail(detail: unknown): string | null {
+  if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  if (Array.isArray(detail)) return formatValidationErrors(detail);
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
   }
   return null;
 }
@@ -442,7 +480,9 @@ function uploadFormData<T>(
       const body = xhr.responseText || '';
 
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(httpErrorMessage(xhr.status, xhr.statusText, body, url)));
+        reject(
+          new Error(httpErrorMessage(xhr.status, xhr.statusText, body, parseDetail(body), url))
+        );
         return;
       }
 
@@ -710,10 +750,17 @@ export const api = {
   // form. Only a complete card (economics included) qualifies, so a dataset's
   // first study usually goes through the pilot form. Publishing is still separate.
   // It excludes the dataset's other experiments; getLaunchPreview lists them.
-  async launchFromCard(experimentId: number, places?: number): Promise<ExperimentRound> {
+  async launchFromCard(
+    experimentId: number,
+    places?: number,
+    { acknowledgePilotCheck = false }: { acknowledgePilotCheck?: boolean } = {}
+  ): Promise<ExperimentRound> {
     return requestJson<ExperimentRound>(routes.admin.launch(experimentId), {
       method: 'POST',
-      json: places != null ? { places } : {},
+      json: {
+        ...(places != null ? { places } : {}),
+        ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}),
+      },
     });
   },
 
@@ -745,10 +792,14 @@ export const api = {
     });
   },
 
-  async runExperimentRound(experimentId: number, places: number): Promise<ExperimentRound> {
+  async runExperimentRound(
+    experimentId: number,
+    places: number,
+    { acknowledgePilotCheck = false }: { acknowledgePilotCheck?: boolean } = {}
+  ): Promise<ExperimentRound> {
     return requestJson<ExperimentRound>(routes.admin.prolificRounds(experimentId), {
       method: 'POST',
-      json: { places },
+      json: { places, ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}) },
     });
   },
 

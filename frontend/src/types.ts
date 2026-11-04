@@ -112,6 +112,10 @@ export interface PilotCheckSummary {
   created_at: string | null;
   finished_at: string | null;
   counts: Record<PilotCheckSeverity, number>;
+  gate_mode: 'warn' | 'block' | 'off';
+  // True when creating a study is refused with a 409 unless the request
+  // carries acknowledge_pilot_check (never satisfiable in block mode).
+  needs_acknowledgement: boolean;
   // One sentence on why, or null when the run is clean.
   reason: string | null;
 }
@@ -167,6 +171,12 @@ export interface PilotCheckRun {
 }
 
 // The structured body of the launch gate's 409.
+export interface PilotCheckRefusal {
+  code: 'pilot_check' | 'pilot_check_blocked';
+  message: string;
+  pilot_check: PilotCheckSummary;
+}
+
 // A group whose wave is not the platform's current one.
 export interface WaveWarning {
   group_wave: string;

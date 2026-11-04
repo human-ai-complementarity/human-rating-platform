@@ -116,7 +116,7 @@ Before creating any study, press **Run check** on the **Pilot check** card at th
 
 Findings are grouped by check with a severity each, and a question-level finding links straight to that question in the participant preview. The card says when the check was last run and by whom. Editing the instructions, prompts, Markdown switch, assistance settings or questions makes the run **stale**, so run it again after changes.
 
-The sample size, the judge model and per-check severities live under `[pilot_check]` in `backend/config.toml`.
+Creating a pilot or a round without a clean run (none, stale, still running, or with warnings or errors) opens a confirmation. You can launch anyway, and the round records who did; or the deployment can be configured to block instead. The sample size, the judge model, the gate mode and per-check severities live under `[pilot_check]` in `backend/config.toml`.
 
 ### Dataset cards and the one-click pilot
 

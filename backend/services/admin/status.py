@@ -39,6 +39,7 @@ def compute_attention_reason(
     status: ExperimentStatus,
     remaining_actions: int,
     round_statuses: list[ProlificStudyStatus],
+    pilot_check_pending: bool = False,
 ) -> str | None:
     """Short reason an experiment has a pending admin action, or None if not.
 
@@ -46,6 +47,7 @@ def compute_attention_reason(
     flag a row without loading round data per experiment:
 
       * An UNPUBLISHED round draft exists — publish it. (DRAFT or LAUNCH)
+      * DRAFT with questions but no clean pilot check — run the check.
       * LAUNCH, every round closed, target not met — launch another round.
       * LAUNCH, every round closed, target met — mark the experiment finished.
 
@@ -56,6 +58,9 @@ def compute_attention_reason(
         return None
     if ProlificStudyStatus.UNPUBLISHED in round_statuses:
         return "A round draft is waiting to be published on Prolific."
+    if status == ExperimentStatus.DRAFT and not round_statuses and pilot_check_pending:
+        # Questions are in but no clean pilot check backs them (docs/pilot-check.md).
+        return "Run the pilot check before launching."
     if status != ExperimentStatus.LAUNCH or not round_statuses:
         return None
     if any(s not in ROUND_TERMINAL_STATUSES for s in round_statuses):
@@ -203,7 +208,7 @@ def launch_blocker_summary(blockers: list[str]) -> str | None:
     return "this experiment " + " and ".join(parts)
 
 
-async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
+async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> int:
     """Refuse to create a study for an experiment that isn't fully onboarded.
 
     Bites at first study creation — the last moment before a Prolific study
@@ -213,9 +218,10 @@ async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
     The testing-preview blocker alone also bites later on
     (`assert_not_preview_testing`).
     """
+    question_count = await fetch_total_questions_for_experiment(experiment.id, db)
     blockers = experiment_launch_blockers(
         experiment,
-        question_count=await fetch_total_questions_for_experiment(experiment.id, db),
+        question_count=question_count,
         tags=await fetch_tag_names_for_experiment(experiment.id, db),
     )
     if blockers:
@@ -228,6 +234,7 @@ async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
                 ]
             ),
         )
+    return question_count
 
 
 async def assert_not_preview_testing(experiment: Experiment, db: AsyncSession, action: str) -> None:

@@ -461,6 +461,10 @@ async def _build_experiment_responses(
                 status=experiment.status,
                 remaining_actions=remaining_by_experiment.get(experiment.id, 0),
                 round_statuses=round_statuses_by_experiment.get(experiment.id, []),
+                pilot_check_pending=(
+                    int(question_count or 0) > 0
+                    and pilot_checks[experiment.id].needs_acknowledgement
+                ),
             ),
             spend_minor_units=spend_by_experiment.get(experiment.id, 0),
             group=snapshots.get(experiment.group_id) if experiment.group_id else None,
