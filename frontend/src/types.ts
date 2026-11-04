@@ -53,6 +53,7 @@ export interface Experiment {
   consent_statement_ref: string | null;
   debrief_statement_ref: string | null;
   is_markdown: boolean;
+  render_math: boolean;
   prolific_pool: string | null;
   status: ExperimentStatus;
   // Non-null ISO timestamp when the experiment has been archived (soft-hidden
@@ -169,12 +170,14 @@ export const UPLOAD_META_KEYS = [
   ...DATASET_META_FIELDS,
   'assistance_models.top_n',
   'assistance_models.human_as_a_tool',
+  'render_math',
 ] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 // What an upload declared; `assistance_models` maps method to an entry. Rows
 // uploaded before entries carried options hold a bare model id.
 export type DatasetMeta = Partial<Record<DatasetMetaField, string>> & {
   assistance_models?: Record<string, AssistanceModelEntry | string>;
+  render_math?: boolean;
 };
 
 export type StudyLabel =
@@ -265,6 +268,7 @@ export interface Question {
   question_type: string;
   parent_question_text?: string | null;
   is_markdown: boolean;
+  render_math: boolean;
 }
 
 export interface ExperimentStats {

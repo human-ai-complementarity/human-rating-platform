@@ -17,12 +17,15 @@
   },
   "dependencies": {
     "@clerk/clerk-react": "^5.61.1",
+    "katex": "^0.16.47",
     "posthog-js": "^1.438.9",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^6.21.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",

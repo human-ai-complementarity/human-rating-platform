@@ -607,6 +607,7 @@ export const api = {
       study_flags?: StudyFlag[];
       content_warning_details?: string;
       is_markdown?: boolean;
+      render_math?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
       // experiment leaves DRAFT.

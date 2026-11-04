@@ -176,6 +176,12 @@ class Experiment(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+    # Render TeX between math delimiters ($…$, $$…$$, \(…\), \[…\]) on the
+    # rater card. Opt-in: other datasets use "$" for money.
+    render_math: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
     prolific_pool: Optional[str] = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),

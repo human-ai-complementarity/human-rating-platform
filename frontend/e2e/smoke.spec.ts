@@ -14,6 +14,7 @@ type ExperimentRecord = {
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
   is_markdown: boolean;
+  render_math: boolean;
   assistance_method: string;
   resolved_models?: Record<
     string,
@@ -188,6 +189,7 @@ type RaterQuestionRecord = {
   question_type: string;
   parent_question_text?: string | null;
   is_markdown: boolean;
+  render_math?: boolean;
 };
 
 type MockState = {
@@ -237,6 +239,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     status: 'DRAFT',
     archived_at: null,
     is_markdown: false,
+    render_math: false,
     assistance_method: 'none',
     needs_attention: false,
     attention_reason: null,
@@ -1540,6 +1543,91 @@ test('the markdown flag also applies to the long-context document window', async
   await popup.waitForLoadState('domcontentloaded');
 
   await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+});
+
+test('the math flag typesets TeX in plain text and leaves prices as text', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 508,
+    question_text: [
+      'A sphere of radius $R$ has field $E = \\dfrac{q}{4 \\pi \\epsilon_0 L^2}$.',
+      'The kit costs $5 and $10.',
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.locator('math')).toHaveCount(2);
+  await expect(page.locator('math mfrac')).toHaveCount(1);
+  await expect(page.getByText('The kit costs $5 and $10.')).toBeVisible();
+  await expect(page.getByText('$R$')).toHaveCount(0);
+
+  // Same question with the flag off: the TeX is literal text.
+  question.render_math = false;
+  await page.reload();
+  await expect(page.getByText('A sphere of radius $R$')).toBeVisible();
+  await expect(page.locator('math')).toHaveCount(0);
+});
+
+test('with Markdown on, math is parsed before Markdown reads its underscores', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 509,
+    question_text: '**Given** $a_1 + b_1 = c_1$, which holds?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.locator('strong')).toHaveText('Given');
+  await expect(page.locator('math')).toHaveCount(1);
+  await expect(page.locator('math msub')).toHaveCount(3);
+  await expect(page.locator('em')).toHaveCount(0);
+});
+
+test('the math flag also typesets the long-context document window', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `The energy is $E = mc^2$.\n${'A sentence of padding. '.repeat(120)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 510,
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('link', { name: 'Open document in new tab' }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+
+  await expect(popup.locator('pre math')).toHaveCount(1);
+  await expect(popup.getByText('$E = mc^2$')).toHaveCount(0);
 });
 
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from models import Question
+from models import Experiment, Question
 from schemas import QuestionResponse, RaterStartResponse
 from services.prolific_markdown import to_prolific_html
 from services.terms import RaterTerms
@@ -11,7 +11,7 @@ from session_policy import SessionPolicy
 
 def build_question_response(
     question: Question,
-    is_markdown: bool,
+    experiment: Experiment,
     parent_question_text: str | None = None,
 ) -> QuestionResponse:
     return QuestionResponse(
@@ -20,7 +20,8 @@ def build_question_response(
         options=question.options,
         question_type=question.question_type,
         parent_question_text=parent_question_text,
-        is_markdown=is_markdown,
+        is_markdown=experiment.is_markdown,
+        render_math=experiment.render_math,
     )
 
 

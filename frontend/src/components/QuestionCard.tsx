@@ -4,6 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Question } from '../types';
+import { loadMathRenderer, splitMath, useMathRenderer } from '../math';
+import type { MathRenderer } from '../math';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
 import appCss from '../index.css?raw';
@@ -70,21 +72,68 @@ const MARKDOWN_COMPONENTS: Components = {
   ),
 };
 
+// A formula keeps its full height in the line, so a tall \dfrac pushes the
+// next line down instead of overlapping it, and is set in the system's math
+// font: MathML sizes fractions and scripts from a math font's metrics, which
+// the card's text fonts lack. Inline styles, because the plain document tab
+// carries none of the app's stylesheets.
+const INLINE_MATH_STYLE: CSSProperties = {
+  display: 'inline-block',
+  lineHeight: 'normal',
+  fontFamily: 'math',
+  // Stacked fractions on consecutive lines would otherwise touch.
+  margin: '0.15em 0',
+};
+const DISPLAY_MATH_STYLE: CSSProperties = { ...INLINE_MATH_STYLE, display: 'block' };
+
+// Plain text with its math typeset. KaTeX escapes the TeX it is given and,
+// untrusted by default, renders no links or raw HTML, so its markup is safe to
+// inject.
+function MathText({ text, math }: { text: string; math: MathRenderer }) {
+  const segments = useMemo(() => splitMath(text), [text]);
+  return (
+    <>
+      {segments.map((segment, index) =>
+        segment.kind === 'text' ? (
+          segment.text
+        ) : (
+          <span
+            key={index}
+            style={segment.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
+            dangerouslySetInnerHTML={{ __html: math.toHtml(segment.tex, segment.display) }}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
 function QuestionBody({
   text,
   markdown,
+  math,
   style,
 }: {
   text: string;
   markdown: boolean;
+  // Null when the experiment does not render math, or until KaTeX has loaded.
+  math: MathRenderer | null;
   style?: CSSProperties;
 }) {
   if (!markdown) {
-    return <p style={{ ...style, whiteSpace: 'pre-wrap' }}>{text}</p>;
+    return (
+      <p style={{ ...style, whiteSpace: 'pre-wrap' }}>
+        {math ? <MathText text={text} math={math} /> : text}
+      </p>
+    );
   }
   return (
     <div className="question-markdown markdown" style={style}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+      <ReactMarkdown
+        remarkPlugins={math ? [remarkGfm, ...math.remarkPlugins] : [remarkGfm]}
+        rehypePlugins={math?.rehypePlugins}
+        components={MARKDOWN_COMPONENTS}
+      >
         {text}
       </ReactMarkdown>
     </div>
@@ -182,17 +231,23 @@ function parseOptions(rawOptions: string | null): string[] {
 async function buildLongContextDocumentHtml(
   documentText: string,
   isMarkdown: boolean,
+  renderMath: boolean,
 ): Promise<string> {
   const title = 'Document';
   // The window is a standalone HTML string, so the card's Markdown component is
   // pre-rendered into it and the stylesheets its classes need are inlined.
   let body = `<pre>${escapeHtml(documentText)}</pre>`;
   let appStyles = '';
-  if (isMarkdown) {
+  if (isMarkdown || renderMath) {
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
-    body = renderToStaticMarkup(<QuestionBody text={documentText} markdown />);
-    appStyles = `<style>${tokensCss}${appCss}</style>`;
+    const math = renderMath ? await loadMathRenderer() : null;
+    if (isMarkdown) {
+      body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={math} />);
+      appStyles = `<style>${tokensCss}${appCss}</style>`;
+    } else if (math) {
+      body = `<pre>${renderToStaticMarkup(<MathText text={documentText} math={math} />)}</pre>`;
+    }
   }
 
   return `<!doctype html>
@@ -260,6 +315,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question]
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
+  const math = useMathRenderer(question.render_math);
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
@@ -281,7 +337,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
 
     let url: string | null = null;
     let cancelled = false;
-    void buildLongContextDocumentHtml(display.documentText, question.is_markdown).then((html) => {
+    void buildLongContextDocumentHtml(
+      display.documentText,
+      question.is_markdown,
+      question.render_math,
+    ).then((html) => {
       if (cancelled) return;
       url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       setDocumentUrl(url);
@@ -292,7 +352,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       if (url) URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
-  }, [display.documentText, question.is_markdown]);
+  }, [display.documentText, question.is_markdown, question.render_math]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -368,6 +428,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           <QuestionBody
             text={display.inlineContext}
             markdown={question.is_markdown}
+            math={math}
             style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
           />
         </div>
@@ -403,6 +464,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       <QuestionBody
         text={display.questionText}
         markdown={question.is_markdown}
+        math={math}
         style={{
           fontFamily: 'var(--font-head)',
           fontSize: 22,
