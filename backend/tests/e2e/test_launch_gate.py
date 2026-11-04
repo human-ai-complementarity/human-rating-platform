@@ -724,9 +724,8 @@ def test_the_reserved_tag_matches_in_any_case(client: TestClient):
 
 def test_the_summary_is_served_as_the_400_words_it(client: TestClient):
     """The UI shows the summary as served rather than wording its own."""
-    assert _testing_preview(client)["launch_blocker_summary"] == (
-        "this experiment is a testing preview"
-    )
+    exp = _testing_preview(client)
+    assert exp["launch_blocker_summary"] == "this experiment is a testing preview"
     bare = client.post(
         "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
     ).json()
@@ -734,7 +733,8 @@ def test_the_summary_is_served_as_the_400_words_it(client: TestClient):
         "this experiment is a testing preview and is missing questions, rater instructions, "
         "internal study name"
     )
-    assert _carded_experiment(client)["launch_blocker_summary"] is None
+    # Ready once the tag is off: no summary at all.
+    assert _tag(client, exp["id"], [])["launch_blocker_summary"] is None
 
 
 @respx.mock
