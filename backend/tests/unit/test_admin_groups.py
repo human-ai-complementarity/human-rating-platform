@@ -107,20 +107,39 @@ def test_unknown_group_is_a_404_pointing_at_the_setting() -> None:
         read_group_emails(["nope@example.com"], FakeSession({}))
 
 
+GOOD = {
+    lookup(G): {"name": "groups/top"},
+    members("groups/top"): {"memberships": [person("a@x.org")]},
+}
+
+
 @pytest.mark.asyncio
-async def test_refresh_replaces_on_success_and_keeps_on_failure(monkeypatch) -> None:
+async def test_refresh_replaces_on_success_and_clears_after_repeated_failure(monkeypatch) -> None:
     monkeypatch.setattr(admin_groups, "_emails", frozenset())
-    good = FakeSession(
-        {
-            lookup(G): {"name": "groups/top"},
-            members("groups/top"): {"memberships": [person("a@x.org")]},
-        }
-    )
-    monkeypatch.setattr(admin_groups, "google_session", lambda: good)
+    monkeypatch.setattr(admin_groups, "RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr(admin_groups, "google_session", lambda: FakeSession(GOOD))
     await admin_groups.refresh([G])
     assert admin_groups.emails() == {"a@x.org"}
 
-    monkeypatch.setattr(admin_groups, "google_session", lambda: FakeSession({}))
+    attempts = 0
+
+    def broken() -> FakeSession:
+        nonlocal attempts
+        attempts += 1
+        return FakeSession({})
+
+    monkeypatch.setattr(admin_groups, "google_session", broken)
+    await admin_groups.refresh([G])
+    assert attempts == 3
+    assert admin_groups.emails() == set()
+
+
+@pytest.mark.asyncio
+async def test_refresh_survives_a_transient_failure(monkeypatch) -> None:
+    monkeypatch.setattr(admin_groups, "_emails", frozenset({"a@x.org"}))
+    monkeypatch.setattr(admin_groups, "RETRY_DELAYS", (0, 0))
+    sessions = iter([FakeSession({}), FakeSession(GOOD)])
+    monkeypatch.setattr(admin_groups, "google_session", lambda: next(sessions))
     await admin_groups.refresh([G])
     assert admin_groups.emails() == {"a@x.org"}
 

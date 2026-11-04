@@ -5,8 +5,8 @@ included, is admitted to the admin surface exactly as if listed in
 ``ADMIN_ALLOWLIST``. The platform reads the groups through the Cloud Identity
 Groups API as its own Google identity (the service-account key named by
 ``GOOGLE_APPLICATION_CREDENTIALS``) on boot and every few minutes after, and
-keeps the emails in memory. A failed read keeps the last good set; until the
-first good read only ``ADMIN_ALLOWLIST`` admits anyone.
+keeps the emails in memory. A read that fails after retries clears the set, so
+until the next good read only ``ADMIN_ALLOWLIST`` admits anyone.
 
 The service account must be allowed to view the members of each group it
 reads, nested ones included: a Member of each (external members allowed on
@@ -26,6 +26,7 @@ API = "https://cloudidentity.googleapis.com/v1"
 PAGE_SIZE = 500
 MAX_NESTING = 5
 REFRESH_SECONDS = 300
+RETRY_DELAYS = (5, 15)  # seconds to wait before the second and third attempt
 
 
 class GroupReadError(RuntimeError):
@@ -121,15 +122,33 @@ def google_session() -> Session:
 
 
 async def refresh(groups: list[str]) -> None:
-    """Replace the in-memory set from Google; on any failure keep the last one."""
+    """Replace the in-memory set from Google.
+
+    A read is retried after each delay in ``RETRY_DELAYS`` so a blip changes
+    nothing. If every attempt fails the set is cleared: only ``ADMIN_ALLOWLIST``
+    admits anyone until a later refresh succeeds, so a broken sync can never
+    keep admitting someone who has since been removed from a group.
+    """
     global _emails
-    try:
-        found = await asyncio.to_thread(lambda: read_group_emails(groups, google_session()))
-    except Exception as exc:  # GroupReadError, or google-auth's own credential errors
-        logger.error("Admin groups read failed; keeping the last %d emails: %s", len(_emails), exc)
+    for attempt, delay in enumerate((*RETRY_DELAYS, None), start=1):
+        try:
+            found = await asyncio.to_thread(lambda: read_group_emails(groups, google_session()))
+        except Exception as exc:  # GroupReadError, or google-auth's own credential errors
+            if delay is not None:
+                logger.warning("Admin groups read failed (attempt %d), retrying: %s", attempt, exc)
+                await asyncio.sleep(delay)
+                continue
+            logger.error(
+                "Admin groups read failed %d times; admitting only ADMIN_ALLOWLIST until a "
+                "read succeeds: %s",
+                attempt,
+                exc,
+            )
+            _emails = frozenset()
+            return
+        _emails = frozenset(found)
+        logger.info("Admin groups: %d people across %s", len(found), ", ".join(groups))
         return
-    _emails = frozenset(found)
-    logger.info("Admin groups: %d people across %s", len(found), ", ".join(groups))
 
 
 async def run_refresh_loop(groups: list[str]) -> None:
