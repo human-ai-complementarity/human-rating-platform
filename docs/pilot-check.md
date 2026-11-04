@@ -3,11 +3,11 @@
 An admin-triggered check that samples an experiment's questions, walks each
 one through the same code path a rater hits, runs the configured assistance
 method on it, and reports anything a researcher would want to fix before
-paying Prolific participants to look at it. The experiment read says whether
-the check has been run and what it found.
+paying Prolific participants to look at it. The experiment page says whether
+the check has been run and shows its findings.
 
 Code: `backend/services/pilot_check/`, settings under `[pilot_check]` in
-`backend/config.toml`.
+`backend/config.toml`, UI in `frontend/src/components/experiment-detail/PilotCheckCard.tsx`.
 
 ## Why
 
@@ -86,7 +86,9 @@ check, not a toggle.
   least one sub-question when the upload has any", so a dataset with one odd
   row type is not missed by chance.
 - The sample's question ids are stored on the run, so the report links each
-  finding to a question.
+  finding to a question and the admin can reopen exactly that question in the
+  participant preview (`buildRaterPreviewUrl(experimentId, questionId)` pins
+  the first question served).
 
 ## Running assistance without a rater
 
@@ -158,7 +160,7 @@ untouched for five minutes belongs to a process that is gone, reads as
 `aborted`, and can be re-run. This is simpler than a durable claim in the
 preparation queue and enough for a job an admin starts by hand and watches.
 
-A client polls the GET while `running`. The row carries where the
+The UI polls the GET every 3 s while `running`. The row carries where the
 run is: `stage` (`sampling`, `assistance`, `checks`, then one stage per
 judged check named after it, then `done`) and `stage_detail` (a short line
 such as "9 of 15 questions probed", updated after every model call). The
@@ -167,7 +169,9 @@ goes through (no `assistance` or `assistance_useful` on a control arm, no
 judged stages when the judge has no key), computed at read time. The
 deterministic checks share one stage because they finish before a poll could
 show progress; the judged ones each get a dot because they are where a run
-spends its time.
+spends its time. The card draws them as a horizontal stepper: a dot lights
+with a glow once its stage has started, pulses while it is the current one,
+and turns red if the run died there.
 
 ## Cost and time
 
@@ -193,6 +197,7 @@ assistance calls.
   makes every assistance call fail, which is itself a good fixture: the run
   must report `assistance_health` as failed, not crash); a stale fingerprint;
   a run that stopped reporting progress.
+- Playwright (`frontend/e2e/smoke.spec.ts`): the stepper mid-run and landed.
 
 ## Open questions
 

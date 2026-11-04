@@ -26,6 +26,7 @@ import type {
   ExperimentStats,
   ExperimentStatus,
   LaunchPreview,
+  PilotCheckRun,
   PilotStudyCreate,
   PlatformStatus,
   Question,
@@ -101,6 +102,7 @@ const routes = {
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
     launch: (id: number) => `/admin/experiments/${id}/launch`,
+    pilotCheck: (id: number) => `/admin/experiments/${id}/pilot-check`,
     launchPreview: (id: number) => `/admin/experiments/${id}/launch/preview`,
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
@@ -713,6 +715,21 @@ export const api = {
       method: 'POST',
       json: places != null ? { places } : {},
     });
+  },
+
+  // ── Pilot check (docs/pilot-check.md) ─────────────────────────────────
+
+  // Starts a run; it finishes in the background. Poll getPilotCheck.
+  async runPilotCheck(experimentId: number): Promise<PilotCheckRun> {
+    return requestJson<PilotCheckRun>(routes.admin.pilotCheck(experimentId), { method: 'POST' });
+  },
+
+  // The experiment's latest run, or null when none has been started.
+  async getPilotCheck(experimentId: number): Promise<PilotCheckRun | null> {
+    const { url, response } = await request(routes.admin.pilotCheck(experimentId));
+    if (response.status === 404) return null;
+    if (!response.ok) await throwHttpError(response, url);
+    return parseJson<PilotCheckRun>(response, url);
   },
 
   async getLaunchPreview(experimentId: number): Promise<LaunchPreview> {
