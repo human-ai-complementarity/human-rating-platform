@@ -14,10 +14,13 @@ This is the inference pipeline's media store layout
 bucket as is. A read re-hashes the bytes, so a replaced object is refused
 rather than shown under the old reference.
 
-A rater's browser fetches an image from ``/api/raters/media/<digest>``,
-served by the backend behind an expiring HMAC token
-(``services/media/urls.py``) with at least ``URL_TTL_SECONDS`` (four
-hours) of life left when handed out.
+Two deliveries to a rater's browser, both a bearer URL with at least
+``URL_TTL_SECONDS`` (four hours) of life left when handed out:
+
+* a gs:// source with ``MEDIA__SIGNED_URLS`` on: a V4 signed URL, so GCS
+  serves the bytes and the API never proxies them;
+* otherwise: ``/api/raters/media/<digest>`` served by the backend, behind an
+  HMAC token (``services/media/urls.py``).
 """
 
 from __future__ import annotations
@@ -25,8 +28,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 
 from config import BASE_DIR, MediaSettings
@@ -39,6 +45,9 @@ logger = logging.getLogger(__name__)
 
 # Existence checks and reads fan out to the bucket; keep the fan-out bounded.
 _GCS_CONCURRENCY = 8
+
+SIGNED_URL = "signed_url"
+PROXY = "proxy"
 
 
 class MediaSourceError(RuntimeError):
@@ -72,6 +81,12 @@ def _source(settings: MediaSettings) -> str:
     )
 
 
+def delivery(settings: MediaSettings) -> str:
+    """How a rater gets an image: ``SIGNED_URL`` or ``PROXY``."""
+    source = _source(settings)
+    return SIGNED_URL if source.startswith("gs://") and settings.signed_urls else PROXY
+
+
 def _file_root(source: str) -> Path:
     root = Path(source[len("file://") :])
     return root if root.is_absolute() else BASE_DIR / root
@@ -84,11 +99,29 @@ def _bucket(source: str) -> tuple[str, str]:
         raise MediaSourceError(str(exc)) from exc
 
 
+def _scopes(settings: MediaSettings) -> gcs.Scopes:
+    # Signing through IAM signBlob needs the iam scope; a key signs locally
+    # and ignores the scopes. Harmless to ask for it either way.
+    if settings.signed_urls:
+        return (gcs.GCS_READ_SCOPE, gcs.IAM_SCOPE)
+    return gcs.READ_SCOPES
+
+
 def _client(settings: MediaSettings):
     try:
-        return gcs.gcs_client(*gcs.access_key(settings), gcs.READ_SCOPES, setting_prefix="MEDIA")
+        return gcs.gcs_client(*gcs.access_key(settings), _scopes(settings), setting_prefix="MEDIA")
     except gcs.GcsAccessError as exc:
         raise MediaSourceError(str(exc)) from exc
+
+
+def _credentials(settings: MediaSettings):
+    try:
+        credentials, _ = gcs.gcs_credentials(
+            *gcs.access_key(settings), _scopes(settings), setting_prefix="MEDIA"
+        )
+    except gcs.GcsAccessError as exc:
+        raise MediaSourceError(str(exc)) from exc
+    return credentials
 
 
 @contextmanager
@@ -257,20 +290,85 @@ async def missing_digests(settings: MediaSettings, digests: list[str]) -> list[s
 URL_TTL_SECONDS = 240 * 60
 
 
-def url_for(settings: MediaSettings, secret: str, digest: str) -> str:
+@dataclass
+class _SignedUrl:
+    url: str
+    expires_at: float
+
+
+# A URL is minted for twice the TTL and reused until only the TTL is left,
+# so every URL handed out has at least the TTL of life, and each image is
+# signed once per TTL however many raters reach it: through IAM signBlob a
+# mint is an API call.
+_signed_cache: dict[str, _SignedUrl] = {}
+_SIGNED_CACHE_LIMIT = 4096
+
+
+def _sign_gcs(
+    settings: MediaSettings, bucket_name: str, prefix: str, digest: str, mime_type: str
+) -> str:
+    blob_name = gcs.blob_name_under(prefix, digest)
+    uri = f"gs://{bucket_name}/{blob_name}"
+    with _translating_gcs_errors(uri):
+        blob = _client(settings).bucket(bucket_name).blob(blob_name)
+        credentials = _credentials(settings)
+        kwargs: dict = {}
+        if not hasattr(credentials, "sign_bytes"):
+            # Federated credentials carry no private key: the storage client
+            # signs through the IAM signBlob API as the named service
+            # account, with the access token it already holds. That account
+            # needs roles/iam.serviceAccountTokenCreator on itself.
+            if not settings.gcs_impersonate_service_account:
+                raise MediaSourceError(
+                    "Signed media URLs need a signer: set "
+                    "MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT (signing goes through IAM "
+                    "signBlob as that account), use a service-account key, or set "
+                    "MEDIA__SIGNED_URLS=false to serve images through the API"
+                )
+            if not credentials.valid:
+                import google.auth.transport.requests
+
+                credentials.refresh(google.auth.transport.requests.Request())
+            kwargs = {
+                "service_account_email": settings.gcs_impersonate_service_account,
+                "access_token": credentials.token,
+            }
+        return blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(seconds=2 * URL_TTL_SECONDS),
+            method="GET",
+            response_type=mime_type,
+            **kwargs,
+        )
+
+
+async def _signed_url(settings: MediaSettings, digest: str, mime_type: str) -> str:
+    now = time.time()
+    cached = _signed_cache.get(digest)
+    if cached is not None and cached.expires_at - now >= URL_TTL_SECONDS:
+        return cached.url
+    bucket_name, prefix = _bucket(_source(settings))
+    url = await asyncio.to_thread(_sign_gcs, settings, bucket_name, prefix, digest, mime_type)
+    if len(_signed_cache) >= _SIGNED_CACHE_LIMIT:
+        _signed_cache.clear()
+    _signed_cache[digest] = _SignedUrl(url, now + 2 * URL_TTL_SECONDS)
+    return url
+
+
+async def url_for(settings: MediaSettings, secret: str, digest: str, mime_type: str) -> str:
     """A URL a rater's browser can fetch ``digest`` from for at least the TTL."""
-    # An unset or malformed source is refused here, before a link is handed
-    # out that the media route could never honour.
-    _source(settings)
+    if delivery(settings) == SIGNED_URL:
+        return await _signed_url(settings, digest, mime_type)
     return proxy_url(secret, digest, ttl_seconds=URL_TTL_SECONDS)
 
 
-def render_blocks(
+async def render_blocks(
     settings: MediaSettings, secret: str, blocks: list[Block] | None
 ) -> list[Block] | None:
     """The blocks a rater is sent: text as is, each image by a fetchable URL.
 
-    The content address is not sent: the URL is all the browser needs.
+    The content address is not sent: the URL is all the browser needs, and a
+    signed URL carries the object name anyway.
     """
     if not blocks:
         return None
@@ -280,6 +378,6 @@ def render_blocks(
             rendered.append(block)
             continue
         digest = block["ref"].removeprefix("sha256:")
-        url = url_for(settings, secret, digest)
+        url = await url_for(settings, secret, digest, block["mime_type"])
         rendered.append({"type": IMAGE, "url": url, "mime_type": block["mime_type"]})
     return rendered

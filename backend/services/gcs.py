@@ -22,6 +22,10 @@ from functools import lru_cache
 from config import GcsAccessSettings
 
 GCS_READ_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only"
+# Signing a URL without a private key calls the IAM credentials API
+# (signBlob) as the impersonated service account; that call needs this scope
+# on top of the storage one.
+IAM_SCOPE = "https://www.googleapis.com/auth/iam"
 _STS_TOKEN_URL = "https://sts.googleapis.com/v1/token"
 _RENDER_TOKEN_FILE_ENV = "AWS_WEB_IDENTITY_TOKEN_FILE"
 

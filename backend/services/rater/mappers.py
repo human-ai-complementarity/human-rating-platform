@@ -27,7 +27,9 @@ async def build_question_response(
     settings = get_settings()
     secret = settings.effective_rater_session_secret
     try:
-        content = media.render_blocks(settings.media, secret, media.load_content(question.content))
+        content = await media.render_blocks(
+            settings.media, secret, media.load_content(question.content)
+        )
     except media.MediaSourceError as exc:
         raise HTTPException(status_code=503, detail=f"Question media unavailable: {exc}") from exc
     return QuestionResponse(

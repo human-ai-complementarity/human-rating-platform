@@ -183,13 +183,20 @@ class MediaSettings(GcsAccessSettings):
     # backend directory). Each object is named by the SHA-256 hex digest of
     # its bytes, the layout of the inference pipeline's media store, so that
     # store syncs to the bucket as is. Unset means uploads carrying image
-    # blocks are refused. Layout: services/media/source.py.
+    # blocks are refused. Layout and delivery: services/media/source.py.
     source_url: str = ""
     # Largest image an upload admits, in bytes. The assistance models get each
     # image inline, and the strictest provider limit in use (Claude: 10 MB of
     # base64, about 7.5 MB raw) would otherwise fail at assistance time, where
     # it is hard to see. Checked at upload from the source's object sizes.
     max_image_bytes: int = 7_000_000
+    # How a rater's browser fetches an image. True (the default) and a gs://
+    # source: the backend mints a V4 signed URL and GCS serves the bytes.
+    # Signing without a private key goes through the IAM signBlob API as the
+    # impersonated service account, which therefore has to be named. False,
+    # or a file:// source: the backend serves the bytes itself from
+    # /api/raters/media, behind an HMAC token with the same expiry.
+    signed_urls: bool = True
 
     @field_validator("source_url")
     @classmethod
