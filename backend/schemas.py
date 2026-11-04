@@ -244,6 +244,72 @@ class ResolvedModel(BaseModel):
     source: Literal["assistance_models", "default"]
 
 
+# Pilot check schemas (docs/pilot-check.md)
+PilotCheckState = Literal["not_run", "running", "stale", "passed", "warnings", "failed", "aborted"]
+
+
+class PilotCheckSummary(BaseModel):
+    """The latest run's state as the experiment page shows it."""
+
+    state: PilotCheckState
+    run_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    counts: dict[str, int] = Field(default_factory=lambda: {"error": 0, "warning": 0, "info": 0})
+    # One sentence on why, or None when the run is clean.
+    reason: Optional[str] = None
+
+
+class PilotCheckFinding(BaseModel):
+    check: str
+    check_label: str = ""
+    severity: Literal["error", "warning", "info"]
+    message: str
+    question_id: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class PilotCheckProbe(BaseModel):
+    question_id: int
+    step_type: str
+    payload: dict
+    failure_reason: Optional[str] = None
+    failure_detail: Optional[str] = None
+    latency_ms: int
+
+
+class PilotCheckStage(BaseModel):
+    # sampling | assistance | checks | <judged check name> | done
+    id: str
+    label: str
+
+
+class PilotCheckRunResponse(BaseModel):
+    id: int
+    experiment_id: int
+    status: Literal["running", "passed", "warnings", "failed", "aborted"]
+    # Where the run is, a short detail for that stage while it runs, and the
+    # stages a run of this experiment goes through, for the card's stepper.
+    stage: Optional[str] = None
+    stage_detail: Optional[str] = None
+    stages: list[PilotCheckStage] = Field(default_factory=list)
+    requested_by: Optional[str] = None
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    fingerprint: str
+    config_sha256: str
+    terms_ref: Optional[str] = None
+    sample_question_ids: list[int] = Field(default_factory=list)
+    findings: list[PilotCheckFinding] = Field(default_factory=list)
+    # None on a control arm: no method ran.
+    assistance_steps: Optional[list[PilotCheckProbe]] = None
+    judge_model: Optional[str] = None
+    error: Optional[str] = None
+    # The experiment changed since this run looked at it.
+    stale: bool = False
+    sample_size: int = 0
+
+
 class ExperimentResponse(BaseModel):
     id: int
     name: str
@@ -307,6 +373,8 @@ class ExperimentResponse(BaseModel):
     # ready. Not needed to upload or analyse — only to launch.
     launch_ready: bool = True
     launch_blockers: list[str] = Field(default_factory=list)
+    # The latest pilot check's state (docs/pilot-check.md).
+    pilot_check: Optional[PilotCheckSummary] = None
     # How to fix each blocker, one per blocker in the same order.
     launch_blocker_fixes: list[str] = Field(default_factory=list)
     # The blockers as one clause ("this experiment is missing questions"), the
