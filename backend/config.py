@@ -183,19 +183,8 @@ class MediaSettings(GcsAccessSettings):
     # backend directory). Each object is named by the SHA-256 hex digest of
     # its bytes, the layout of the inference pipeline's media store, so that
     # store syncs to the bucket as is. Unset means uploads carrying image
-    # blocks are refused. Layout and delivery: services/media/source.py.
+    # blocks are refused. Layout: services/media/source.py.
     source_url: str = ""
-    # How a rater's browser fetches an image. True (the default) and a gs://
-    # source: the backend mints a V4 signed URL and GCS serves the bytes.
-    # Signing without a private key goes through the IAM signBlob API as the
-    # impersonated service account, which therefore has to be named. False,
-    # or a file:// source: the backend serves the bytes itself from
-    # /api/raters/media, behind an HMAC token with the same expiry.
-    signed_urls: bool = True
-    # The least life a URL has when handed to a rater: long enough to cover
-    # a session, so a rater who opens a question late in theirs still sees
-    # its images.
-    url_ttl_minutes: int = Field(default=240, ge=5, le=7 * 24 * 60)
 
 
 class LLMModels:

@@ -12,7 +12,9 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from models import Experiment, Question, Upload
+from services import media
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     reject_removed_model_key,
@@ -63,6 +65,9 @@ DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD, RENDER_
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
+# The row column holding the stimulus as blocks (services/media/blocks.py).
+_CONTENT_FIELD = "content"
+_MISSING_MEDIA_PREVIEW = 5
 _SEPARATOR_REJECT_PREVIEW = 5
 # Matches the Question.exclusion_key String(255) column.
 _EXCLUSION_KEY_MAX_LENGTH = 255
@@ -399,9 +404,35 @@ def _read_parquet(
 
     meta = _parse_parquet_schema_meta(table)
     rows = [
-        {key: _serialize_cell(value) for key, value in row.items()} for row in table.to_pylist()
+        {
+            key: _serialize_content_cell(value) if key == _CONTENT_FIELD else _serialize_cell(value)
+            for key, value in row.items()
+        }
+        for row in table.to_pylist()
     ]
     return rows, meta
+
+
+def _serialize_content_cell(value: Any) -> str:
+    """A Parquet `content` cell as the JSON string the CSV form carries.
+
+    A typed `list<struct>` column gives every block the union of the block
+    types' fields, the absent ones as None; those are dropped so each block
+    carries exactly its own keys, as the validator requires. A string cell
+    (JSON written by the export) passes through.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return json.dumps(
+            [
+                {k: v for k, v in block.items() if v is not None}
+                if isinstance(block, dict)
+                else block
+                for block in value
+            ]
+        )
+    return str(value)
 
 
 def _reject_separator_question_text(rows: list[dict[str, Any]]) -> None:
@@ -454,6 +485,12 @@ def _build_questions_with_parent_refs(
                     f"{_EXCLUSION_KEY_MAX_LENGTH}"
                 ),
             )
+        try:
+            blocks = media.parse_content(
+                row.get(_CONTENT_FIELD), where=f"Question '{row['question_id']}'"
+            )
+        except media.ContentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         new_questions.append(
             Question(
                 experiment_id=experiment_id,
@@ -463,11 +500,54 @@ def _build_questions_with_parent_refs(
                 options=row.get("options") or "",
                 question_type=row.get("question_type") or "MC",
                 extra_data=row.get("metadata") or "{}",
+                content=media.dump_content(blocks),
                 exclusion_key=exclusion_key,
             )
         )
         parent_refs.append((row.get("parent_question_id") or "").strip())
     return new_questions, parent_refs
+
+
+async def _require_media_present(new_questions: list[Question]) -> None:
+    """Refuse the upload unless every image its rows reference is in the source.
+
+    Checked before any row is stored: a dataset whose images were never
+    synced to the bucket must fail here, at upload, not in front of a rater.
+    """
+    digests: dict[str, None] = {}
+    for question in new_questions:
+        for digest in media.image_digests(media.load_content(question.content)):
+            digests.setdefault(digest)
+    if not digests:
+        return
+    settings = get_settings().media
+    if not media.configured(settings):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(digests)} image(s) are referenced but MEDIA__SOURCE_URL is not set: "
+                "point it at the bucket or folder holding this dataset's images"
+            ),
+        )
+    try:
+        missing = await media.missing_digests(settings, list(digests))
+    except media.MediaSourceError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not check media: {exc}") from exc
+    if missing:
+        shown = ", ".join(f"sha256:{d}" for d in missing[:_MISSING_MEDIA_PREVIEW])
+        more = (
+            f" (and {len(missing) - _MISSING_MEDIA_PREVIEW} more)"
+            if len(missing) > _MISSING_MEDIA_PREVIEW
+            else ""
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(missing)} referenced image(s) are not in the media source "
+                f"({settings.source_url.strip()}): {shown}{more}. Sync the dataset's "
+                "images there first, each object named by its SHA-256 hex digest."
+            ),
+        )
 
 
 async def _resolve_parent_refs(
@@ -556,6 +636,7 @@ async def upload_questions(
         meta_applied, meta_conflicts = _apply_meta_to_experiment(experiment, meta)
 
     new_questions, parent_refs = _build_questions_with_parent_refs(experiment_id, rows)
+    await _require_media_present(new_questions)
 
     # Flushes in payload-bounded batches so the rows have DB ids before we
     # resolve parent references, without handing Postgres one giant INSERT.
