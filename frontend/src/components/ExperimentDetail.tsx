@@ -21,6 +21,7 @@ import type {
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
+import { testingPreviewFix } from './experiment-detail/launchBlockers';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import { EthicsPanel } from './experiment-detail/EthicsPanel';
 import {
@@ -2670,6 +2671,13 @@ function LaunchPanel(props: {
     onBack,
   } = props;
 
+  // Past the pilot the launch gate no longer shows, but a testing preview
+  // still can't publish or start a round (#174): say so on the rounds view.
+  const testingPreview =
+    rounds.length > 0
+      ? testingPreviewFix(experiment.launch_blockers ?? [], experiment.launch_blocker_fixes ?? [])
+      : null;
+
   // Only surface the Prolific-mode banner when it tells the researcher
   // something they need to act on. In prod Prolific is always enabled and
   // the "Prolific is enabled" copy is just noise; hide it in that case.
@@ -2782,6 +2790,16 @@ function LaunchPanel(props: {
 
           {prolificEnabled === true && (
             <>
+              {testingPreview && (
+                <div data-testid="testing-preview-rounds">
+                  <Banner tone="warn">
+                    This experiment is a testing preview, so it can't publish a draft or start a
+                    new round.
+                    <div style={{ marginTop: 6 }}>{testingPreview}</div>
+                  </Banner>
+                </div>
+              )}
+
               {rounds.length > 0 && (
                 <div data-testid="study-rounds-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {rounds.map((round) => (
@@ -2798,6 +2816,7 @@ function LaunchPanel(props: {
                       editRewardInput={editRewardInput}
                       savingEdit={savingEdit}
                       publishing={publishingRoundId === round.id}
+                      publishBlocked={testingPreview !== null}
                       closing={closingRoundId === round.id}
                       discarding={discardingRoundId === round.id}
                       onStartEdit={() => onStartEditRound(round)}
@@ -2820,6 +2839,7 @@ function LaunchPanel(props: {
                   nextRoundNumber={nextRoundNumber}
                   latestRoundClosed={latestRoundClosed}
                   roundLaunchBlockedMessage={roundLaunchBlockedMessage}
+                  launchBlocked={testingPreview !== null}
                   onRunRound={onRunRound}
                   roundReward={rounds.length > 0 ? rounds[0].reward : null}
                   currencyCode={currencyCode}
@@ -2850,6 +2870,7 @@ function LaunchPanel(props: {
                   datasetId={experiment.group_dataset_id}
                   datasetName={experiment.group_dataset_name ?? 'dataset'}
                   launchBlockers={experiment.launch_blockers ?? []}
+                  launchBlockerSummary={experiment.launch_blocker_summary}
                   currencyCode={currencyCode}
                   currencySymbol={currencySymbol}
                   onLaunched={onLaunchedFromCard}
@@ -2872,6 +2893,7 @@ function LaunchPanel(props: {
                   datasetDescription={experiment.description}
                   launchBlockers={experiment.launch_blockers ?? []}
                   launchBlockerFixes={experiment.launch_blocker_fixes ?? []}
+                  launchBlockerSummary={experiment.launch_blocker_summary}
                 />
               )}
             </>
@@ -3017,6 +3039,8 @@ function RoundCard(props: {
   editRewardInput: string;
   savingEdit: boolean;
   publishing: boolean;
+  // A testing preview: the API refuses to publish, so the button is off.
+  publishBlocked: boolean;
   closing: boolean;
   discarding: boolean;
   onStartEdit: () => void;
@@ -3041,6 +3065,7 @@ function RoundCard(props: {
     editRewardInput,
     savingEdit,
     publishing,
+    publishBlocked,
     closing,
     discarding,
     onStartEdit,
@@ -3122,8 +3147,13 @@ function RoundCard(props: {
               type="button"
               data-testid={`publish-round-${round.round_number}`}
               onClick={onPublish}
-              disabled={publishing || isEditing || discarding}
-              style={{ ...primaryButton, padding: '7px 16px', fontSize: 13 }}
+              disabled={publishing || isEditing || discarding || publishBlocked}
+              style={{
+                ...primaryButton,
+                padding: '7px 16px',
+                fontSize: 13,
+                ...(publishBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+              }}
             >
               {publishing ? 'Publishing…' : 'Publish'}
             </button>
@@ -3323,6 +3353,7 @@ function RecommendationCard({
   nextRoundNumber,
   latestRoundClosed,
   roundLaunchBlockedMessage,
+  launchBlocked,
   onRunRound,
   roundReward,
   currencyCode,
@@ -3333,6 +3364,8 @@ function RecommendationCard({
   nextRoundNumber: number;
   latestRoundClosed: boolean;
   roundLaunchBlockedMessage: string | null;
+  /** A testing preview: the API refuses a new round, so the button is off. */
+  launchBlocked: boolean;
   onRunRound: () => void;
   /** Reward the next round will use: rounds inherit the pilot's reward. */
   roundReward: number | null;
@@ -3381,7 +3414,11 @@ function RecommendationCard({
         <button
           data-testid="launch-round-button"
           onClick={onRunRound}
-          style={primaryButton}
+          disabled={launchBlocked}
+          style={{
+            ...primaryButton,
+            ...(launchBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+          }}
         >
           Create Round {nextRoundNumber} Draft ({recommendation.recommended_places} places)
         </button>
@@ -3413,6 +3450,8 @@ function PilotForm(props: {
   launchBlockers: string[];
   // From the API, one per blocker: the same fixes its 400 would give.
   launchBlockerFixes: string[];
+  // From the API: the blockers as one clause, as its 400 words them.
+  launchBlockerSummary: string | null;
 }) {
   const {
     pilotForm,
@@ -3428,6 +3467,7 @@ function PilotForm(props: {
     sessionDurationMinutes,
     launchBlockers,
     launchBlockerFixes,
+    launchBlockerSummary,
   } = props;
   const prefilledFromDataset =
     !!datasetDescription && pilotForm.description === datasetDescription;
@@ -3623,7 +3663,7 @@ function PilotForm(props: {
         {launchBlockers.length > 0 && (
           <div data-testid="launch-blockers" style={{ marginBottom: 12 }}>
             <Banner tone="warn">
-              This study can't launch yet — it's missing {launchBlockers.join(', ')}.
+              This study can't launch yet: {launchBlockerSummary}.
               {launchBlockerFixes.map((fix) => (
                 <div key={fix} style={{ marginTop: 6 }}>
                   {fix}

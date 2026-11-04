@@ -83,6 +83,9 @@ export interface Experiment {
   launch_blockers: string[];
   // How to fix each blocker, one per blocker in the same order.
   launch_blocker_fixes: string[];
+  // The blockers as one clause ("this experiment is missing questions"), as
+  // the launch 400 words it. Null when ready.
+  launch_blocker_summary: string | null;
 }
 
 // A group whose wave is not the platform's current one.

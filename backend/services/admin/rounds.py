@@ -56,7 +56,12 @@ from services.terms import PendingPin, apply_terms_pin, prepare_terms_pin, study
 from session_policy import SessionPolicy, resolve_session_policy
 
 from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
-from .status import assert_launch_ready, is_locked, validate_new_exclusion_targets
+from .status import (
+    assert_launch_ready,
+    assert_not_preview_testing,
+    is_locked,
+    validate_new_exclusion_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -823,6 +828,7 @@ async def run_experiment_round(
         raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    await assert_not_preview_testing(experiment, db, "launch a new round")
     if experiment.status == ExperimentStatus.FINISHED:
         raise HTTPException(
             status_code=400,
@@ -1019,6 +1025,8 @@ async def publish_experiment_round(
             status_code=400,
             detail="Only unpublished rounds can be published",
         )
+    # A draft made before the tag went on still never goes live.
+    await assert_not_preview_testing(experiment, db, "publish")
 
     # The time-limit note was generated when the round was created, and the
     # session length stays editable until the first publish flips the

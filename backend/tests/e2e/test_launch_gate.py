@@ -669,3 +669,156 @@ def test_one_click_applies_the_launch_gate(client: TestClient, enable_prolific):
     assert resp.status_code == 400
     assert "rater instructions" in resp.json()["detail"]
     assert route.call_count == 0
+
+
+# --- Testing previews (#174) ---------------------------------------------
+# The pipeline's `create_human_rating_study.py --mode testing` makes preview-only
+# drafts tagged `preview-testing`, holding a subsample of the real questions.
+# They sit in the dataset's real group, so they look launchable; the tag is
+# what keeps every Prolific write away from them.
+
+_TESTING_FIX_START = "Testing preview only: this experiment is tagged preview-testing"
+
+
+def _tag(client: TestClient, experiment_id: int, tags: list[str]) -> dict:
+    # An update restates the method (ExperimentUpdate requires it).
+    method = client.get(f"/api/admin/experiments/{experiment_id}").json()["assistance_method"]
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}",
+        json={"assistance_method": method, "tags": tags},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _testing_preview(client: TestClient) -> dict:
+    """An otherwise launch-ready experiment on a complete card, tagged as the
+    pipeline's testing mode tags it."""
+    exp = _carded_experiment_with_economics(client)
+    return _tag(client, exp["id"], ["preview-testing", "wave-check"])
+
+
+def test_a_testing_preview_reports_the_blocker_first(client: TestClient):
+    exp = _testing_preview(client)
+    assert exp["launch_ready"] is False
+    assert exp["launch_blockers"] == ["testing preview"]
+    assert exp["launch_blocker_fixes"][0].startswith(_TESTING_FIX_START)
+    assert "--mode prod" in exp["launch_blocker_fixes"][0]
+    assert "remove the preview-testing tag" in exp["launch_blocker_fixes"][0]
+
+    # Ahead of anything missing: filling those in would not make it launchable.
+    bare = client.post(
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
+    ).json()
+    assert bare["launch_blockers"][:2] == ["testing preview", "questions"]
+
+    # Taking the tag off is the way out.
+    assert _tag(client, exp["id"], ["wave-check"])["launch_ready"] is True
+
+
+def test_the_reserved_tag_matches_in_any_case(client: TestClient):
+    """Tag names are case-insensitive everywhere else, so the reserved one is too."""
+    exp = _carded_experiment_with_economics(client)
+    assert _tag(client, exp["id"], ["Preview-Testing"])["launch_blockers"] == ["testing preview"]
+
+
+def test_the_summary_is_served_as_the_400_words_it(client: TestClient):
+    """The UI shows the summary as served rather than wording its own."""
+    exp = _testing_preview(client)
+    assert exp["launch_blocker_summary"] == "this experiment is a testing preview"
+    bare = client.post(
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
+    ).json()
+    assert bare["launch_blocker_summary"] == (
+        "this experiment is a testing preview and is missing questions, rater instructions, "
+        "internal study name"
+    )
+    # Ready once the tag is off: no summary at all.
+    assert _tag(client, exp["id"], [])["launch_blocker_summary"] is None
+
+
+@respx.mock
+def test_a_testing_preview_cannot_pilot(client: TestClient, enable_prolific):
+    exp = _testing_preview(client)
+    route = _mock_create_study()
+
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "Cannot launch: this experiment is a testing preview. " + exp["launch_blocker_fixes"][0]
+    )
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_a_testing_preview_cannot_launch_in_one_click(client: TestClient, enable_prolific):
+    exp = _testing_preview(client)
+    route = _mock_create_study()
+
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"].startswith("Cannot launch: this experiment is a testing preview.")
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_a_testing_preview_names_what_it_is_missing_too(client: TestClient, enable_prolific):
+    exp = client.post(
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
+    ).json()
+    _mock_create_study()
+
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"].startswith(
+        "Cannot launch: this experiment is a testing preview and is missing questions, "
+        "rater instructions, internal study name. Testing preview only:"
+    )
+
+
+def _pilot_then_tag(client: TestClient) -> tuple[int, dict, respx.Route]:
+    """A pilot draft made before the tag went on, then the tag added: the
+    gate at pilot time no longer covers it. Returns the experiment id, the
+    pilot round and the mocked study-create route."""
+    exp = _carded_experiment_with_economics(client)
+    route = _mock_create_study()
+    pilot = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+    assert pilot.status_code == 200, pilot.text
+    _tag(client, exp["id"], ["preview-testing"])
+    return exp["id"], pilot.json(), route
+
+
+@respx.mock
+def test_a_testing_preview_cannot_publish_a_round(client: TestClient, enable_prolific):
+    exp_id, pilot, _ = _pilot_then_tag(client)
+    transition = respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=httpx.Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "ACTIVE"})
+    )
+
+    resp = client.post(f"/api/admin/experiments/{exp_id}/prolific/rounds/{pilot['id']}/publish")
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"].startswith(
+        "Cannot publish: this experiment is a testing preview. " + _TESTING_FIX_START
+    )
+    assert transition.call_count == 0
+    rounds = client.get(f"/api/admin/experiments/{exp_id}/prolific/rounds")
+    assert [r["prolific_study_status"] for r in rounds.json()] == ["UNPUBLISHED"]
+
+
+@respx.mock
+def test_a_testing_preview_cannot_launch_a_round(client: TestClient, enable_prolific):
+    exp_id, _, route = _pilot_then_tag(client)
+    calls_before = route.call_count
+
+    resp = client.post(f"/api/admin/experiments/{exp_id}/prolific/rounds", json={"places": 10})
+
+    assert resp.status_code == 400
+    # Refused for the tag, before the round checks would have their say.
+    assert resp.json()["detail"].startswith(
+        "Cannot launch a new round: this experiment is a testing preview. " + _TESTING_FIX_START
+    )
+    assert route.call_count == calls_before
