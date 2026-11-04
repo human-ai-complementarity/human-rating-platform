@@ -1,16 +1,13 @@
 /**
- * Words the launch gate's blockers as a clause, the way the backend's
- * `launch_blocker_summary` words its 400.
- *
- * Every blocker names something the experiment is missing, except the one a
- * `preview-testing` tag raises (#174): a preview-only draft from the pipeline's
- * testing mode is not missing anything, it must simply never reach Prolific.
+ * The blocker a `preview-testing` tag raises (#174), by its API key. A testing
+ * preview never goes to Prolific, so unlike the rest of the launch gate it
+ * still applies after a pilot: the API refuses publishing a draft and creating
+ * a round too.
  */
 export const TESTING_PREVIEW_BLOCKER = 'testing preview';
 
-export function launchBlockerSummary(blockers: string[]): string {
-  const missing = blockers.filter((blocker) => blocker !== TESTING_PREVIEW_BLOCKER);
-  const parts = blockers.includes(TESTING_PREVIEW_BLOCKER) ? ["it's a testing preview"] : [];
-  if (missing.length > 0) parts.push(`it's missing ${missing.join(', ')}`);
-  return parts.join(' and ');
+/** The served fix for the testing-preview blocker, or null when it isn't raised. */
+export function testingPreviewFix(blockers: string[], fixes: string[]): string | null {
+  const index = blockers.indexOf(TESTING_PREVIEW_BLOCKER);
+  return index === -1 ? null : (fixes[index] ?? null);
 }

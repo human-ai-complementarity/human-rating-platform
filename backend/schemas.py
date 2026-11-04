@@ -83,13 +83,9 @@ class ExperimentRef(BaseModel):
 
 class OneClickLaunchPreview(BaseModel):
     """What a one-click launch would do beyond the card: the experiments
-    whose participants it excludes, and anything that stops it launching."""
+    whose participants it excludes."""
 
     excluded_experiments: list[ExperimentRef] = Field(default_factory=list)
-    # The launch gate's verdict, as on `ExperimentResponse`: one-click refuses
-    # while any blocker remains.
-    launch_blockers: list[str] = Field(default_factory=list)
-    launch_blocker_fixes: list[str] = Field(default_factory=list)
 
 
 class ExperimentRoundCreate(BaseModel):
@@ -312,6 +308,10 @@ class ExperimentResponse(BaseModel):
     launch_blockers: list[str] = Field(default_factory=list)
     # How to fix each blocker, one per blocker in the same order.
     launch_blocker_fixes: list[str] = Field(default_factory=list)
+    # The blockers as one clause ("this experiment is missing questions"), the
+    # wording the launch 400 uses, so the UI need not compose its own. None
+    # when ready.
+    launch_blocker_summary: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

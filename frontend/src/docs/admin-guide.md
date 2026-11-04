@@ -82,7 +82,7 @@ Keep the **estimated completion time** at or under the session length. It is the
 
 The pilot can't be created until the experiment has at least one uploaded question, rater instructions, an internal study name, and (when assisted) an assistance model. The prompt prefix and suffix are optional. The pilot form lists anything missing and how to fix it.
 
-`preview-testing` is a reserved tag. The inference pipeline's `scripts/create_human_rating_study.py --mode testing` sets it on its `-TESTONLY` drafts, which hold a subsample of the real questions for clicking through. An experiment with that tag can't go to Prolific at all: no pilot, no one-click pilot, no new round and no publish, and the Launch tab says so. Create the real study with `--mode prod`. If an experiment carries the tag by mistake, remove the tag to launch it.
+`preview-testing` is a reserved tag. The inference pipeline's `scripts/create_human_rating_study.py --mode testing` sets it on its `-TESTONLY` drafts, which hold a subsample of the real questions for clicking through. An experiment with that tag can't go to Prolific at all: no pilot, no one-click pilot, no new round and no publish. The Launch tab says so: before the pilot with the pilot form's list of blockers, and after it with a banner over the rounds, whose Publish and Create Round buttons are turned off. That covers a tag added after a pilot draft was made. Create the real study with `--mode prod`. If an experiment carries the tag by mistake, remove the tag to launch it.
 
 ### Dataset cards and the one-click pilot
 

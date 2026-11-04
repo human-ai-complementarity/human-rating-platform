@@ -83,6 +83,9 @@ export interface Experiment {
   launch_blockers: string[];
   // How to fix each blocker, one per blocker in the same order.
   launch_blocker_fixes: string[];
+  // The blockers as one clause ("this experiment is missing questions"), as
+  // the launch 400 words it. Null when ready.
+  launch_blocker_summary: string | null;
 }
 
 // A group whose wave is not the platform's current one.
@@ -525,12 +528,9 @@ export interface PilotStudyCreate {
   excluded_experiment_ids: number[];
 }
 
-// What a one-click launch excludes (every other experiment on the dataset),
-// and the launch gate's blockers, as on the experiment.
+// What a one-click launch excludes: every other experiment on the dataset.
 export interface LaunchPreview {
   excluded_experiments: { id: number; name: string; internal_name: string | null }[];
-  launch_blockers: string[];
-  launch_blocker_fixes: string[];
 }
 
 export interface RecommendationResponse {

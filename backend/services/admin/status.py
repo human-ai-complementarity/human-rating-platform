@@ -186,26 +186,21 @@ def launch_blocker_fixes(blockers: list[str]) -> list[str]:
     return [_LAUNCH_BLOCKER_FIXES[blocker] for blocker in blockers]
 
 
-def launch_blocker_summary(blockers: list[str]) -> str:
-    """The blockers as a clause: "is a testing preview and is missing questions".
+def launch_blocker_summary(blockers: list[str]) -> str | None:
+    """The blockers as one clause, or None when there are none:
+    "this experiment is a testing preview and is missing questions".
 
     Every blocker but the testing preview is something the experiment lacks.
-    The admin UI words its banner the same way (`launchBlockerSummary`).
+    The launch 400 opens with it, and the admin UI's banners show it as served
+    (`ExperimentResponse.launch_blocker_summary`).
     """
+    if not blockers:
+        return None
     missing = [blocker for blocker in blockers if blocker != TESTING_PREVIEW_BLOCKER]
     parts = ["is a testing preview"] if TESTING_PREVIEW_BLOCKER in blockers else []
     if missing:
         parts.append(f"is missing {', '.join(missing)}")
-    return " and ".join(parts)
-
-
-async def fetch_launch_blockers(experiment: Experiment, db: AsyncSession) -> list[str]:
-    """`experiment_launch_blockers`, reading its inputs from the database."""
-    return experiment_launch_blockers(
-        experiment,
-        question_count=await fetch_total_questions_for_experiment(experiment.id, db),
-        tags=await fetch_tag_names_for_experiment(experiment.id, db),
-    )
+    return "this experiment " + " and ".join(parts)
 
 
 async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
@@ -218,13 +213,17 @@ async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
     The testing-preview blocker alone also bites later on
     (`assert_not_preview_testing`).
     """
-    blockers = await fetch_launch_blockers(experiment, db)
+    blockers = experiment_launch_blockers(
+        experiment,
+        question_count=await fetch_total_questions_for_experiment(experiment.id, db),
+        tags=await fetch_tag_names_for_experiment(experiment.id, db),
+    )
     if blockers:
         raise HTTPException(
             status_code=400,
             detail=" ".join(
                 [
-                    f"Cannot launch: this experiment {launch_blocker_summary(blockers)}.",
+                    f"Cannot launch: {launch_blocker_summary(blockers)}.",
                     *launch_blocker_fixes(blockers),
                 ]
             ),

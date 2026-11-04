@@ -252,6 +252,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     launch_ready: true,
     launch_blockers: [],
     launch_blocker_fixes: [],
+    launch_blocker_summary: null,
     study_flags: [],
     content_warning_details: null,
     consent_statement_ref: null,
@@ -821,12 +822,7 @@ async function installApiMocks(
     }
 
     if (pathname.endsWith('/launch/preview') && method === 'GET') {
-      const experiment = state.experiments.find((exp) => exp.id === extractExperimentId(url));
-      await fulfillJson(route, 200, {
-        excluded_experiments: state.launchExcluded,
-        launch_blockers: experiment?.launch_blockers ?? [],
-        launch_blocker_fixes: experiment?.launch_blocker_fixes ?? [],
-      });
+      await fulfillJson(route, 200, { excluded_experiments: state.launchExcluded });
       return;
     }
 
@@ -2845,6 +2841,7 @@ test('a testing preview cannot start a pilot, and the banner says why', async ({
       launch_ready: false,
       launch_blockers: ['testing preview', 'questions'],
       launch_blocker_fixes: fixes,
+      launch_blocker_summary: 'this experiment is a testing preview and is missing questions',
     }),
   ];
   state.nextExperimentId = 2;
@@ -2857,12 +2854,71 @@ test('a testing preview cannot start a pilot, and the banner says why', async ({
 
   const banner = page.getByTestId('launch-blockers');
   await expect(banner).toContainText(
-    "This study can't launch yet — it's a testing preview and it's missing questions.",
+    "This study can't launch yet: this experiment is a testing preview and is missing questions.",
   );
   for (const fix of fixes) {
     await expect(banner).toContainText(fix);
   }
   await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
+});
+
+// A tag added after the pilot: the pilot form is gone, but the API still
+// refuses to publish or start a round, so the rounds view says so too.
+for (const [label, round, control] of [
+  ['publish its draft', { prolific_study_status: 'UNPUBLISHED' }, 'publish-round-0'],
+  ['start a new round', { prolific_study_status: 'AWAITING_REVIEW' }, 'launch-round-button'],
+] as const) {
+  test(`a testing preview past its pilot cannot ${label}`, async ({ page }) => {
+    const fix = 'Testing preview only: this experiment is tagged preview-testing.';
+    const state = createMockState();
+    state.experiments = [
+      buildExperiment(state, {
+        id: 1,
+        name: 'Passages fall25 control-TESTONLY',
+        tags: ['preview-testing'],
+        launch_ready: false,
+        launch_blockers: ['testing preview'],
+        launch_blocker_fixes: [fix],
+        launch_blocker_summary: 'this experiment is a testing preview',
+      }),
+    ];
+    state.nextExperimentId = 2;
+    state.uploads[1] = [];
+    state.rounds[1] = [buildRound(state, { round_number: 0, places_requested: 5, ...round })];
+    state.recommendations[1] = {
+      avg_time_per_question_seconds: 60,
+      remaining_rating_actions: 10,
+      total_hours_remaining: 1,
+      recommended_places: 4,
+      is_complete: false,
+    };
+
+    await installApiMocks(page, state);
+    await page.goto('/admin/experiments/1');
+    await page.getByTestId('tab-launch').click();
+
+    const banner = page.getByTestId('testing-preview-rounds');
+    await expect(banner).toContainText(
+      "This experiment is a testing preview, so it can't publish a draft or start a new round.",
+    );
+    await expect(banner).toContainText(fix);
+    await expect(page.getByTestId(control)).toBeDisabled();
+  });
+}
+
+test('a ready experiment past its pilot shows no testing-preview banner', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Ready' })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [buildRound(state, { round_number: 0, places_requested: 5 })];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await expect(page.getByTestId('publish-round-0')).toBeEnabled();
+  await expect(page.getByTestId('testing-preview-rounds')).toHaveCount(0);
 });
 
 test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
@@ -2882,6 +2938,8 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
       launch_ready: false,
       launch_blockers: ['questions', 'rater instructions', 'internal study name', 'assistance model'],
       launch_blocker_fixes: fixes,
+      launch_blocker_summary:
+        'this experiment is missing questions, rater instructions, internal study name, assistance model',
     }),
   ];
   state.nextExperimentId = 2;
@@ -3196,6 +3254,7 @@ test('launch blockers disable the one-click pilot', async ({ page }) => {
   seedCardExperiment(state, COMPLETE_CARD, {
     launch_ready: false,
     launch_blockers: ['rater instructions', 'internal study name'],
+    launch_blocker_summary: 'this experiment is missing rater instructions, internal study name',
   });
 
   await installApiMocks(page, state);

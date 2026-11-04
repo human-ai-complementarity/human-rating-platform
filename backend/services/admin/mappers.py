@@ -8,7 +8,7 @@ from models import Experiment, Question, Rating, Rater, Upload
 from schemas import ExperimentResponse, ResolvedModel
 from services.assistance.registry import resolved_models
 from .groups import GroupSnapshot
-from .status import experiment_launch_blockers, launch_blocker_fixes
+from .status import experiment_launch_blockers, launch_blocker_fixes, launch_blocker_summary
 
 QUESTION_PREVIEW_LENGTH = 100
 
@@ -86,6 +86,7 @@ def build_experiment_response(
         # the launch button with exactly the list the API would reject with.
         launch_blockers=launch_blockers,
         launch_blocker_fixes=launch_blocker_fixes(launch_blockers),
+        launch_blocker_summary=launch_blocker_summary(launch_blockers),
         launch_ready=not launch_blockers,
     )
 

@@ -413,11 +413,7 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
     assert all(ref["internal_name"] for ref in expected)
     preview = client.get(f"/api/admin/experiments/{target['id']}/launch/preview")
     assert preview.status_code == 200, preview.text
-    assert preview.json() == {
-        "excluded_experiments": expected,
-        "launch_blockers": [],
-        "launch_blocker_fixes": [],
-    }
+    assert preview.json() == {"excluded_experiments": expected}
 
     # The siblings are still DRAFT, which the pilot form would refuse as
     # exclusion targets; one-click chose them itself.
@@ -437,7 +433,7 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
 
     # The target never lists itself, and its siblings list it.
     after = client.get(f"/api/admin/experiments/{target['id']}/launch/preview").json()
-    assert after["excluded_experiments"] == expected
+    assert after == {"excluded_experiments": expected}
     from_sibling = client.get(f"/api/admin/experiments/{never_ran['id']}/launch/preview").json()
     assert [ref["id"] for ref in from_sibling["excluded_experiments"]] == [
         same_wave["id"],
@@ -483,7 +479,7 @@ def test_an_ungrouped_experiment_previews_no_exclusions(client: TestClient):
     exp = client.post("/api/admin/experiments", json={"name": "Scratch"}).json()
     resp = client.get(f"/api/admin/experiments/{exp['id']}/launch/preview")
     assert resp.status_code == 200, resp.text
-    assert resp.json()["excluded_experiments"] == []
+    assert resp.json() == {"excluded_experiments": []}
 
 
 @respx.mock
@@ -726,13 +722,19 @@ def test_the_reserved_tag_matches_in_any_case(client: TestClient):
     assert _tag(client, exp["id"], ["Preview-Testing"])["launch_blockers"] == ["testing preview"]
 
 
-def test_the_launch_preview_reports_the_blocker(client: TestClient):
-    exp = _testing_preview(client)
-    resp = client.get(f"/api/admin/experiments/{exp['id']}/launch/preview")
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["launch_blockers"] == ["testing preview"]
-    assert body["launch_blocker_fixes"] == exp["launch_blocker_fixes"]
+def test_the_summary_is_served_as_the_400_words_it(client: TestClient):
+    """The UI shows the summary as served rather than wording its own."""
+    assert _testing_preview(client)["launch_blocker_summary"] == (
+        "this experiment is a testing preview"
+    )
+    bare = client.post(
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
+    ).json()
+    assert bare["launch_blocker_summary"] == (
+        "this experiment is a testing preview and is missing questions, rater instructions, "
+        "internal study name"
+    )
+    assert _carded_experiment(client)["launch_blocker_summary"] is None
 
 
 @respx.mock

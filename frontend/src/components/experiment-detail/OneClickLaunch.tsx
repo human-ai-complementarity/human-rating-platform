@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../api';
 import type { Dataset, LaunchPreview } from '../../types';
-import { launchBlockerSummary } from './launchBlockers';
 import { formatMinorUnits } from './reward';
 import { SectionCard, fieldLabel, primaryButton } from './ui';
 
@@ -18,6 +17,7 @@ export function OneClickLaunch({
   datasetId,
   datasetName,
   launchBlockers,
+  launchBlockerSummary,
   currencyCode,
   currencySymbol,
   onLaunched,
@@ -26,6 +26,8 @@ export function OneClickLaunch({
   datasetId: number;
   datasetName: string;
   launchBlockers: string[];
+  // From the API: the blockers as one clause, as its 400 words them.
+  launchBlockerSummary: string | null;
   currencyCode: string | null;
   currencySymbol: string | null;
   onLaunched: () => Promise<void>;
@@ -165,8 +167,7 @@ export function OneClickLaunch({
             data-testid="one-click-blockers"
             style={{ fontSize: 13, color: 'var(--warn)', marginBottom: 10 }}
           >
-            Can't launch yet — {launchBlockerSummary(launchBlockers)}. The pilot form below says
-            how to fix each.
+            Can't launch yet: {launchBlockerSummary}. The pilot form below says how to fix each.
           </div>
         )}
         {errorLine}
