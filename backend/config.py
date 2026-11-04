@@ -138,25 +138,33 @@ class ProlificSettings(_StrictModel):
         return bool(self.api_token.strip())
 
 
-class TermsSettings(_StrictModel):
-    # Where rater consent and debrief statements live: `gs://bucket/prefix`
-    # (a private bucket, read with Application Default Credentials), an
-    # `https://` prefix, or a `file://` path relative to the backend
-    # directory. Read live when an admin configures or publishes an
-    # experiment; whatever an experiment pins is archived in the database.
-    # The platform deliberately ships no statement text of its own: unset, the
-    # consent screen shows a placeholder saying so. Layout: services/terms/source.py.
-    source_url: str = ""
-    # Keyless access to a gs:// source through Workload Identity Federation:
-    # the host (Render's managed OIDC) writes a short-lived identity token to
-    # a file, and the platform exchanges it for Google credentials. Set the
-    # provider's audience ("//iam.googleapis.com/projects/<n>/locations/global/
-    # workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
-    # token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
-    # account, when given, is impersonated so the bucket grant stays on it.
+class GcsAccessSettings(_StrictModel):
+    """How a reader reaches a private gs:// bucket (services/gcs.py).
+
+    Keyless access through Workload Identity Federation: the host (Render's
+    managed OIDC) writes a short-lived identity token to a file, and the
+    platform exchanges it for Google credentials. Set the provider's audience
+    ("//iam.googleapis.com/projects/<n>/locations/global/
+    workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
+    token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
+    account, when given, is impersonated so the bucket grant stays on it.
+    Unset, Application Default Credentials are used instead.
+    """
+
     gcs_wif_audience: str = ""
     gcs_wif_token_file: str = ""
     gcs_impersonate_service_account: str = ""
+
+
+class TermsSettings(GcsAccessSettings):
+    # Where rater consent and debrief statements live: `gs://bucket/prefix`
+    # (a private bucket, read with the credentials above), an `https://`
+    # prefix, or a `file://` path relative to the backend directory. Read
+    # live when an admin configures or publishes an experiment; whatever an
+    # experiment pins is archived in the database. The platform deliberately
+    # ships no statement text of its own: unset, the consent screen shows a
+    # placeholder saying so. Layout: services/terms/source.py.
+    source_url: str = ""
 
 
 class SlackSettings(_StrictModel):
@@ -166,6 +174,28 @@ class SlackSettings(_StrictModel):
     @property
     def enabled(self) -> bool:
         return bool(self.webhook_url.strip())
+
+
+class MediaSettings(GcsAccessSettings):
+    # Where the images that question `content` blocks reference live:
+    # `gs://bucket/prefix` (a private bucket, read with the credentials
+    # above) or `file://folder` (local dev and tests; relative to the
+    # backend directory). Each object is named by the SHA-256 hex digest of
+    # its bytes, the layout of the inference pipeline's media store, so that
+    # store syncs to the bucket as is. Unset means uploads carrying image
+    # blocks are refused. Layout and delivery: services/media/source.py.
+    source_url: str = ""
+    # How a rater's browser fetches an image. True (the default) and a gs://
+    # source: the backend mints a V4 signed URL and GCS serves the bytes.
+    # Signing without a private key goes through the IAM signBlob API as the
+    # impersonated service account, which therefore has to be named. False,
+    # or a file:// source: the backend serves the bytes itself from
+    # /api/raters/media, behind an HMAC token with the same expiry.
+    signed_urls: bool = True
+    # The least life a URL has when handed to a rater: long enough to cover
+    # a session, so a rater who opens a question late in theirs still sees
+    # its images.
+    url_ttl_minutes: int = Field(default=240, ge=5, le=7 * 24 * 60)
 
 
 class LLMModels:
@@ -221,6 +251,7 @@ class Settings(BaseSettings):
     terms: TermsSettings = Field(default_factory=TermsSettings)
     slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
