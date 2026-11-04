@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api } from '../../api';
 import ConfirmDialog from '../ConfirmDialog';
 import type { Dataset, Experiment, ExperimentGroup } from '../../types';
-import { secondaryButton } from './ui';
+import { secondaryButton, selectStyle } from './ui';
 
 // Moves between groups on the experiment page. Both controls report through
 // the same two callbacks; the page refreshes and toasts on `onMoved`.
@@ -147,14 +147,12 @@ export function GroupControl({
             onChange={(e) => setSelected(e.target.value)}
             disabled={busy}
             style={{
+              ...selectStyle,
               width: 'auto',
               maxWidth: 360,
-              padding: '4px 8px',
-              border: '1px solid var(--faint)',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--surface)',
+              padding: '4px 30px 4px 8px',
+              backgroundPosition: 'right 10px center',
               font: '400 13.5px var(--font-body)',
-              color: 'var(--ink)',
             }}
           >
             <option value="">Ungrouped</option>

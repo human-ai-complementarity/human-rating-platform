@@ -43,6 +43,7 @@ import {
   inputStyle,
   primaryButton,
   secondaryButton,
+  selectStyle,
   textareaStyle,
 } from './experiment-detail/ui';
 import {
@@ -2452,7 +2453,7 @@ function AssistanceModePanel({
               value={confidenceMethod}
               disabled={isLocked}
               onChange={(e) => onConfidenceMethodChange(e.target.value)}
-              style={{ ...inputStyle, maxWidth: 380, cursor: 'pointer' }}
+              style={{ ...selectStyle, maxWidth: 380 }}
             >
               <option value="self_report">Self-report — single call, fastest</option>
               <option value="sampling">Sampling — K samples + clustering, most accurate</option>
@@ -3293,7 +3294,7 @@ function RoundCard(props: {
                   study_label: e.target.value as PilotStudyCreate['study_label'],
                 })
               }
-              style={{ ...inputStyle, cursor: 'pointer' }}
+              style={selectStyle}
             >
               {STUDY_LABELS.map(([value, label]) => (
                 <option key={value} value={value}>
@@ -3522,7 +3523,7 @@ function PilotForm(props: {
                 study_label: e.target.value as PilotStudyCreate['study_label'],
               })
             }
-            style={{ ...inputStyle, cursor: 'pointer' }}
+            style={selectStyle}
           >
             {STUDY_LABELS.map(([value, label]) => (
               <option key={value} value={value}>
