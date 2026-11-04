@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Settings, get_settings
 from database import get_session
+from services import admin_groups
 
 
 def _b64url(data: bytes) -> str:
@@ -183,8 +184,9 @@ async def require_api_key(
     raise HTTPException(status_code=401, detail="Invalid API key")
 
 
-def _allowlist(settings: Settings) -> set[str]:
-    return {e.strip().lower() for e in settings.admin_allowlist}
+def allowed_emails(settings: Settings) -> set[str]:
+    """Who may use the admin surface: ADMIN_ALLOWLIST plus everyone in ADMIN_GROUPS."""
+    return {e.strip().lower() for e in settings.admin_allowlist} | admin_groups.emails()
 
 
 async def _admin_session_from_api_key(
@@ -217,7 +219,7 @@ async def _admin_session_from_api_key(
             status_code=403,
             detail="This API key is read-only (/api/v1); /api/admin needs an admin-scoped key",
         )
-    if (record.created_by or "").strip().lower() not in _allowlist(settings):
+    if (record.created_by or "").strip().lower() not in allowed_emails(settings):
         raise HTTPException(
             status_code=403,
             detail="This API key's creator is no longer allowlisted for admin access",
@@ -248,7 +250,7 @@ async def require_admin(
         raise HTTPException(status_code=403, detail="Admin session required")
 
     email = session.email.lower().strip()
-    if not email or email not in _allowlist(settings):
+    if not email or email not in allowed_emails(settings):
         raise HTTPException(status_code=403, detail="Not allowlisted for admin access")
 
     return session

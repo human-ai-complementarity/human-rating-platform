@@ -45,7 +45,13 @@ from services import terms as terms_service
 from services.admin.prolific import get_cached_workspace_currency
 from services.admin.queries import fetch_experiment_or_404
 from services.admin.waves import CURRENT_WAVE
-from auth import AdminSession, get_admin_manager, require_admin, require_signed_in_admin
+from auth import (
+    AdminSession,
+    allowed_emails,
+    get_admin_manager,
+    require_admin,
+    require_signed_in_admin,
+)
 from services.authn import verify_clerk_token_and_get_email
 
 # Public admin router (for auth endpoints)
@@ -83,9 +89,7 @@ async def admin_login(
     email: str = Depends(get_clerk_email_from_request),
     manager=Depends(get_admin_manager),
 ):
-    settings = get_settings()
-    allow = {e.strip().lower() for e in settings.admin_allowlist}
-    if email.strip().lower() not in allow:
+    if email.strip().lower() not in allowed_emails(get_settings()):
         return JSONResponse(status_code=403, content={"message": "Email is not allowlisted"})
 
     resp = JSONResponse({"ok": True})

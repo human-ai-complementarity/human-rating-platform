@@ -17,7 +17,7 @@ from config import get_settings
 from database import build_database
 from logging_config import configure_logging
 from routers import admin, raters, v1
-from services import prolific_to_slack
+from services import admin_groups, prolific_to_slack
 from services.assistance.runner import PreparationRunner
 
 logger = logging.getLogger(__name__)
@@ -142,6 +142,11 @@ def create_app() -> FastAPI:
         app.state.database = database
         runner = PreparationRunner(database)
         app.state.preparation_runner = runner
+        admin_groups_task: asyncio.Task | None = None
+        if settings.admin_groups:
+            admin_groups_task = asyncio.create_task(
+                admin_groups.run_refresh_loop(settings.admin_groups), name="admin-groups"
+            )
         prolific_to_slack_task: asyncio.Task | None = None
         if prolific_to_slack.forwarding_enabled(settings):
             prolific_to_slack_task = asyncio.create_task(
@@ -153,6 +158,10 @@ def create_app() -> FastAPI:
             await runner.wait_ready()
             yield
         finally:
+            if admin_groups_task is not None:
+                admin_groups_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await admin_groups_task
             if prolific_to_slack_task is not None:
                 prolific_to_slack_task.cancel()
                 with suppress(asyncio.CancelledError):
