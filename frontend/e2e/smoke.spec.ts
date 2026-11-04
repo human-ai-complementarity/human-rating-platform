@@ -188,15 +188,30 @@ type AnalyticsRecord = {
   raters: RaterAnalyticsRecord[];
 };
 
+type RaterContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; mime_type: string };
+
 type RaterQuestionRecord = {
   id: number;
   question_text: string;
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  content?: RaterContentBlock[] | null;
+  parent_content?: RaterContentBlock[] | null;
   is_markdown: boolean;
   render_math?: boolean;
 };
+
+// A 1x1 PNG: enough for the browser to decode, which is what proves the
+// image bytes came back through the API path the backend handed out.
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+);
+const MEDIA_DIGEST = 'a'.repeat(64);
+const MEDIA_URL = `/api/raters/media/${MEDIA_DIGEST}?exp=4102444800&sig=0123456789abcdef0123456789abcdef`;
 
 type MockState = {
   experiments: ExperimentRecord[];
@@ -216,6 +231,7 @@ type MockState = {
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  mediaRequests: string[];
   consentSessionTokens: string[];
   experimentPatches: Record<string, unknown>[];
   pinnedQuestionRequests: number[];
@@ -304,6 +320,7 @@ function createMockState(): MockState {
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    mediaRequests: [],
     consentSessionTokens: [],
     experimentPatches: [],
     pinnedQuestionRequests: [],
@@ -919,6 +936,17 @@ async function installApiMocks(
         session_end_time: consentedSession?.session_end_time ?? '2099-03-09T01:02:30Z',
         session_grace_seconds: consentedSession?.session_grace_seconds ?? 0,
         rater_session_token: token,
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/api/raters/media/') && method === 'GET') {
+      state.mediaRequests.push(`${pathname}?${url.searchParams.toString()}`);
+      await route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        headers: { 'cache-control': 'private, max-age=600' },
+        body: ONE_PIXEL_PNG,
       });
       return;
     }
@@ -3971,4 +3999,46 @@ test('on a phone the header menus open above the sticky section tabs', async ({ 
     expect(itemOnTop).toBe(true);
     await page.keyboard.press('Escape');
   }
+});
+
+test('a question with image content renders its blocks in order and fetches the image', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 507,
+    question_text: 'Screen after step 1:\n\nShould the next action be allowed?',
+    options: 'allow|deny',
+    question_type: 'MC',
+    is_markdown: false,
+    content: [
+      { type: 'text', text: 'Screen after step 1:' },
+      { type: 'image', url: MEDIA_URL, mime_type: 'image/png' },
+      { type: 'text', text: 'Should the next action be allowed?' },
+    ],
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('Screen after step 1:')).toBeVisible();
+  await expect(page.getByText('Should the next action be allowed?')).toBeVisible();
+  // Blocks replace the text form; it is not rendered a second time.
+  await expect(page.getByText('Screen after step 1:')).toHaveCount(1);
+
+  const image = page.getByRole('img', { name: 'Question image 1' });
+  await expect(image).toBeVisible();
+  // The API path the backend handed out is what the browser fetched, with
+  // its token intact, and the bytes decoded.
+  await expect.poll(() => state.mediaRequests).toContain(MEDIA_URL);
+  await expect
+    .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBe(1);
+  // Full size opens in a new tab rather than navigating away from the question.
+  await expect(page.getByRole('link', { name: 'Question image 1' })).toHaveAttribute(
+    'target',
+    '_blank',
+  );
+  await expect(page.getByRole('button', { name: 'allow' })).toBeVisible();
 });

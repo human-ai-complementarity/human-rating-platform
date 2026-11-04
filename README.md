@@ -282,7 +282,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 - `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
-- `MEDIA__SOURCE_URL` — where question images live, `gs://bucket/prefix` or `file://folder`; unset refuses uploads that reference images. `MEDIA__GCS_WIF_AUDIENCE`, `MEDIA__GCS_WIF_TOKEN_FILE`, `MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT` as for `TERMS__GCS_*`. See [Questions with images](#questions-with-images).
+- `MEDIA__SOURCE_URL` — where question images live, `gs://bucket/prefix` or `file://folder`; unset refuses uploads that reference images. `MEDIA__URL_TTL_MINUTES` (default 240) is the least life a rater's image URL has when handed out; `MEDIA__GCS_WIF_AUDIENCE`, `MEDIA__GCS_WIF_TOKEN_FILE`, `MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT` as for `TERMS__GCS_*`. See [Questions with images](#questions-with-images).
 
 Top‑level convenience envs (not nested):
 
@@ -492,6 +492,8 @@ gsutil -m rsync outputs/checkpoints/ingest_questions/media gs://<bucket>/<prefix
 ```
 
 An upload checks every referenced digest against the source and refuses the file, listing the missing ones, rather than store a question whose image a rater could not see. It also refuses an image over `MEDIA__MAX_IMAGE_BYTES` (default 7 MB): the assistance models receive each image inline, and the strictest provider in use rejects larger ones at request time. The source is `gs://bucket/prefix` in production (read with the platform's own Google credentials, `MEDIA__GCS_WIF_*` as for `TERMS__GCS_*`) or `file://folder` locally.
+
+**Delivery.** Only raters with a live session are handed image URLs. The backend serves the bytes from `/api/raters/media/<digest>` behind an HMAC token with at least `MEDIA__URL_TTL_MINUTES` of life left when handed out (default 240, long enough to cover a session); the bytes are re-hashed on every read, so an object that changed after upload is refused rather than shown.
 
 ### Optional dataset-level metadata
 
@@ -748,6 +750,7 @@ model and key management.
 - `GET /api/raters/next-question` — get next question
 - `POST /api/raters/submit` — submit a rating
 - `GET /api/raters/session-status` — check session status
+- `GET /api/raters/media/{digest}` — one question image, by the expiring URL `next-question` handed out (no session header; the URL is the credential)
 - `POST /api/raters/end-session` — end session
 - `POST /api/raters/assistance/start` — start an assistance session for a question; returns an `AssistanceStepResponse` with `session_id`, `type`, and `content`
 - `POST /api/raters/assistance/advance` — advance a multi-turn assistance session; body: `{ session_id, human_input }`

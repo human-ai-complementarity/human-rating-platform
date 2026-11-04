@@ -4,7 +4,8 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
-import type { Question } from '../types';
+import type { ContentBlock, Question } from '../types';
+import { resolveMediaUrl } from '../api';
 import { splitMath, useMathRenderer } from '../math';
 import type { MathRenderer } from '../math';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
@@ -40,6 +41,7 @@ type QuestionDisplay = {
   /** Rendered inline in the "Context" box above the question. */
   inlineContext: string | null;
   questionText: string;
+  questionBlocks: ContentBlock[] | null;
 };
 
 function escapeHtml(value: string): string {
@@ -147,6 +149,70 @@ function QuestionBody({
   );
 }
 
+function ContentImage({ url, index }: { url: string; index: number }) {
+  const src = resolveMediaUrl(url);
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      title="Open image in new tab"
+      style={{ display: 'block', margin: '12px 0' }}
+    >
+      <img
+        src={src}
+        alt={`Question image ${index}`}
+        loading="lazy"
+        style={{
+          display: 'block',
+          maxWidth: '100%',
+          height: 'auto',
+          border: '1px solid #e6e1d5',
+          borderRadius: 9,
+          background: '#ffffff',
+        }}
+      />
+    </a>
+  );
+}
+
+/**
+ * A stimulus with images: its blocks in order, text rendered as the plain
+ * question text would be, each image full width and opening at full size in
+ * a new tab. Inline styles throughout, so the same markup works in the
+ * standalone document popup.
+ */
+function ContentBlocks({
+  blocks,
+  markdown,
+  math,
+  textStyle,
+}: {
+  blocks: ContentBlock[];
+  markdown: boolean;
+  math: MathRenderer | null;
+  textStyle?: CSSProperties;
+}) {
+  let imageIndex = 0;
+  return (
+    <div className="question-content">
+      {blocks.map((block, i) =>
+        block.type === 'image' ? (
+          <ContentImage key={i} url={block.url} index={++imageIndex} />
+        ) : (
+          <QuestionBody
+            key={i}
+            text={block.text}
+            markdown={markdown}
+            math={math}
+            style={textStyle}
+          />
+        ),
+      )}
+    </div>
+  );
+}
+
 // Researcher-supplied framing is instructional, not decorative: raters are
 // expected to read it before answering, so it gets a labelled callout rather
 // than muted italics.
@@ -200,11 +266,13 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
 function parseQuestionDisplay(question: Question): QuestionDisplay {
   const parent = question.parent_question_text?.trim() || null;
   const parentIsDocument = parent !== null && parent.length > INLINE_CONTEXT_MAX_CHARS;
+  const questionBlocks = question.content?.length ? question.content : null;
 
   return {
     documentText: parentIsDocument ? parent : null,
     inlineContext: parentIsDocument ? null : parent,
     questionText: question.question_text,
+    questionBlocks,
   };
 }
 
@@ -484,20 +552,38 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
       )}
 
-      <QuestionBody
-        text={display.questionText}
-        markdown={question.is_markdown}
-        math={math}
-        style={{
-          fontFamily: 'var(--font-head)',
-          fontSize: 22,
-          lineHeight: 1.35,
-          letterSpacing: '-0.005em',
-          color: 'var(--ink)',
-          marginTop: 0,
-          marginBottom: 24,
-        }}
-      />
+      {display.questionBlocks ? (
+        <div style={{ marginBottom: 24 }}>
+          <ContentBlocks
+            blocks={display.questionBlocks}
+            markdown={question.is_markdown}
+            math={math}
+            textStyle={{
+              fontFamily: 'var(--font-head)',
+              fontSize: 22,
+              lineHeight: 1.35,
+              letterSpacing: '-0.005em',
+              color: 'var(--ink)',
+              margin: 0,
+            }}
+          />
+        </div>
+      ) : (
+        <QuestionBody
+          text={display.questionText}
+          markdown={question.is_markdown}
+          math={math}
+          style={{
+            fontFamily: 'var(--font-head)',
+            fontSize: 22,
+            lineHeight: 1.35,
+            letterSpacing: '-0.005em',
+            color: 'var(--ink)',
+            marginTop: 0,
+            marginBottom: 24,
+          }}
+        />
+      )}
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
         <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />

@@ -1,10 +1,12 @@
-"""Questions with images (#114): the content column and the media source."""
+"""Questions with images (#114): upload, delivery to raters, and the media route."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +14,12 @@ from sqlalchemy import text
 
 from config import get_settings
 from services import media
-from test_characterization import _build_parquet_bytes, _create_experiment
+from test_characterization import (
+    _build_parquet_bytes,
+    _create_experiment,
+    _rater_headers,
+    _start_session,
+)
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"screenshot bytes"
 DIGEST = hashlib.sha256(PNG).hexdigest()
@@ -74,7 +81,15 @@ def _stored_content(sync_engine, experiment_id: int) -> dict[str, str | None]:
         )
 
 
-def test_upload_stores_blocks_as_given(client: TestClient, sync_engine, media_source: Path):
+def _next_question(client: TestClient, session: dict) -> dict:
+    response = client.get("/api/raters/next-question", headers=_rater_headers(session))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_upload_stores_blocks_and_serves_them_with_fetchable_urls(
+    client: TestClient, sync_engine, media_source: Path
+):
     experiment = _create_experiment(client)
     blocks = [_text("Screen after step 1:"), _image(), _text("Allow the action?")]
     response = _upload(
@@ -97,6 +112,47 @@ def test_upload_stores_blocks_as_given(client: TestClient, sync_engine, media_so
     stored = _stored_content(sync_engine, experiment["id"])
     assert stored["task"] is None
     assert json.loads(stored["step1"]) == blocks
+
+    session = _start_session(client, experiment["id"])
+    question = _next_question(client, session)
+    assert question["question_text"] == "Screen after step 1:\n\nAllow the action?"
+    assert question["parent_question_text"] == "Task: enable Do Not Track"
+    content = question["content"]
+    assert content[0] == blocks[0] and content[2] == blocks[2]
+    image = content[1]
+    assert image["type"] == "image" and image["mime_type"] == "image/png"
+    assert "ref" not in image
+    url = image["url"]
+    assert url.startswith(f"/api/raters/media/{DIGEST}?")
+
+    # The URL is the credential: no session header needed, bytes come back
+    # with the sniffed type and a cache lifetime bounded by the link's.
+    fetched = client.get(url)
+    assert fetched.status_code == 200, fetched.text
+    assert fetched.content == PNG
+    assert fetched.headers["content-type"] == "image/png"
+    assert fetched.headers["cache-control"].startswith("private, max-age=")
+
+    # Re-pointing the link at another object, or altering its signature, fails.
+    query = parse_qs(urlparse(url).query)
+    other = client.get(
+        f"/api/raters/media/{JPEG_DIGEST}", params={"exp": query["exp"][0], "sig": query["sig"][0]}
+    )
+    assert other.status_code == 403
+    tampered = client.get(url[:-1] + ("0" if url[-1] != "0" else "1"))
+    assert tampered.status_code == 403
+    assert (
+        client.get("/api/raters/media/not-a-digest", params={"exp": 1, "sig": "x"}).status_code
+        == 404
+    )
+
+
+def test_expired_media_links_are_refused(client: TestClient, media_source: Path):
+    secret = get_settings().effective_rater_session_secret
+    stale = media.proxy_url(secret, DIGEST, ttl_seconds=60, now=time.time() - 120)
+    response = client.get(stale)
+    assert response.status_code == 403
+    assert "expired" in response.json()["detail"]
 
 
 def test_parquet_content_column_may_be_typed_blocks(
@@ -178,6 +234,10 @@ def test_text_only_uploads_are_untouched(client: TestClient, sync_engine):
     assert response.status_code == 200, response.text
     assert _stored_content(sync_engine, experiment["id"]) == {"q1": None}
 
+    session = _start_session(client, experiment["id"])
+    question = _next_question(client, session)
+    assert question["content"] is None
+
 
 def test_upload_refuses_an_image_over_the_size_limit(client: TestClient, media_source: Path):
     settings = get_settings().media
@@ -251,3 +311,19 @@ def test_duplicate_copies_every_question_column(
         }
     assert rows[copy["id"]] == rows[experiment["id"]]
     assert _stored_content(sync_engine, copy["id"]) == {"q1": media.dump_content(blocks)}
+
+
+def test_serving_fails_closed_when_the_source_disappears(client: TestClient, media_source: Path):
+    experiment = _create_experiment(client)
+    response = _upload(
+        client,
+        experiment["id"],
+        _csv([{"question_id": "q1", "question_text": "x", "content": json.dumps([_image()])}]),
+    )
+    assert response.status_code == 200, response.text
+    session = _start_session(client, experiment["id"])
+    settings = get_settings()
+    settings.media.source_url = ""
+    response = client.get("/api/raters/next-question", headers=_rater_headers(session))
+    assert response.status_code == 503
+    assert "MEDIA__SOURCE_URL" in response.json()["detail"]
