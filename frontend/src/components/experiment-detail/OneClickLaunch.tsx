@@ -20,6 +20,7 @@ export function OneClickLaunch({
   currencyCode,
   currencySymbol,
   onLaunched,
+  attemptLaunch,
 }: {
   experimentId: number;
   datasetId: number;
@@ -28,6 +29,9 @@ export function OneClickLaunch({
   currencyCode: string | null;
   currencySymbol: string | null;
   onLaunched: () => Promise<void>;
+  // The pilot check gate (docs/pilot-check.md): runs the launch, and on the
+  // gate's 409 shows its dialog and resolves false instead of throwing.
+  attemptLaunch: (launch: (acknowledgePilotCheck: boolean) => Promise<void>) => Promise<boolean>;
 }) {
   const [card, setCard] = useState<Dataset | null>(null);
   const [excluded, setExcluded] = useState<LaunchPreview['excluded_experiments']>([]);
@@ -117,19 +121,22 @@ export function OneClickLaunch({
       return;
     }
     setLaunching(true);
+    const launch = async (acknowledgePilotCheck: boolean) => {
+      await api.launchFromCard(experimentId, undefined, { acknowledgePilotCheck });
+      try {
+        await onLaunched();
+      } catch {
+        // The draft exists; only the refresh failed, so offer no second launch.
+        setLaunching(false);
+        setCreated(true);
+      }
+    };
     try {
-      await api.launchFromCard(experimentId);
+      const launched = await attemptLaunch(launch);
+      if (!launched) setLaunching(false); // deferred to the gate's dialog
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to launch from the dataset card');
       setLaunching(false);
-      return;
-    }
-    try {
-      await onLaunched();
-    } catch {
-      // The draft exists; only the refresh failed, so offer no second launch.
-      setLaunching(false);
-      setCreated(true);
     }
   };
 

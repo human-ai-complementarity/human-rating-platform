@@ -167,3 +167,30 @@ def terms_source(tmp_path: Path):
     settings.terms.source_url = f"file://{root}"
     yield root
     settings.terms.source_url = original
+
+
+@pytest.fixture(autouse=True)
+def pilot_check_gate_off():
+    """The pilot check's launch gate is off for the suite: most tests create
+    studies without running a check first. `pilot_check_gate` turns it on."""
+    from services.pilot_check import get_pilot_check_config
+    from services.pilot_check.config import set_config_override
+
+    config = get_pilot_check_config().model_copy(deep=True)
+    config.gate.mode = "off"
+    set_config_override(config)
+    try:
+        yield config
+    finally:
+        set_config_override(None)
+
+
+@pytest.fixture
+def pilot_check_gate(pilot_check_gate_off):
+    """The gate in its shipped "warn" mode."""
+    from services.pilot_check.config import set_config_override
+
+    config = pilot_check_gate_off.model_copy(deep=True)
+    config.gate.mode = "warn"
+    set_config_override(config)
+    yield config

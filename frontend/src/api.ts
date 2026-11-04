@@ -26,6 +26,8 @@ import type {
   ExperimentStats,
   ExperimentStatus,
   LaunchPreview,
+  PilotCheckRefusal,
+  PilotCheckRun,
   PilotStudyCreate,
   PlatformStatus,
   Question,
@@ -101,6 +103,8 @@ const routes = {
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
     launch: (id: number) => `/admin/experiments/${id}/launch`,
+    pilotCheck: (id: number) => `/admin/experiments/${id}/pilot-check`,
+    pilotCheckRun: (runId: number) => `/admin/pilot-checks/${runId}`,
     launchPreview: (id: number) => `/admin/experiments/${id}/launch/preview`,
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
@@ -229,13 +233,49 @@ function httpErrorMessage(status: number, statusText: string, body: string, url:
   return `Request failed (${status}) for ${url}: ${fallback}`;
 }
 
+/**
+ * A non-2xx response. `message` is what the UI shows; `status` and `detail`
+ * let a caller recognise a structured refusal, such as the pilot check's 409
+ * (docs/pilot-check.md), and act on it instead of only displaying it.
+ */
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); }
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+function parseDetail(body: string): unknown {
+  const trimmed = body.trim();
+  if (!trimmed || trimmed[0] !== '{') return undefined;
+  try {
+    return (JSON.parse(trimmed) as { detail?: unknown }).detail;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The launch gate's refusal, when `err` is one. */
+export function pilotCheckRefusal(err: unknown): PilotCheckRefusal | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const detail = err.detail as Partial<PilotCheckRefusal> | undefined;
+  if (!detail || typeof detail !== 'object' || !detail.pilot_check) return null;
+  if (detail.code !== 'pilot_check' && detail.code !== 'pilot_check_blocked') return null;
+  return detail as PilotCheckRefusal;
 }
 
 async function throwHttpError(response: Response, url: string): Promise<never> {
   const body = await readText(response);
-  throw new ApiError(response.status, httpErrorMessage(response.status, response.statusText, body, url));
+  throw new ApiError(
+    response.status,
+    httpErrorMessage(response.status, response.statusText, body, url),
+    parseDetail(body)
+  );
 }
 
 // FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
@@ -252,6 +292,10 @@ function extractDetail(body: string): string | null {
     }
     if (parsed && Array.isArray(parsed.detail)) {
       return formatValidationErrors(parsed.detail);
+    }
+    // A structured refusal ({code, message, ...}) carries its sentence in `message`.
+    if (parsed && parsed.detail && typeof parsed.detail.message === 'string') {
+      return parsed.detail.message.trim();
     }
   } catch {
     // not JSON — fall through to raw body fallback in caller
@@ -694,11 +738,37 @@ export const api = {
   // form. Only a complete card (economics included) qualifies, so a dataset's
   // first study usually goes through the pilot form. Publishing is still separate.
   // It excludes the dataset's other experiments; getLaunchPreview lists them.
-  async launchFromCard(experimentId: number, places?: number): Promise<ExperimentRound> {
+  async launchFromCard(
+    experimentId: number,
+    places?: number,
+    { acknowledgePilotCheck = false }: { acknowledgePilotCheck?: boolean } = {}
+  ): Promise<ExperimentRound> {
     return requestJson<ExperimentRound>(routes.admin.launch(experimentId), {
       method: 'POST',
-      json: places != null ? { places } : {},
+      json: {
+        ...(places != null ? { places } : {}),
+        ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}),
+      },
     });
+  },
+
+  // ── Pilot check (docs/pilot-check.md) ─────────────────────────────────
+
+  // Starts a run; it finishes in the background. Poll getPilotCheck.
+  async runPilotCheck(experimentId: number): Promise<PilotCheckRun> {
+    return requestJson<PilotCheckRun>(routes.admin.pilotCheck(experimentId), { method: 'POST' });
+  },
+
+  // The experiment's latest run, or null when none has been started.
+  async getPilotCheck(experimentId: number): Promise<PilotCheckRun | null> {
+    const { url, response } = await request(routes.admin.pilotCheck(experimentId));
+    if (response.status === 404) return null;
+    if (!response.ok) await throwHttpError(response, url);
+    return parseJson<PilotCheckRun>(response, url);
+  },
+
+  async getPilotCheckRun(runId: number): Promise<PilotCheckRun> {
+    return requestJson<PilotCheckRun>(routes.admin.pilotCheckRun(runId));
   },
 
   async getLaunchPreview(experimentId: number): Promise<LaunchPreview> {
@@ -714,10 +784,14 @@ export const api = {
     });
   },
 
-  async runExperimentRound(experimentId: number, places: number): Promise<ExperimentRound> {
+  async runExperimentRound(
+    experimentId: number,
+    places: number,
+    { acknowledgePilotCheck = false }: { acknowledgePilotCheck?: boolean } = {}
+  ): Promise<ExperimentRound> {
     return requestJson<ExperimentRound>(routes.admin.prolificRounds(experimentId), {
       method: 'POST',
-      json: { places },
+      json: { places, ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}) },
     });
   },
 

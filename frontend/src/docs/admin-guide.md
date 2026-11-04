@@ -66,7 +66,7 @@ The **first** upload that declares a value populates the experiment. Later uploa
 
 ### Always preview
 
-Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect.
+Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect. The [pilot check](#run-the-pilot-check) on the Launch tab automates the first pass over a sample of questions; the preview is still how you look at one with your own eyes.
 
 ## 3. Pick an assistance method (optional)
 
@@ -81,6 +81,14 @@ Always pilot before scaling. In the **Prolific Workflow** section, create a smal
 Keep the **estimated completion time** at or under the session length. It is the number Prolific advertises, so an estimate longer than the session promises work that cannot be finished in the time given — raters either return the study on sight or run out of time partway through. Both the pilot form and the round editor warn you when the two disagree.
 
 The pilot can't be created until the experiment has at least one uploaded question, rater instructions, an internal study name, and (when assisted) an assistance model. The prompt prefix and suffix are optional. The pilot form lists anything missing and how to fix it.
+
+### Run the pilot check
+
+Before creating any study, press **Run check** on the **Pilot check** card at the top of the Launch tab. It samples a handful of questions (15 by default), builds exactly what a rater would see for each, runs the assistance method on it, and reports anything a rater would trip over: a missing or placeholder consent statement, Markdown that will show as literal symbols, a choice question with no options, assistance that comes back empty or with every subtask at 0% confidence, instructions that describe a different task than the questions pose. Deterministic rules catch the structural problems; an LLM judge reads the instructions, each sampled question and its assistance for the rest. A run takes about a minute.
+
+Findings are grouped by check with a severity each, and a question-level finding links straight to that question in the participant preview. The card says when the check was last run and by whom. Editing the instructions, prompts, Markdown switch, assistance settings or questions makes the run **stale**, so run it again after changes.
+
+Creating a pilot or a round without a clean run (none, stale, still running, or with warnings or errors) opens a confirmation. You can launch anyway, and the round records who did; or the deployment can be configured to block instead. Which checks run, their severities, the sample size, the judge model and the gate mode live in `backend/pilot_check.toml`.
 
 ### Dataset cards and the one-click pilot
 

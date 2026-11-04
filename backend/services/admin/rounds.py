@@ -55,7 +55,13 @@ from services.queries import parent_question_ids_subquery
 from services.terms import PendingPin, apply_terms_pin, prepare_terms_pin, study_requirements
 from session_policy import SessionPolicy, resolve_session_policy
 
-from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
+from .queries import (
+    fetch_experiment_or_404,
+    fetch_ratings_for_experiment,
+    fetch_total_questions_for_experiment,
+)
+from services.pilot_check import gate_for
+
 from .status import assert_launch_ready, is_locked, validate_new_exclusion_targets
 
 logger = logging.getLogger(__name__)
@@ -215,6 +221,8 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         total_cost=round_.total_cost,
         submissions_completed=round_.submissions_completed,
         submissions_in_progress=round_.submissions_in_progress,
+        pilot_check_run_id=round_.pilot_check_run_id,
+        pilot_check_acknowledged_by=round_.pilot_check_acknowledged_by,
     )
 
 
@@ -698,12 +706,25 @@ async def calculate_recommendation(
     )
 
 
+async def _pilot_check_gate(experiment, db, *, acknowledged: bool, admin_email: str | None):
+    """The soft gate after the hard one (docs/pilot-check.md)."""
+    question_count = await fetch_total_questions_for_experiment(experiment.id, db)
+    return await gate_for(
+        experiment,
+        db,
+        acknowledged=acknowledged,
+        admin_email=admin_email,
+        question_count=question_count,
+    )
+
+
 async def run_pilot_study(
     experiment_id: int,
     payload: PilotStudyCreate,
     db: AsyncSession,
     *,
     preapproved_exclusion_ids: list[int] | None = None,
+    requested_by: str | None = None,
 ) -> ExperimentRoundResponse:
     settings = get_settings()
     if not settings.prolific.enabled:
@@ -717,6 +738,9 @@ async def run_pilot_study(
             detail="A pilot study has already been run for this experiment",
         )
     await assert_launch_ready(experiment, db)
+    gate = await _pilot_check_gate(
+        experiment, db, acknowledged=payload.acknowledge_pilot_check, admin_email=requested_by
+    )
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
     # Pilot creation is the first write for this experiment's exclusion list —
@@ -791,6 +815,8 @@ async def run_pilot_study(
         screeners=json.dumps(list(payload.screeners)),
         excluded_experiment_ids=json.dumps(excluded_experiment_ids),
         places_requested=payload.pilot_places,
+        pilot_check_run_id=gate.run_id,
+        pilot_check_acknowledged_by=gate.acknowledged_by,
     )
     await _commit_round_creation(
         db,
@@ -817,6 +843,8 @@ async def run_experiment_round(
     experiment_id: int,
     payload: ExperimentRoundCreate,
     db: AsyncSession,
+    *,
+    requested_by: str | None = None,
 ) -> ExperimentRoundResponse:
     settings = get_settings()
     if not settings.prolific.enabled:
@@ -844,6 +872,11 @@ async def run_experiment_round(
         )
 
     next_round_number = latest_round.round_number + 1
+    # Config is frozen after the first main round, so a run made before the
+    # pilot stays valid here; the gate still catches a never-run or stale one.
+    gate = await _pilot_check_gate(
+        experiment, db, acknowledged=payload.acknowledge_pilot_check, admin_email=requested_by
+    )
     device_compatibility = _parse_device_compatibility(pilot_round.device_compatibility)
     screeners = _parse_screeners(pilot_round.screeners)
     excluded_experiment_ids = _parse_excluded_experiment_ids(pilot_round.excluded_experiment_ids)
@@ -913,6 +946,8 @@ async def run_experiment_round(
         screeners=pilot_round.screeners,
         excluded_experiment_ids=pilot_round.excluded_experiment_ids,
         places_requested=payload.places,
+        pilot_check_run_id=gate.run_id,
+        pilot_check_acknowledged_by=gate.acknowledged_by,
     )
     await _commit_round_creation(
         db,

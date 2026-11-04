@@ -83,6 +83,97 @@ export interface Experiment {
   launch_blockers: string[];
   // How to fix each blocker, one per blocker in the same order.
   launch_blocker_fixes: string[];
+  // The latest pilot check's state (docs/pilot-check.md), computed with the
+  // launch gate's own function so the UI nags exactly when the API would 409.
+  // Absent on responses from older endpoints; treat as unknown.
+  pilot_check?: PilotCheckSummary | null;
+}
+
+// ── Pilot check (docs/pilot-check.md) ────────────────────────────────────
+
+export type PilotCheckState =
+  | 'not_run'
+  | 'running'
+  | 'stale'
+  | 'passed'
+  | 'warnings'
+  | 'failed'
+  | 'aborted';
+
+export type PilotCheckSeverity = 'error' | 'warning' | 'info';
+
+export interface PilotCheckSummary {
+  state: PilotCheckState;
+  run_id: number | null;
+  created_at: string | null;
+  finished_at: string | null;
+  counts: Record<PilotCheckSeverity, number>;
+  gate_mode: 'warn' | 'block' | 'off';
+  // True when creating a study is refused with a 409 unless the request
+  // carries acknowledge_pilot_check (never satisfiable in block mode).
+  needs_acknowledgement: boolean;
+  // One sentence on why, or null when the run is clean.
+  reason: string | null;
+}
+
+export interface PilotCheckFinding {
+  check: string;
+  severity: PilotCheckSeverity;
+  message: string;
+  question_id: number | null;
+  detail: string | null;
+}
+
+export interface PilotCheckProbe {
+  question_id: number;
+  step_type: string;
+  payload: Record<string, unknown>;
+  failure_reason: string | null;
+  failure_detail: string | null;
+  latency_ms: number;
+}
+
+// The fixed stages plus one per judged check, named after the check.
+export type PilotCheckStage =
+  | 'sampling'
+  | 'assistance'
+  | 'checks'
+  | 'instructions_coherent'
+  | 'question_coherent'
+  | 'assistance_useful'
+  | 'done';
+
+export interface PilotCheckRun {
+  id: number;
+  experiment_id: number;
+  status: 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  // Where the run is and the stages it goes through (the card's stepper).
+  stage: PilotCheckStage | null;
+  stage_detail: string | null;
+  stages: PilotCheckStage[];
+  requested_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+  fingerprint: string;
+  config_sha256: string;
+  terms_ref: string | null;
+  sample_question_ids: number[];
+  findings: PilotCheckFinding[];
+  // null on a control arm: no method ran.
+  assistance_steps: PilotCheckProbe[] | null;
+  judge_model: string | null;
+  error: string | null;
+  // The experiment changed since this run looked at it.
+  stale: boolean;
+  enabled_checks: string[];
+  sample_size: number;
+}
+
+// The structured body of the launch gate's 409.
+export interface PilotCheckRefusal {
+  code: 'pilot_check' | 'pilot_check_blocked';
+  message: string;
+  pilot_check: PilotCheckSummary;
 }
 
 // A group whose wave is not the platform's current one.
@@ -501,6 +592,10 @@ export interface ExperimentRound {
   // working. Null until the round has been synced from Prolific.
   submissions_completed: number | null;
   submissions_in_progress: number | null;
+  // The pilot check run this round was launched against, and who launched
+  // past a check the gate would have stopped (docs/pilot-check.md).
+  pilot_check_run_id?: number | null;
+  pilot_check_acknowledged_by?: string | null;
 }
 
 export interface ExperimentRoundUpdate {
@@ -523,6 +618,8 @@ export interface PilotStudyCreate {
   study_label: StudyLabel;
   screeners: Screener[];
   excluded_experiment_ids: number[];
+  // The admin saw the pilot check's refusal and chose to launch anyway.
+  acknowledge_pilot_check?: boolean;
 }
 
 // What a one-click launch excludes: every other experiment on the dataset.

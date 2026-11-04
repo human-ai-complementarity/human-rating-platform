@@ -21,6 +21,8 @@ import type {
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
+import { PilotCheckCard, StatePill, describeSummary } from './experiment-detail/PilotCheckCard';
+import { usePilotCheckGate } from './experiment-detail/pilotCheckGate';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import { EthicsPanel } from './experiment-detail/EthicsPanel';
 import {
@@ -930,19 +932,26 @@ function ExperimentDetail({
     }
   };
 
+  // Study creation goes through the pilot check gate (docs/pilot-check.md):
+  // its 409 becomes a dialog, and "Launch anyway" repeats the call acknowledged.
+  const pilotCheckGate = usePilotCheckGate();
+
   const handleRunPilot = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
-      await api.runPilotStudy(experiment.id, {
-        ...pilotForm,
-        reward: rewardInputToMinor(pilotRewardInput, currencyCode),
+      await pilotCheckGate.attempt(async (acknowledgePilotCheck) => {
+        await api.runPilotStudy(experiment.id, {
+          ...pilotForm,
+          reward: rewardInputToMinor(pilotRewardInput, currencyCode),
+          ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}),
+        });
+        showSuccess('Pilot draft created on Prolific. Publish it when ready.', 4000);
+        pilotDescriptionDirtyRef.current = false;
+        onRefresh();
+        await loadRounds();
+        await loadRecommendation();
       });
-      showSuccess('Pilot draft created on Prolific. Publish it when ready.', 4000);
-      pilotDescriptionDirtyRef.current = false;
-      onRefresh();
-      await loadRounds();
-      await loadRecommendation();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create pilot study');
     }
@@ -962,10 +971,12 @@ function ExperimentDetail({
     const places = recommendation.recommended_places;
     setError(null);
     try {
-      await api.runExperimentRound(experiment.id, places);
-      showSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`, 4000);
-      await loadRounds();
-      await loadRecommendation();
+      await pilotCheckGate.attempt(async (acknowledgePilotCheck) => {
+        await api.runExperimentRound(experiment.id, places, { acknowledgePilotCheck });
+        showSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`, 4000);
+        await loadRounds();
+        await loadRecommendation();
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create study round');
     }
@@ -1388,9 +1399,12 @@ function ExperimentDetail({
             onRunRound={handleRunRound}
             otherExperiments={otherExperiments}
             onBack={() => setTab('assistance')}
+            onPilotCheckChanged={onRefresh}
+            attemptLaunch={pilotCheckGate.attempt}
           />
         )}
       </div>
+      {pilotCheckGate.dialog}
     </div>
   );
 }
@@ -1509,6 +1523,37 @@ function OverviewPanel({
               <StepChip key={s.key} step={s} onClick={() => onGoto(s.key)} />
             ))}
           </div>
+          {/* The pilot check (docs/pilot-check.md) verifies the steps rather
+              than being one, so it sits under them. Shown once there is
+              something to check. */}
+          {experiment.question_count > 0 && (
+            <div
+              data-testid="overview-pilot-check"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                marginTop: 14,
+                padding: '12px 14px',
+                border: '1px solid var(--faint)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--surface-2)',
+                fontSize: 13.5,
+              }}
+            >
+              <StatePill state={experiment.pilot_check?.state ?? 'not_run'} />
+              <span style={{ flex: 1, color: 'var(--ink)' }}>
+                {describeSummary(experiment.pilot_check)}
+              </span>
+              <button
+                type="button"
+                onClick={() => onGoto('launch')}
+                style={{ ...secondaryButton, padding: '6px 12px', fontSize: 13 }}
+              >
+                {experiment.pilot_check?.state === 'passed' ? 'View check' : 'Run the pilot check'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -2631,6 +2676,9 @@ function LaunchPanel(props: {
   onRunRound: () => void;
   otherExperiments: Experiment[];
   onBack: () => void;
+  // Refreshes the experiment (and so `experiment.pilot_check`) when a run lands.
+  onPilotCheckChanged: () => void;
+  attemptLaunch: (launch: (acknowledgePilotCheck: boolean) => Promise<void>) => Promise<boolean>;
 }) {
   const {
     experiment,
@@ -2668,6 +2716,8 @@ function LaunchPanel(props: {
     onRunRound,
     otherExperiments,
     onBack,
+    onPilotCheckChanged,
+    attemptLaunch,
   } = props;
 
   // Only surface the Prolific-mode banner when it tells the researcher
@@ -2780,6 +2830,17 @@ function LaunchPanel(props: {
             Preview as participant
           </button>
 
+          {/* The pilot check (docs/pilot-check.md) sits above every launch
+              control: it is what the gate on those controls reads. Hidden once
+              the experiment is finished, when nothing can launch. */}
+          {experiment.status !== 'FINISHED' && (
+            <PilotCheckCard
+              experiment={experiment}
+              summary={experiment.pilot_check}
+              onRunStateChange={onPilotCheckChanged}
+            />
+          )}
+
           {prolificEnabled === true && (
             <>
               {rounds.length > 0 && (
@@ -2853,6 +2914,7 @@ function LaunchPanel(props: {
                   currencyCode={currencyCode}
                   currencySymbol={currencySymbol}
                   onLaunched={onLaunchedFromCard}
+                  attemptLaunch={attemptLaunch}
                 />
               )}
 

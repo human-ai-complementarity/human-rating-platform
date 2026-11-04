@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from models import Experiment, Question, Rating, Rater, Upload
-from schemas import ExperimentResponse, ResolvedModel
+from schemas import ExperimentResponse, PilotCheckSummary, ResolvedModel
 from services.assistance.registry import resolved_models
 from .groups import GroupSnapshot
 from .status import experiment_launch_blockers, launch_blocker_fixes
@@ -38,6 +38,7 @@ def build_experiment_response(
     tags: list[str] | None = None,
     consent_statement_ref: str | None = None,
     debrief_statement_ref: str | None = None,
+    pilot_check: PilotCheckSummary | None = None,
 ) -> ExperimentResponse:
     params = json.loads(experiment.assistance_params) if experiment.assistance_params else None
     resolved = resolved_models(params if isinstance(params, dict) else {})
@@ -85,6 +86,7 @@ def build_experiment_response(
         launch_blockers=launch_blockers,
         launch_blocker_fixes=launch_blocker_fixes(launch_blockers),
         launch_ready=not launch_blockers,
+        pilot_check=pilot_check,
     )
 
 

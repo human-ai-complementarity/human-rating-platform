@@ -282,6 +282,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 - `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
+- `PILOT_CHECK__CONFIG_PATH` — the pilot check's checks file (default: `backend/pilot_check.toml`); which checks run, their severities, the sample size, the judge model and the launch gate mode. See [docs/pilot-check.md](docs/pilot-check.md).
 
 Top‑level convenience envs (not nested):
 

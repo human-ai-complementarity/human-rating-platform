@@ -57,6 +57,9 @@ class PilotStudyCreate(BaseModel):
         default_factory=lambda: ["ai_taskers", "fact_checkers", "approval_rate"]
     )
     excluded_experiment_ids: list[int] = Field(default_factory=list)
+    # The admin saw the pilot check's 409 and chose to launch anyway
+    # (docs/pilot-check.md). Recorded on the round.
+    acknowledge_pilot_check: bool = False
 
     @field_validator("excluded_experiment_ids")
     @classmethod
@@ -72,6 +75,7 @@ class OneClickLaunchRequest(BaseModel):
     """
 
     places: Optional[int] = Field(default=None, ge=1)
+    acknowledge_pilot_check: bool = False
 
 
 class ExperimentRef(BaseModel):
@@ -90,6 +94,7 @@ class OneClickLaunchPreview(BaseModel):
 
 class ExperimentRoundCreate(BaseModel):
     places: int = Field(ge=1)
+    acknowledge_pilot_check: bool = False
 
 
 class ExperimentRoundUpdate(BaseModel):
@@ -146,6 +151,10 @@ class ExperimentRoundResponse(BaseModel):
     excluded_experiment_ids: list[int] = Field(default_factory=list)
     created_at: datetime
     prolific_study_url: str
+    # The pilot check run this round was launched against, and who launched
+    # past a check the gate would have stopped (docs/pilot-check.md).
+    pilot_check_run_id: Optional[int] = None
+    pilot_check_acknowledged_by: Optional[str] = None
     # Prolific's own `total_cost` for this round's study (rewards + fee + VAT),
     # in minor units. Null until the round has been synced from Prolific.
     total_cost: Optional[int] = None
@@ -238,6 +247,71 @@ class ResolvedModel(BaseModel):
     source: Literal["assistance_models", "default"]
 
 
+# Pilot check schemas (docs/pilot-check.md)
+PilotCheckState = Literal["not_run", "running", "stale", "passed", "warnings", "failed", "aborted"]
+
+
+class PilotCheckSummary(BaseModel):
+    """The latest run's state as the experiment page shows it and the launch
+    gate reads it, computed by one function so the two agree."""
+
+    state: PilotCheckState
+    run_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    counts: dict[str, int] = Field(default_factory=lambda: {"error": 0, "warning": 0, "info": 0})
+    gate_mode: Literal["warn", "block", "off"]
+    # True when creating a study would be refused with a 409 unless the
+    # request carries `acknowledge_pilot_check` (never satisfiable in block mode).
+    needs_acknowledgement: bool
+    # One sentence on why, or None when the run is clean.
+    reason: Optional[str] = None
+
+
+class PilotCheckFinding(BaseModel):
+    check: str
+    severity: Literal["error", "warning", "info"]
+    message: str
+    question_id: Optional[int] = None
+    detail: Optional[str] = None
+
+
+class PilotCheckProbe(BaseModel):
+    question_id: int
+    step_type: str
+    payload: dict
+    failure_reason: Optional[str] = None
+    failure_detail: Optional[str] = None
+    latency_ms: int
+
+
+class PilotCheckRunResponse(BaseModel):
+    id: int
+    experiment_id: int
+    status: Literal["running", "passed", "warnings", "failed", "aborted"]
+    # Where the run is (sampling | assistance | checks | review | done), a
+    # short detail for the current stage, and the stages this run goes through.
+    stage: Optional[str] = None
+    stage_detail: Optional[str] = None
+    stages: list[str] = Field(default_factory=list)
+    requested_by: Optional[str] = None
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    fingerprint: str
+    config_sha256: str
+    terms_ref: Optional[str] = None
+    sample_question_ids: list[int] = Field(default_factory=list)
+    findings: list[PilotCheckFinding] = Field(default_factory=list)
+    # None on a control arm: no method ran.
+    assistance_steps: Optional[list[PilotCheckProbe]] = None
+    judge_model: Optional[str] = None
+    error: Optional[str] = None
+    # The experiment changed since this run looked at it.
+    stale: bool = False
+    enabled_checks: list[str] = Field(default_factory=list)
+    sample_size: int = 0
+
+
 class ExperimentResponse(BaseModel):
     id: int
     name: str
@@ -300,6 +374,9 @@ class ExperimentResponse(BaseModel):
     # ready. Not needed to upload or analyse — only to launch.
     launch_ready: bool = True
     launch_blockers: list[str] = Field(default_factory=list)
+    # The latest pilot check's state (docs/pilot-check.md). Computed with the
+    # launch gate's own function, so the UI nags exactly when the API would 409.
+    pilot_check: Optional[PilotCheckSummary] = None
     # How to fix each blocker, one per blocker in the same order.
     launch_blocker_fixes: list[str] = Field(default_factory=list)
 

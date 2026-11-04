@@ -196,6 +196,12 @@ class LLMSettings(_StrictModel):
     max_retries: int = 2
 
 
+class PilotCheckSettings(_StrictModel):
+    # The checks file (docs/pilot-check.md), relative to the backend directory
+    # unless absolute. Loaded once at startup; its hash is stored on each run.
+    config_path: str = "pilot_check.toml"
+
+
 class PrefetchSettings(_StrictModel):
     enable_all: bool = False
     worker_count: int = Field(default=8, ge=2, le=64)
@@ -222,6 +228,7 @@ class Settings(BaseSettings):
     slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
+    pilot_check: PilotCheckSettings = Field(default_factory=PilotCheckSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)

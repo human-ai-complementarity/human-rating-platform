@@ -37,6 +37,7 @@ def compute_attention_reason(
     status: ExperimentStatus,
     remaining_actions: int,
     round_statuses: list[ProlificStudyStatus],
+    pilot_check_pending: bool = False,
 ) -> str | None:
     """Short reason an experiment has a pending admin action, or None if not.
 
@@ -44,6 +45,7 @@ def compute_attention_reason(
     flag a row without loading round data per experiment:
 
       * An UNPUBLISHED round draft exists — publish it. (DRAFT or LAUNCH)
+      * DRAFT with questions but no clean pilot check — run the check.
       * LAUNCH, every round closed, target not met — launch another round.
       * LAUNCH, every round closed, target met — mark the experiment finished.
 
@@ -54,6 +56,9 @@ def compute_attention_reason(
         return None
     if ProlificStudyStatus.UNPUBLISHED in round_statuses:
         return "A round draft is waiting to be published on Prolific."
+    if status == ExperimentStatus.DRAFT and not round_statuses and pilot_check_pending:
+        # Questions are in but no clean pilot check backs them (docs/pilot-check.md).
+        return "Run the pilot check before launching."
     if status != ExperimentStatus.LAUNCH or not round_statuses:
         return None
     if any(s not in ROUND_TERMINAL_STATUSES for s in round_statuses):

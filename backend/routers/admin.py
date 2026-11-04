@@ -30,6 +30,7 @@ from schemas import (
     ExperimentUpdate,
     OneClickLaunchPreview,
     OneClickLaunchRequest,
+    PilotCheckRunResponse,
     PilotStudyCreate,
     TagResponse,
     PlatformStatus,
@@ -42,6 +43,7 @@ from models import ApiKey
 from services import admin as admin_service
 from services import api_keys as api_key_service
 from services import terms as terms_service
+from services.pilot_check import admin as pilot_check_service
 from services.admin.prolific import get_cached_workspace_currency
 from services.admin.queries import fetch_experiment_or_404
 from services.admin.waves import CURRENT_WAVE
@@ -401,8 +403,11 @@ async def run_pilot_study(
     experiment_id: int,
     payload: PilotStudyCreate,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
-    return await admin_service.run_pilot_study(experiment_id=experiment_id, payload=payload, db=db)
+    return await admin_service.run_pilot_study(
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
+    )
 
 
 @secure_router.post(
@@ -414,12 +419,15 @@ async def launch_from_card(
     experiment_id: int,
     payload: OneClickLaunchRequest,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
     """Create the pilot draft from a complete dataset card, without the pilot form.
 
     Publishing stays a separate action — it spends money.
     """
-    return await admin_service.launch_from_card(experiment_id=experiment_id, payload=payload, db=db)
+    return await admin_service.launch_from_card(
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
+    )
 
 
 @secure_router.get(
@@ -458,10 +466,51 @@ async def run_experiment_round(
     experiment_id: int,
     payload: ExperimentRoundCreate,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
     return await admin_service.run_experiment_round(
-        experiment_id=experiment_id, payload=payload, db=db
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
     )
+
+
+# --- Pilot check (docs/pilot-check.md) ------------------------------------
+
+
+@secure_router.post(
+    "/experiments/{experiment_id}/pilot-check",
+    response_model=PilotCheckRunResponse,
+    status_code=202,
+)
+async def run_pilot_check(
+    experiment_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
+):
+    """Start a pilot check run; it finishes in the background. Poll the GET."""
+    return await pilot_check_service.run_pilot_check(
+        experiment_id,
+        requested_by=admin.email,
+        db=db,
+        database=request.app.state.database,
+    )
+
+
+@secure_router.get("/experiments/{experiment_id}/pilot-check", response_model=PilotCheckRunResponse)
+async def get_latest_pilot_check(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """The experiment's latest run, findings and probed assistance steps included."""
+    return await pilot_check_service.get_latest_pilot_check(experiment_id, db)
+
+
+@secure_router.get("/pilot-checks/{run_id}", response_model=PilotCheckRunResponse)
+async def get_pilot_check_run(
+    run_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    return await pilot_check_service.get_pilot_check_run(run_id, db)
 
 
 @secure_router.get(
