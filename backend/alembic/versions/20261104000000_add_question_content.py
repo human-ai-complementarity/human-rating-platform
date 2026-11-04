@@ -4,8 +4,8 @@ A question may carry images (#114): `content` holds its stimulus as a JSON
 list of text and image blocks. Nullable: text-only questions keep
 `question_text` alone.
 
-Revision ID: 20261028000000
-Revises: 20261016000000
+Revision ID: 20261104000000
+Revises: 20261029000000
 Create Date: 2026-10-28 00:00:00.000000
 
 """
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "20261028000000"
-down_revision: Union[str, Sequence[str], None] = "20261016000000"
+revision: str = "20261104000000"
+down_revision: Union[str, Sequence[str], None] = "20261029000000"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
