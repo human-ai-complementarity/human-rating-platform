@@ -8,11 +8,12 @@ Design goals for contributors:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
@@ -232,6 +233,23 @@ class LLMSettings(_StrictModel):
     max_retries: int = 2
 
 
+PilotCheckSeverity = Literal["error", "warning", "info"]
+
+
+class PilotCheckSettings(_StrictModel):
+    """The pilot check (docs/pilot-check.md). A hash of these values is stored
+    on every run, so changing one marks earlier runs stale."""
+
+    # Served questions drawn per run (parent rows are header-only and skipped).
+    sample_size: int = Field(default=15, ge=1, le=50)
+    # Per-check severity overrides, keyed by check name; each check has a
+    # default in code (services/pilot_check/checks).
+    severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)
+
+    def sha256(self) -> str:
+        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()
+
+
 class PrefetchSettings(_StrictModel):
     enable_all: bool = False
     worker_count: int = Field(default=8, ge=2, le=64)
@@ -259,6 +277,7 @@ class Settings(BaseSettings):
     llm: LLMSettings = Field(default_factory=LLMSettings)
     media: MediaSettings = Field(default_factory=MediaSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
+    pilot_check: PilotCheckSettings = Field(default_factory=PilotCheckSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)

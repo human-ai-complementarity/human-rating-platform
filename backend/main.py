@@ -19,6 +19,7 @@ from logging_config import configure_logging
 from routers import admin, raters, v1
 from services import admin_groups, prolific_to_slack
 from services.assistance.runner import PreparationRunner
+from services.pilot_check.checks import validate_severities
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ def _configure_openapi(app: FastAPI, expose_internal_docs: bool) -> None:
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.app.log_level)
+    validate_severities(settings.pilot_check)
 
     logger.info(
         "Starting Human Rating Platform",
