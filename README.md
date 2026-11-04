@@ -495,6 +495,8 @@ An upload checks every referenced digest against the source and refuses the file
 
 **Delivery.** Only raters with a live session are handed image URLs. The backend serves the bytes from `/api/raters/media/<digest>` behind an HMAC token with at least four hours of life left when handed out (long enough to cover a session); the bytes are re-hashed on every read, so an object that changed after upload is refused rather than shown.
 
+**Assistance.** Top-N and Human-as-a-Tool send the blocks to their model as chat-completion parts, images inline as base64 in the same order the rater sees them, so the `assistance_models` entry for such a dataset has to name a vision-capable model. Human-as-a-Tool's confidence estimators still read only the text form.
+
 ### Optional dataset-level metadata
 
 Each upload format has a natural place for dataset-level metadata. The first upload populates these fields on the experiment; later uploads that disagree are reported but never overwrite. See [dataset-file-level-metadata-construction.ipynb](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) for how to produce both formats from a pandas DataFrame.

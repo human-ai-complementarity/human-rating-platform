@@ -42,7 +42,10 @@ from config import LLMSettings
 
 logger = logging.getLogger(__name__)
 
-Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": "..."}
+# {"role": "user"|"assistant"|"system", "content": "..."}. A user message's
+# content may instead be a list of chat-completions parts, text and
+# image_url, which both providers take as is (services/media/prompt.py).
+Message = dict[str, Any]
 
 # Shared by foreground calls and preparation fan-out on the same event loop.
 # Speculation uses at most half the slots, leaving capacity for visible work.
@@ -322,7 +325,8 @@ async def complete(
     request) and return the response text.
 
     Args:
-        messages:         List of {"role": ..., "content": ...} dicts.
+        messages:         List of {"role": ..., "content": ...} dicts; content is
+                          a string, or for a user message a list of parts.
         settings:         LLMSettings instance (pass get_settings().llm).
         model:            Override the model. Defaults to settings.default_model.
                           Must be "<provider>/<model-id>".

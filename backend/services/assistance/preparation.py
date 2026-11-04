@@ -21,6 +21,8 @@ class QuestionSnapshot:
     question_text: str
     question_type: str
     options: str | None
+    # The stimulus as stored block JSON when it carries images (services/media).
+    content: str | None = None
 
     @classmethod
     def capture(cls, question: Question) -> QuestionSnapshot:
@@ -30,6 +32,7 @@ class QuestionSnapshot:
             question_text=question.question_text,
             question_type=question.question_type,
             options=question.options,
+            content=question.content,
         )
 
 

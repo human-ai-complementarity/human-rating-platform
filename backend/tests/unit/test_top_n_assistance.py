@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import openai
 import pytest
-from config import LLMSettings
+from config import LLMSettings, MediaSettings
 from models import Question, StepType
 from services.assistance.llm import EmptyTruncatedReplyError, NoChoicesError
 from services.assistance.model_resolution import AssistanceModel
@@ -649,7 +649,7 @@ async def test_start_reports_reply_cut_off_with_no_content_as_provider_error(cap
         patch("services.assistance.llm._get_client", return_value=_cut_off_client()),
         patch(
             "services.assistance.methods.top_n.get_settings",
-            return_value=SimpleNamespace(llm=llm),
+            return_value=SimpleNamespace(llm=llm, media=MediaSettings()),
         ),
     ):
         step = await method.start(_make_question(), {"assistance_models": {"top_n": entry}})
@@ -868,3 +868,88 @@ async def test_start_returns_none_step_on_value_error():
 
     assert step.type == StepType.NONE
     assert step.is_terminal is True
+
+
+# ---------------------------------------------------------------------------
+# Content blocks: images go to the model in the order the rater sees them
+# ---------------------------------------------------------------------------
+
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"pixels"
+
+
+@pytest.fixture
+def media_source(tmp_path, monkeypatch):
+    import hashlib
+
+    from config import get_settings
+
+    digest = hashlib.sha256(_PNG).hexdigest()
+    (tmp_path / digest).write_bytes(_PNG)
+    settings = get_settings()
+    monkeypatch.setattr(settings.media, "source_url", f"file://{tmp_path}")
+    return digest
+
+
+@pytest.mark.asyncio
+async def test_start_sends_image_blocks_as_parts_in_place(media_source):
+    import json as _json
+
+    method = TopNAssistance()
+    question = _make_question()
+    question.content = _json.dumps(
+        [
+            {"type": "text", "text": "Screen after step 1:"},
+            {"type": "image", "ref": f"sha256:{media_source}", "mime_type": "image/png"},
+            {"type": "text", "text": "Should the action be allowed?"},
+        ]
+    )
+    mock_complete = AsyncMock(return_value=_llm_response([{"option_index": 1, "confidence": 70}]))
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        step = await method.start(question, {}, parent_question_text="Task: enable Do Not Track")
+
+    assert step.type == StepType.DISPLAY
+    user_message = next(m for m in mock_complete.call_args[0][0] if m["role"] == "user")
+    parts = user_message["content"]
+    assert [p["type"] for p in parts] == ["text", "image_url", "text"]
+    assert parts[0]["text"] == (
+        "Parent question/context:\nTask: enable Do Not Track\n\nQuestion:\nScreen after step 1:"
+    )
+    assert parts[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert parts[2]["text"].startswith("Should the action be allowed?\n\nQuestion type: MC")
+
+
+@pytest.mark.asyncio
+async def test_text_only_question_is_sent_as_the_same_string_as_before():
+    method = TopNAssistance()
+    question = _make_question()
+    mock_complete = AsyncMock(return_value=_llm_response([{"option_index": 1, "confidence": 70}]))
+    with patch("services.assistance.methods.top_n.complete", new=mock_complete):
+        await method.start(question, {}, parent_question_text="Some context")
+
+    user_message = next(m for m in mock_complete.call_args[0][0] if m["role"] == "user")
+    assert user_message["content"] == (
+        "Parent question/context:\nSome context\n\n"
+        "Question:\nIs this a good answer?\n\n"
+        "Question type: MC\nOptions:\n1. Yes\n2. No\n\n"
+        "Return exactly the top 2 candidate(s) as option_index values "
+        "(1-based, matching the numbering above), ordered best first."
+    )
+
+
+@pytest.mark.asyncio
+async def test_unreadable_media_is_a_provider_error_not_a_crash(media_source, tmp_path):
+    import json as _json
+
+    method = TopNAssistance()
+    question = _make_question()
+    question.content = _json.dumps(
+        [{"type": "image", "ref": f"sha256:{'0' * 64}", "mime_type": "image/png"}]
+    )
+    with patch("services.assistance.methods.top_n.complete", new=AsyncMock()) as mock_complete:
+        step = await method.start(question, {})
+
+    assert step.type == StepType.NONE
+    assert step.failure_reason == "provider_error"
+    assert "not found" in (step.failure_detail or "")
+    mock_complete.assert_not_called()
