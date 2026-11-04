@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from services.terms import RaterTerms
 
     from ..assistance import AssistanceProbe
+    from ..judge import Judge, JudgeError, Verdict
     from ..rater_view import RaterQuestionView
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,8 @@ class CheckContext:
 
     `probes` is None on a control arm: no method ran, and the assistance
     checks say so rather than reporting "no assistance" as a failure.
+    `judge` is None when the judge model's provider has no key, and judged
+    checks report that as a skipped finding.
     """
 
     experiment: Experiment
@@ -69,6 +72,9 @@ class CheckContext:
     terms: RaterTerms | None = None
     terms_error: str | None = None
     probes: list[AssistanceProbe] | None = None
+    judge: Judge | None = None
+    judge_unavailable_reason: str | None = None
+    assistance_instructions: str | None = None
     method_params: dict = field(default_factory=dict)
     # Set by the run while a check runs: how far along it is, for the card's
     # stepper ("9 of 15 questions reviewed"). Cosmetic, never fatal.
@@ -100,9 +106,42 @@ class CheckSpec:
     run: CheckFn
     # The level its findings get unless `settings.severities` overrides it.
     severity: Severity
+    # Judged checks need a judge; without one they report a skip.
+    judged: bool = False
     # Checks that only have something to do when an assistance method ran.
     needs_assistance: bool = False
 
 
 def skipped(check: str, reason: str) -> Finding:
     return Finding(check, "info", f"Skipped: {reason}")
+
+
+# --- Judged checks -----------------------------------------------------------
+
+
+def no_judge(check: str, ctx: CheckContext) -> Finding:
+    return skipped(check, ctx.judge_unavailable_reason or "no judge is configured")
+
+
+def judge_failed(check: str, exc: JudgeError) -> Finding:
+    logger.warning("pilot check judge failed", extra={"attributes": {"check": check}})
+    # A warning, not info: a check whose judge never answered must not read
+    # as passed. A judge skipped for want of a key is `no_judge`, info.
+    return Finding(
+        check, "warning", "The judge call failed, so this check did not run.", detail=str(exc)
+    )
+
+
+def verdict_finding(
+    check: str, verdict: Verdict, severity: Severity, *, question_id: int | None = None
+) -> Finding | None:
+    if verdict.ok:
+        return None
+    detail = "\n".join(f"- {issue}" for issue in verdict.issues) or None
+    return Finding(
+        check,
+        severity,
+        verdict.summary or "The judge flagged this; see the issues.",
+        question_id=question_id,
+        detail=detail,
+    )

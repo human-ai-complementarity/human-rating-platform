@@ -3,8 +3,8 @@
 An admin-triggered check that samples an experiment's questions, walks each
 one through the same code path a rater hits, runs the configured assistance
 method on it, and reports anything a researcher would want to fix before
-paying Prolific participants to look at it. The experiment read says whether the check has been run and what it
-found.
+paying Prolific participants to look at it. The experiment read says whether
+the check has been run and what it found.
 
 Code: `backend/services/pilot_check/`, settings under `[pilot_check]` in
 `backend/config.toml`.
@@ -26,23 +26,32 @@ things an attentive researcher would notice in ten minutes.
 ## What it checks
 
 Each check is one function with a stable name, a label, and a default
-severity (`services/pilot_check/checks/`). The checks here read platform
-state and apply rules; they need no model.
+severity (`services/pilot_check/checks/`). There are two kinds:
+
+- **Deterministic** checks read platform state and apply rules. They need no
+  model and always run.
+- **Judged** checks hand the rater-facing material to an LLM judge with a
+  rubric and turn its JSON answer into findings. They are skipped, with a
+  visible "skipped: no judge key" finding, when the judge model's provider
+  has no key on the server.
 
 ### Experiment-level checks (run once per run)
 
-| name | what it flags |
-| --- | --- |
-| `consent_configured` | `TERMS__SOURCE_URL` unset (placeholder statement would be shown), source unreadable (the 503 raters would get), unknown placeholders left in the rendered text, rendered statement missing the study name or session length. The study flags' own rules: a sensitive or explicit study with no content warning details, the pinned statement not the one the flags select (standard vs warned), a deception study with no debrief, and the warned statement missing the promised details. |
-| `markdown_mode` | The prefix or suffix contains Markdown structure (headings, lists, fenced code, links); the rater card shows them as plain text in both modes. `is_markdown` is false but sampled question text contains Markdown structure, or it is true and the text contains raw HTML. Stray `{{placeholders}}` anywhere. |
-| `assistance_health` | Aggregate over the sampled assistance runs: any `none`/`skip` steps, median latency above `max_median_latency_seconds` (default 20 s), and every run byte-identical. |
+| name | kind | what it flags |
+| --- | --- | --- |
+| `consent_configured` | deterministic | `TERMS__SOURCE_URL` unset (placeholder statement would be shown), source unreadable (the 503 raters would get), unknown placeholders left in the rendered text, rendered statement missing the study name or session length. The study flags' own rules: a sensitive or explicit study with no content warning details, the pinned statement not the one the flags select (standard vs warned), a deception study with no debrief, and the warned statement missing the promised details. |
+| `instructions_coherent` | judged | The rater instructions (`description`, as rendered on the intro screen) read as instructions for the task the questions pose: they name what to rate and how, they do not contradict the prompt prefix/suffix, and they do not mention an assistance method that is off (or omit one that is on). The judge sees the instructions, the prefix/suffix, the method's `rater_instructions`, and three sampled questions for context. |
+| `markdown_mode` | deterministic | The prefix or suffix contains Markdown structure (headings, lists, fenced code, links); the rater card shows them as plain text in both modes. `is_markdown` is false but sampled question text contains Markdown structure, or it is true and the text contains raw HTML. Stray `{{placeholders}}` anywhere. |
+| `assistance_health` | deterministic | Aggregate over the sampled assistance runs: any `none`/`skip` steps, median latency above `max_median_latency_seconds` (default 20 s), and every run byte-identical. |
 
 ### Question-level checks (run once per sampled question)
 
-| name | what it flags |
-| --- | --- |
-| `question_renders` | Empty or whitespace-only question text; a multiple-choice question with no options or only one (parsed with top-N's `parse_options`, the rules the rater card uses); duplicate options; a sub-question whose parent text is empty; text over 20,000 characters, which needs scrolling inside the card. |
-| `assistance_output` | Method-specific. `top_n`: zero candidates, every candidate the same answer, every confidence 0, no rationales. `human_as_a_tool`: zero subtasks, every subtask confidence equal (especially 0), every subtask answer empty, `COMPLETE` on the first step with an empty synthesis answer, the pre-filled answers all above threshold with nothing delegated. Any method: step type `none` or `skip`, with the `failure_reason` and detail. |
+| name | kind | what it flags |
+| --- | --- | --- |
+| `question_renders` | deterministic | Empty or whitespace-only question text; a multiple-choice question with no options or only one (parsed with top-N's `parse_options`, the rules the rater card uses); duplicate options; a sub-question whose parent text is empty; text over 20,000 characters, which needs scrolling inside the card. |
+| `question_coherent` | judged | Shown exactly what the rater sees, in order: prefix, parent context, question text, options, suffix, and the rendering mode. Asked whether a rater could answer it: the question is a question, the options match the question, nothing reads as leaked metadata, a truncated passage, or an unrendered table. |
+| `assistance_output` | deterministic | Method-specific. `top_n`: zero candidates, every candidate the same answer, every confidence 0, no rationales. `human_as_a_tool`: zero subtasks, every subtask confidence equal (especially 0), every subtask answer empty, `COMPLETE` on the first step with an empty synthesis answer, the pre-filled answers all above threshold with nothing delegated. Any method: step type `none` or `skip`, with the `failure_reason` and detail. |
+| `assistance_useful` | judged | Given the question and the first assistance step's payload, is the assistance about this question, plausible, and in the form the rater instructions describe. Catches a method that returns fluent nonsense without tripping a deterministic rule. |
 
 The "every confidence is 0 and nothing is filled in" pattern from the brief is
 `assistance_output` on a single question and `assistance_health` across the
@@ -59,6 +68,7 @@ stale by the time it could matter.
 | key | default | meaning |
 | --- | --- | --- |
 | `sample_size` | 15 | served questions drawn per run (1 to 50) |
+| `judge_model` | `openrouter/anthropic/claude-sonnet-4-6` | `<provider>/<model-id>`, as in `assistance_models` |
 | `max_median_latency_seconds` | 20 | `assistance_health` latency threshold |
 | `severities` | `{}` | per-check overrides of the default severity, e.g. `markdown_mode = "info"` |
 
@@ -143,33 +153,51 @@ All under the admin session.
 
 The run executes in the API process as an `asyncio` task started by the
 POST handler, with its own short-lived DB sessions. It touches the row's
-`updated_at` after every step; a `running` row left untouched for five
-minutes belongs to a process that is gone, reads as `aborted`, and can be
-re-run. This is simpler than a durable claim in the preparation queue and
-enough for a job an admin starts by hand and watches.
+`updated_at` after every probe and every judge call; a `running` row left
+untouched for five minutes belongs to a process that is gone, reads as
+`aborted`, and can be re-run. This is simpler than a durable claim in the
+preparation queue and enough for a job an admin starts by hand and watches.
 
-A client polls the GET while `running`. The row carries where the run is:
-`stage` (`sampling`, `assistance`, `checks`, `done`) and `stage_detail` (a
-short line such as "9 of 15 questions probed", updated after every probe).
-The response adds `stages`, the labelled list of stages a run of this
-experiment goes through (no `assistance` on a control arm), computed at read
-time.
+A client polls the GET while `running`. The row carries where the
+run is: `stage` (`sampling`, `assistance`, `checks`, then one stage per
+judged check named after it, then `done`) and `stage_detail` (a short line
+such as "9 of 15 questions probed", updated after every model call). The
+response adds `stages`, the labelled list of stages a run of this experiment
+goes through (no `assistance` or `assistance_useful` on a control arm, no
+judged stages when the judge has no key), computed at read time. The
+deterministic checks share one stage because they finish before a poll could
+show progress; the judged ones each get a dot because they are where a run
+spends its time.
+
+## Cost and time
+
+Per run, with defaults and an assisted arm:
+
+| calls | count |
+| --- | --- |
+| assistance `start()` | 15 (human_as_a_tool: decomposition + confidence each) |
+| judge, question-level | 30 (coherence + usefulness) |
+| judge, experiment-level | 1 |
+
+Roughly a minute wall-clock under the 8-slot provider limit, and well under
+a dollar on the default judge. A control arm is 16 judge calls and no
+assistance calls.
 
 ## Testing
 
 - Unit (`tests/unit/test_pilot_check_units.py`): each check against
-  hand-built `CheckContext`s; the summary and fingerprint.
+  hand-built `CheckContext`s; the judge is a fake that returns a canned
+  verdict; the summary and fingerprint.
 - E2E (`tests/e2e/test_pilot_check.py`, under `make test`): a run starts and
   lands with the provider client stubbed (the `no_provider_calls` fixture
   makes every assistance call fail, which is itself a good fixture: the run
-  must report `assistance_health` as failed, not crash); a placeholder
-  consent fails it; a stale fingerprint; a second run while one is running;
+  must report `assistance_health` as failed, not crash); a stale fingerprint;
   a run that stopped reporting progress.
 
 ## Open questions
 
-- `sample_size` of 15 is a guess between the 10 and 20 in the brief; 15
-  keeps a run around a minute once the model-backed checks are in.
+- `sample_size` of 15 is a guess between the 10 and 20 in the brief. The
+  cost table above says 20 is fine too; 15 keeps a run around a minute.
 - Whether the check should also run `advance()` for `human_as_a_tool` with
   a synthetic "I don't know" answer to see the synthesis step. It would catch
   an empty-synthesis bug the first step cannot show, at the cost of

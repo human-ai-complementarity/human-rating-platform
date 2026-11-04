@@ -1,5 +1,6 @@
 """Unit tests for the pilot check (docs/pilot-check.md): the sample, the
-checks against hand-built contexts, and the summary the UI reads."""
+deterministic checks against hand-built contexts, the judge's reply parsing,
+and the summary the gate and the UI read."""
 
 from __future__ import annotations
 
@@ -20,11 +21,13 @@ from services.pilot_check.checks import (
     assistance_health,
     assistance_output,
     consent,
+    instructions,
     markdown_mode,
     question_renders,
     validate_severities,
 )
 from services.pilot_check.summary import summarise
+from services.pilot_check.judge import JudgeError, Verdict, parse_verdict
 from services.pilot_check.rater_view import RaterQuestionView
 from services.pilot_check.runs import _run_check, compute_fingerprint
 from services.pilot_check.sampling import choose_sample
@@ -340,6 +343,62 @@ async def test_slow_assistance_is_a_warning(config):
     findings = await assistance_health.run(ctx, "error")
     assert _severities(findings) == ["warning"]
     assert "45.0s" in findings[0].message
+
+
+# --- Judged checks --------------------------------------------------------
+
+
+def test_verdict_parsing_tolerates_fences_and_rejects_junk():
+    verdict = parse_verdict('```json\n{"ok": false, "issues": ["bad"], "summary": "no"}\n```')
+    assert verdict == Verdict(ok=False, issues=["bad"], summary="no")
+    with pytest.raises(JudgeError):
+        parse_verdict("not json")
+    with pytest.raises(JudgeError):
+        parse_verdict('{"issues": []}')
+
+
+class _FakeJudge:
+    model = "fake/judge"
+
+    def __init__(self, verdict: Verdict | Exception):
+        self.verdict = verdict
+        self.calls: list[str] = []
+
+    async def __call__(self, *, task: str, material: str) -> Verdict:
+        self.calls.append(material)
+        if isinstance(self.verdict, Exception):
+            raise self.verdict
+        return self.verdict
+
+
+@pytest.mark.asyncio
+async def test_a_judged_check_without_a_judge_is_skipped(config):
+    ctx = _ctx(config, _experiment(), judge=None, judge_unavailable_reason="no key")
+    findings = await instructions.run(ctx, "warning")
+    assert _severities(findings) == ["info"]
+    assert "no key" in findings[0].message
+
+
+@pytest.mark.asyncio
+async def test_a_judged_check_turns_the_verdict_into_a_finding(config):
+    judge = _FakeJudge(Verdict(ok=False, issues=["names a 1-5 scale"], summary="Scale mismatch"))
+    exp = _experiment(human_prompt_suffix="Pick one.")
+    findings = await instructions.run(_ctx(config, exp, judge=judge), "warning")
+    assert len(findings) == 1
+    assert findings[0].message == "Scale mismatch"
+    assert findings[0].detail == "- names a 1-5 scale"
+    # The judge saw the instructions, the framing and an example question.
+    assert "Rate each passage" in judge.calls[0]
+    assert "Pick one." in judge.calls[0]
+    assert "[Example question 1]" in judge.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_judge_is_a_warning(config):
+    judge = _FakeJudge(JudgeError("boom"))
+    findings = await instructions.run(_ctx(config, _experiment(), judge=judge), "warning")
+    assert _severities(findings) == ["warning"]
+    assert findings[0].detail == "boom"
 
 
 # --- Summary and fingerprint ---------------------------------------------
