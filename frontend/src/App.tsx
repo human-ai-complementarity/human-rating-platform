@@ -185,7 +185,7 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
       <AdminShell>
         <InfoCard
           title="You don't have admin access."
-          body="Please contact Juliana, Andrew, or Sander to have your email added to the allowlist."
+          body="Ask a platform admin to add this email to the admin group."
         />
       </AdminShell>
     );
