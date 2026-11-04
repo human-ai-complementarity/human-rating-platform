@@ -167,3 +167,17 @@ def terms_source(tmp_path: Path):
     settings.terms.source_url = f"file://{root}"
     yield root
     settings.terms.source_url = original
+
+
+@pytest.fixture
+def no_judge():
+    """No key for the judge model's provider, so a run skips the judged checks
+    with an info note and can pass. Without this, the stubbed provider client
+    makes every judge call fail, which the run reports as a warning."""
+    settings = get_settings()
+    original = settings.llm.openrouter_api_key
+    settings.llm.openrouter_api_key = ""
+    try:
+        yield
+    finally:
+        settings.llm.openrouter_api_key = original
