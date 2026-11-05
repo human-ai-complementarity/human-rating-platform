@@ -58,7 +58,7 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 - **`description`** supports markdown — same renderer as the Prolific study description: `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists, blank-line paragraphs.
 - The four other fields are plain text. Line breaks are preserved.
-- **`render_math`** (`true` or `false`, optional) typesets TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` in the question text, its context and the document only; MC options, the prefix/suffix and assistance text stay as written. Leave it off for datasets that use `$` for money. It cannot be combined with Markdown. It is also a checkbox under **Question rendering**.
+- **`render_math`** (`true` or `false`, optional) typesets TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` in the question text, its MC options, its context and the document; the prefix/suffix and assistance text stay as written. Leave it off for datasets that use `$` for money. It cannot be combined with Markdown. It is also a checkbox under **Question rendering**.
 - **CSV only:** newlines inside any value must be encoded as `\n` escapes, because the whole JSON object has to fit on one line. `json.dumps(...)` handles this automatically. Parquet stores the metadata as bytes in the schema, so this constraint doesn't apply there.
 
 #### Multiple uploads + conflicts

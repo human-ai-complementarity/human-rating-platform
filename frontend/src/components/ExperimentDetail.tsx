@@ -2277,7 +2277,7 @@ function MetadataPanel({
         renderMath,
         onRenderMathChange,
         'Render math',
-        'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] in the question, its context and the document is typeset. Leave off when questions use $ for money.',
+        'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] in the question, its options, its context and the document is typeset. Leave off when questions use $ for money.',
         {
           blockedBy: isMarkdown ? 'Markdown' : undefined,
           conflicts: renderMathConflicts,
