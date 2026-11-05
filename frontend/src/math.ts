@@ -1,9 +1,9 @@
 // Math rendering for experiments with `render_math` on: TeX between $…$,
-// $$…$$, \(…\) or \[…\] is typeset with KaTeX as MathML, which browsers lay
-// out natively, so neither the card nor the standalone document tab needs
-// KaTeX's stylesheet or fonts.
+// $$…$$, \(…\) or \[…\] in plain text is typeset with KaTeX as MathML, which
+// browsers lay out natively, so neither the card nor the standalone document
+// tab needs KaTeX's stylesheet or fonts. The backend keeps `render_math` and
+// `is_markdown` exclusive.
 import { useEffect, useState } from 'react';
-import type { Options as MarkdownOptions } from 'react-markdown';
 
 export type MathSegment =
   | { kind: 'text'; text: string }
@@ -11,10 +11,6 @@ export type MathSegment =
 
 export interface MathRenderer {
   toHtml: (tex: string, display: boolean) => string;
-  // For the Markdown path: remark-math parses the delimiters before Markdown
-  // can read TeX's _ and \ as emphasis and escapes.
-  remarkPlugins: NonNullable<MarkdownOptions['remarkPlugins']>;
-  rehypePlugins: NonNullable<MarkdownOptions['rehypePlugins']>;
 }
 
 const isSpace = (ch: string | undefined) => ch !== undefined && /\s/.test(ch);
@@ -98,38 +94,66 @@ export function splitMath(text: string): MathSegment[] {
   return segments;
 }
 
+let loaded: MathRenderer | null = null;
 let loading: Promise<MathRenderer> | null = null;
 
-/** KaTeX and the Markdown plugins, fetched once and only for math experiments. */
-export function loadMathRenderer(): Promise<MathRenderer> {
-  loading ??= Promise.all([import('katex'), import('remark-math'), import('rehype-katex')]).then(
-    ([katex, remarkMath, rehypeKatex]) => {
+/** KaTeX, fetched only for math experiments and kept once it has loaded. */
+function loadMathRenderer(): Promise<MathRenderer> {
+  loading ??= import('katex').then(
+    (katex) => {
       // throwOnError off: a typo in one formula renders that formula in red,
       // not a blank card.
       const options = { throwOnError: false, output: 'mathml' as const };
-      return {
+      loaded = {
         toHtml: (tex, display) =>
           katex.default.renderToString(tex, { ...options, displayMode: display }),
-        remarkPlugins: [remarkMath.default],
-        rehypePlugins: [[rehypeKatex.default, options]],
       };
+      return loaded;
+    },
+    (error: unknown) => {
+      // Not cached: the next question tries again.
+      loading = null;
+      throw error;
     },
   );
   return loading;
 }
 
-/** The renderer once loaded when `enabled`; null while loading or when off. */
-export function useMathRenderer(enabled: boolean): MathRenderer | null {
-  const [renderer, setRenderer] = useState<MathRenderer | null>(null);
+export interface MathState {
+  // False only while KaTeX is loading, so the card can wait instead of showing
+  // raw TeX and reflowing once it arrives.
+  ready: boolean;
+  // Null when math is off, or when KaTeX failed to load: the card then shows
+  // the text as written.
+  renderer: MathRenderer | null;
+}
+
+/**
+ * KaTeX for a question with `render_math` on. A failed load leaves this
+ * question as plain text and is retried when `retryKey` (the question) changes.
+ */
+export function useMathRenderer(enabled: boolean, retryKey: unknown): MathState {
+  const [renderer, setRenderer] = useState<MathRenderer | null>(loaded);
+  const [failedFor, setFailedFor] = useState<unknown>(undefined);
+  const failed = failedFor !== undefined && failedFor === retryKey;
+
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || renderer || failed) return;
     let cancelled = false;
-    void loadMathRenderer().then((loaded) => {
-      if (!cancelled) setRenderer(loaded);
-    });
+    loadMathRenderer().then(
+      (ready) => {
+        if (!cancelled) setRenderer(ready);
+      },
+      (error: unknown) => {
+        console.warn('KaTeX failed to load; showing TeX as written.', error);
+        if (!cancelled) setFailedFor(retryKey);
+      },
+    );
     return () => {
       cancelled = true;
     };
-  }, [enabled]);
-  return enabled ? renderer : null;
+  }, [enabled, renderer, failed, retryKey]);
+
+  if (!enabled) return { ready: true, renderer: null };
+  return { ready: renderer !== null || failed, renderer };
 }

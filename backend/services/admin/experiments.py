@@ -837,6 +837,25 @@ async def _terms_ref_kwargs(experiment: Experiment, db: AsyncSession) -> dict[st
     }
 
 
+MARKDOWN_WITH_MATH_DETAIL = (
+    "is_markdown and render_math cannot both be on: the card renders math in "
+    "plain text only. Turn one off."
+)
+
+
+def _reject_markdown_with_math(experiment: Experiment, payload: ExperimentUpdate) -> None:
+    """Refuse a PATCH that would leave both rendering flags on.
+
+    Math is typeset in plain text only. Under Markdown, `\\(…\\)` would lose
+    its backslashes and "$5 and $10" would read as math, so the pair stays
+    exclusive until a dataset needs both.
+    """
+    markdown = experiment.is_markdown if payload.is_markdown is None else payload.is_markdown
+    math = experiment.render_math if payload.render_math is None else payload.render_math
+    if markdown and math:
+        raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -866,6 +885,8 @@ async def update_experiment(
                     "main round is launched."
                 ),
             )
+
+    _reject_markdown_with_math(experiment, payload)
 
     merged_params = None
     if payload.assistance_params is not None:

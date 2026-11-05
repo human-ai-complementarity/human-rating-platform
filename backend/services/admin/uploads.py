@@ -267,14 +267,16 @@ def _apply_render_math_meta(
     Off is the column default, so it cannot tell an admin's choice from an
     untouched experiment: an upload may switch it on, the way the string
     fields fill a blank. Declaring false on an experiment an admin switched on
-    is a conflict, not a silent switch-off.
+    is a conflict, not a silent switch-off. So is declaring true on one an
+    admin set to Markdown: the two flags are exclusive (see
+    `_reject_markdown_with_math`), and the admin's choice stands.
     """
     if RENDER_MATH_META_FIELD not in meta:
         return
     declared = meta[RENDER_MATH_META_FIELD]
     if declared == experiment.render_math:
         return
-    if declared:
+    if declared and not experiment.is_markdown:
         experiment.render_math = True
         applied.append(RENDER_MATH_META_FIELD)
     else:

@@ -4,7 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Question } from '../types';
-import { loadMathRenderer, splitMath, useMathRenderer } from '../math';
+import { splitMath, useMathRenderer } from '../math';
 import type { MathRenderer } from '../math';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
@@ -88,19 +88,28 @@ const DISPLAY_MATH_STYLE: CSSProperties = { ...INLINE_MATH_STYLE, display: 'bloc
 
 // Plain text with its math typeset. KaTeX escapes the TeX it is given and,
 // untrusted by default, renders no links or raw HTML, so its markup is safe to
-// inject.
+// inject. Typeset once per text: the card re-renders on every keystroke in the
+// free-text box.
 function MathText({ text, math }: { text: string; math: MathRenderer }) {
-  const segments = useMemo(() => splitMath(text), [text]);
+  const parts = useMemo(
+    () =>
+      splitMath(text).map((segment) =>
+        segment.kind === 'text'
+          ? segment
+          : { ...segment, html: math.toHtml(segment.tex, segment.display) },
+      ),
+    [text, math],
+  );
   return (
     <>
-      {segments.map((segment, index) =>
-        segment.kind === 'text' ? (
-          segment.text
+      {parts.map((part, index) =>
+        part.kind === 'text' ? (
+          part.text
         ) : (
           <span
             key={index}
-            style={segment.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
-            dangerouslySetInnerHTML={{ __html: math.toHtml(segment.tex, segment.display) }}
+            style={part.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
+            dangerouslySetInnerHTML={{ __html: part.html }}
           />
         ),
       )}
@@ -116,7 +125,8 @@ function QuestionBody({
 }: {
   text: string;
   markdown: boolean;
-  // Null when the experiment does not render math, or until KaTeX has loaded.
+  // Null when the experiment does not render math, or KaTeX failed to load.
+  // Ignored under Markdown, which the backend keeps exclusive with math.
   math: MathRenderer | null;
   style?: CSSProperties;
 }) {
@@ -129,11 +139,7 @@ function QuestionBody({
   }
   return (
     <div className="question-markdown markdown" style={style}>
-      <ReactMarkdown
-        remarkPlugins={math ? [remarkGfm, ...math.remarkPlugins] : [remarkGfm]}
-        rehypePlugins={math?.rehypePlugins}
-        components={MARKDOWN_COMPONENTS}
-      >
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
@@ -231,19 +237,18 @@ function parseOptions(rawOptions: string | null): string[] {
 async function buildLongContextDocumentHtml(
   documentText: string,
   isMarkdown: boolean,
-  renderMath: boolean,
+  math: MathRenderer | null,
 ): Promise<string> {
   const title = 'Document';
   // The window is a standalone HTML string, so the card's Markdown component is
   // pre-rendered into it and the stylesheets its classes need are inlined.
   let body = `<pre>${escapeHtml(documentText)}</pre>`;
   let appStyles = '';
-  if (isMarkdown || renderMath) {
+  if (isMarkdown || math) {
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
-    const math = renderMath ? await loadMathRenderer() : null;
     if (isMarkdown) {
-      body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={math} />);
+      body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={null} />);
       appStyles = `<style>${tokensCss}${appCss}</style>`;
     } else if (math) {
       body = `<pre>${renderToStaticMarkup(<MathText text={documentText} math={math} />)}</pre>`;
@@ -315,7 +320,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question]
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
-  const math = useMathRenderer(question.render_math);
+  // Markdown and math are exclusive (the backend enforces it); Markdown wins.
+  const { ready: mathReady, renderer: math } = useMathRenderer(
+    question.render_math && !question.is_markdown,
+    question.id,
+  );
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
@@ -329,30 +338,34 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     timeStartedRef.current = new Date().toISOString();
   }, [question.id]);
 
+  // The card waits for KaTeX on the first math question, so the clock starts
+  // when the question is shown, not when it arrived.
   useEffect(() => {
-    if (!display.documentText) {
+    if (mathReady) timeStartedRef.current = new Date().toISOString();
+  }, [mathReady]);
+
+  useEffect(() => {
+    if (!display.documentText || !mathReady) {
       setDocumentUrl(null);
       return;
     }
 
     let url: string | null = null;
     let cancelled = false;
-    void buildLongContextDocumentHtml(
-      display.documentText,
-      question.is_markdown,
-      question.render_math,
-    ).then((html) => {
-      if (cancelled) return;
-      url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-      setDocumentUrl(url);
-    });
+    void buildLongContextDocumentHtml(display.documentText, question.is_markdown, math).then(
+      (html) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+        setDocumentUrl(url);
+      },
+    );
 
     return () => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
-  }, [display.documentText, question.is_markdown, question.render_math]);
+  }, [display.documentText, question.is_markdown, mathReady, math]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -382,16 +395,25 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
 
   const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
 
+  const cardStyle: CSSProperties = {
+    background: 'var(--surface)',
+    borderRadius: 'var(--radius)',
+    border: '1px solid var(--faint)',
+    boxShadow: 'var(--shadow)',
+    padding: 32,
+  };
+
+  // Rather than raw TeX that reflows once KaTeX arrives (first math question).
+  if (!mathReady) {
+    return (
+      <div style={cardStyle} aria-busy="true">
+        <p style={{ color: 'var(--muted)', margin: 0 }}>Loading…</p>
+      </div>
+    );
+  }
+
   return (
-    <div
-      style={{
-        background: 'var(--surface)',
-        borderRadius: 'var(--radius)',
-        border: '1px solid var(--faint)',
-        boxShadow: 'var(--shadow)',
-        padding: 32,
-      }}
-    >
+    <div style={cardStyle}>
       <div
         style={{
           font: '600 11px/1 var(--font-mono)',

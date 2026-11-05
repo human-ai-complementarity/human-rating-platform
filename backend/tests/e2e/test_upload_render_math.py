@@ -1,7 +1,8 @@
 """`render_math` as a dataset_meta key: the export switches math rendering on.
 
 A JSON boolean, not a string like the column-backed keys. An upload may turn
-it on; it never turns off an experiment an admin switched on.
+it on; it never turns off an experiment an admin switched on. It is exclusive
+with `is_markdown`, in the PATCH and the upload alike.
 """
 
 from __future__ import annotations
@@ -52,11 +53,15 @@ def _render_math(client: TestClient, experiment_id: int) -> bool:
     return client.get(f"/api/admin/experiments/{experiment_id}").json()["render_math"]
 
 
-def _switch_on(client: TestClient, experiment_id: int) -> None:
-    resp = client.patch(
+def _patch(client: TestClient, experiment_id: int, **fields):
+    return client.patch(
         f"/api/admin/experiments/{experiment_id}",
-        json={"assistance_method": "none", "render_math": True},
+        json={"assistance_method": "none", **fields},
     )
+
+
+def _switch_on(client: TestClient, experiment_id: int) -> None:
+    resp = _patch(client, experiment_id, render_math=True)
     assert resp.status_code == 200, resp.text
 
 
@@ -103,6 +108,48 @@ def test_declaring_the_current_value_is_silent(client: TestClient, on):
 
     assert body["meta_applied"] == [] and body["meta_conflicts"] == []
     assert _render_math(client, exp["id"]) is on
+
+
+def test_declaring_true_on_a_markdown_experiment_is_a_conflict(client: TestClient):
+    exp = _experiment(client)
+    assert _patch(client, exp["id"], is_markdown=True).status_code == 200
+    body = _upload_csv(client, exp["id"], {"render_math": True}).json()
+
+    assert body["meta_applied"] == []
+    assert body["meta_conflicts"] == ["render_math"]
+    assert _render_math(client, exp["id"]) is False
+
+
+@pytest.mark.parametrize(
+    ("first", "second"), [("is_markdown", "render_math"), ("render_math", "is_markdown")]
+)
+def test_a_patch_cannot_turn_on_the_second_flag(client: TestClient, first, second):
+    exp = _experiment(client)
+    assert _patch(client, exp["id"], **{first: True}).status_code == 200
+    resp = _patch(client, exp["id"], **{second: True})
+
+    assert resp.status_code == 400
+    assert "cannot both be on" in resp.json()["detail"]
+    experiment = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert (experiment[first], experiment[second]) == (True, False)
+
+
+def test_a_patch_cannot_turn_on_both_at_once(client: TestClient):
+    exp = _experiment(client)
+    resp = _patch(client, exp["id"], is_markdown=True, render_math=True)
+
+    assert resp.status_code == 400
+    experiment = client.get(f"/api/admin/experiments/{exp['id']}").json()
+    assert (experiment["is_markdown"], experiment["render_math"]) == (False, False)
+
+
+def test_a_patch_can_swap_one_flag_for_the_other(client: TestClient):
+    exp = _experiment(client)
+    assert _patch(client, exp["id"], is_markdown=True).status_code == 200
+    resp = _patch(client, exp["id"], is_markdown=False, render_math=True)
+
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["is_markdown"], resp.json()["render_math"]) == (False, True)
 
 
 def test_an_upload_without_the_key_leaves_it_off(client: TestClient):

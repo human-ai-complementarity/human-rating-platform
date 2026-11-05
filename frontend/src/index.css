@@ -500,19 +500,6 @@ button:disabled {
   margin: 0 0 0.7em 0;
 }
 
-/* A formula keeps its full height in the line and uses the system math font
-   (see MathText, which does the same for plain text). */
-.question-markdown .katex {
-  display: inline-block;
-  line-height: normal;
-  font-family: math;
-  margin: 0.15em 0;
-}
-
-.question-markdown .katex-display .katex {
-  display: block;
-}
-
 .question-markdown h1,
 .question-markdown h2,
 .question-markdown h3,

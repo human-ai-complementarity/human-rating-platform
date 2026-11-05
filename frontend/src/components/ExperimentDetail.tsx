@@ -2193,44 +2193,62 @@ function MetadataPanel({
     onChange: (value: boolean) => void,
     label: string,
     hint: string,
-  ) => (
-    <div>
-      <label
-        htmlFor={id}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'flex-start',
-          gap: 10,
-          fontSize: 13.5,
-          lineHeight: 1.4,
-          fontWeight: 600,
-          cursor: isLocked ? 'not-allowed' : 'pointer',
-        }}
-      >
-        <input
-          id={id}
-          type="checkbox"
-          checked={checked}
-          disabled={isLocked}
-          aria-describedby={`${id}-hint`}
-          onChange={(e) => onChange(e.target.checked)}
-          style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
-        />
-        {label}
-      </label>
-      <p
-        id={`${id}-hint`}
-        style={{
-          fontSize: 12.5,
-          color: 'var(--muted)',
-          lineHeight: 1.55,
-          margin: '2px 0 0 26px',
-        }}
-      >
-        {hint}
-      </p>
-    </div>
-  );
+    options: { blockedBy?: string; conflicts?: Upload[] } = {},
+  ) => {
+    // The other rendering flag is on: the two are exclusive.
+    const blocked = !checked && options.blockedBy !== undefined;
+    const disabled = isLocked || blocked;
+    return (
+      <div>
+        <label
+          htmlFor={id}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'flex-start',
+            gap: 10,
+            fontSize: 13.5,
+            lineHeight: 1.4,
+            fontWeight: 600,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            opacity: blocked ? 0.6 : 1,
+          }}
+        >
+          <input
+            id={id}
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            aria-describedby={`${id}-hint`}
+            onChange={(e) => onChange(e.target.checked)}
+            style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
+          />
+          {label}
+        </label>
+        <div
+          id={`${id}-hint`}
+          style={{
+            fontSize: 12.5,
+            color: 'var(--muted)',
+            lineHeight: 1.55,
+            margin: '2px 0 0 26px',
+          }}
+        >
+          {hint}
+          {blocked && <div>Turn off {options.blockedBy} to use this.</div>}
+          {options.conflicts && options.conflicts.length > 0 && (
+            <div style={{ color: 'var(--warn)', marginTop: 6 }}>
+              Declared differently by: {options.conflicts.map((c) => c.filename).join(', ')}.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderMathConflicts = uploads.filter((u) => {
+    const declared = u.dataset_meta?.render_math;
+    return declared !== undefined && declared !== experiment.render_math;
+  });
 
   const renderingCard = (
     <section
@@ -2252,13 +2270,18 @@ function MetadataPanel({
         onIsMarkdownChange,
         'Render questions as Markdown',
         'Code blocks, tables, etc. will be rendered as styled elements',
+        { blockedBy: renderMath ? 'Render math' : undefined },
       )}
       {renderToggle(
         'meta-render_math',
         renderMath,
         onRenderMathChange,
         'Render math',
-        'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] is typeset. Leave off when questions use $ for money.',
+        'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] in the question, its context and the document is typeset. Leave off when questions use $ for money.',
+        {
+          blockedBy: isMarkdown ? 'Markdown' : undefined,
+          conflicts: renderMathConflicts,
+        },
       )}
     </section>
   );

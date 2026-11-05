@@ -1576,27 +1576,99 @@ test('the math flag typesets TeX in plain text and leaves prices as text', async
   await expect(page.locator('math')).toHaveCount(0);
 });
 
-test('with Markdown on, math is parsed before Markdown reads its underscores', async ({
-  page,
-}) => {
+test('the card waits for KaTeX instead of showing raw TeX first', async ({ page }) => {
   const state = createMockState();
   seedRaterWithQuestion(state, {
-    id: 509,
-    question_text: '**Given** $a_1 + b_1 = c_1$, which holds?',
+    id: 511,
+    question_text: 'A sphere of radius $R$ carries charge $q$.',
     options: 'A|B',
     question_type: 'MC',
-    is_markdown: true,
+    is_markdown: false,
     render_math: true,
   });
 
   await installApiMocks(page, state);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/katex\.js(\?|$)/, async (route) => {
+    await released;
+    await route.continue();
+  });
   await page.goto(RATER_URL);
   await agreeToConsent(page);
 
-  await expect(page.locator('strong')).toHaveText('Given');
-  await expect(page.locator('math')).toHaveCount(1);
-  await expect(page.locator('math msub')).toHaveCount(3);
-  await expect(page.locator('em')).toHaveCount(0);
+  await expect(page.getByText('Loading…')).toBeVisible();
+  await expect(page.getByText('$R$', { exact: false })).toHaveCount(0);
+  release();
+  await expect(page.locator('math')).toHaveCount(2);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+});
+
+test('a question whose KaTeX fails to load shows its TeX as written', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 509,
+    question_text: 'A sphere of radius $R$ carries charge $q$.',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  // Vite serves the pre-bundled dependency as .vite/deps/katex.js.
+  await page.route(/\/katex\.js(\?|$)/, (route) => route.abort());
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('A sphere of radius $R$ carries charge $q$.')).toBeVisible();
+  await expect(page.locator('math')).toHaveCount(0);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+});
+
+test('the math checkbox is exclusive with Markdown and shows an upload that disagrees', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'Math Rendering Experiment', question_count: 1 }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [
+    {
+      id: 1,
+      filename: 'gpqa_n20.csv',
+      uploaded_at: '2026-11-05T00:00:00Z',
+      question_count: 1,
+      dataset_meta: { render_math: true },
+    },
+  ];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  const markdown = page.getByLabel('Render questions as Markdown');
+  const math = page.getByLabel('Render math');
+  // The experiment has math off; the upload declared it on.
+  await expect(page.getByText('Declared differently by: gpqa_n20.csv.')).toBeVisible();
+
+  await markdown.check();
+  await expect(math).toBeDisabled();
+  await expect(page.getByText('Turn off Markdown to use this.')).toBeVisible();
+
+  await markdown.uncheck();
+  await math.check();
+  await expect(markdown).toBeDisabled();
+  await expect(page.getByText('Turn off Render math to use this.')).toBeVisible();
 });
 
 test('the math flag also typesets the long-context document window', async ({
