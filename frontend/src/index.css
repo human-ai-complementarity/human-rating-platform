@@ -737,11 +737,6 @@ button:disabled {
 .xd-tabs::-webkit-scrollbar {
   display: none;
 }
-select.xd-section-select {
-  display: none;
-  min-height: 48px;
-  font-weight: 600;
-}
 
 /* Divided stat strip shared by the experiment page and analytics; each page
    sets its own column count (.xd-stats, .an-stats). */
@@ -796,6 +791,13 @@ select.xd-section-select {
 @media (max-width: 1024px) {
   .admin-page {
     padding: 32px 24px 56px;
+  }
+  /* Tabs stay on screen while a long section scrolls under them. */
+  .xd-tabs-wrap {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--page-bg);
   }
   /* Tabs scroll sideways here; fade the right edge so it reads as scrollable. */
   .xd-tabs {
@@ -856,11 +858,13 @@ select.xd-section-select {
     margin-bottom: 8px;
   }
 
-  .xd-tabs {
-    display: none;
+  /* Same scrolling tab row as tablets, run edge to edge. */
+  .xd-tabs-wrap {
+    margin: 0 -16px;
   }
-  select.xd-section-select {
-    display: block;
+  .xd-tabs {
+    gap: 14px;
+    padding-left: 16px;
   }
 
   .xd-preview {

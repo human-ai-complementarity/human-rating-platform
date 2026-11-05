@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 
 /**
  * The numbered stepper tab bar on the experiment detail page.
@@ -9,9 +9,9 @@ import React from 'react';
  * - Steps 1–4 are the guided setup sequence: Questions → Instructions &
  *   prompts → Rater assistance → Launch on Prolific. Each has a completion
  *   state derived from the model (see `deriveStepStates` in the parent).
- * - Responsive: the tab row scrolls sideways (edge fade ≤1024px); on phones
- *   (≤640px) it's swapped for a single native <select> of the same sections.
- *   Both are always rendered; CSS in index.css picks which one shows.
+ * - Responsive: one tab row at every width. Below 1024px it scrolls sideways
+ *   with an edge fade and sticks to the top of the screen while the section
+ *   scrolls (CSS in index.css); the active tab is kept scrolled into view.
  *
  * A step's marker shows:
  *   - a checkmark on a filled accent circle if `done`
@@ -42,26 +42,43 @@ interface StepperTabsProps {
 }
 
 export function StepperTabs({ active, onChange, steps }: StepperTabsProps) {
-  const doneCount = steps.filter((s) => s.status === 'done').length;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const firstRender = useRef(true);
+
+  // On narrow screens later tabs start off-screen; bring the active one into
+  // view. Only the row scrolls (scrollIntoView could also move the page).
+  useEffect(() => {
+    const row = rowRef.current;
+    const tab = row?.querySelector<HTMLElement>(`[data-testid="tab-${active}"]`);
+    if (!row || !tab || row.scrollWidth <= row.clientWidth) return;
+    const fade = 40;
+    const left = tab.getBoundingClientRect().left - row.getBoundingClientRect().left + row.scrollLeft;
+    const right = left + tab.offsetWidth;
+    if (left < row.scrollLeft) row.scrollTo({ left: Math.max(0, left - 16) });
+    else if (right > row.scrollLeft + row.clientWidth - fade)
+      row.scrollTo({ left: right - row.clientWidth + fade });
+  }, [active]);
+
+  // Below 1024px the row sticks while the section scrolls under it. Switching
+  // tabs from down the page should start the new section at its top, not
+  // midway through it, so jump back to where the row sits unstuck.
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const top = anchor.getBoundingClientRect().top + window.scrollY;
+    if (window.scrollY > top) window.scrollTo({ top });
+  }, [active]);
+
   return (
     <>
-      <select
-        className="xd-section-select"
-        aria-label="Section"
-        data-testid="section-select"
-        value={active}
-        onChange={(e) => onChange(e.target.value as TabKey)}
-      >
-        <option value="overview">Overview</option>
-        <optgroup label={`Setup · ${doneCount} of ${steps.length} done`}>
-          {steps.map((step) => (
-            <option key={step.key} value={step.key}>
-              {step.status === 'done' ? '✓' : `${step.index}.`} {step.label}
-            </option>
-          ))}
-        </optgroup>
-      </select>
-      <div className="xd-tabs">
+    <div ref={anchorRef} aria-hidden="true" />
+    <nav aria-label="Experiment sections" className="xd-tabs-wrap">
+      <div className="xd-tabs" ref={rowRef}>
         <TabButton
           active={active === 'overview'}
           onClick={() => onChange('overview')}
@@ -107,6 +124,7 @@ export function StepperTabs({ active, onChange, steps }: StepperTabsProps) {
           </TabButton>
         ))}
       </div>
+    </nav>
     </>
   );
 }

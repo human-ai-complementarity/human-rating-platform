@@ -2465,6 +2465,47 @@ test('duplicating into an older wave group warns on the copy', async ({ page }) 
   await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
 });
 
+test('on a phone the section tabs scroll sideways and stay on screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Phone Tabs', question_count: 2 })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // One tab row at every width: no separate section dropdown on phones.
+  await expect(page.getByTestId('tab-overview')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Section' })).toHaveCount(0);
+
+  // The last tab starts off-screen; picking it scrolls it fully into view.
+  const launch = page.getByTestId('tab-launch');
+  await launch.click();
+  await expect(launch).toBeInViewport({ ratio: 1 });
+
+  // Scrolling a long section keeps the tab row pinned to the top.
+  await page.getByTestId('tab-instructions').click();
+  await page.mouse.wheel(0, 1500);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300);
+  await expect(page.getByTestId('tab-instructions')).toBeInViewport();
+
+  // Switching tabs from down the page starts the new section at its top.
+  await page.getByTestId('tab-questions').click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(600);
+  await expect(page.getByTestId('tab-questions')).toBeInViewport();
+
+  // Nothing pushes the page wider than the phone.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
 test('a DRAFT in an older wave group keeps a small wave notice', async ({ page }) => {
   const state = createMockState();
   const inGroup = (id: number, name: string, wave: string) => ({
