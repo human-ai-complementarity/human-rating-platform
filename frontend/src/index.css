@@ -842,3 +842,546 @@ select.xd-section-select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ── Experiments list ─────────────────────────────────────────────────────
+   The create form lives in a side panel (.xl-drawer) so the list keeps the
+   page width; on phones the panel goes full screen and rows put the spend
+   under the name instead of beside it. */
+.xl-pagehead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  margin-bottom: 24px;
+}
+.xl-h1 {
+  font-family: var(--font-head);
+  font-weight: 600;
+  font-size: 30px;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.xl-new-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 600 14px var(--font-body);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.xl-seg {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.xl-seg::-webkit-scrollbar {
+  display: none;
+}
+.xl-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(40, 36, 32, 0.28);
+}
+.xl-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 901;
+  width: min(520px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  box-shadow: -18px 0 40px -20px rgba(40, 36, 32, 0.35);
+}
+.xl-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 14px 24px;
+  border-bottom: 1px solid var(--line);
+}
+.xl-drawer-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.xl-icon-btn {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.xl-icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .xl-h1 {
+    font-size: 24px;
+  }
+  .xl-pagehead {
+    margin-bottom: 18px;
+  }
+  .xl-new-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+  .xl-drawer-head {
+    padding-left: 16px;
+  }
+  .xl-grouphead {
+    padding: 16px 14px 12px !important;
+  }
+  .xl-group-arms {
+    padding: 0 14px 14px 36px !important;
+  }
+  .xl-group-arms > button {
+    margin-left: 0 !important;
+  }
+  .xl-row {
+    flex-wrap: wrap;
+    gap: 8px 12px !important;
+    padding: 14px 12px 14px 14px !important;
+  }
+  .xl-row-main {
+    flex: 1 1 100%;
+  }
+  .xl-row-side {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    padding-left: 19px;
+  }
+  .xl-row-spend {
+    width: auto !important;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    text-align: left !important;
+  }
+}
+
+/* ── Experiment detail: launch tab + collapsing grids ─────────────────────
+   The launch tab's rounds column and side column (completion URL, card)
+   share a wrapping row so the side column drops below on narrow screens.
+   .xd-grid-collapse marks 2- and 3-up grids that go single-column on phones;
+   inline styles set the desktop columns, so the override needs !important. */
+.xd-sechead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+.xd-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.xd-split-main {
+  flex: 999 1 560px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.xd-split-side {
+  flex: 1 1 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.xd-split-side:empty {
+  display: none;
+}
+
+@media (max-width: 1024px) {
+  .xd-grid-collapse {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .xd-grid-collapse {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .xd-sechead > button {
+    width: 100%;
+    min-height: 44px;
+  }
+  .xd-round-head {
+    padding: 14px 16px !important;
+  }
+  .xd-round-head > button {
+    flex: 1 1 auto;
+    min-height: 40px;
+  }
+}
+
+/* ── Analytics ────────────────────────────────────────────────────────────
+   Same header language as the experiment page: back link, eyebrow + title,
+   one stat strip, underline tabs. Tables scroll inside their card on desktop
+   and are swapped for stacked cards on phones. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.an-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 600 13px var(--font-body);
+  color: var(--muted);
+  cursor: pointer;
+}
+.an-crumb:hover {
+  color: var(--ink);
+}
+.an-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  margin-bottom: 22px;
+}
+.an-head > :first-child {
+  flex: 1 1 480px;
+}
+.an-eyebrow {
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.an-title {
+  margin: 8px 0 0;
+  font-family: var(--font-head);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.an-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+}
+.an-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.an-tabs {
+  display: flex;
+  gap: 28px;
+  margin: 28px 0 16px;
+  border-bottom: 1px solid var(--faint);
+}
+.an-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font: 600 14px var(--font-body);
+  color: var(--muted);
+  cursor: pointer;
+}
+.an-tabs button[aria-selected='true'] {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.an-count {
+  font: 400 12px var(--font-mono);
+  color: var(--muted);
+}
+.an-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.an-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.an-tablebox {
+  overflow-x: auto;
+}
+.an-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.an-table th {
+  padding: 11px 16px;
+  text-align: left;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.an-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.an-table tr:last-child td {
+  border-bottom: 0;
+}
+.an-table .an-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.an-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.an-qid {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.an-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.an-chip {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.an-cards {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.an-cards > li {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.an-cards > li:last-child {
+  border-bottom: 0;
+}
+.an-card-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.an-kv {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 12px;
+  margin: 10px 0 0;
+  font-size: 12.5px;
+}
+.an-kv dt {
+  color: var(--muted);
+}
+.an-kv dd {
+  margin: 0;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+@media (max-width: 1024px) {
+  .an-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .an-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .an-stats > div {
+    padding: 14px 16px !important;
+  }
+  .an-stats > div > :first-child {
+    font-size: 22px !important;
+  }
+  .an-actions {
+    width: 100%;
+  }
+  .an-actions > button {
+    margin-left: auto;
+  }
+  .an-tablebox {
+    display: none;
+  }
+  .an-cards {
+    display: block;
+  }
+}
+
+/* ── API keys ─────────────────────────────────────────────────────────── */
+.ak-create {
+  display: block;
+  margin-left: auto;
+}
+
+/* ── Documentation ────────────────────────────────────────────────────────
+   A sticky contents list beside the guide; on phones it becomes one jump
+   <select> above it. Tables scroll inside .docs-tablebox. */
+.docs-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 24px 40px;
+}
+.docs-toc {
+  flex: 0 0 240px;
+  position: sticky;
+  top: 24px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.docs-toc ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--faint);
+}
+.docs-toc a {
+  display: block;
+  margin-left: -1px;
+  padding: 6px 0 6px 14px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+.docs-toc a:hover {
+  color: var(--ink);
+}
+.docs-toc a[aria-current='true'] {
+  color: var(--ink);
+  font-weight: 600;
+  border-left-color: var(--accent);
+}
+.docs-toc .docs-toc-part a {
+  margin-top: 10px;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.docs-toc .docs-toc-part:first-child a {
+  margin-top: 0;
+}
+.docs-toc-sm {
+  display: none;
+}
+.docs-toc-sm span {
+  display: block;
+  font-weight: 600;
+  font-size: 13.5px;
+  margin-bottom: 6px;
+}
+.docs-toc-sm select {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font: 14px var(--font-body);
+  color: var(--ink);
+}
+.docs-article {
+  flex: 999 1 560px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 36px 44px;
+}
+.admin-docs .docs-anchor {
+  scroll-margin-top: 24px;
+}
+.admin-docs h1.docs-anchor:not(:first-child) {
+  margin-top: 48px;
+}
+.docs-tablebox {
+  overflow-x: auto;
+  margin: 0 0 14px;
+}
+.docs-tablebox table {
+  min-width: 560px;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .docs-toc {
+    display: none;
+  }
+  .docs-toc-sm {
+    display: block;
+    flex: 1 1 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .docs-article {
+    padding: 22px 18px;
+  }
+  .ak-create {
+    width: 100%;
+    min-height: 44px;
+  }
+  .ak-row {
+    padding: 16px !important;
+  }
+}

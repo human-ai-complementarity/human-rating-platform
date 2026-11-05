@@ -2437,6 +2437,7 @@ function MetadataPanel({
                 gridTemplateColumns: group.fields.length > 1 ? '1fr 1fr' : '1fr',
                 gap: 18,
               }}
+              className="xd-grid-collapse"
             >
               {group.fields.map(({ field, kind, minHeight }) =>
                 renderFieldCard(field, kind, {
@@ -2561,7 +2562,7 @@ function AssistanceModePanel({
       </p>
       {isLocked && <Banner tone="warn">{lockedHint}</Banner>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+      <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
         <ModeCard
           selected={method === 'none'}
           disabled={isLocked}
@@ -2869,53 +2870,26 @@ function LaunchPanel(props: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {/* Hero banner marking this as the final step */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 20,
-          background: 'var(--accent)',
-          color: 'var(--accent-ink)',
-          borderRadius: 'var(--radius)',
-          padding: '22px 26px',
-          boxShadow: 'var(--shadow)',
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.16)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            font: '600 16px var(--font-mono)',
-            flex: '0 0 auto',
-          }}
-        >
-          4
-        </span>
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              font: '600 11px/1 var(--font-mono)',
-              letterSpacing: '0.16em',
-              textTransform: 'uppercase',
-              opacity: 0.85,
-            }}
+      {/* Plain section heading; the step tabs above already say where we are. */}
+      <div className="xd-sechead">
+        <div style={{ minWidth: 0 }}>
+          <h2
+            style={{ margin: 0, fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 22 }}
           >
-            Final step
-          </div>
-          <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 20, marginTop: 5 }}>
             Launch on Prolific
-          </div>
-          <div style={{ fontSize: 13.5, opacity: 0.9, marginTop: 3 }}>
-            Start with the pilot, review results, then launch full rounds.
-          </div>
+          </h2>
+          <p style={{ margin: '4px 0 0', fontSize: 14, color: 'var(--muted)' }}>
+            Run the pilot, check the results, then launch full rounds.
+          </p>
         </div>
+        {/* Preview link is always available regardless of Prolific mode. */}
+        <button
+          data-testid="preview-participant-button"
+          onClick={() => window.open(buildRaterPreviewUrl(experiment.id), '_blank')}
+          style={secondaryButton}
+        >
+          Preview as participant
+        </button>
       </div>
 
       {bannerContent && (
@@ -2948,16 +2922,8 @@ function LaunchPanel(props: {
         <Banner tone="warn">{platformStatusMessage}</Banner>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 20, alignItems: 'start' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Preview link is always available regardless of Prolific mode. */}
-          <button
-            data-testid="preview-participant-button"
-            onClick={() => window.open(buildRaterPreviewUrl(experiment.id), '_blank')}
-            style={{ ...secondaryButton, alignSelf: 'flex-start' }}
-          >
-            Preview as participant
-          </button>
+      <div className="xd-split">
+        <div className="xd-split-main">
 
           {prolificEnabled === true && (
             <>
@@ -3071,7 +3037,7 @@ function LaunchPanel(props: {
           )}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="xd-split-side">
           {experiment.prolific_completion_url && (
             <SectionCard header="Completion URL">
               <div
@@ -3253,16 +3219,18 @@ function RoundCard(props: {
   return (
     <SectionCard padded={false}>
       <div
+        className="xd-round-head"
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
-          gap: 12,
+          gap: '10px 12px',
           padding: '16px 20px',
           background: 'var(--surface-2)',
           borderBottom: '1px solid var(--faint)',
         }}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 16 }}>
             {round.round_number === 0 ? 'Pilot Round' : `Round ${round.round_number}`}
           </span>
@@ -3361,7 +3329,7 @@ function RoundCard(props: {
               style={{ ...textareaStyle, height: 88 }}
             />
           </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+          <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
             <Field id={`edit-round-time-${round.round_number}`} label="Time (min)">
               <input
                 data-testid={`edit-round-time-${round.round_number}`}

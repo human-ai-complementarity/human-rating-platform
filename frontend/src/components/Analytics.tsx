@@ -1,21 +1,101 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api';
 import { buildRaterPreviewUrl } from '../raterPreview';
-import type { Analytics as AnalyticsType } from '../types';
-import { Banner } from './experiment-detail/ui';
+import type { Analytics as AnalyticsType, ExperimentStatus } from '../types';
+import StatusLabel from './StatusLabel';
+import { Banner, ToggleSwitch, secondaryButton } from './experiment-detail/ui';
 
-export const ANALYTICS_TABS = ['overview', 'questions', 'raters'] as const;
+// The summary numbers sit above the tabs on every view, so the tabs only
+// switch the breakdown below them. `/analytics` with no tab shows questions.
+export const ANALYTICS_TABS = ['questions', 'raters'] as const;
 export type AnalyticsTab = (typeof ANALYTICS_TABS)[number];
+
+const TAB_LABELS: Record<AnalyticsTab, string> = { questions: 'Questions', raters: 'Raters' };
 
 interface AnalyticsProps {
   experimentId: number;
   experimentName: string;
+  experimentStatus: ExperimentStatus;
   activeTab: AnalyticsTab;
   onTabChange: (tab: AnalyticsTab) => void;
   onBack: () => void;
 }
 
-function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBack }: AnalyticsProps) {
+const formatTime = (seconds: number | undefined | null): string => {
+  if (seconds === undefined || seconds === null || isNaN(seconds)) return '-';
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = (seconds % 60).toFixed(0);
+  return `${mins}m ${secs}s`;
+};
+
+const formatNumber = (num: number | undefined | null, decimals = 1): string => {
+  if (num === undefined || num === null || isNaN(num)) return '-';
+  return num.toFixed(decimals);
+};
+
+const formatDate = (iso: string | null): string => (iso ? new Date(iso).toLocaleString() : '-');
+
+function Stat({
+  label,
+  value,
+  tone,
+  testId,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: 'warn';
+  testId?: string;
+}) {
+  return (
+    <div style={{ background: 'var(--surface)', padding: '16px 20px', minWidth: 0 }}>
+      <div
+        data-testid={testId}
+        style={{
+          fontSize: 26,
+          fontWeight: 600,
+          lineHeight: 1.15,
+          fontVariantNumeric: 'tabular-nums',
+          color: tone === 'warn' ? 'var(--warn)' : 'var(--ink)',
+        }}
+      >
+        {value}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{label}</div>
+    </div>
+  );
+}
+
+function TimedOutPill() {
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        minHeight: 20,
+        padding: '0 8px',
+        borderRadius: 999,
+        background: 'var(--warn-soft)',
+        color: 'var(--warn)',
+        font: '600 10.5px var(--font-mono)',
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      Timed out
+    </span>
+  );
+}
+
+function Analytics({
+  experimentId,
+  experimentName,
+  experimentStatus,
+  activeTab,
+  onTabChange,
+  onBack,
+}: AnalyticsProps) {
   const [analytics, setAnalytics] = useState<AnalyticsType | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -37,188 +117,29 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
     loadAnalytics();
   }, [loadAnalytics]);
 
-  const formatTime = (seconds: number | undefined | null): string => {
-    if (seconds === undefined || seconds === null || isNaN(seconds)) return '-';
-    if (seconds < 60) return `${seconds.toFixed(1)}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = (seconds % 60).toFixed(0);
-    return `${mins}m ${secs}s`;
-  };
+  const backLink = (
+    <button type="button" onClick={onBack} className="an-crumb">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M19 12H5M11 18l-6-6 6-6" />
+      </svg>
+      Experiment
+    </button>
+  );
 
-  const formatNumber = (num: number | undefined | null, decimals = 1): string => {
-    if (num === undefined || num === null || isNaN(num)) return '-';
-    return num.toFixed(decimals);
-  };
-
-  const styles = {
-    container: {
-      maxWidth: '1200px',
-      margin: '0 auto',
-      padding: '24px',
-    },
-    header: {
-      display: 'flex',
-      alignItems: 'center',
-      gap: '16px',
-      marginBottom: '24px',
-      paddingBottom: '16px',
-      borderBottom: '1px solid #e0e0e0',
-    },
-    backButton: {
-      background: 'none',
-      border: '1px solid #ddd',
-      padding: '8px 16px',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      color: '#666',
-    },
-    title: {
-      margin: 0,
-      fontSize: '24px',
-      fontWeight: 600,
-    },
-    tabs: {
-      display: 'flex',
-      gap: '4px',
-      background: '#f0f0f0',
-      padding: '4px',
-      borderRadius: '8px',
-      width: 'fit-content',
-    },
-    tab: {
-      padding: '10px 20px',
-      border: 'none',
-      background: 'transparent',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-      fontWeight: 500,
-      color: '#666',
-      transition: 'all 0.15s',
-    },
-    tabActive: {
-      background: '#fff',
-      color: '#333',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-    },
-    section: {
-      background: '#fff',
-      borderRadius: '8px',
-      border: '1px solid #e0e0e0',
-      overflow: 'hidden',
-    },
-    sectionHeader: {
-      padding: '16px 20px',
-      borderBottom: '1px solid #e0e0e0',
-      background: '#fafafa',
-    },
-    sectionTitle: {
-      margin: 0,
-      fontSize: '14px',
-      fontWeight: 600,
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      color: '#555',
-    },
-    sectionBody: {
-      padding: '20px',
-    },
-    statsGrid: {
-      display: 'grid',
-      gridTemplateColumns: 'repeat(4, 1fr)',
-      gap: '16px',
-    },
-    statItem: {
-      textAlign: 'center' as const,
-      padding: '20px 16px',
-      background: '#f8f9fa',
-      borderRadius: '6px',
-    },
-    statValue: {
-      fontSize: '28px',
-      fontWeight: 700,
-      color: '#333',
-    },
-    statLabel: {
-      fontSize: '12px',
-      color: '#666',
-      marginTop: '4px',
-    },
-    table: {
-      width: '100%',
-      borderCollapse: 'collapse' as const,
-      fontSize: '14px',
-    },
-    th: {
-      padding: '12px 16px',
-      textAlign: 'left' as const,
-      background: '#fafafa',
-      borderBottom: '2px solid #e0e0e0',
-      fontWeight: 600,
-      fontSize: '12px',
-      textTransform: 'uppercase' as const,
-      letterSpacing: '0.5px',
-      color: '#555',
-    },
-    thCenter: {
-      textAlign: 'center' as const,
-    },
-    td: {
-      padding: '12px 16px',
-      borderBottom: '1px solid #eee',
-    },
-    tdCenter: {
-      textAlign: 'center' as const,
-    },
-    tdMono: {
-      fontFamily: 'monospace',
-      fontSize: '13px',
-    },
-    questionLink: {
-      fontFamily: 'monospace',
-      fontSize: '13px',
-      color: '#4a90d9',
-      textDecoration: 'underline',
-      cursor: 'pointer',
-    },
-    badge: {
-      display: 'inline-block',
-      padding: '2px 8px',
-      borderRadius: '4px',
-      fontSize: '12px',
-      background: '#e3f2fd',
-    },
-    refreshButton: {
-      padding: '10px 20px',
-      background: '#fff',
-      color: '#333',
-      border: '1px solid #ddd',
-      borderRadius: '6px',
-      cursor: 'pointer',
-      fontSize: '14px',
-    },
-    emptyState: {
-      padding: '40px 20px',
-      textAlign: 'center' as const,
-      color: '#888',
-    },
-  };
-
-  if (loading) {
+  if (loading && !analytics) {
     return (
-      <div style={styles.container}>
-        <div style={styles.emptyState}>Loading analytics...</div>
+      <div className="admin-page">
+        {backLink}
+        <div className="an-empty">Loading analytics…</div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div style={styles.container}>
-        <div style={{ marginBottom: 16 }}>
-          <Banner tone="danger">{error}</Banner>
-        </div>
-        <button onClick={onBack} style={styles.backButton}>Back</button>
+      <div className="admin-page">
+        {backLink}
+        <Banner tone="danger">{error}</Banner>
       </div>
     );
   }
@@ -227,230 +148,265 @@ function Analytics({ experimentId, experimentName, activeTab, onTabChange, onBac
     return null;
   }
 
+  const { overview } = analytics;
+
   return (
-    <div style={styles.container}>
-      {/* Header */}
-      <div style={styles.header}>
-        <button onClick={onBack} style={styles.backButton}>← Back</button>
-        <h1 style={styles.title}>Analytics: {experimentName}</h1>
+    <div className="admin-page">
+      {backLink}
+      <div className="an-head">
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span className="an-eyebrow">Analytics</span>
+            <StatusLabel status={experimentStatus} size="sm" />
+          </div>
+          <h1 className="xd-h1 an-title">
+            <span className="visually-hidden">Analytics: </span>
+            {experimentName}
+          </h1>
+        </div>
+        <div className="an-actions">
+          <span id="include-preview-analytics" style={{ fontSize: 13.5, color: 'var(--muted)' }}>
+            Include preview data
+          </span>
+          <ToggleSwitch
+            checked={includePreview}
+            onChange={() => setIncludePreview((v) => !v)}
+            ariaLabelledBy="include-preview-analytics"
+          />
+          <button
+            type="button"
+            onClick={loadAnalytics}
+            disabled={loading}
+            style={{ ...secondaryButton, display: 'inline-flex', alignItems: 'center', gap: 8 }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />
+            </svg>
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
-      {/* Tabs + Filters */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
-        <div style={styles.tabs}>
-          {ANALYTICS_TABS.map((tab) => (
+      <div className="an-stats">
+        <Stat label="Ratings" value={overview.total_ratings} />
+        <Stat label="Questions" value={overview.total_questions} />
+        <Stat label="Raters" value={overview.total_raters} />
+        <Stat
+          label="Ran out of time"
+          value={overview.timed_out_raters}
+          tone={overview.timed_out_raters > 0 ? 'warn' : undefined}
+          testId="timed-out-raters"
+        />
+        <Stat
+          label="Avg confidence"
+          value={
+            <>
+              {formatNumber(overview.avg_confidence)}
+              <span style={{ fontSize: 14, fontWeight: 500, color: 'var(--muted)' }}> / 5</span>
+            </>
+          }
+        />
+        <Stat label="Avg response time" value={formatTime(overview.avg_response_time_seconds || 0)} />
+      </div>
+      {/* Fastest/slowest only once there is something to compare. */}
+      {overview.total_ratings > 0 &&
+        (overview.min_response_time_seconds || overview.max_response_time_seconds) ? (
+        <p style={{ margin: '10px 0 0', fontSize: 13, color: 'var(--muted)' }}>
+          Fastest answer {formatTime(overview.min_response_time_seconds)} · slowest{' '}
+          {formatTime(overview.max_response_time_seconds)}
+        </p>
+      ) : null}
+
+      <div className="an-tabs" role="tablist" aria-label="Breakdown">
+        {ANALYTICS_TABS.map((tab) => {
+          const count = tab === 'questions' ? analytics.questions.length : analytics.raters.length;
+          return (
             <button
               key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
               onClick={() => onTabChange(tab)}
-              style={{
-                ...styles.tab,
-                ...(activeTab === tab ? styles.tabActive : {}),
-              }}
             >
-              {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              {TAB_LABELS[tab]}
+              <span className="an-count" aria-hidden="true">
+                {count}
+              </span>
             </button>
-          ))}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <span style={{ fontSize: '13px', color: '#666' }}>Include preview data</span>
-          <div style={{ position: 'relative' as const, width: '44px', height: '24px', flexShrink: 0 }}>
-            <div
-              style={{
-                width: '44px',
-                height: '24px',
-                borderRadius: '12px',
-                cursor: 'pointer',
-                transition: 'background 0.2s',
-                background: includePreview ? '#4a90d9' : '#ddd',
-              }}
-              onClick={() => setIncludePreview(!includePreview)}
-            />
-            <div
-              style={{
-                position: 'absolute' as const,
-                top: '2px',
-                width: '20px',
-                height: '20px',
-                borderRadius: '50%',
-                background: '#fff',
-                boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                transition: 'left 0.2s',
-                left: includePreview ? '22px' : '2px',
-                pointerEvents: 'none',
-              }}
-            />
-          </div>
-        </div>
+          );
+        })}
       </div>
 
-      {/* Overview Tab */}
-      {activeTab === 'overview' && (
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Overview</h2>
-          </div>
-          <div style={styles.sectionBody}>
-            <div style={styles.statsGrid}>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{analytics.overview.total_ratings}</div>
-                <div style={styles.statLabel}>Total Ratings</div>
-              </div>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{analytics.overview.total_questions}</div>
-                <div style={styles.statLabel}>Total Questions</div>
-              </div>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{analytics.overview.total_raters}</div>
-                <div style={styles.statLabel}>Total Raters</div>
-              </div>
-              <div style={styles.statItem}>
-                <div
-                  style={{
-                    ...styles.statValue,
-                    color:
-                      analytics.overview.timed_out_raters > 0 ? 'var(--danger)' : undefined,
-                  }}
-                  data-testid="timed-out-raters"
-                >
-                  {analytics.overview.timed_out_raters}
-                </div>
-                <div style={styles.statLabel}>Ran Out Of Time</div>
-              </div>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{formatNumber(analytics.overview.avg_confidence)}</div>
-                <div style={styles.statLabel}>Avg Confidence</div>
-              </div>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{formatTime(analytics.overview.avg_response_time_seconds || 0)}</div>
-                <div style={styles.statLabel}>Avg Response Time</div>
-              </div>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{formatTime(analytics.overview.min_response_time_seconds || 0)}</div>
-                <div style={styles.statLabel}>Min Response Time</div>
-              </div>
-              <div style={styles.statItem}>
-                <div style={styles.statValue}>{formatTime(analytics.overview.max_response_time_seconds || 0)}</div>
-                <div style={styles.statLabel}>Max Response Time</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Questions Tab */}
       {activeTab === 'questions' && (
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Per-Question Analytics</h2>
-          </div>
+        <section className="an-card" aria-label="Per-question analytics">
           {analytics.questions.length === 0 ? (
-            <div style={styles.emptyState}>No ratings yet.</div>
+            <div className="an-empty">No ratings yet.</div>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Question ID</th>
-                    <th style={styles.th}>Preview</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Ratings</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Avg Time</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Avg Confidence</th>
-                    <th style={styles.th}>Answer Distribution</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {analytics.questions.map((q) => (
-                    <tr key={q.question_id}>
-                      <td style={styles.td}>
-                        <a
-                          href={buildRaterPreviewUrl(experimentId, q.question_db_id)}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="Open this question in the rater preview"
-                          data-testid={`question-preview-link-${q.question_db_id}`}
-                          style={styles.questionLink}
-                        >
-                          {q.question_id}
-                        </a>
-                      </td>
-                      <td style={{ ...styles.td, maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {q.question_text}
-                      </td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{q.num_ratings}</td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{formatTime(q.avg_response_time_seconds)}</td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{q.avg_confidence.toFixed(1)}</td>
-                      <td style={styles.td}>
-                        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                          {Object.entries(q.answer_distribution).map(([answer, count]) => (
-                            <span key={answer} style={styles.badge}>
-                              {answer.length > 15 ? answer.substring(0, 15) + '...' : answer}: {count}
-                            </span>
-                          ))}
-                        </div>
-                      </td>
+            <>
+              <div className="an-tablebox">
+                <table className="an-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Question</th>
+                      <th scope="col" className="an-num">Ratings</th>
+                      <th scope="col" className="an-num">Avg time</th>
+                      <th scope="col" className="an-num">Avg conf.</th>
+                      <th scope="col">Answers</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {analytics.questions.map((q) => (
+                      <tr key={q.question_id}>
+                        <td style={{ maxWidth: 440 }}>
+                          <a
+                            href={buildRaterPreviewUrl(experimentId, q.question_db_id)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="Open this question in the rater preview"
+                            data-testid={`question-preview-link-${q.question_db_id}`}
+                            className="an-qid"
+                          >
+                            {q.question_id}
+                          </a>
+                          <div className="an-ellipsis" title={q.question_text}>
+                            {q.question_text}
+                          </div>
+                        </td>
+                        <td className="an-num">{q.num_ratings}</td>
+                        <td className="an-num">{formatTime(q.avg_response_time_seconds)}</td>
+                        <td className="an-num">{q.avg_confidence.toFixed(1)}</td>
+                        <td>
+                          <AnswerChips distribution={q.answer_distribution} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <ul className="an-cards">
+                {analytics.questions.map((q) => (
+                  <li key={q.question_id}>
+                    <a
+                      href={buildRaterPreviewUrl(experimentId, q.question_db_id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="an-qid"
+                    >
+                      {q.question_id}
+                    </a>
+                    <div style={{ marginTop: 2, fontSize: 13.5 }}>{q.question_text}</div>
+                    <div style={{ marginTop: 8 }}>
+                      <AnswerChips distribution={q.answer_distribution} />
+                    </div>
+                    <div className="an-card-meta">
+                      {q.num_ratings} ratings · {formatTime(q.avg_response_time_seconds)} avg · conf.{' '}
+                      {q.avg_confidence.toFixed(1)}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
-        </div>
+        </section>
       )}
 
-      {/* Raters Tab */}
       {activeTab === 'raters' && (
-        <div style={styles.section}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Per-Rater Analytics</h2>
-          </div>
+        // Shows Prolific IDs: PostHog must not capture clicks here.
+        <section className="an-card ph-no-capture" aria-label="Per-rater analytics">
           {analytics.raters.length === 0 ? (
-            <div style={styles.emptyState}>No raters yet.</div>
+            <div className="an-empty">No raters yet.</div>
           ) : (
-            // Shows Prolific IDs: PostHog must not capture clicks here.
-            <div className="ph-no-capture" style={{ overflowX: 'auto' }}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>Prolific ID</th>
-                    <th style={styles.th}>Study ID</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Questions</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Total Time</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Avg Time</th>
-                    <th style={{ ...styles.th, ...styles.thCenter }}>Avg Confidence</th>
-                    <th style={styles.th}>Session Start</th>
-                    <th style={styles.th}>Consent</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {analytics.raters.map((r) => (
-                    <tr key={r.prolific_id}>
-                      <td style={{ ...styles.td, ...styles.tdMono }}>{r.prolific_id}</td>
-                      <td style={{ ...styles.td, ...styles.tdMono, color: '#888' }}>{r.study_id || '-'}</td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{r.num_ratings}</td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{formatTime(r.total_response_time_seconds)}</td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{formatTime(r.avg_response_time_seconds)}</td>
-                      <td style={{ ...styles.td, ...styles.tdCenter }}>{r.avg_confidence.toFixed(1)}</td>
-                      <td style={{ ...styles.td, fontSize: '12px', color: '#666' }}>
-                        {r.session_start ? new Date(r.session_start).toLocaleString() : '-'}
-                      </td>
-                      <td style={{ ...styles.td, fontSize: '12px', color: '#666' }} title={r.consented_at ? new Date(r.consented_at).toLocaleString() : undefined}>
-                        {r.consent_version ?? '-'}
-                      </td>
+            <>
+              <div className="an-tablebox">
+                <table className="an-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Prolific ID</th>
+                      <th scope="col">Study ID</th>
+                      <th scope="col" className="an-num">Ratings</th>
+                      <th scope="col" className="an-num">Total time</th>
+                      <th scope="col" className="an-num">Avg time</th>
+                      <th scope="col" className="an-num">Avg conf.</th>
+                      <th scope="col">Started</th>
+                      <th scope="col">Consent</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {analytics.raters.map((r) => (
+                      <tr key={r.prolific_id}>
+                        <td>
+                          <span className="an-mono">{r.prolific_id}</span>
+                          {r.timed_out && (
+                            <span style={{ marginLeft: 8 }}>
+                              <TimedOutPill />
+                            </span>
+                          )}
+                        </td>
+                        <td className="an-mono" style={{ color: 'var(--muted)' }}>
+                          {r.study_id || '-'}
+                        </td>
+                        <td className="an-num">{r.num_ratings}</td>
+                        <td className="an-num">{formatTime(r.total_response_time_seconds)}</td>
+                        <td className="an-num">{formatTime(r.avg_response_time_seconds)}</td>
+                        <td className="an-num">{r.avg_confidence.toFixed(1)}</td>
+                        <td style={{ whiteSpace: 'nowrap', color: 'var(--muted)', fontSize: 12.5 }}>
+                          {formatDate(r.session_start)}
+                        </td>
+                        <td
+                          style={{ color: 'var(--muted)', fontSize: 12.5 }}
+                          title={r.consented_at ? formatDate(r.consented_at) : undefined}
+                        >
+                          {r.consent_version ?? '-'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <ul className="an-cards">
+                {analytics.raters.map((r) => (
+                  <li key={r.prolific_id}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                      <span className="an-mono an-ellipsis">{r.prolific_id}</span>
+                      {r.timed_out && <TimedOutPill />}
+                    </div>
+                    <dl className="an-kv">
+                      <div>
+                        <dt>Ratings</dt>
+                        <dd>{r.num_ratings}</dd>
+                      </div>
+                      <div>
+                        <dt>Avg time</dt>
+                        <dd>{formatTime(r.avg_response_time_seconds)}</dd>
+                      </div>
+                      <div>
+                        <dt>Avg conf.</dt>
+                        <dd>{r.avg_confidence.toFixed(1)}</dd>
+                      </div>
+                    </dl>
+                    <div className="an-card-meta">
+                      Started {formatDate(r.session_start)} · {formatTime(r.total_response_time_seconds)}{' '}
+                      total
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
-        </div>
+        </section>
       )}
+    </div>
+  );
+}
 
-      {/* Refresh */}
-      <div style={{ textAlign: 'center', marginTop: '24px' }}>
-        <button onClick={loadAnalytics} style={styles.refreshButton}>
-          Refresh Analytics
-        </button>
-      </div>
+function AnswerChips({ distribution }: { distribution: Record<string, number> }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+      {Object.entries(distribution).map(([answer, count]) => (
+        <span key={answer} className="an-chip" title={answer}>
+          {answer.length > 15 ? answer.substring(0, 15) + '…' : answer}: {count}
+        </span>
+      ))}
     </div>
   );
 }

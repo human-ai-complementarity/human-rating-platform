@@ -155,7 +155,9 @@ function ApiKeysPage() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}>
+      {/* Create sits above the list as one compact card, so the list keeps the
+          page width and nothing sits side by side on a phone. */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 980 }}>
         <CreatePanel onCreate={handleCreate} onError={setError} />
         <KeyListPanel
           keys={keys}
@@ -240,8 +242,9 @@ function CreatePanel({
   };
 
   return (
-    <SectionCard header="Create new">
+    <SectionCard header="Create a key">
       <form onSubmit={submit}>
+        <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
         <Field
           id="api-key-name"
           label="Name"
@@ -273,7 +276,8 @@ function CreatePanel({
             <option value="admin">Admin (/api/v1 and /api/admin)</option>
           </select>
         </Field>
-        <div style={{ marginBottom: 18, display: 'grid', gap: 10 }}>
+        </div>
+        <div style={{ marginBottom: 16, display: 'grid', gap: 10 }}>
           {scope === 'admin' && (
             <Banner tone="warn">
               An admin key can create, change and delete experiments and datasets. It cannot manage
@@ -289,11 +293,11 @@ function CreatePanel({
           type="submit"
           data-testid="api-key-create-button"
           disabled={submitting || name.trim() === ''}
+          className="ak-create"
           style={{
             ...primaryButton,
-            width: '100%',
-            padding: 13,
-            fontSize: 15,
+            padding: '11px 22px',
+            fontSize: 14.5,
             opacity: submitting || name.trim() === '' ? 0.6 : 1,
           }}
         >
@@ -351,11 +355,11 @@ function RevealCard({
         This is the only time <strong>{created.name}</strong> will be shown in full. Once you dismiss
         this, only its prefix remains visible.
       </p>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'stretch' }}>
         <code
           data-testid="api-key-plaintext"
           style={{
-            flex: 1,
+            flex: '1 1 240px',
             padding: '12px 14px',
             background: 'var(--surface-2)',
             border: '1px solid var(--faint)',
@@ -468,19 +472,21 @@ function KeyRow({
   return (
     <div
       data-testid="api-key-row"
+      className="ak-row"
       style={{
         display: 'flex',
+        flexWrap: 'wrap',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 20,
+        gap: '12px 20px',
         padding: '18px 24px',
         borderBottom: isLast ? 'none' : '1px solid var(--line)',
         opacity: apiKey.is_active ? 1 : 0.62,
       }}
     >
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: '1 1 300px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-head)', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em' }}>
+          <span style={{ fontFamily: 'var(--font-head)', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em', overflowWrap: 'anywhere' }}>
             {apiKey.name}
           </span>
           {apiKey.is_active ? <ActivePill /> : <RevokedPill />}

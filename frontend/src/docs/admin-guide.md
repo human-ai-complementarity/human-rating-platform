@@ -4,7 +4,7 @@ End-to-end flow: create → upload → optionally configure AI assistance → pi
 
 ## 1. Create the experiment
 
-From the **Experiments** page, fill out the create form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
+From the **Experiments** page, click **New experiment**, fill out the form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
 
 **Session length** is how long each rater gets before their session ends, in minutes. The default of `60` suits most tasks; raise it when a single question takes a long time to read (long-context datasets in particular), up to a maximum of 120 — a task needing longer than two hours is better split into more, shorter sessions than given a longer clock. Every other clock follows from this one number, so you only set it here.
 
