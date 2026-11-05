@@ -52,12 +52,13 @@ function AnalyticsPage() {
     };
   }, [experimentId]);
 
-  // No `:tab` segment means overview; an unknown segment redirects to the
-  // canonical overview URL instead of rendering a broken page.
+  // No `:tab` segment shows the questions breakdown (the summary numbers are
+  // on every tab). An unknown segment, including the old `overview` tab,
+  // redirects to the canonical URL instead of rendering a broken page.
   if (tab !== undefined && !ANALYTICS_TABS.includes(tab as AnalyticsTab)) {
     return <Navigate to={`/admin/experiments/${experimentId}/analytics`} replace />;
   }
-  const activeTab: AnalyticsTab = (tab as AnalyticsTab) ?? 'overview';
+  const activeTab: AnalyticsTab = (tab as AnalyticsTab) ?? 'questions';
 
   if (loading) {
     return (
@@ -107,6 +108,7 @@ function AnalyticsPage() {
     <Analytics
       experimentId={experiment.id}
       experimentName={experiment.internal_name || experiment.name}
+      experimentStatus={experiment.status}
       activeTab={activeTab}
       onTabChange={(next) => navigate(`/admin/experiments/${experiment.id}/analytics/${next}`)}
       onBack={() => navigate(`/admin/experiments/${experiment.id}`)}

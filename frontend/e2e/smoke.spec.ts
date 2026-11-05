@@ -140,6 +140,12 @@ type RaterSessionRecord = {
   debrief_html?: string | null;
 };
 
+// The create form lives in a side panel opened from the page header.
+async function openCreatePanel(page: Page) {
+  await page.getByTestId('new-experiment-button').click();
+  await expect(page.getByTestId('create-drawer')).toBeVisible();
+}
+
 const MOCK_CONSENT_HTML = '<h2>Purpose of the study</h2><p>Mock consent statement.</p>';
 
 // Ticks the box and agrees on the consent screen, the first thing every rater
@@ -984,6 +990,7 @@ test('a long-context experiment is created with its own session length', async (
 
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('Two Hour Reading Task');
   await page.getByTestId('ratings-per-question-input').fill('3');
   await page.getByTestId('session-duration-input').fill('120');
@@ -1091,6 +1098,7 @@ test('create experiment and upload CSV shows the upload and success toast', asyn
 
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('Hour Breakdown Smoke Test');
   await page.getByTestId('ratings-per-question-input').fill('3');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
@@ -1130,6 +1138,7 @@ test('a slow upload shows progress and re-enables the form when it finishes', as
   });
 
   await page.goto('/admin');
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('Slow Upload Test');
   await page.getByTestId('ratings-per-question-input').fill('3');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
@@ -2185,7 +2194,7 @@ test.describe('analytics raters tab', () => {
     await expect(page).toHaveURL('/admin/experiments/1/analytics');
     await expect(page.getByRole('heading', { name: 'Analytics: Analytics Internal Name' })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Raters', exact: true }).click();
+    await page.getByRole('tab', { name: 'Raters' }).click();
     await expect(page).toHaveURL('/admin/experiments/1/analytics/raters');
 
     const raterRow = page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' });
@@ -2294,10 +2303,14 @@ test.describe('analytics raters tab', () => {
     await expect(page.getByRole('heading', { name: 'Analytics: Analytics Internal Name' })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' })).toBeVisible();
 
-    // Unknown tab segments fall back to the overview URL.
+    // Unknown tab segments (and the retired overview tab) fall back to the
+    // canonical URL, which shows the summary strip and the questions tab.
     await page.goto('/admin/experiments/1/analytics/bogus');
     await expect(page).toHaveURL('/admin/experiments/1/analytics');
-    await expect(page.getByText('Total Ratings')).toBeVisible();
+    await expect(page.getByText('Ran out of time')).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Questions' })).toHaveAttribute('aria-selected', 'true');
+    await page.goto('/admin/experiments/1/analytics/overview');
+    await expect(page).toHaveURL('/admin/experiments/1/analytics');
   });
 });
 
@@ -2384,6 +2397,7 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   await expect(page.getByText('Ungrouped · scratch work')).toBeVisible();
 
   await page.getByTestId('grouped-toggle').click();
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-option-1').click();
   await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall');
@@ -2449,6 +2463,47 @@ test('duplicating into an older wave group warns on the copy', async ({ page }) 
   await expect(warning).toContainText('move it to a fall26 group before launch');
   // The loud warning replaces the small notice rather than doubling it.
   await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+});
+
+test('on a phone the section tabs scroll sideways and stay on screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Phone Tabs', question_count: 2 })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // One tab row at every width: no separate section dropdown on phones.
+  await expect(page.getByTestId('tab-overview')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Section' })).toHaveCount(0);
+
+  // The last tab starts off-screen; picking it scrolls it fully into view.
+  const launch = page.getByTestId('tab-launch');
+  await launch.click();
+  await expect(launch).toBeInViewport({ ratio: 1 });
+
+  // Scrolling a long section keeps the tab row pinned to the top.
+  await page.getByTestId('tab-instructions').click();
+  await page.mouse.wheel(0, 1500);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300);
+  await expect(page.getByTestId('tab-instructions')).toBeInViewport();
+
+  // Switching tabs from down the page starts the new section at its top.
+  await page.getByTestId('tab-questions').click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(600);
+  await expect(page.getByTestId('tab-questions')).toBeInViewport();
+
+  // Nothing pushes the page wider than the phone.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 test('a DRAFT in an older wave group keeps a small wave notice', async ({ page }) => {
@@ -2630,7 +2685,7 @@ test('saving other fields leaves the group out of the PATCH', async ({ page }) =
   const rename = page.waitForRequest(isExperimentPatch(1));
   await page.getByRole('button', { name: 'Save name' }).click();
   expect((await rename).postDataJSON()).not.toHaveProperty('group_id');
-  await expect(page.getByText('Public name (shown to raters): Spring draft v2')).toBeVisible();
+  await expect(page.getByTestId('public-name')).toHaveText('Spring draft v2');
   await expect(page.getByTestId('group-current')).toHaveText('MedQA Spring · medqa × sp26');
   expect(state.experiments[0].group_id).toBe(1);
 });
@@ -2750,7 +2805,7 @@ test('a launched experiment shows its group without move controls', async ({ pag
   await page.goto('/admin/experiments/1');
   const control = page.getByTestId('group-control');
   await expect(control).toContainText('MedQA Spring · medqa × sp26');
-  await expect(control.getByTestId('group-locked')).toHaveText('(locked after launch)');
+  await expect(control.getByTestId('group-locked')).toHaveText('Locked');
   await expect(control.getByTestId('group-move-button')).toHaveCount(0);
   await expect(page.getByTestId('move-to-current-wave')).toHaveCount(0);
 
@@ -2758,7 +2813,7 @@ test('a launched experiment shows its group without move controls', async ({ pag
   await page.getByRole('button', { name: 'Edit public name' }).click();
   await page.getByRole('textbox', { name: 'Public name' }).fill('Spring launched v2');
   await page.getByRole('button', { name: 'Save name' }).click();
-  await expect(page.getByText('Public name (shown to raters): Spring launched v2')).toBeVisible();
+  await expect(page.getByTestId('public-name')).toHaveText('Spring launched v2');
   await expect(control).toContainText('MedQA Spring · medqa × sp26');
 });
 
@@ -2795,6 +2850,7 @@ test('group picker keyboard: type-ahead commits the match, not "No group"', asyn
 
   // Typing to a single match and pressing Enter picks that match. The highlight
   // used to stay pinned to the "No group" row, so this silently ungrouped.
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-input').fill('MedQA Fall');
   await page.getByTestId('group-picker-input').press('Enter');
@@ -2823,6 +2879,7 @@ test('new dataset collects wave tokens one at a time', async ({ page }) => {
   await installApiMocks(page, state);
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-create').click();
   await page.getByTestId('new-group-name-input').fill('MedQA Spring');
@@ -2863,6 +2920,7 @@ test('failed experiment create reuses the group already made', async ({ page }) 
   await installApiMocks(page, state);
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-create').click();
   await page.getByTestId('new-group-name-input').fill('MedQA Spring');
@@ -2888,6 +2946,7 @@ test('a validation error shows each field and message, not the raw JSON body', a
   await installApiMocks(page, state);
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('TRIGGER-422');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
 
@@ -2902,12 +2961,47 @@ test('a validation error shows each field and message, not the raw JSON body', a
   await expect(alert).not.toContainText('three');
 });
 
+test('the new-experiment panel opens from the header and closes on Escape', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  const opener = page.getByTestId('new-experiment-button');
+  const appInert = () => page.evaluate(() => document.getElementById('root')?.inert ?? null);
+  await expect(page.getByTestId('create-drawer')).toBeHidden();
+  await opener.click();
+  await expect(page.getByRole('dialog', { name: 'New experiment' })).toBeVisible();
+  await expect(page.getByTestId('experiment-name-input')).toBeFocused();
+  // The page behind the panel is out of the tab order while it is open.
+  expect(await appInert()).toBe(true);
+
+  // Escape inside the group picker closes the picker, not the whole panel.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').press('Escape');
+  await expect(page.getByTestId('create-drawer')).toBeVisible();
+
+  // A half-built new group survives closing and reopening the panel.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('Draft group');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('Draft group');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('create-drawer')).toBeHidden();
+  await expect(opener).toBeFocused();
+  expect(await appInert()).toBe(false);
+
+  await opener.click();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('Draft group');
+});
+
 test('tag input enforces the length and count limits while typing', async ({ page }) => {
   const state = createMockState();
   // One existing tag, so there is a suggestion chip for the full state to hide.
   state.experiments = [buildExperiment(state, { name: 'Tagged', tags: ['needs-review'] })];
   await installApiMocks(page, state);
   await page.goto('/admin');
+  await openCreatePanel(page);
 
   const input = page.getByTestId('experiment-tags-input');
   const suggestion = page.getByTestId('tag-suggestion-needs-review');
@@ -2956,11 +3050,6 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
   await installApiMocks(page, state);
   await page.goto('/admin');
 
-  await expect(page.getByTestId('tag-suggestion-needs-review')).toBeVisible();
-  await expect(page.getByTestId('tag-suggestion-alpha')).toBeVisible();
-  await expect(page.getByTestId('tag-suggestion-pilot-batch-2')).toBeVisible();
-  await expect(page.getByTestId('tag-suggestion-needs-review')).toContainText('3');
-
   await page.getByTestId('experiment-tag-needs-review').first().click();
   await expect(page.getByTestId('tag-filter-chip')).toContainText('needs-review');
   await expect(page.getByText('Scratch draft')).toHaveCount(0);
@@ -2969,6 +3058,11 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
   await page.getByRole('button', { name: 'Clear filters' }).click();
   await expect(page.getByText('Scratch draft')).toBeVisible();
 
+  await openCreatePanel(page);
+  await expect(page.getByTestId('tag-suggestion-needs-review')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-alpha')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-pilot-batch-2')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-needs-review')).toContainText('3');
   await page.getByTestId('tag-suggestion-needs-review').click();
   await expect(page.getByTestId('selected-tag-needs-review')).toBeVisible();
 
@@ -3586,6 +3680,7 @@ test('the create form leaves names and the ratings target to the card unless typ
 
   await installApiMocks(page, state);
   await page.goto('/admin');
+  await openCreatePanel(page);
   const name = page.getByTestId('experiment-name-input');
   const internalName = page.getByTestId('experiment-internal-name-input');
   const ratings = page.getByTestId('ratings-per-question-input');
@@ -3617,6 +3712,7 @@ test('the create form leaves names and the ratings target to the card unless typ
 
   // Typed values win.
   await page.goto('/admin');
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-option-1').click();
   await name.fill('Long passage rating');
@@ -3801,4 +3897,78 @@ test('the consent section saves the flags and details, and previews the statemen
   await page.getByTestId('ethics-save').click();
   await expect(page.getByText('Consent settings saved.')).toBeVisible();
   expect(state.experimentPatches[1]).toMatchObject({ study_flags: [], content_warning_details: '' });
+});
+
+test('the docs contents list follows the section scrolled to', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin/docs');
+
+  const toc = page.getByRole('navigation', { name: 'On this page' });
+  // Two scrolls in a row: the second only registers if the headings the
+  // scroll-spy observes survive the re-render the first one causes.
+  for (const id of ['2-upload-questions', '4-pilot-on-prolific']) {
+    await page.evaluate((target) => document.getElementById(target)?.scrollIntoView(), id);
+    await expect(toc.locator(`a[href="#${id}"]`)).toHaveAttribute('aria-current', 'true');
+  }
+});
+
+test('on a phone the docs contents open from a bar and close after a jump', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin/docs');
+
+  const toggle = page.getByRole('button', { name: /On this page/ });
+  await toggle.click();
+  const menu = page.locator('#docs-toc-sm-menu');
+  await expect(menu).toBeVisible();
+  await menu.getByRole('link', { name: '4. Pilot on Prolific' }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(toggle).toContainText('4. Pilot on Prolific');
+  await expect(page.locator('[id="4-pilot-on-prolific"]')).toBeInViewport();
+});
+
+test('a long dataset name never widens the experiments list on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  const name = 'Multidimensional Difference Awareness';
+  seedCardExperiment(state, { name }, { group_dataset_name: name });
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  // The name truncates; the card status stays readable.
+  await expect(page.getByTestId('group-card-edit-1')).toContainText('incomplete');
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
+
+  // The create panel fills the screen with its submit button in reach.
+  await openCreatePanel(page);
+  const box = await page.getByTestId('create-drawer').boundingBox();
+  expect(box).toMatchObject({ x: 0, width: 390 });
+  await expect(page.getByRole('button', { name: 'Create experiment' })).toBeInViewport();
+});
+
+test('on a phone the header menus open above the sticky section tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  seedCardExperiment(state, {});
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // Both menus open over the tab row just below them; a click on an item must
+  // land on the item, not on a tab painted over it.
+  for (const menu of ['export-menu', 'more-menu']) {
+    await page.getByTestId(menu).locator('summary').click();
+    const itemOnTop = await page.evaluate((testId) => {
+      const item = document.querySelector(`[data-testid="${testId}"] .xd-menu-item`)!;
+      const r = item.getBoundingClientRect();
+      return item.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    }, menu);
+    expect(itemOnTop).toBe(true);
+    await page.keyboard.press('Escape');
+  }
 });

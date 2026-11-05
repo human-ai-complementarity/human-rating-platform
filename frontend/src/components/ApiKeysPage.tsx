@@ -155,7 +155,11 @@ function ApiKeysPage() {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}>
+      {/* Two columns on desktop; stacked below 900px (see .ak-layout). */}
+      <div
+        className="ak-layout"
+        style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}
+      >
         <CreatePanel onCreate={handleCreate} onError={setError} />
         <KeyListPanel
           keys={keys}
@@ -351,11 +355,11 @@ function RevealCard({
         This is the only time <strong>{created.name}</strong> will be shown in full. Once you dismiss
         this, only its prefix remains visible.
       </p>
-      <div style={{ display: 'flex', gap: 10, alignItems: 'stretch' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'stretch' }}>
         <code
           data-testid="api-key-plaintext"
           style={{
-            flex: 1,
+            flex: '1 1 240px',
             padding: '12px 14px',
             background: 'var(--surface-2)',
             border: '1px solid var(--faint)',
@@ -468,19 +472,21 @@ function KeyRow({
   return (
     <div
       data-testid="api-key-row"
+      className="ak-row"
       style={{
         display: 'flex',
+        flexWrap: 'wrap',
         alignItems: 'center',
         justifyContent: 'space-between',
-        gap: 20,
+        gap: '12px 20px',
         padding: '18px 24px',
         borderBottom: isLast ? 'none' : '1px solid var(--line)',
         opacity: apiKey.is_active ? 1 : 0.62,
       }}
     >
-      <div style={{ minWidth: 0 }}>
+      <div style={{ minWidth: 0, flex: '1 1 260px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap' }}>
-          <span style={{ fontFamily: 'var(--font-head)', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em' }}>
+          <span style={{ fontFamily: 'var(--font-head)', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em', overflowWrap: 'anywhere' }}>
             {apiKey.name}
           </span>
           {apiKey.is_active ? <ActivePill /> : <RevokedPill />}

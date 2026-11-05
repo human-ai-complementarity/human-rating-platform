@@ -276,7 +276,7 @@ export default function DatasetCardEditor({
                 style={{ ...textareaStyle, minHeight: 80 }}
               />
             </Field>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field id="card-time" label="Estimated completion time (minutes)">
                 <input
                   id="card-time"
@@ -315,7 +315,7 @@ export default function DatasetCardEditor({
                 </div>
               </Field>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
               <Field id="card-ratings" label="Ratings per question">
                 <input
                   id="card-ratings"
