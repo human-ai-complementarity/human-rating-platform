@@ -155,9 +155,11 @@ function ApiKeysPage() {
         </div>
       )}
 
-      {/* Create sits above the list as one compact card, so the list keeps the
-          page width and nothing sits side by side on a phone. */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 20, maxWidth: 980 }}>
+      {/* Two columns on desktop; stacked below 900px (see .ak-layout). */}
+      <div
+        className="ak-layout"
+        style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}
+      >
         <CreatePanel onCreate={handleCreate} onError={setError} />
         <KeyListPanel
           keys={keys}
@@ -242,9 +244,8 @@ function CreatePanel({
   };
 
   return (
-    <SectionCard header="Create a key">
+    <SectionCard header="Create new">
       <form onSubmit={submit}>
-        <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 18px' }}>
         <Field
           id="api-key-name"
           label="Name"
@@ -276,8 +277,7 @@ function CreatePanel({
             <option value="admin">Admin (/api/v1 and /api/admin)</option>
           </select>
         </Field>
-        </div>
-        <div style={{ marginBottom: 16, display: 'grid', gap: 10 }}>
+        <div style={{ marginBottom: 18, display: 'grid', gap: 10 }}>
           {scope === 'admin' && (
             <Banner tone="warn">
               An admin key can create, change and delete experiments and datasets. It cannot manage
@@ -293,11 +293,11 @@ function CreatePanel({
           type="submit"
           data-testid="api-key-create-button"
           disabled={submitting || name.trim() === ''}
-          className="ak-create"
           style={{
             ...primaryButton,
-            padding: '11px 22px',
-            fontSize: 14.5,
+            width: '100%',
+            padding: 13,
+            fontSize: 15,
             opacity: submitting || name.trim() === '' ? 0.6 : 1,
           }}
         >
@@ -484,7 +484,7 @@ function KeyRow({
         opacity: apiKey.is_active ? 1 : 0.62,
       }}
     >
-      <div style={{ minWidth: 0, flex: '1 1 300px' }}>
+      <div style={{ minWidth: 0, flex: '1 1 260px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap' }}>
           <span style={{ fontFamily: 'var(--font-head)', fontSize: 17, fontWeight: 600, letterSpacing: '-0.01em', overflowWrap: 'anywhere' }}>
             {apiKey.name}

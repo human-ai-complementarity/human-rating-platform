@@ -1265,10 +1265,12 @@ select.xd-section-select {
   }
 }
 
-/* ── API keys ─────────────────────────────────────────────────────────── */
-.ak-create {
-  display: block;
-  margin-left: auto;
+/* ── API keys ─────────────────────────────────────────────────────────────
+   Desktop keeps create beside the key list; narrower screens stack them. */
+@media (max-width: 900px) {
+  .ak-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
 }
 
 /* ── Documentation ────────────────────────────────────────────────────────
@@ -1376,10 +1378,6 @@ select.xd-section-select {
 @media (max-width: 640px) {
   .docs-article {
     padding: 22px 18px;
-  }
-  .ak-create {
-    width: 100%;
-    min-height: 44px;
   }
   .ak-row {
     padding: 16px !important;
