@@ -5,8 +5,9 @@ included, is admitted to the admin surface exactly as if listed in
 ``ADMIN_ALLOWLIST``. The platform reads the groups through the Cloud Identity
 Groups API as its own Google identity (the service-account key named by
 ``GOOGLE_APPLICATION_CREDENTIALS``) on boot and every few minutes after, and
-keeps the emails in memory. A read that fails after retries clears the set, so
-until the next good read only ``ADMIN_ALLOWLIST`` admits anyone.
+keeps the emails in memory. A nested group the platform cannot read is skipped
+with a warning. A read of a top-level group that fails after retries clears the
+set, so until the next good read only ``ADMIN_ALLOWLIST`` admits anyone.
 
 The service account must be allowed to view the members of each group it
 reads, nested ones included: a Member of each (external members allowed on
@@ -30,7 +31,7 @@ RETRY_DELAYS = (5, 15)  # seconds to wait before the second and third attempt
 
 
 class GroupReadError(RuntimeError):
-    """The groups could not be read; the last good set stays in force."""
+    """A group in ``ADMIN_GROUPS`` could not be read."""
 
 
 class Session(Protocol):
@@ -76,13 +77,30 @@ def _walk(session: Session, group: str, found: set[str], seen: set[str], depth: 
             if not email:
                 continue
             if kind == "GROUP":
-                _walk(session, email, found, seen, depth + 1)
+                _walk_nested(session, email, group, found, seen, depth + 1)
             elif kind != "SERVICE_ACCOUNT" and not email.endswith(".gserviceaccount.com"):
                 # The platform's own identity is a member so it can read; it is not a person.
                 found.add(email)
         page_token = payload.get("nextPageToken")
         if not page_token:
             return
+
+
+def _walk_nested(
+    session: Session, group: str, parent: str, found: set[str], seen: set[str], depth: int
+) -> None:
+    """Walk a nested group; one the platform cannot read is skipped, not fatal.
+
+    Its people are added only if the whole subtree reads cleanly, so a failure
+    on a later page never admits half a group.
+    """
+    sub: set[str] = set()
+    try:
+        _walk(session, group, sub, seen, depth)
+    except GroupReadError as exc:
+        logger.warning("Skipping nested group %s under %s: %s", group, parent, exc)
+        return
+    found |= sub
 
 
 def _get(session: Session, url: str, params: dict[str, Any], group: str) -> dict[str, Any]:
@@ -94,8 +112,8 @@ def _get(session: Session, url: str, params: dict[str, Any], group: str) -> dict
         ) from exc
     if response.status_code == 403:
         raise GroupReadError(
-            f"No permission to read {group} (403): the platform's service account must be a "
-            "Member of that group or hold the Groups Reader role, and the Cloud Identity API "
+            f"No permission to read {group} (403): the platform's service account must hold "
+            "the Workspace Groups Reader role, and the Cloud Identity API "
             f"must be enabled on its project. {response.text[:300]}"
         )
     if response.status_code == 404:

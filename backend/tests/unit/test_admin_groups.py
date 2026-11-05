@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -90,15 +91,37 @@ def test_pagination_is_followed() -> None:
     assert read_group_emails([G], session) == {"a@x.org", "b@x.org"}
 
 
-def test_unreadable_nested_group_fails_the_whole_read_naming_it() -> None:
+def test_unreadable_nested_group_is_skipped_with_a_warning(caplog) -> None:
+    session = FakeSession(
+        {
+            lookup(G): {"name": "groups/top"},
+            members("groups/top"): {
+                "memberships": [person("a@x.org"), person(COHORT, "GROUP"), person("b@x.org")]
+            },
+            lookup(COHORT): FakeResponse(403, text="PERMISSION_DENIED"),
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="services.admin_groups"):
+        assert read_group_emails([G], session) == {"a@x.org", "b@x.org"}
+    assert f"Skipping nested group {COHORT} under {G}" in caplog.text
+
+
+def test_nested_group_failing_mid_way_contributes_nobody() -> None:
     session = FakeSession(
         {
             lookup(G): {"name": "groups/top"},
             members("groups/top"): {"memberships": [person("a@x.org"), person(COHORT, "GROUP")]},
-            lookup(COHORT): FakeResponse(403, text="PERMISSION_DENIED"),
+            lookup(COHORT): {"name": "groups/cohort"},
+            members("groups/cohort"): {"memberships": [person("c@x.org")], "nextPageToken": "p2"},
+            members("groups/cohort", "p2"): FakeResponse(500, text="boom"),
         }
     )
-    with pytest.raises(GroupReadError, match=f"read {COHORT}.*Member of that group"):
+    assert read_group_emails([G], session) == {"a@x.org"}
+
+
+def test_unreadable_top_level_group_fails_the_read_naming_it() -> None:
+    session = FakeSession({lookup(G): FakeResponse(403, text="PERMISSION_DENIED")})
+    with pytest.raises(GroupReadError, match=f"read {G}.*Groups Reader role"):
         read_group_emails([G], session)
 
 
