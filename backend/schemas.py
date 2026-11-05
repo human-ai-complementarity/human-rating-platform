@@ -266,9 +266,9 @@ class PilotCheckSummary(BaseModel):
     created_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
     counts: dict[str, int] = Field(default_factory=lambda: {"error": 0, "warning": 0, "info": 0})
-    gate_mode: Literal["warn", "block", "off"]
-    # True when creating a study would be refused with a 409 unless the
-    # request carries `acknowledge_pilot_check` (never satisfiable in block mode).
+    gate_mode: Literal["warn", "off"]
+    # True when creating a study answers 409 until the request carries
+    # `acknowledge_pilot_check`: the admin is asked to confirm, never refused.
     needs_acknowledgement: bool
     # One sentence on why, or None when the run is clean.
     reason: Optional[str] = None

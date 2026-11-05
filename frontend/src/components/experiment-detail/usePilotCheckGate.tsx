@@ -10,8 +10,8 @@ import { describeSummary } from './PilotCheckCard';
  * Every study-creating call goes through `attempt`. When the backend answers
  * with the pilot check's 409, the refusal is shown in a dialog built from the
  * 409's own body, so the UI and the API cannot disagree about why. "Launch
- * anyway" repeats the call with the acknowledgement flag; in block mode the
- * dialog has no such button. Any other error is rethrown to the caller.
+ * anyway" repeats the call with the acknowledgement flag; the check can ask,
+ * never refuse. Any other error is rethrown to the caller.
  */
 
 type Launch = (acknowledgePilotCheck: boolean) => Promise<void>;
@@ -45,10 +45,6 @@ export function usePilotCheckGate() {
 
   const confirm = useCallback(async () => {
     if (!pending) return;
-    if (pending.refusal.code === 'pilot_check_blocked') {
-      close();
-      return;
-    }
     setBusy(true);
     try {
       await pending.launch(true);
@@ -58,23 +54,18 @@ export function usePilotCheckGate() {
     } finally {
       setBusy(false);
     }
-  }, [pending, close]);
+  }, [pending]);
 
   const dialog = pending ? (
     <div data-testid="pilot-check-dialog">
       <ConfirmDialog
-        title={
-          pending.refusal.code === 'pilot_check_blocked'
-            ? 'Pilot check required'
-            : 'Launch without a clean pilot check?'
-        }
+        title="Launch without a clean pilot check?"
         message={
           <>
             <div>{describeSummary(pending.refusal.pilot_check)}</div>
             <div style={{ marginTop: 8 }}>
-              {pending.refusal.code === 'pilot_check_blocked'
-                ? 'Run the pilot check from the card above and fix what it finds before creating a study.'
-                : 'Run the pilot check from the card above first, or launch anyway and it will be recorded on the round.'}
+              Run the pilot check from the card above first, or launch anyway and it will be
+              recorded on the round.
             </div>
             {retryError && (
               <div role="alert" style={{ marginTop: 8, color: 'var(--danger)' }}>
@@ -83,9 +74,9 @@ export function usePilotCheckGate() {
             )}
           </>
         }
-        confirmLabel={pending.refusal.code === 'pilot_check_blocked' ? 'OK' : 'Launch anyway'}
-        cancelLabel={pending.refusal.code === 'pilot_check_blocked' ? 'Close' : 'Run the check first'}
-        tone={pending.refusal.code === 'pilot_check_blocked' ? 'default' : 'danger'}
+        confirmLabel="Launch anyway"
+        cancelLabel="Run the check first"
+        tone="danger"
         busy={busy}
         onConfirm={confirm}
         onCancel={close}

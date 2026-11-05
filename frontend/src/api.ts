@@ -284,7 +284,7 @@ export function pilotCheckRefusal(err: unknown): PilotCheckRefusal | null {
   if (!(err instanceof ApiError) || err.status !== 409) return null;
   const detail = err.detail as Partial<PilotCheckRefusal> | undefined;
   if (!detail || typeof detail !== 'object' || !detail.pilot_check) return null;
-  if (detail.code !== 'pilot_check' && detail.code !== 'pilot_check_blocked') return null;
+  if (detail.code !== 'pilot_check') return null;
   return detail as PilotCheckRefusal;
 }
 

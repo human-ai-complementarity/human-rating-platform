@@ -352,16 +352,3 @@ def test_launching_anyway_records_who_acknowledged(
     assert created.status_code == 200, created.text
     assert created.json()["pilot_check_run_id"] is None
     assert created.json()["pilot_check_acknowledged_by"] == "dev@local"
-
-
-@respx.mock
-def test_block_mode_has_no_acknowledgement_path(
-    client: TestClient, enable_prolific, pilot_check_gate
-):
-    _mock_prolific_study()
-    pilot_check_gate.gate_mode = "block"
-    exp = _ready_experiment(client)
-    url = f"/api/admin/experiments/{exp['id']}/prolific/pilot"
-    refused = client.post(url, json={**_PILOT, "acknowledge_pilot_check": True})
-    assert refused.status_code == 409
-    assert refused.json()["detail"]["code"] == "pilot_check_blocked"

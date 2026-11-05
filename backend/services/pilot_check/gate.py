@@ -1,4 +1,8 @@
-"""The launch gate: refuse a study creation the pilot check should stop."""
+"""The launch gate: ask before a study is created past the pilot check.
+
+It never refuses. A judge will always find something to fix, so the most
+the check does is make the admin confirm and record who did.
+"""
 
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ class PilotCheckGate:
     """What a launch records about the check it was made against."""
 
     summary: PilotCheckSummary
-    # Set when the admin launched past a check the gate would have stopped.
+    # Set when the admin confirmed a launch past a missing, stale or flagged check.
     acknowledged_by: str | None
 
     @property
@@ -37,26 +41,16 @@ async def gate_for(
     admin_email: str | None,
     question_count: int,
 ) -> PilotCheckGate:
-    """Refuse a study creation the pilot check should stop (docs/pilot-check.md).
+    """Ask before a study is created past the pilot check (docs/pilot-check.md).
 
     Runs after `assert_launch_ready`: hard blockers stay hard. With the gate in
     "warn" mode a missing, stale, running or failing check is a 409 carrying the
-    summary, unless the request acknowledges it; "block" refuses regardless;
-    "off" records nothing.
+    summary until the request acknowledges it; "off" records nothing. There is
+    no mode that refuses an acknowledged launch.
     """
     summary = await summary_for(experiment, question_count=question_count, db=db)
     if not summary.needs_acknowledgement:
         return PilotCheckGate(summary=summary, acknowledged_by=None)
-    if summary.gate_mode == "block":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "pilot_check_blocked",
-                "message": f"{summary.reason} Run the pilot check and fix what it finds "
-                "before creating a study.",
-                "pilot_check": summary.model_dump(mode="json"),
-            },
-        )
     if not acknowledged:
         raise HTTPException(
             status_code=409,

@@ -5,7 +5,9 @@ one through the same code path a rater hits, runs the configured assistance
 method on it, and reports anything a researcher would want to fix before
 paying Prolific participants to look at it. The experiment and launch pages
 say whether the check has been run, show its findings, and ask before
-creating a study without a clean run.
+creating a study without a clean run. They ask; they never refuse. A
+judge will always find something to fix, so the decision stays with the
+admin and the check records who made it.
 
 Code: `backend/services/pilot_check/`, settings under `[pilot_check]` in
 `backend/config.toml`, UI in `frontend/src/components/experiment-detail/`
@@ -73,7 +75,7 @@ could matter.
 | `sample_size` | 15 | served questions drawn per run (1 to 50) |
 | `judge_model` | `openrouter/anthropic/claude-sonnet-4-6` | `<provider>/<model-id>`, as in `assistance_models` |
 | `max_median_latency_seconds` | 20 | `assistance_health` latency threshold |
-| `gate_mode` | `warn` | `warn` asks for acknowledgement, `block` refuses, `off` ignores the check (the UI still shows it) |
+| `gate_mode` | `warn` | `warn` asks for acknowledgement, `off` ignores the check (the UI still shows it) |
 | `severities` | `{}` | per-check overrides of the default severity, e.g. `markdown_mode = "info"` |
 
 A SHA-256 of these values is stored on every run and is part of the
@@ -185,13 +187,16 @@ spends its time.
 
 - `gate_mode == "off"`: returns.
 - Latest run `passed` and not stale: returns.
-- Otherwise, with `warn`: 409 with
+- Otherwise: 409 with
   `{"detail": {"code": "pilot_check", "message", "pilot_check": <summary>}}`
   unless the request carries `acknowledge_pilot_check: true`, in which case
   the acknowledgement is written onto the round's row (`pilot_check_run_id`,
   `pilot_check_acknowledged_by`, both on `ExperimentRoundResponse`) and the
   launch proceeds.
-- With `block`: 409 with code `pilot_check_blocked`, regardless.
+
+There is deliberately no mode that refuses an acknowledged launch. The check
+is advisory: it surfaces what a rater would hit and who decided to go ahead
+anyway, and leaves the decision to the admin.
 
 The frontend's `ApiError` keeps the parsed `detail`; `usePilotCheckGate`
 recognises the refusal, shows it in a dialog built from the 409's own body,
@@ -226,7 +231,7 @@ assistance calls.
   The suite runs with the gate off (`pilot_check_gate_off` in conftest); the
   gate tests turn it on.
 - Playwright (`frontend/e2e/smoke.spec.ts`): the stepper mid-run and landed,
-  the acknowledge dialog, block mode.
+  the acknowledge dialog and its cancel path.
 
 ## Open questions
 

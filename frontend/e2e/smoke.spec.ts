@@ -61,7 +61,7 @@ type PilotCheckSummaryRecord = {
   created_at: string | null;
   finished_at: string | null;
   counts: { error: number; warning: number; info: number };
-  gate_mode: 'warn' | 'block' | 'off';
+  gate_mode: 'warn' | 'off';
   needs_acknowledgement: boolean;
   reason: string | null;
 };
@@ -431,11 +431,10 @@ async function refuseUnlessAcknowledged(
   const acknowledged = payload.acknowledge_pilot_check === true;
   state.launchAcknowledgements.push(acknowledged);
   if (!experiment || !experiment.pilot_check.needs_acknowledgement) return false;
-  const blocked = experiment.pilot_check.gate_mode === 'block';
-  if (acknowledged && !blocked) return false;
+  if (acknowledged) return false;
   await fulfillJson(route, 409, {
     detail: {
-      code: blocked ? 'pilot_check_blocked' : 'pilot_check',
+      code: 'pilot_check',
       message: `${experiment.pilot_check.reason} Run the pilot check first, or acknowledge and launch anyway.`,
       pilot_check: experiment.pilot_check,
     },
@@ -4377,23 +4376,4 @@ test('creating a pilot without a clean pilot check asks before launching anyway'
   await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();
   expect(state.launchAcknowledgements).toEqual([false, false, true]);
   expect(state.rounds[1]).toHaveLength(1);
-});
-
-test('block mode offers no way to launch past the pilot check', async ({ page }) => {
-  const state = createMockState();
-  pilotCheckExperiment(state, { ...PILOT_CHECK_NOT_RUN, gate_mode: 'block' });
-  await installApiMocks(page, state);
-  await page.goto('/admin/experiments/1');
-  await page.getByTestId('tab-launch').click();
-  await expect(page.getByTestId('pilot-check-banner')).toContainText(
-    'Launching is blocked until the check passes.',
-  );
-  await fillPilotForm(page);
-  await page.getByTestId('run-pilot-button').click();
-  const dialog = page.getByTestId('pilot-check-dialog');
-  await expect(dialog).toContainText('Pilot check required');
-  await expect(dialog.getByRole('button', { name: 'Launch anyway' })).toHaveCount(0);
-  await dialog.getByRole('button', { name: 'OK' }).click();
-  await expect(dialog).toHaveCount(0);
-  expect(state.rounds[1]).toEqual([]);
 });
