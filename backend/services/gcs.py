@@ -90,7 +90,7 @@ def gcs_credentials(
             gcs_impersonate_service_account=impersonate,
         )
         return wif_credentials(settings, wif_token_file, scopes), project
-    credentials, adc_project = google.auth.default()
+    credentials, adc_project = google.auth.default(scopes=list(scopes))
     return credentials, project or adc_project
 
 
