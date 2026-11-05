@@ -493,7 +493,7 @@ _LOCKED_META_FIELDS = (
 # the meta loop strips strings. Session length is locked once the experiment
 # leaves DRAFT because raters already mid-session hold a session_end_time
 # computed from the old value, and their browsers never hear about a change.
-_LOCKED_SCALAR_FIELDS = ("session_duration_minutes", "is_markdown")
+_LOCKED_SCALAR_FIELDS = ("session_duration_minutes", "is_markdown", "render_math")
 
 # Matches the String(255) columns on Experiment.name / internal_name.
 _NAME_MAX_LENGTH = 255
@@ -582,6 +582,7 @@ async def duplicate_experiment(
         study_flags=list(source.study_flags or []),
         content_warning_details=source.content_warning_details,
         is_markdown=source.is_markdown,
+        render_math=source.render_math,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
     )
@@ -836,6 +837,25 @@ async def _terms_ref_kwargs(experiment: Experiment, db: AsyncSession) -> dict[st
     }
 
 
+MARKDOWN_WITH_MATH_DETAIL = (
+    "is_markdown and render_math cannot both be on: the card renders math in "
+    "plain text only. Turn one off."
+)
+
+
+def _reject_markdown_with_math(experiment: Experiment, payload: ExperimentUpdate) -> None:
+    """Refuse a PATCH that would leave both rendering flags on.
+
+    Math is typeset in plain text only. Under Markdown, `\\(…\\)` would lose
+    its backslashes and "$5 and $10" would read as math, so the pair stays
+    exclusive until a dataset needs both.
+    """
+    markdown = experiment.is_markdown if payload.is_markdown is None else payload.is_markdown
+    math = experiment.render_math if payload.render_math is None else payload.render_math
+    if markdown and math:
+        raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
+
+
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
@@ -865,6 +885,8 @@ async def update_experiment(
                     "main round is launched."
                 ),
             )
+
+    _reject_markdown_with_math(experiment, payload)
 
     merged_params = None
     if payload.assistance_params is not None:

@@ -270,6 +270,7 @@ class ExperimentResponse(BaseModel):
     consent_statement_ref: Optional[str] = None
     debrief_statement_ref: Optional[str] = None
     is_markdown: bool = False
+    render_math: bool = False
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
     # Non-null when the experiment has been archived (soft-hidden from the
@@ -348,6 +349,7 @@ class ExperimentUpdate(BaseModel):
     study_flags: Optional[list[StudyFlag]] = None
     content_warning_details: Optional[str] = None
     is_markdown: Optional[bool] = None
+    render_math: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # None means "leave unchanged". Locked once the experiment leaves DRAFT:
     # raters already in a session hold a session_end_time computed from the old
@@ -376,6 +378,7 @@ class QuestionResponse(BaseModel):
     question_type: str
     parent_question_text: Optional[str] = None
     is_markdown: bool = False
+    render_math: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -69,6 +69,7 @@ def build_experiment_response(
         consent_statement_ref=consent_statement_ref,
         debrief_statement_ref=debrief_statement_ref,
         is_markdown=experiment.is_markdown,
+        render_math=experiment.render_math,
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,
         archived_at=experiment.archived_at,

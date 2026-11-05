@@ -50,11 +50,16 @@ DATASET_META_FIELDS = (
 # "assistance_models.<method>" in meta_applied / meta_conflicts.
 ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
 
+# Whether the rater card renders TeX between math delimiters. A JSON boolean,
+# not a string, so it stays out of the string-coerced tuple above; see
+# `_apply_render_math_meta`.
+RENDER_MATH_META_FIELD = "render_math"
+
 # Everything an upload may declare. Keys are matched against this allowlist so
 # unknown keys surface as a clean 400 instead of silently filling columns we
 # don't model. Applies to both the CSV `#META:` header line and the Parquet
 # schema's `dataset_meta` key — the export writes the same JSON shape for both.
-DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD)
+DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD, RENDER_MATH_META_FIELD)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
@@ -132,7 +137,8 @@ def _validate_assistance_models(value: Any) -> dict[str, dict[str, Any]]:
 def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     """Validate a decoded `#META:` / `dataset_meta` payload and normalise to str.
 
-    `assistance_models` is the one non-string value: it stays an object.
+    `assistance_models` stays an object and `render_math` a bool; every other
+    value is coerced to a string.
 
     Shared between the CSV and Parquet readers so the wire format and error
     messages stay identical. Raises HTTPException(400) for bad shapes — silently
@@ -156,6 +162,7 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         )
     parsed = dict(parsed)
     assistance_models = parsed.pop(ASSISTANCE_MODELS_META_FIELD, None)
+    render_math = parsed.pop(RENDER_MATH_META_FIELD, None)
     # Coerce all values to strings — JSON may have given us ints/bools for
     # `prolific_pool` etc. Drop empty strings so they don't overwrite existing values.
     values: dict[str, Any] = {
@@ -165,6 +172,17 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         assistance_models = _validate_assistance_models(assistance_models)
         if assistance_models:
             values[ASSISTANCE_MODELS_META_FIELD] = assistance_models
+    if render_math is not None:
+        # Strict: "false" or 0 coerced to bool would read as the opposite.
+        if not isinstance(render_math, bool):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"dataset metadata {RENDER_MATH_META_FIELD} must be true or false, "
+                    f"got {render_math!r}"
+                ),
+            )
+        values[RENDER_MATH_META_FIELD] = render_math
     return values
 
 
@@ -234,7 +252,35 @@ def _apply_meta_to_experiment(
         elif current_value != new_value:
             conflicts.append(field_name)
     _apply_assistance_models_meta(experiment, meta, applied, conflicts)
+    _apply_render_math_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
+
+
+def _apply_render_math_meta(
+    experiment: Experiment,
+    meta: dict[str, Any],
+    applied: list[str],
+    conflicts: list[str],
+) -> None:
+    """Turn math rendering on when an upload declares it; never turn it off.
+
+    Off is the column default, so it cannot tell an admin's choice from an
+    untouched experiment: an upload may switch it on, the way the string
+    fields fill a blank. Declaring false on an experiment an admin switched on
+    is a conflict, not a silent switch-off. So is declaring true on one an
+    admin set to Markdown: the two flags are exclusive (see
+    `_reject_markdown_with_math`), and the admin's choice stands.
+    """
+    if RENDER_MATH_META_FIELD not in meta:
+        return
+    declared = meta[RENDER_MATH_META_FIELD]
+    if declared == experiment.render_math:
+        return
+    if declared and not experiment.is_markdown:
+        experiment.render_math = True
+        applied.append(RENDER_MATH_META_FIELD)
+    else:
+        conflicts.append(RENDER_MATH_META_FIELD)
 
 
 def _apply_assistance_models_meta(

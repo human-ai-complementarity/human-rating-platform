@@ -14,6 +14,7 @@ type ExperimentRecord = {
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
   is_markdown: boolean;
+  render_math: boolean;
   assistance_method: string;
   resolved_models?: Record<
     string,
@@ -188,6 +189,7 @@ type RaterQuestionRecord = {
   question_type: string;
   parent_question_text?: string | null;
   is_markdown: boolean;
+  render_math?: boolean;
 };
 
 type MockState = {
@@ -237,6 +239,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     status: 'DRAFT',
     archived_at: null,
     is_markdown: false,
+    render_math: false,
     assistance_method: 'none',
     needs_attention: false,
     attention_reason: null,
@@ -1540,6 +1543,163 @@ test('the markdown flag also applies to the long-context document window', async
   await popup.waitForLoadState('domcontentloaded');
 
   await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+});
+
+test('the math flag typesets TeX in plain text and leaves prices as text', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 508,
+    question_text: [
+      'A sphere of radius $R$ has field $E = \\dfrac{q}{4 \\pi \\epsilon_0 L^2}$.',
+      'The kit costs $5 and $10.',
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.locator('math')).toHaveCount(2);
+  await expect(page.locator('math mfrac')).toHaveCount(1);
+  await expect(page.getByText('The kit costs $5 and $10.')).toBeVisible();
+  await expect(page.getByText('$R$')).toHaveCount(0);
+
+  // Same question with the flag off: the TeX is literal text.
+  question.render_math = false;
+  await page.reload();
+  await expect(page.getByText('A sphere of radius $R$')).toBeVisible();
+  await expect(page.locator('math')).toHaveCount(0);
+});
+
+test('the card waits for KaTeX instead of showing raw TeX first', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 511,
+    question_text: 'A sphere of radius $R$ carries charge $q$.',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/katex\.js(\?|$)/, async (route) => {
+    await released;
+    await route.continue();
+  });
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('Loading…')).toBeVisible();
+  await expect(page.getByText('$R$', { exact: false })).toHaveCount(0);
+  release();
+  await expect(page.locator('math')).toHaveCount(2);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+});
+
+test('a question whose KaTeX fails to load shows its TeX as written', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 509,
+    question_text: 'A sphere of radius $R$ carries charge $q$.',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  // Vite serves the pre-bundled dependency as .vite/deps/katex.js.
+  await page.route(/\/katex\.js(\?|$)/, (route) => route.abort());
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('A sphere of radius $R$ carries charge $q$.')).toBeVisible();
+  await expect(page.locator('math')).toHaveCount(0);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+});
+
+test('the math checkbox is exclusive with Markdown and shows an upload that disagrees', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'Math Rendering Experiment', question_count: 1 }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [
+    {
+      id: 1,
+      filename: 'gpqa_n20.csv',
+      uploaded_at: '2026-11-05T00:00:00Z',
+      question_count: 1,
+      dataset_meta: { render_math: true },
+    },
+  ];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  const markdown = page.getByLabel('Render questions as Markdown');
+  const math = page.getByLabel('Render math');
+  // The experiment has math off; the upload declared it on.
+  await expect(page.getByText('Declared differently by: gpqa_n20.csv.')).toBeVisible();
+
+  await markdown.check();
+  await expect(math).toBeDisabled();
+  await expect(page.getByText('Turn off Markdown to use this.')).toBeVisible();
+
+  await markdown.uncheck();
+  await math.check();
+  await expect(markdown).toBeDisabled();
+  await expect(page.getByText('Turn off Render math to use this.')).toBeVisible();
+});
+
+test('the math flag also typesets the long-context document window', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `The energy is $E = mc^2$.\n${'A sentence of padding. '.repeat(120)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 510,
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('link', { name: 'Open document in new tab' }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+
+  await expect(popup.locator('pre math')).toHaveCount(1);
+  await expect(popup.getByText('$E = mc^2$')).toHaveCount(0);
 });
 
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {

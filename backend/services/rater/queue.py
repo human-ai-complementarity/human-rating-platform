@@ -119,7 +119,7 @@ async def snapshot(rater, experiment, assignments, db):
                 generation=assignment.generation,
                 activated=assignment.activated_at is not None,
                 question=build_question_response(
-                    question, is_markdown=experiment.is_markdown, parent_question_text=parent
+                    question, experiment, parent_question_text=parent
                 ).model_copy(
                     update={
                         "assignment_id": assignment.id,

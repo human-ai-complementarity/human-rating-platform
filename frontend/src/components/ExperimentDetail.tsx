@@ -77,6 +77,7 @@ const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   prolific_pool: 'Prolific participant pool',
   'assistance_models.top_n': 'Top-N model entry',
   'assistance_models.human_as_a_tool': 'Human-as-a-Tool model entry',
+  render_math: 'Math rendering',
 };
 
 // A key with no label (a method added since) shows as itself.
@@ -111,7 +112,7 @@ const DATASET_META_PLACEHOLDERS: Partial<Record<DatasetMetaField, string>> = {
 const META_FIELD_GROUPS: {
   header: string;
   fields: { field: DatasetMetaField; kind: 'input' | 'textarea'; minHeight?: number }[];
-  card?: 'is_markdown';
+  card?: 'rendering';
 }[] = [
   {
     header: 'Instructions',
@@ -130,7 +131,7 @@ const META_FIELD_GROUPS: {
   {
     header: 'Question rendering',
     fields: [],
-    card: 'is_markdown',
+    card: 'rendering',
   },
   {
     header: 'Deployment',
@@ -510,6 +511,7 @@ function ExperimentDetail({
     prolific_pool: experiment.prolific_pool ?? '',
   });
   const [isMarkdown, setIsMarkdown] = useState(experiment.is_markdown);
+  const [renderMath, setRenderMath] = useState(experiment.render_math);
   const [savingMeta, setSavingMeta] = useState(false);
   const metaFormDirtyRef = useRef(false);
 
@@ -523,6 +525,7 @@ function ExperimentDetail({
       prolific_pool: experiment.prolific_pool ?? '',
     });
     setIsMarkdown(experiment.is_markdown);
+    setRenderMath(experiment.render_math);
   }, [
     experiment.description,
     experiment.system_prompt,
@@ -530,6 +533,7 @@ function ExperimentDetail({
     experiment.human_prompt_suffix,
     experiment.prolific_pool,
     experiment.is_markdown,
+    experiment.render_math,
   ]);
 
   // ── Data-loading effects ───────────────────────────────────────────────
@@ -633,6 +637,7 @@ function ExperimentDetail({
         human_prompt_prefix: metaForm.human_prompt_prefix,
         human_prompt_suffix: metaForm.human_prompt_suffix,
         is_markdown: isMarkdown,
+        render_math: renderMath,
         prolific_pool: metaForm.prolific_pool,
       });
       showSuccess('Instructions & prompts saved.', 2000);
@@ -1317,6 +1322,11 @@ function ExperimentDetail({
             onIsMarkdownChange={(value) => {
               metaFormDirtyRef.current = true;
               setIsMarkdown(value);
+            }}
+            renderMath={renderMath}
+            onRenderMathChange={(value) => {
+              metaFormDirtyRef.current = true;
+              setRenderMath(value);
             }}
             onSave={handleSaveMeta}
             savingMeta={savingMeta}
@@ -2079,6 +2089,8 @@ function MetadataPanel({
   onMetaChange,
   isMarkdown,
   onIsMarkdownChange,
+  renderMath,
+  onRenderMathChange,
   onSave,
   savingMeta,
   isLocked,
@@ -2093,6 +2105,8 @@ function MetadataPanel({
   onMetaChange: (field: DatasetMetaField, value: string) => void;
   isMarkdown: boolean;
   onIsMarkdownChange: (value: boolean) => void;
+  renderMath: boolean;
+  onRenderMathChange: (value: boolean) => void;
   onSave: () => void;
   savingMeta: boolean;
   isLocked: boolean;
@@ -2173,7 +2187,70 @@ function MetadataPanel({
     );
   };
 
-  const markdownCard = (
+  const renderToggle = (
+    id: string,
+    checked: boolean,
+    onChange: (value: boolean) => void,
+    label: string,
+    hint: string,
+    options: { blockedBy?: string; conflicts?: Upload[] } = {},
+  ) => {
+    // The other rendering flag is on: the two are exclusive.
+    const blocked = !checked && options.blockedBy !== undefined;
+    const disabled = isLocked || blocked;
+    return (
+      <div>
+        <label
+          htmlFor={id}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'flex-start',
+            gap: 10,
+            fontSize: 13.5,
+            lineHeight: 1.4,
+            fontWeight: 600,
+            cursor: disabled ? 'not-allowed' : 'pointer',
+            opacity: blocked ? 0.6 : 1,
+          }}
+        >
+          <input
+            id={id}
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            aria-describedby={`${id}-hint`}
+            onChange={(e) => onChange(e.target.checked)}
+            style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
+          />
+          {label}
+        </label>
+        <div
+          id={`${id}-hint`}
+          style={{
+            fontSize: 12.5,
+            color: 'var(--muted)',
+            lineHeight: 1.55,
+            margin: '2px 0 0 26px',
+          }}
+        >
+          {hint}
+          {blocked && <div>Turn off {options.blockedBy} to use this.</div>}
+          {options.conflicts && options.conflicts.length > 0 && (
+            <div style={{ color: 'var(--warn)', marginTop: 6 }}>
+              Declared differently by: {options.conflicts.map((c) => c.filename).join(', ')}.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderMathConflicts = uploads.filter((u) => {
+    const declared = u.dataset_meta?.render_math;
+    return declared !== undefined && declared !== experiment.render_math;
+  });
+
+  const renderingCard = (
     <section
       style={{
         background: 'var(--surface)',
@@ -2182,42 +2259,30 @@ function MetadataPanel({
         boxShadow: 'var(--shadow)',
         padding: '18px 24px',
         opacity: isLocked ? 0.7 : 1,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
       }}
     >
-      <label
-        htmlFor="meta-is_markdown"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'flex-start',
-          gap: 10,
-          fontSize: 13.5,
-          lineHeight: 1.4,
-          fontWeight: 600,
-          cursor: isLocked ? 'not-allowed' : 'pointer',
-        }}
-      >
-        <input
-          id="meta-is_markdown"
-          type="checkbox"
-          checked={isMarkdown}
-          disabled={isLocked}
-          aria-describedby="meta-is_markdown-hint"
-          onChange={(e) => onIsMarkdownChange(e.target.checked)}
-          style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
-        />
-        Render questions as Markdown
-      </label>
-      <p
-        id="meta-is_markdown-hint"
-        style={{
-          fontSize: 12.5,
-          color: 'var(--muted)',
-          lineHeight: 1.55,
-          margin: '2px 0 0 26px',
-        }}
-      >
-        Code blocks, tables, etc. will be rendered as styled elements
-      </p>
+      {renderToggle(
+        'meta-is_markdown',
+        isMarkdown,
+        onIsMarkdownChange,
+        'Render questions as Markdown',
+        'Code blocks, tables, etc. will be rendered as styled elements',
+        { blockedBy: renderMath ? 'Render math' : undefined },
+      )}
+      {renderToggle(
+        'meta-render_math',
+        renderMath,
+        onRenderMathChange,
+        'Render math',
+        'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] in the question, its context and the document is typeset. Leave off when questions use $ for money.',
+        {
+          blockedBy: isMarkdown ? 'Markdown' : undefined,
+          conflicts: renderMathConflicts,
+        },
+      )}
     </section>
   );
 
@@ -2276,7 +2341,7 @@ function MetadataPanel({
                       : undefined,
                 }),
               )}
-              {group.card === 'is_markdown' && markdownCard}
+              {group.card === 'rendering' && renderingCard}
             </div>
           </div>
         );
