@@ -3951,3 +3951,24 @@ test('a long dataset name never widens the experiments list on a phone', async (
   expect(box).toMatchObject({ x: 0, width: 390 });
   await expect(page.getByRole('button', { name: 'Create experiment' })).toBeInViewport();
 });
+
+test('on a phone the header menus open above the sticky section tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  seedCardExperiment(state, {});
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // Both menus open over the tab row just below them; a click on an item must
+  // land on the item, not on a tab painted over it.
+  for (const menu of ['export-menu', 'more-menu']) {
+    await page.getByTestId(menu).locator('summary').click();
+    const itemOnTop = await page.evaluate((testId) => {
+      const item = document.querySelector(`[data-testid="${testId}"] .xd-menu-item`)!;
+      const r = item.getBoundingClientRect();
+      return item.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    }, menu);
+    expect(itemOnTop).toBe(true);
+    await page.keyboard.press('Escape');
+  }
+});

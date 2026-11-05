@@ -76,55 +76,55 @@ export function StepperTabs({ active, onChange, steps }: StepperTabsProps) {
 
   return (
     <>
-    <div ref={anchorRef} aria-hidden="true" />
-    <nav aria-label="Experiment sections" className="xd-tabs-wrap">
-      <div className="xd-tabs" ref={rowRef}>
-        <TabButton
-          active={active === 'overview'}
-          onClick={() => onChange('overview')}
-          testId="tab-overview"
-        >
-          <span
-            aria-hidden
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: '50%',
-              display: 'inline-flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flex: '0 0 auto',
-              background: 'var(--surface-2)',
-              border: '1px solid var(--faint)',
-            }}
+      <div ref={anchorRef} aria-hidden="true" />
+      <nav aria-label="Experiment sections" className="xd-tabs-wrap">
+        <div className="xd-tabs" ref={rowRef}>
+          <TabButton
+            active={active === 'overview'}
+            onClick={() => onChange('overview')}
+            testId="tab-overview"
           >
             <span
+              aria-hidden
               style={{
-                width: 7,
-                height: 7,
+                width: 22,
+                height: 22,
                 borderRadius: '50%',
-                background: 'var(--muted)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flex: '0 0 auto',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--faint)',
               }}
-            />
-          </span>
-          <span>Overview</span>
-        </TabButton>
-
-        <Divider />
-
-        {steps.map((step) => (
-          <TabButton
-            key={step.key}
-            active={active === step.key}
-            onClick={() => onChange(step.key)}
-            testId={`tab-${step.key}`}
-          >
-            <StepMarker index={step.index} status={step.status} />
-            <span>{step.label}</span>
+            >
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: 'var(--muted)',
+                }}
+              />
+            </span>
+            <span>Overview</span>
           </TabButton>
-        ))}
-      </div>
-    </nav>
+  
+          <Divider />
+  
+          {steps.map((step) => (
+            <TabButton
+              key={step.key}
+              active={active === step.key}
+              onClick={() => onChange(step.key)}
+              testId={`tab-${step.key}`}
+            >
+              <StepMarker index={step.index} status={step.status} />
+              <span>{step.label}</span>
+            </TabButton>
+          ))}
+        </div>
+      </nav>
     </>
   );
 }

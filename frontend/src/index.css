@@ -678,7 +678,8 @@ button:disabled {
 .xd-menu-panel {
   position: absolute;
   top: calc(100% + 6px);
-  z-index: 20;
+  /* Above the sticky section tabs (.xd-tabs-wrap), which sit right below. */
+  z-index: 40;
   min-width: 270px;
   padding: 6px;
   display: flex;
