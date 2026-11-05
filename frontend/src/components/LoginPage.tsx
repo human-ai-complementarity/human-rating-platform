@@ -57,8 +57,15 @@ export default function LoginPage() {
       } else {
         setError('Sign-in incomplete. Please try again.');
       }
-    } catch {
-      setError('Invalid email or password.');
+    } catch (err: any) {
+      const code = err?.errors?.[0]?.code;
+      if (code === 'form_identifier_not_found') {
+        setError('No account with this email yet. Create an account, or continue with Google.');
+      } else if (code === 'strategy_for_user_invalid') {
+        setError('This account signs in with Google. Use "Continue with Google".');
+      } else {
+        setError('Invalid email or password.');
+      }
     } finally {
       setLoading(false);
     }
@@ -85,6 +92,13 @@ export default function LoginPage() {
         setError('Something went wrong. Please try again.');
       }
     } catch (err: any) {
+      if (err?.errors?.[0]?.code === 'form_identifier_exists') {
+        // A Google sign-in or an earlier sign-up already made this account.
+        setPassword('');
+        setStage('sign-in');
+        setError('An account with this email already exists. Sign in with your password, or continue with Google.');
+        return;
+      }
       setError(err?.errors?.[0]?.longMessage || err?.message || 'Failed to create account');
     } finally {
       setLoading(false);
