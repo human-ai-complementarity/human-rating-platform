@@ -32,14 +32,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 import httpx
 
 from config import BASE_DIR, TermsSettings
+from services import gcs
 
 from .render import KNOWN_PLACEHOLDERS, find_placeholders
 
@@ -113,76 +112,20 @@ def _file_root(settings: TermsSettings) -> Path:
     return root if root.is_absolute() else BASE_DIR / root
 
 
-_GCS_READ_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only"
-_STS_TOKEN_URL = "https://sts.googleapis.com/v1/token"
-_RENDER_TOKEN_FILE_ENV = "AWS_WEB_IDENTITY_TOKEN_FILE"
-
-
 def wif_token_file(settings: TermsSettings) -> str:
     """Where the host leaves the OIDC identity token for federation."""
-    return settings.gcs_wif_token_file or os.environ.get(_RENDER_TOKEN_FILE_ENV, "")
+    return gcs.wif_token_file(settings)
 
 
 def wif_credentials(settings: TermsSettings, token_file: str):
-    """Workload Identity Federation credentials: no key anywhere.
-
-    The host's OIDC token (Render writes one per service and rotates it) is
-    exchanged at Google's STS for a short-lived access token, optionally
-    impersonating the platform's service account so the bucket grant lives on
-    that one identity. Nothing here is a secret; it is all configuration.
-    """
-    from google.auth import identity_pool
-
-    impersonation_url = None
-    if settings.gcs_impersonate_service_account:
-        impersonation_url = (
-            "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"
-            f"{settings.gcs_impersonate_service_account}:generateAccessToken"
-        )
-    return identity_pool.Credentials(
-        audience=settings.gcs_wif_audience,
-        subject_token_type="urn:ietf:params:oauth:token-type:jwt",
-        token_url=_STS_TOKEN_URL,
-        credential_source={"file": token_file},
-        service_account_impersonation_url=impersonation_url,
-        scopes=[_GCS_READ_SCOPE],
-    )
+    """Workload Identity Federation credentials: no key anywhere (services/gcs)."""
+    return gcs.wif_credentials(settings, token_file)
 
 
-@lru_cache(maxsize=4)
 def _gcs_client(wif_audience: str, wif_token_file: str, impersonate: str):
-    # Cached per credential configuration, so a caller's settings decide the
-    # identity rather than the process-wide ones. Imported lazily so the
-    # dependency is only touched when a gs:// source is configured. Two ways
-    # in, in order of preference:
-    #   1. Workload Identity Federation (keyless), when TERMS__GCS_WIF_AUDIENCE
-    #      is set and the host provides an OIDC token file.
-    #   2. Application Default Credentials: a service-account key named by
-    #      GOOGLE_APPLICATION_CREDENTIALS.
-    import google.auth
-    from google.cloud import storage
-
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT")
-    if wif_audience:
-        if not wif_token_file:
-            raise TermsSourceError(
-                "TERMS__GCS_WIF_AUDIENCE is set but no identity token file was found: "
-                f"set TERMS__GCS_WIF_TOKEN_FILE or let the host set {_RENDER_TOKEN_FILE_ENV}"
-            )
-        settings = TermsSettings(
-            gcs_wif_audience=wif_audience,
-            gcs_wif_token_file=wif_token_file,
-            gcs_impersonate_service_account=impersonate,
-        )
-        credentials = wif_credentials(settings, wif_token_file)
-    else:
-        credentials, adc_project = google.auth.default()
-        project = project or adc_project
-    # The client insists on a project, but reading objects never uses it:
-    # federated and user credentials carry none (and in a container there is
-    # no gcloud binary to ask). Fall back to a placeholder rather than failing
-    # a read that would succeed.
-    return storage.Client(project=project or "rater-terms-reader", credentials=credentials)
+    # The shared client, cached per credential configuration; the name here
+    # is what the terms reader (and its tests) swap out.
+    return gcs.gcs_client(wif_audience, wif_token_file, impersonate, setting_prefix="TERMS")
 
 
 def _download_gcs_text(settings: TermsSettings, bucket_name: str, blob_name: str) -> str:
@@ -191,22 +134,19 @@ def _download_gcs_text(settings: TermsSettings, bucket_name: str, blob_name: str
     from google.auth import exceptions as auth_exceptions
 
     uri = f"gs://{bucket_name}/{blob_name}"
-    client_key = (
-        settings.gcs_wif_audience,
-        wif_token_file(settings),
-        settings.gcs_impersonate_service_account,
-    )
     try:
-        client = _gcs_client(*client_key)
+        client = _gcs_client(*gcs.access_key(settings))
         return client.bucket(bucket_name).blob(blob_name).download_as_text(encoding="utf-8")
+    except gcs.GcsAccessError as exc:
+        raise TermsSourceError(str(exc)) from exc
     except auth_exceptions.DefaultCredentialsError as exc:
-        _gcs_client.cache_clear()
+        gcs.clear_cached_clients()
         raise TermsSourceError(
             "No Google credentials for the gs:// terms source: configure Workload Identity "
             "Federation (TERMS__GCS_WIF_AUDIENCE) or set GOOGLE_APPLICATION_CREDENTIALS"
         ) from exc
     except auth_exceptions.RefreshError as exc:
-        _gcs_client.cache_clear()
+        gcs.clear_cached_clients()
         raise TermsSourceError(f"Google credentials for {uri} were refused: {exc}") from exc
     except gcs_exceptions.NotFound as exc:
         raise TermsSourceError(f"{uri} not found") from exc
@@ -244,10 +184,11 @@ async def fetch_text(settings: TermsSettings, relative_path: str) -> str:
             detail = getattr(exc, "strerror", None) or exc
             raise TermsSourceError(f"Could not read {path}: {detail}") from exc
     if raw.startswith("gs://"):
-        bucket_name, _, prefix = base[len("gs://") :].partition("/")
-        if not bucket_name:
-            raise TermsSourceError("TERMS__SOURCE_URL gs:// needs a bucket name")
-        blob_name = f"{prefix}/{relative_path}" if prefix else relative_path
+        try:
+            bucket_name, prefix = gcs.split_gs_url(base, setting="TERMS__SOURCE_URL")
+        except gcs.GcsAccessError as exc:
+            raise TermsSourceError(str(exc)) from exc
+        blob_name = gcs.blob_name_under(prefix, relative_path)
         # The storage client is synchronous; keep the event loop free.
         return await asyncio.to_thread(_download_gcs_text, settings, bucket_name, blob_name)
     if raw.startswith("https://"):
