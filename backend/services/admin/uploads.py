@@ -526,7 +526,8 @@ async def _require_media_present(new_questions: list[Question]) -> None:
             status_code=400,
             detail=(
                 f"{len(digests)} image(s) are referenced but MEDIA__SOURCE_URL is not set: "
-                "point it at the bucket or folder holding this dataset's images"
+                "point it at the bucket or folder holding this dataset's images. "
+                "See README, section 'Questions with images'."
             ),
         )
     try:
@@ -544,8 +545,10 @@ async def _require_media_present(new_questions: list[Question]) -> None:
             status_code=400,
             detail=(
                 f"{len(missing)} referenced image(s) are not in the media source "
-                f"({settings.source_url.strip()}): {shown}{more}. Sync the dataset's "
-                "images there first, each object named by its SHA-256 hex digest."
+                f"({settings.source_url.strip()}): {shown}{more}. Copy the images there "
+                "first: the pipeline's create_human_rating_study.py does it, or sync any "
+                "folder of files named by their SHA-256 hex digest. See README, section "
+                "'Questions with images'."
             ),
         )
 
