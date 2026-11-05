@@ -39,7 +39,13 @@ A row's `content` column holds the stimulus as an ordered list of blocks, the in
 ```
 
 - A text block is exactly `{"type": "text", "text": ...}`; an image block exactly `{"type": "image", "ref": "sha256:<64 hex>", "mime_type": ...}` with `mime_type` one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits). Anything else fails the upload, naming the row.
-- `ref` is the SHA-256 of the image's bytes. The bytes themselves live in the platform's media source (`MEDIA__SOURCE_URL`, a bucket the team syncs the pipeline's media store to), each object named by that hex digest. The upload checks that every referenced image is there and refuses the file otherwise, so a rater never meets a broken image.
+- `ref` is the SHA-256 of the image's bytes. The bytes themselves are not part of the upload: they live in the platform's media source (`MEDIA__SOURCE_URL`, a `gs://bucket/prefix` or a local `file://folder`), each object named by that hex digest with no extension. Any folder of files named that way works; the inference pipeline's media store (`outputs/checkpoints/ingest_questions/media/`) is one producer, and its one-click study script copies the images for you. To sync a folder by hand:
+
+  ```bash
+  gsutil -m rsync <folder of files named by digest> gs://<bucket>/<prefix>
+  ```
+
+  The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image.
 - In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
 
 ### Dataset-level metadata (optional)
