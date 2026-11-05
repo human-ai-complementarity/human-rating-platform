@@ -33,12 +33,14 @@ import {
 } from './experiment-detail/StepperTabs';
 import {
   Banner,
+  BackLink,
   DEFAULT_SCREENERS,
   Field,
   ProgressBar,
   STUDY_LABELS,
   ScreenerCheckboxes,
   SectionCard,
+  StatCell,
   Toast,
   ToggleSwitch,
   inputStyle,
@@ -1054,38 +1056,7 @@ function ExperimentDetail({
     <div className="admin-page">
       {/* Header: back link, status, title + actions (actions wrap under the
           title on narrow screens), then the name/group details. */}
-      <button
-        type="button"
-        onClick={onBack}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          minHeight: 28,
-          marginBottom: 14,
-          padding: 0,
-          border: 'none',
-          background: 'none',
-          font: '600 13px var(--font-body)',
-          color: 'var(--muted)',
-          cursor: 'pointer',
-        }}
-      >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
-        >
-          <path d="M19 12H5M11 18l-6-6 6-6" />
-        </svg>
-        Experiments
-      </button>
+      <BackLink label="Experiments" onClick={onBack} />
       <div className="xd-head">
         <div className="xd-title">
           <div style={{ display: 'flex', alignItems: 'center', minHeight: 22 }}>
@@ -1644,11 +1615,11 @@ function OverviewPanel({
       </div>
 
       {/* Stats: one divided strip (5 columns → 2 on phones, Spend full width). */}
-      <div className="xd-stats" style={{ marginTop: -4 }}>
-        <StatTile label="Questions" value={stats?.total_questions ?? 0} />
-        <StatTile label="Complete" value={stats?.questions_complete ?? 0} />
-        <StatTile label="Ratings" value={stats?.total_ratings ?? 0} />
-        <StatTile label="Raters" value={stats?.total_raters ?? 0} />
+      <div className="stat-strip xd-stats" style={{ marginTop: -4 }}>
+        <StatCell label="Questions" value={stats?.total_questions ?? 0} />
+        <StatCell label="Complete" value={stats?.questions_complete ?? 0} />
+        <StatCell label="Ratings" value={stats?.total_ratings ?? 0} />
+        <StatCell label="Raters" value={stats?.total_raters ?? 0} />
         <SpendTile
           minorUnits={spendMinor}
           symbol={currencySymbol}
@@ -1808,24 +1779,8 @@ function StepDot({ status, index }: { status: StepStatus; index: number }) {
   );
 }
 
-// One cell of the `.xd-stats` strip; the strip draws the border and dividers.
-const statCellStyle: React.CSSProperties = {
-  background: 'var(--surface)',
-  padding: '18px 22px',
-  minWidth: 0,
-};
-
-function StatTile({ label, value }: { label: string; value: number }) {
-  return (
-    <div style={statCellStyle}>
-      <div style={{ font: '600 30px/1.1 var(--font-head)' }}>{value}</div>
-      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 5 }}>{label}</div>
-    </div>
-  );
-}
-
 /**
- * Spend counterpart to StatTile: a currency figure that hydrates in the
+ * Spend cell for the stat strip: a currency figure that hydrates in the
  * background from Prolific. Shows the last-known value with a subtle "syncing"
  * hint until the live cost lands. The figure is each study's Prolific cost
  * (rewards + fee + VAT) summed over rounds; it excludes bonuses paid separately.
@@ -1849,27 +1804,16 @@ function SpendTile({
       ? '—'
       : `${symbol || '$'}${(minorUnits / 10 ** decimals).toFixed(decimals)}`;
   return (
-    <div
+    <StatCell
       title="Prolific study cost (rewards + platform fee + VAT) across all rounds. Excludes bonuses paid separately."
-      style={statCellStyle}
-    >
-      <div style={{ font: '600 30px/1.1 var(--font-head)', fontVariantNumeric: 'tabular-nums' }}>
-        {value}
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          color: 'var(--muted)',
-          marginTop: 5,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-        }}
-      >
-        Spend
-        {syncing && <span style={{ fontSize: 11, color: 'var(--muted)' }}>· syncing…</span>}
-      </div>
-    </div>
+      value={value}
+      label={
+        <>
+          Spend
+          {syncing && <span style={{ fontSize: 11, marginLeft: 6 }}>· syncing…</span>}
+        </>
+      }
+    />
   );
 }
 

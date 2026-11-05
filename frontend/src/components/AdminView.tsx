@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type {
@@ -186,6 +187,7 @@ function AdminView() {
   const [editingCard, setEditingCard] = useState<{ id: number; name: string } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const closeCreate = useCallback(() => setCreateOpen(false), []);
+  const newButtonRef = useRef<HTMLButtonElement>(null);
 
   // Delete is the one destructive/irreversible action, so it still confirms;
   // archive/restore apply immediately with a toast (per the mock).
@@ -402,6 +404,7 @@ function AdminView() {
           type="button"
           className="xl-new-btn"
           data-testid="new-experiment-button"
+          ref={newButtonRef}
           aria-haspopup="dialog"
           aria-expanded={createOpen}
           onClick={() => setCreateOpen(true)}
@@ -415,20 +418,20 @@ function AdminView() {
 
       {error && <ErrorBanner text={error} />}
 
-      {createOpen && (
-        <CreateDrawer onClose={closeCreate}>
-          <CreatePanel
-            value={newExperiment}
-            onChange={setNewExperiment}
-            onSubmit={handleCreateExperiment}
-            onCatalogRefresh={loadCatalog}
-            groups={groups}
-            datasets={datasets}
-            experiments={experiments}
-            tagSuggestions={tagSuggestions}
-          />
-        </CreateDrawer>
-      )}
+      {/* Mounted while closed so the form keeps its builder state and an
+          in-flight submit across a close and reopen. */}
+      <CreateDrawer open={createOpen} onClose={closeCreate} returnFocusRef={newButtonRef}>
+        <CreatePanel
+          value={newExperiment}
+          onChange={setNewExperiment}
+          onSubmit={handleCreateExperiment}
+          onCatalogRefresh={loadCatalog}
+          groups={groups}
+          datasets={datasets}
+          experiments={experiments}
+          tagSuggestions={tagSuggestions}
+        />
+      </CreateDrawer>
 
       <div>
         <ListPanel
@@ -2372,13 +2375,30 @@ function CreatePanel({
  * Side panel that holds the create form, so the experiment list keeps the full
  * page width. Full screen on phones (see .xl-drawer in index.css). Escape and
  * the scrim close it; focus moves into the panel on open and back to the
- * opener on close.
+ * New experiment button on close. It renders into <body> so that, while it is
+ * open, the app root can be made inert: Tab and screen readers stay in the
+ * panel. It stays mounted (hidden) while closed.
  */
-function CreateDrawer({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+function CreateDrawer({
+  open,
+  onClose,
+  returnFocusRef,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  returnFocusRef: React.RefObject<HTMLElement>;
+  children: React.ReactNode;
+}) {
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
+    if (!open) return;
+    // The opener by ref: Safari doesn't focus a clicked button, so
+    // document.activeElement at open time is often <body>.
+    const opener = returnFocusRef.current;
+    const appRoot = document.getElementById('root');
+    if (appRoot) appRoot.inert = true;
     // First field of the form, not the header's Close button.
     panelRef.current
       ?.querySelector<HTMLElement>('.xl-drawer-body :is(input, select, textarea, button)')
@@ -2393,13 +2413,14 @@ function CreateDrawer({ onClose, children }: { onClose: () => void; children: Re
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
-      opener?.focus?.();
+      if (appRoot) appRoot.inert = false;
+      opener?.focus();
     };
-  }, [onClose]);
+  }, [open, onClose, returnFocusRef]);
 
-  return (
+  return createPortal(
     <>
-      <div className="xl-scrim" onClick={onClose} aria-hidden="true" />
+      {open && <div className="xl-scrim" onClick={onClose} aria-hidden="true" />}
       <div
         ref={panelRef}
         className="xl-drawer"
@@ -2407,6 +2428,7 @@ function CreateDrawer({ onClose, children }: { onClose: () => void; children: Re
         aria-modal="true"
         aria-labelledby="create-drawer-title"
         data-testid="create-drawer"
+        hidden={!open}
       >
         <div className="xl-drawer-head">
           <h2
@@ -2429,7 +2451,8 @@ function CreateDrawer({ onClose, children }: { onClose: () => void; children: Re
         </div>
         <div className="xl-drawer-body">{children}</div>
       </div>
-    </>
+    </>,
+    document.body,
   );
 }
 

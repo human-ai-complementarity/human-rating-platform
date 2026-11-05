@@ -30,7 +30,7 @@ export function HeaderMenu({
   const ref = useRef<HTMLDetailsElement>(null);
 
   useEffect(() => {
-    const onPointerDown = (e: MouseEvent) => {
+    const onPointerDown = (e: PointerEvent) => {
       const el = ref.current;
       if (el?.open && !el.contains(e.target as Node)) el.open = false;
     };
@@ -41,10 +41,10 @@ export function HeaderMenu({
         el.querySelector('summary')?.focus();
       }
     };
-    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDown);
     return () => {
-      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDown);
     };
   }, []);

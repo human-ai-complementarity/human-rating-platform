@@ -1,5 +1,5 @@
 import { Children, isValidElement, useEffect, useMemo, useState, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import adminGuide from '../docs/admin-guide.md?raw';
 
@@ -40,6 +40,28 @@ function buildToc(markdown: string): TocEntry[] {
   return entries;
 }
 
+// Module-level so each render passes the same component types; per-render
+// closures would remount every heading and leave the scroll-spy observing
+// detached nodes.
+const heading =
+  (Tag: 'h1' | 'h2') =>
+  ({ children }: { children?: ReactNode }) => (
+    <Tag id={slugify(textOf(children))} className="docs-anchor">
+      {children}
+    </Tag>
+  );
+
+const MARKDOWN_COMPONENTS: Components = {
+  h1: heading('h1'),
+  h2: heading('h2'),
+  // Wide tables scroll inside their own box instead of the page.
+  table: ({ children }) => (
+    <div className="docs-tablebox">
+      <table>{children}</table>
+    </div>
+  ),
+};
+
 function AdminDocs() {
   const toc = useMemo(() => buildToc(adminGuide), []);
   const [activeId, setActiveId] = useState(toc[0]?.id ?? '');
@@ -68,14 +90,6 @@ function AdminDocs() {
     setActiveId(id);
   };
 
-  const heading =
-    (Tag: 'h1' | 'h2') =>
-    ({ children }: { children?: ReactNode }) => (
-      <Tag id={slugify(textOf(children))} className="docs-anchor">
-        {children}
-      </Tag>
-    );
-
   return (
     <div className="admin-page">
       <div className="docs-layout">
@@ -103,7 +117,8 @@ function AdminDocs() {
           <select value={activeId} onChange={(e) => jumpTo(e.target.value)}>
             {toc.map((entry) => (
               <option key={entry.id} value={entry.id}>
-                {entry.level === 2 ? `  ${entry.text}` : entry.text}
+                {/* Non-breaking: browsers strip leading ASCII spaces from option text. */}
+                {entry.level === 2 ? `\u00a0\u00a0\u00a0${entry.text}` : entry.text}
               </option>
             ))}
           </select>
@@ -111,19 +126,7 @@ function AdminDocs() {
 
         <article className="docs-article">
           <div className="admin-docs markdown">
-            <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
-              components={{
-                h1: heading('h1'),
-                h2: heading('h2'),
-                // Wide tables scroll inside their own box instead of the page.
-                table: ({ children }) => (
-                  <div className="docs-tablebox">
-                    <table>{children}</table>
-                  </div>
-                ),
-              }}
-            >
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
               {adminGuide}
             </ReactMarkdown>
           </div>

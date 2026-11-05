@@ -2926,19 +2926,32 @@ test('the new-experiment panel opens from the header and closes on Escape', asyn
   await page.goto('/admin');
 
   const opener = page.getByTestId('new-experiment-button');
-  await expect(page.getByTestId('create-drawer')).toHaveCount(0);
+  const appInert = () => page.evaluate(() => document.getElementById('root')?.inert ?? null);
+  await expect(page.getByTestId('create-drawer')).toBeHidden();
   await opener.click();
   await expect(page.getByRole('dialog', { name: 'New experiment' })).toBeVisible();
   await expect(page.getByTestId('experiment-name-input')).toBeFocused();
+  // The page behind the panel is out of the tab order while it is open.
+  expect(await appInert()).toBe(true);
 
   // Escape inside the group picker closes the picker, not the whole panel.
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-input').press('Escape');
   await expect(page.getByTestId('create-drawer')).toBeVisible();
 
+  // A half-built new group survives closing and reopening the panel.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('Draft group');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('Draft group');
+
   await page.keyboard.press('Escape');
-  await expect(page.getByTestId('create-drawer')).toHaveCount(0);
+  await expect(page.getByTestId('create-drawer')).toBeHidden();
   await expect(opener).toBeFocused();
+  expect(await appInert()).toBe(false);
+
+  await opener.click();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('Draft group');
 });
 
 test('tag input enforces the length and count limits while typing', async ({ page }) => {
@@ -3843,4 +3856,18 @@ test('the consent section saves the flags and details, and previews the statemen
   await page.getByTestId('ethics-save').click();
   await expect(page.getByText('Consent settings saved.')).toBeVisible();
   expect(state.experimentPatches[1]).toMatchObject({ study_flags: [], content_warning_details: '' });
+});
+
+test('the docs contents list follows the section scrolled to', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin/docs');
+
+  const toc = page.getByRole('navigation', { name: 'On this page' });
+  // Two scrolls in a row: the second only registers if the headings the
+  // scroll-spy observes survive the re-render the first one causes.
+  for (const id of ['2-upload-questions', '4-pilot-on-prolific']) {
+    await page.evaluate((target) => document.getElementById(target)?.scrollIntoView(), id);
+    await expect(toc.locator(`a[href="#${id}"]`)).toHaveAttribute('aria-current', 'true');
+  }
 });

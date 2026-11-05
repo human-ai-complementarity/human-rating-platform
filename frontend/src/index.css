@@ -743,15 +743,49 @@ select.xd-section-select {
   font-weight: 600;
 }
 
-.xd-stats {
+/* Divided stat strip shared by the experiment page and analytics; each page
+   sets its own column count (.xd-stats, .an-stats). */
+.stat-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   background: var(--line);
   border: 1px solid var(--faint);
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow);
+}
+.stat-strip > div {
+  background: var(--surface);
+  padding: 18px 22px;
+  min-width: 0;
+}
+.stat-value {
+  font: 600 30px/1.1 var(--font-head);
+  font-variant-numeric: tabular-nums;
+}
+.stat-label {
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 600 13px var(--font-body);
+  color: var(--muted);
+  cursor: pointer;
+}
+.back-link:hover {
+  color: var(--ink);
+}
+.xd-stats {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 .xd-setup-steps {
   display: grid;
@@ -832,6 +866,12 @@ select.xd-section-select {
   .xd-preview {
     justify-content: space-between !important;
   }
+  .stat-strip > div {
+    padding: 14px 16px;
+  }
+  .stat-value {
+    font-size: 24px;
+  }
   .xd-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -902,6 +942,9 @@ select.xd-section-select {
   flex-direction: column;
   background: var(--surface);
   box-shadow: -18px 0 40px -20px rgba(40, 36, 32, 0.35);
+}
+.xl-drawer[hidden] {
+  display: none;
 }
 .xl-drawer-head {
   display: flex;
@@ -1016,12 +1059,6 @@ select.xd-section-select {
   display: none;
 }
 
-@media (max-width: 1024px) {
-  .xd-grid-collapse {
-    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
-  }
-}
-
 @media (max-width: 640px) {
   .xd-grid-collapse {
     grid-template-columns: minmax(0, 1fr) !important;
@@ -1050,22 +1087,6 @@ select.xd-section-select {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
-}
-.an-crumb {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  margin: 0 0 10px;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: 600 13px var(--font-body);
-  color: var(--muted);
-  cursor: pointer;
-}
-.an-crumb:hover {
-  color: var(--ink);
 }
 .an-head {
   display: flex;
@@ -1099,14 +1120,7 @@ select.xd-section-select {
   gap: 10px 12px;
 }
 .an-stats {
-  display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: hidden;
-  box-shadow: var(--shadow);
 }
 .an-tabs {
   display: flex;
@@ -1201,8 +1215,9 @@ select.xd-section-select {
   font-size: 12px;
   white-space: nowrap;
 }
+/* Phones get .an-cards in place of the table (Analytics renders one or the
+   other, at the same 640px breakpoint as the rules below). */
 .an-cards {
-  display: none;
   list-style: none;
   margin: 0;
   padding: 0;
@@ -1245,23 +1260,11 @@ select.xd-section-select {
   .an-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .an-stats > div {
-    padding: 14px 16px !important;
-  }
-  .an-stats > div > :first-child {
-    font-size: 22px !important;
-  }
   .an-actions {
     width: 100%;
   }
   .an-actions > button {
     margin-left: auto;
-  }
-  .an-tablebox {
-    display: none;
-  }
-  .an-cards {
-    display: block;
   }
 }
 
