@@ -2630,7 +2630,7 @@ test('saving other fields leaves the group out of the PATCH', async ({ page }) =
   const rename = page.waitForRequest(isExperimentPatch(1));
   await page.getByRole('button', { name: 'Save name' }).click();
   expect((await rename).postDataJSON()).not.toHaveProperty('group_id');
-  await expect(page.getByText('Public name (shown to raters): Spring draft v2')).toBeVisible();
+  await expect(page.getByTestId('public-name')).toHaveText('Spring draft v2');
   await expect(page.getByTestId('group-current')).toHaveText('MedQA Spring · medqa × sp26');
   expect(state.experiments[0].group_id).toBe(1);
 });
@@ -2750,7 +2750,7 @@ test('a launched experiment shows its group without move controls', async ({ pag
   await page.goto('/admin/experiments/1');
   const control = page.getByTestId('group-control');
   await expect(control).toContainText('MedQA Spring · medqa × sp26');
-  await expect(control.getByTestId('group-locked')).toHaveText('(locked after launch)');
+  await expect(control.getByTestId('group-locked')).toHaveText('Locked');
   await expect(control.getByTestId('group-move-button')).toHaveCount(0);
   await expect(page.getByTestId('move-to-current-wave')).toHaveCount(0);
 
@@ -2758,7 +2758,7 @@ test('a launched experiment shows its group without move controls', async ({ pag
   await page.getByRole('button', { name: 'Edit public name' }).click();
   await page.getByRole('textbox', { name: 'Public name' }).fill('Spring launched v2');
   await page.getByRole('button', { name: 'Save name' }).click();
-  await expect(page.getByText('Public name (shown to raters): Spring launched v2')).toBeVisible();
+  await expect(page.getByTestId('public-name')).toHaveText('Spring launched v2');
   await expect(control).toContainText('MedQA Spring · medqa × sp26');
 });
 

@@ -613,3 +613,232 @@ button:disabled {
 .rater-consent-statement li {
   margin-bottom: 4px;
 }
+
+/* ── Responsive admin shell + experiment detail ──────────────────────────
+   Two cut-offs: ≤1024px (tablet: tighter gutters, actions wrap under the
+   title, step tabs scroll with an edge fade) and ≤640px (phone: stacked
+   actions, step tabs collapse into one section <select>, 2-col stats). */
+
+.admin-nav {
+  display: flex;
+  align-items: center;
+}
+
+.xd-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px 40px;
+  margin-bottom: 26px;
+}
+.xd-title {
+  flex: 1 1 520px;
+  min-width: 0;
+}
+.xd-h1 {
+  font-size: 28px;
+}
+.xd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.xd-btn {
+  min-height: 40px;
+  white-space: nowrap;
+}
+.xd-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  align-items: center;
+  margin: 14px 0 0;
+  font-size: 13.5px;
+}
+.xd-meta dt {
+  color: var(--muted);
+}
+.xd-meta dd {
+  margin: 0;
+  min-width: 0;
+}
+
+/* Header dropdowns (<details>-based so items stay in the DOM). */
+.xd-menu {
+  position: relative;
+}
+.xd-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.xd-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.xd-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  z-index: 20;
+  min-width: 270px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+}
+.xd-menu-panel--left {
+  left: 0;
+}
+.xd-menu-panel--right {
+  right: 0;
+}
+.xd-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font: 600 13.5px var(--font-body);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.xd-menu-item:hover {
+  background: var(--surface-2);
+  text-decoration: none;
+}
+.xd-menu-item small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.xd-menu-item--danger {
+  color: var(--danger);
+}
+.xd-menu-item--danger:hover {
+  background: var(--danger-soft);
+}
+
+.xd-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  border-bottom: 1px solid var(--faint);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.xd-tabs::-webkit-scrollbar {
+  display: none;
+}
+select.xd-section-select {
+  display: none;
+  min-height: 48px;
+  font-weight: 600;
+}
+
+.xd-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.xd-setup-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1024px) {
+  .admin-page {
+    padding: 32px 24px 56px;
+  }
+  /* Tabs scroll sideways here; fade the right edge so it reads as scrollable. */
+  .xd-tabs {
+    padding-right: 32px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-page {
+    padding: 16px 16px 48px;
+  }
+  .admin-header {
+    flex-wrap: wrap;
+    row-gap: 14px;
+    padding: 14px 16px !important;
+  }
+  .admin-nav {
+    order: 3;
+    flex: 1 1 100%;
+  }
+  .admin-nav > :first-child {
+    margin-left: 0 !important;
+  }
+
+  .xd-h1 {
+    font-size: 22px;
+  }
+  .xd-actions {
+    width: 100%;
+  }
+  .xd-actions > * {
+    flex: 1 1 auto;
+  }
+  .xd-actions > .xd-primary {
+    order: -1;
+    flex-basis: 100%;
+  }
+  .xd-actions > .xd-icon {
+    flex: 0 0 44px;
+  }
+  .xd-actions .xd-btn {
+    min-height: 44px;
+  }
+  /* Buttons grow via flex; summaries need an explicit fill. */
+  .xd-actions > details > summary {
+    width: 100%;
+  }
+  .xd-actions > .xd-icon > summary {
+    width: 44px !important;
+  }
+  .xd-meta {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+  .xd-meta dd {
+    margin-bottom: 8px;
+  }
+
+  .xd-tabs {
+    display: none;
+  }
+  select.xd-section-select {
+    display: block;
+  }
+
+  .xd-preview {
+    justify-content: space-between !important;
+  }
+  .xd-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .xd-stats > :last-child {
+    grid-column: 1 / -1;
+  }
+  .xd-setup-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

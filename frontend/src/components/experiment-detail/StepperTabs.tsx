@@ -9,8 +9,9 @@ import React from 'react';
  * - Steps 1–4 are the guided setup sequence: Questions → Instructions &
  *   prompts → Rater assistance → Launch on Prolific. Each has a completion
  *   state derived from the model (see `deriveStepStates` in the parent).
- * - A "Delete" action button sits at the far right — not a tab, just a direct
- *   trigger for the delete-confirmation flow.
+ * - Responsive: the tab row scrolls sideways (edge fade ≤1024px); on phones
+ *   (≤640px) it's swapped for a single native <select> of the same sections.
+ *   Both are always rendered; CSS in index.css picks which one shows.
  *
  * A step's marker shows:
  *   - a checkmark on a filled accent circle if `done`
@@ -38,57 +39,65 @@ interface StepperTabsProps {
   active: TabKey;
   onChange: (key: TabKey) => void;
   steps: StepDef[];
-  onDeleteClick: () => void;
-  deleting?: boolean;
 }
 
-export function StepperTabs({ active, onChange, steps, onDeleteClick, deleting }: StepperTabsProps) {
+export function StepperTabs({ active, onChange, steps }: StepperTabsProps) {
+  const doneCount = steps.filter((s) => s.status === 'done').length;
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'stretch',
-        gap: 18,
-        borderBottom: '1px solid var(--faint)',
-      }}
-    >
-      <TabButton
-        active={active === 'overview'}
-        onClick={() => onChange('overview')}
-        testId="tab-overview"
+    <>
+      <select
+        className="xd-section-select"
+        aria-label="Section"
+        data-testid="section-select"
+        value={active}
+        onChange={(e) => onChange(e.target.value as TabKey)}
       >
-        <span
-          aria-hidden
-          style={{
-            width: 22,
-            height: 22,
-            borderRadius: '50%',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flex: '0 0 auto',
-            background: 'var(--surface-2)',
-            border: '1px solid var(--faint)',
-          }}
+        <option value="overview">Overview</option>
+        <optgroup label={`Setup · ${doneCount} of ${steps.length} done`}>
+          {steps.map((step) => (
+            <option key={step.key} value={step.key}>
+              {step.status === 'done' ? '✓' : `${step.index}.`} {step.label}
+            </option>
+          ))}
+        </optgroup>
+      </select>
+      <div className="xd-tabs">
+        <TabButton
+          active={active === 'overview'}
+          onClick={() => onChange('overview')}
+          testId="tab-overview"
         >
           <span
+            aria-hidden
             style={{
-              width: 7,
-              height: 7,
+              width: 22,
+              height: 22,
               borderRadius: '50%',
-              background: 'var(--muted)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flex: '0 0 auto',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--faint)',
             }}
-          />
-        </span>
-        <span>Overview</span>
-      </TabButton>
+          >
+            <span
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: '50%',
+                background: 'var(--muted)',
+              }}
+            />
+          </span>
+          <span>Overview</span>
+        </TabButton>
 
-      <Divider />
-      <SetupLabel />
+        <Divider />
 
-      {steps.map((step, i) => (
-        <React.Fragment key={step.key}>
+        {steps.map((step) => (
           <TabButton
+            key={step.key}
             active={active === step.key}
             onClick={() => onChange(step.key)}
             testId={`tab-${step.key}`}
@@ -96,39 +105,12 @@ export function StepperTabs({ active, onChange, steps, onDeleteClick, deleting }
             <StepMarker index={step.index} status={step.status} />
             <span>{step.label}</span>
           </TabButton>
-          {i < steps.length - 1 && (
-            <span
-              aria-hidden
-              style={{ alignSelf: 'center', color: 'var(--faint)', fontSize: 12 }}
-            >
-              →
-            </span>
-          )}
-        </React.Fragment>
-      ))}
-
-      <button
-        type="button"
-        onClick={onDeleteClick}
-        disabled={deleting}
-        data-testid="delete-experiment-button"
-        style={{
-          marginLeft: 'auto',
-          background: 'none',
-          border: 'none',
-          padding: '14px 2px',
-          cursor: deleting ? 'wait' : 'pointer',
-          font: '600 14px var(--font-body)',
-          color: 'var(--danger)',
-          opacity: deleting ? 0.6 : 1,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {deleting ? 'Deleting…' : 'Delete'}
-      </button>
-    </div>
+        ))}
+      </div>
+    </>
   );
 }
+
 
 function TabButton({
   active,
@@ -176,7 +158,9 @@ function TabButton({
             position: 'absolute',
             left: 0,
             right: 0,
-            bottom: -1,
+            // 0, not -1: the tab row scrolls (overflow-x), which clips
+            // anything hanging below its padding box.
+            bottom: 0,
             height: 2,
             background: underline,
           }}
@@ -263,22 +247,5 @@ function Divider() {
         alignSelf: 'stretch',
       }}
     />
-  );
-}
-
-function SetupLabel() {
-  return (
-    <span
-      aria-hidden
-      style={{
-        alignSelf: 'center',
-        font: '600 10px/1 var(--font-mono)',
-        letterSpacing: '0.14em',
-        textTransform: 'uppercase',
-        color: 'var(--muted)',
-      }}
-    >
-      Setup
-    </span>
   );
 }

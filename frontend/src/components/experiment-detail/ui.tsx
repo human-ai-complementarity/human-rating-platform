@@ -298,11 +298,14 @@ export function ToggleSwitch({
   onChange,
   disabled,
   testId,
+  ariaLabelledBy,
 }: {
   checked: boolean;
   onChange: () => void;
   disabled?: boolean;
   testId?: string;
+  /** Id of the visible label naming this switch. */
+  ariaLabelledBy?: string;
 }) {
   return (
     <div
@@ -317,6 +320,7 @@ export function ToggleSwitch({
         data-testid={testId}
         role="switch"
         aria-checked={checked}
+        aria-labelledby={ariaLabelledBy}
         tabIndex={0}
         onClick={() => {
           if (!disabled) onChange();

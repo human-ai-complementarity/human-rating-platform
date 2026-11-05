@@ -215,6 +215,7 @@ function AdminShell({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--page-bg)' }}>
       <header
+        className="admin-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -250,9 +251,12 @@ function AdminShell({ children }: { children: React.ReactNode }) {
           />
           <span style={{ font: '600 16px/1 var(--font-head)' }}>Complementarities Platform</span>
         </button>
-        <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
-        <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
-        <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
+        {/* On phones this row drops below the brand (see .admin-nav in index.css). */}
+        <nav className="admin-nav" aria-label="Admin sections">
+          <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
+          <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
+          <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
+        </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
           <UserButton afterSignOutUrl="/" />
         </div>

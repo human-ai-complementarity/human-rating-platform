@@ -44,7 +44,7 @@ function datasetSections(groups: ExperimentGroup[], datasetId: number | null) {
 }
 
 /**
- * The header's "Group:" line. A DRAFT can move to any existing group or out
+ * The header's "Group" row. A DRAFT can move to any existing group or out
  * of its group; a move to another dataset's group asks first, since it
  * re-attributes the experiment. Once launched the group is spend attribution
  * and stays put.
@@ -102,90 +102,114 @@ export function GroupControl({
   };
 
   return (
-    <div
-      data-testid="group-control"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        flexWrap: 'wrap',
-        gap: 8,
-        marginTop: 6,
-        fontSize: 14,
-        color: 'var(--muted)',
-      }}
-    >
-      <span>Group:</span>
-      {groups === null ? (
-        <>
-          <span data-testid="group-current">
-            {experiment.group_name
-              ? `${experiment.group_name} · ${experiment.group_dataset_name} × ${experiment.wave}`
-              : 'Ungrouped'}
-          </span>
-          {locked ? (
-            <span data-testid="group-locked" style={{ fontSize: 12.5 }}>
-              (locked after launch)
+    // Renders a dt/dd pair inside the header's <dl>; `display: contents`
+    // lets the wrapper hold the test id without breaking the grid.
+    <div data-testid="group-control" style={{ display: 'contents' }}>
+      <dt>Group</dt>
+      <dd
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '4px 8px',
+        }}
+      >
+        {groups === null ? (
+          <>
+            <span data-testid="group-current">
+              {experiment.group_name
+                ? `${experiment.group_name} · ${experiment.group_dataset_name} × ${experiment.wave}`
+                : 'Ungrouped'}
             </span>
-          ) : (
+            {locked ? (
+              <span
+                data-testid="group-locked"
+                title="The group can't change after launch"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  fontSize: 12,
+                  color: 'var(--muted)',
+                }}
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <rect x="5" y="11" width="14" height="10" rx="2" />
+                  <path d="M8 11V8a4 4 0 0 1 8 0v3" />
+                </svg>
+                Locked
+              </span>
+            ) : (
+              <button
+                type="button"
+                data-testid="group-move-button"
+                onClick={open}
+                disabled={busy}
+                style={smallButton}
+              >
+                {busy ? 'Loading…' : 'Move'}
+              </button>
+            )}
+          </>
+        ) : (
+          <>
+            <select
+              aria-label="Group"
+              data-testid="group-select"
+              value={selected}
+              onChange={(e) => setSelected(e.target.value)}
+              disabled={busy}
+              style={{
+                ...selectStyle,
+                width: 'auto',
+                maxWidth: 360,
+                padding: '4px 30px 4px 8px',
+                backgroundPosition: 'right 10px center',
+                font: '400 13.5px var(--font-body)',
+              }}
+            >
+              <option value="">Ungrouped</option>
+              {datasetSections(groups, experiment.group_dataset_id).map((section) => (
+                <optgroup key={section.id} label={section.name}>
+                  {section.groups.map((group) => (
+                    <option key={group.id} value={group.id}>
+                      {group.name} · {group.wave}
+                      {group.wave === currentWave ? ' (current wave)' : ''}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
             <button
               type="button"
-              data-testid="group-move-button"
-              onClick={open}
+              data-testid="group-save"
+              onClick={save}
+              disabled={busy || selected === currentValue}
+              style={{ ...smallButton, opacity: busy || selected === currentValue ? 0.55 : 1 }}
+            >
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroups(null)}
               disabled={busy}
               style={smallButton}
             >
-              {busy ? 'Loading…' : 'Move'}
+              Cancel
             </button>
-          )}
-        </>
-      ) : (
-        <>
-          <select
-            aria-label="Group"
-            data-testid="group-select"
-            value={selected}
-            onChange={(e) => setSelected(e.target.value)}
-            disabled={busy}
-            style={{
-              ...selectStyle,
-              width: 'auto',
-              maxWidth: 360,
-              padding: '4px 30px 4px 8px',
-              backgroundPosition: 'right 10px center',
-              font: '400 13.5px var(--font-body)',
-            }}
-          >
-            <option value="">Ungrouped</option>
-            {datasetSections(groups, experiment.group_dataset_id).map((section) => (
-              <optgroup key={section.id} label={section.name}>
-                {section.groups.map((group) => (
-                  <option key={group.id} value={group.id}>
-                    {group.name} · {group.wave}
-                    {group.wave === currentWave ? ' (current wave)' : ''}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
-          <button
-            type="button"
-            data-testid="group-save"
-            onClick={save}
-            disabled={busy || selected === currentValue}
-            style={{ ...smallButton, opacity: busy || selected === currentValue ? 0.55 : 1 }}
-          >
-            {busy ? 'Saving…' : 'Save'}
-          </button>
-          <button
-            type="button"
-            onClick={() => setGroups(null)}
-            disabled={busy}
-            style={smallButton}
-          >
-            Cancel
-          </button>
-        </>
-      )}
+          </>
+        )}
+      </dd>
       {crossDataset && (
         <ConfirmDialog
           title={`Move from ${experiment.group_dataset_name} to ${crossDataset.dataset_name}?`}

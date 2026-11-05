@@ -23,6 +23,7 @@ import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
 import { testingPreviewFix } from './experiment-detail/launchBlockers';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
+import { HeaderMenu } from './experiment-detail/HeaderMenu';
 import { EthicsPanel } from './experiment-detail/EthicsPanel';
 import {
   StepperTabs,
@@ -1051,31 +1052,46 @@ function ExperimentDetail({
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="admin-page">
-      {/* Header row: back button, title, status pill, launch action shortcut. */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 26 }}>
-        <button
-          type="button"
-          onClick={onBack}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '8px 14px',
-            border: '1px solid var(--faint)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--surface)',
-            fontSize: 13.5,
-            fontWeight: 600,
-            color: 'var(--muted)',
-            whiteSpace: 'nowrap',
-            marginTop: 4,
-            cursor: 'pointer',
-          }}
+      {/* Header: back link, status, title + actions (actions wrap under the
+          title on narrow screens), then the name/group details. */}
+      <button
+        type="button"
+        onClick={onBack}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          minHeight: 28,
+          marginBottom: 14,
+          padding: 0,
+          border: 'none',
+          background: 'none',
+          font: '600 13px var(--font-body)',
+          color: 'var(--muted)',
+          cursor: 'pointer',
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
         >
-          ← Back
-        </button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <path d="M19 12H5M11 18l-6-6 6-6" />
+        </svg>
+        Experiments
+      </button>
+      <div className="xd-head">
+        <div className="xd-title">
+          <div style={{ display: 'flex', alignItems: 'center', minHeight: 22 }}>
+            <StatusLabel status={experiment.status} />
+          </div>
+          <div style={{ marginTop: 8 }}>
             {editingName === 'internal_name' ? (
               <NameEditor
                 value={nameDraft}
@@ -1090,61 +1106,82 @@ function ExperimentDetail({
             ) : (
               <>
                 <h1
+                  className="xd-h1"
                   style={{
+                    display: 'inline',
                     fontFamily: 'var(--font-head)',
                     fontWeight: 600,
-                    fontSize: 28,
+                    lineHeight: 1.25,
                     letterSpacing: '-0.01em',
+                    overflowWrap: 'anywhere',
                     margin: 0,
                   }}
                 >
                   {experiment.internal_name || experiment.name}
                 </h1>
-                <PencilButton
-                  onClick={() => handleStartEditName('internal_name')}
-                  label="Edit internal name"
-                />
-                <StatusLabel status={experiment.status} />
+                {/* Inline after the text so it sits at the end of the last
+                    line however the title wraps. */}
+                <span
+                  style={{
+                    display: 'inline-block',
+                    verticalAlign: 'middle',
+                    marginLeft: 8,
+                    marginTop: -4,
+                  }}
+                >
+                  <PencilButton
+                    onClick={() => handleStartEditName('internal_name')}
+                    label="Edit internal name"
+                  />
+                </span>
               </>
             )}
           </div>
-          {/* Public name always shown so it stays editable even before an
-              internal name is set (when the title above already is the public
-              name). */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              margin: '6px 0 0',
-              fontSize: 14,
-              color: 'var(--muted)',
-            }}
-          >
-            {editingName === 'name' ? (
-              <>
-                <span style={{ whiteSpace: 'nowrap' }}>Public name (shown to raters):</span>
-                <NameEditor
-                  value={nameDraft}
-                  onChange={setNameDraft}
-                  onSave={handleSaveName}
-                  onCancel={() => setEditingName(null)}
-                  saving={savingName}
-                  placeholder="Public name"
-                  ariaLabel="Public name"
-                />
-              </>
-            ) : (
-              <>
-                <span>Public name (shown to raters): {experiment.name}</span>
-                <PencilButton
-                  onClick={() => handleStartEditName('name')}
-                  label="Edit public name"
-                />
-              </>
-            )}
-          </div>
-          <GroupControl experiment={experiment} currentWave={currentWave} {...moveCallbacks} />
+          <dl className="xd-meta">
+            {/* Public name always shown so it stays editable even before an
+                internal name is set (when the title above already is the
+                public name). */}
+            <div style={{ display: 'contents' }}>
+              <dt title="The name raters see">Public name</dt>
+              <dd style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {editingName === 'name' ? (
+                  <NameEditor
+                    value={nameDraft}
+                    onChange={setNameDraft}
+                    onSave={handleSaveName}
+                    onCancel={() => setEditingName(null)}
+                    saving={savingName}
+                    placeholder="Public name"
+                    ariaLabel="Public name"
+                  />
+                ) : (
+                  <>
+                    <span
+                      data-testid="public-name"
+                      title={experiment.name}
+                      style={{
+                        font: '400 12.5px var(--font-mono)',
+                        background: 'var(--surface-2)',
+                        padding: '3px 8px',
+                        borderRadius: 6,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        minWidth: 0,
+                      }}
+                    >
+                      {experiment.name}
+                    </span>
+                    <PencilButton
+                      onClick={() => handleStartEditName('name')}
+                      label="Edit public name"
+                    />
+                  </>
+                )}
+              </dd>
+            </div>
+            <GroupControl experiment={experiment} currentWave={currentWave} {...moveCallbacks} />
+          </dl>
           {showDraftWaveNotice && (
             <div
               data-testid="draft-wave-notice"
@@ -1172,33 +1209,66 @@ function ExperimentDetail({
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 10, marginTop: 2 }}>
-          <a
-            data-testid="export-link"
-            href={api.getExportUrl(experiment.id, { includePreview })}
-            download
-            style={{ ...secondaryButton, textDecoration: 'none' }}
+        <div className="xd-actions">
+          <HeaderMenu
+            testId="export-menu"
+            summaryClassName="xd-btn"
+            summaryStyle={{ ...secondaryButton, padding: '0 14px', gap: 6 }}
+            summary={
+              <>
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+                </svg>
+                Export
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </>
+            }
           >
-            Export ratings CSV
-          </a>
-          <a
-            data-testid="export-documents-link"
-            href={api.getDocumentsExportUrl(experiment.id)}
-            download
-            style={{ ...secondaryButton, textDecoration: 'none' }}
-          >
-            Export documents CSV
-          </a>
-          <button
-            type="button"
-            onClick={() => navigate(`/admin/experiments/${experiment.id}/analytics`)}
-            style={primaryButton}
-          >
-            View analytics
-          </button>
+            <a
+              data-testid="export-link"
+              className="xd-menu-item"
+              href={api.getExportUrl(experiment.id, { includePreview })}
+              download
+            >
+              Ratings CSV
+              <small>{includePreview ? 'Includes preview data' : 'Live data only'}</small>
+            </a>
+            <a
+              data-testid="export-documents-link"
+              className="xd-menu-item"
+              href={api.getDocumentsExportUrl(experiment.id)}
+              download
+            >
+              Documents CSV
+              <small>Source documents for every question</small>
+            </a>
+          </HeaderMenu>
           {experiment.status === 'LAUNCH' && (
             <button
               data-testid="finish-experiment-button"
+              className="xd-btn"
               onClick={handleFinish}
               disabled={!canFinish || finishing}
               title={
@@ -1208,6 +1278,7 @@ function ExperimentDetail({
               }
               style={{
                 ...secondaryButton,
+                padding: '0 14px',
                 color: 'var(--accent-soft-ink)',
                 background: 'var(--accent-soft)',
                 borderColor: 'var(--accent-soft)',
@@ -1218,6 +1289,39 @@ function ExperimentDetail({
               {finishing ? 'Finishing…' : 'Mark as finished'}
             </button>
           )}
+          <button
+            type="button"
+            className="xd-btn xd-primary"
+            onClick={() => navigate(`/admin/experiments/${experiment.id}/analytics`)}
+            style={{ ...primaryButton, padding: '0 16px' }}
+          >
+            View analytics
+          </button>
+          <HeaderMenu
+            testId="more-menu"
+            align="right"
+            ariaLabel="More actions"
+            className="xd-icon"
+            summaryClassName="xd-btn"
+            summaryStyle={{ ...secondaryButton, width: 40, padding: 0 }}
+            summary={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <circle cx="5" cy="12" r="1.7" />
+                <circle cx="12" cy="12" r="1.7" />
+                <circle cx="19" cy="12" r="1.7" />
+              </svg>
+            }
+          >
+            <button
+              type="button"
+              data-testid="delete-experiment-button"
+              className="xd-menu-item xd-menu-item--danger"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting ? 'Deleting…' : 'Delete experiment'}
+            </button>
+          </HeaderMenu>
         </div>
       </div>
 
@@ -1240,8 +1344,6 @@ function ExperimentDetail({
         active={tab}
         onChange={setTab}
         steps={stepDefs}
-        onDeleteClick={handleDelete}
-        deleting={deleting}
       />
 
       {/* Toasts float over the layout so they don't shove panel content down
@@ -1468,12 +1570,13 @@ function OverviewPanel({
           <div
             style={{
               display: 'flex',
+              flexWrap: 'wrap',
               alignItems: 'flex-start',
               justifyContent: 'space-between',
-              gap: 24,
+              gap: 16,
             }}
           >
-            <div>
+            <div style={{ flex: '1 1 320px' }}>
               <div
                 style={{
                   font: '600 12px/1 var(--font-mono)',
@@ -1515,7 +1618,7 @@ function OverviewPanel({
             )}
           </div>
           <div style={{ height: 1, background: 'var(--line)', margin: '20px 0' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <div className="xd-setup-steps">
             {steps.map((s) => (
               <StepChip key={s.key} step={s} onClick={() => onGoto(s.key)} />
             ))}
@@ -1523,8 +1626,25 @@ function OverviewPanel({
         </div>
       )}
 
-      {/* Stats grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
+      {/* Preview toggle: scopes every number below, so it sits above them. */}
+      <div
+        className="xd-preview"
+        title="Show data from preview sessions in stats, analytics, exports, and round recommendations."
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}
+      >
+        <span id="include-preview-label" style={{ fontSize: 13.5, fontWeight: 500 }}>
+          Include preview data
+        </span>
+        <ToggleSwitch
+          testId="include-preview-toggle"
+          ariaLabelledBy="include-preview-label"
+          checked={includePreview}
+          onChange={() => onTogglePreview(!includePreview)}
+        />
+      </div>
+
+      {/* Stats: one divided strip (5 columns → 2 on phones, Spend full width). */}
+      <div className="xd-stats" style={{ marginTop: -4 }}>
         <StatTile label="Questions" value={stats?.total_questions ?? 0} />
         <StatTile label="Complete" value={stats?.questions_complete ?? 0} />
         <StatTile label="Ratings" value={stats?.total_ratings ?? 0} />
@@ -1537,76 +1657,69 @@ function OverviewPanel({
         />
       </div>
 
-      {/* Progress + preview toggle */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20, alignItems: 'start' }}>
+      {/* Completion progress */}
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius)',
+          padding: '20px 22px',
+          boxShadow: 'var(--shadow)',
+        }}
+      >
         <div
           style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--faint)',
-            borderRadius: 'var(--radius)',
-            padding: 24,
-            boxShadow: 'var(--shadow)',
+            display: 'flex',
+            alignItems: 'baseline',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 12,
           }}
         >
-          <div
+          <h2
             style={{
-              font: '600 12px/1 var(--font-mono)',
+              font: '600 11px/1 var(--font-mono)',
               letterSpacing: '0.14em',
               textTransform: 'uppercase',
               color: 'var(--muted)',
-              marginBottom: 16,
+              margin: 0,
             }}
           >
             Completion progress
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: 13.5,
-              marginBottom: 8,
-            }}
-          >
-            <span style={{ color: 'var(--muted)' }}>
-              {(stats?.effective_ratings ?? 0).toLocaleString()} of {targetRatings.toLocaleString()} ratings
-              toward target · {stats?.questions_complete ?? 0} of {stats?.total_questions ?? 0} questions
-              at target ({experiment.num_ratings_per_question} each)
-            </span>
-            <span style={{ font: '600 13px var(--font-mono)' }}>{completePct}%</span>
-          </div>
-          <ProgressBar pct={completePct} />
-          <div style={{ height: 1, background: 'var(--line)', margin: '22px 0' }} />
-          <div style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
-            {stats && stats.total_ratings > 0
-              ? `Live data from ${stats.total_raters} raters. Toggle preview data below to include preview sessions in stats and exports.`
-              : 'No ratings collected yet. Finish setup and publish the pilot on the Launch step to begin recruiting.'}
-          </div>
+          </h2>
+          <span style={{ font: '600 22px/1 var(--font-head)' }}>{completePct}%</span>
         </div>
+        <ProgressBar pct={completePct} />
         <div
           style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--faint)',
-            borderRadius: 'var(--radius)',
-            padding: '22px 24px',
-            boxShadow: 'var(--shadow)',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '6px 28px',
+            marginTop: 12,
+            fontSize: 13.5,
+            color: 'var(--muted)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>Include preview data</div>
-            </div>
-            <ToggleSwitch
-              testId="include-preview-toggle"
-              checked={includePreview}
-              onChange={() => onTogglePreview(!includePreview)}
-            />
-          </div>
-          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
-            Show data from preview sessions in stats, analytics, exports, and round
-            recommendations.
-          </div>
+          <span>
+            <strong style={{ color: 'var(--ink)', fontWeight: 600 }}>
+              {(stats?.effective_ratings ?? 0).toLocaleString()}
+            </strong>{' '}
+            of {targetRatings.toLocaleString()} ratings toward target
+          </span>
+          <span>
+            <strong style={{ color: 'var(--ink)', fontWeight: 600 }}>
+              {stats?.questions_complete ?? 0}
+            </strong>{' '}
+            of {stats?.total_questions ?? 0} questions at target (
+            {experiment.num_ratings_per_question} each)
+          </span>
         </div>
+        {!(stats && stats.total_ratings > 0) && (
+          <div style={{ marginTop: 12, fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
+            No ratings collected yet. Finish setup and publish the pilot on the Launch step to
+            begin recruiting.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1695,18 +1808,17 @@ function StepDot({ status, index }: { status: StepStatus; index: number }) {
   );
 }
 
+// One cell of the `.xd-stats` strip; the strip draws the border and dividers.
+const statCellStyle: React.CSSProperties = {
+  background: 'var(--surface)',
+  padding: '18px 22px',
+  minWidth: 0,
+};
+
 function StatTile({ label, value }: { label: string; value: number }) {
   return (
-    <div
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        padding: '22px 24px',
-        boxShadow: 'var(--shadow)',
-      }}
-    >
-      <div style={{ font: '600 34px/1 var(--font-head)' }}>{value}</div>
+    <div style={statCellStyle}>
+      <div style={{ font: '600 30px/1.1 var(--font-head)' }}>{value}</div>
       <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 5 }}>{label}</div>
     </div>
   );
@@ -1739,15 +1851,9 @@ function SpendTile({
   return (
     <div
       title="Prolific study cost (rewards + platform fee + VAT) across all rounds. Excludes bonuses paid separately."
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        padding: '22px 24px',
-        boxShadow: 'var(--shadow)',
-      }}
+      style={statCellStyle}
     >
-      <div style={{ font: '600 34px/1 var(--font-head)', fontVariantNumeric: 'tabular-nums' }}>
+      <div style={{ font: '600 30px/1.1 var(--font-head)', fontVariantNumeric: 'tabular-nums' }}>
         {value}
       </div>
       <div
