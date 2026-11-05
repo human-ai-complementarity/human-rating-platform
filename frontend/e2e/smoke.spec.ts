@@ -3871,3 +3871,42 @@ test('the docs contents list follows the section scrolled to', async ({ page }) 
     await expect(toc.locator(`a[href="#${id}"]`)).toHaveAttribute('aria-current', 'true');
   }
 });
+
+test('on a phone the docs contents open from a bar and close after a jump', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin/docs');
+
+  const toggle = page.getByRole('button', { name: /On this page/ });
+  await toggle.click();
+  const menu = page.locator('#docs-toc-sm-menu');
+  await expect(menu).toBeVisible();
+  await menu.getByRole('link', { name: '4. Pilot on Prolific' }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(toggle).toContainText('4. Pilot on Prolific');
+  await expect(page.locator('[id="4-pilot-on-prolific"]')).toBeInViewport();
+});
+
+test('a long dataset name never widens the experiments list on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  const name = 'Multidimensional Difference Awareness';
+  seedCardExperiment(state, { name }, { group_dataset_name: name });
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  // The name truncates; the card status stays readable.
+  await expect(page.getByTestId('group-card-edit-1')).toContainText('incomplete');
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
+
+  // The create panel fills the screen with its submit button in reach.
+  await openCreatePanel(page);
+  const box = await page.getByTestId('create-drawer').boundingBox();
+  expect(box).toMatchObject({ x: 0, width: 390 });
+  await expect(page.getByRole('button', { name: 'Create experiment' })).toBeInViewport();
+});

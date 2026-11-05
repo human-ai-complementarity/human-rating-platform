@@ -937,7 +937,7 @@ select.xd-section-select {
   right: 0;
   bottom: 0;
   z-index: 901;
-  width: min(520px, 100vw);
+  width: min(680px, 100vw);
   display: flex;
   flex-direction: column;
   background: var(--surface);
@@ -951,13 +951,43 @@ select.xd-section-select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 14px 14px 24px;
+  padding: 14px 14px 14px 28px;
   border-bottom: 1px solid var(--line);
 }
 .xl-drawer-body {
   flex: 1 1 auto;
+  /* Without this the flex item grows to its content and never scrolls. */
+  min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+.xl-create-form {
+  padding: 24px 28px 0;
+}
+/* The submit row sticks to the bottom of the scrolling body. */
+.xl-create-footer {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -28px;
+  padding: 12px 28px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* Tablets and phones: the panel is a full-screen sheet, not a side pane. */
+@media (max-width: 1024px) {
+  .xl-drawer {
+    left: 0;
+    width: auto;
+    box-shadow: none;
+  }
+  .xl-scrim {
+    display: none;
+  }
+  .xl-drawer-body > * {
+    max-width: 720px;
+    margin: 0 auto;
+  }
 }
 .xl-icon-btn {
   width: 44px;
@@ -991,6 +1021,14 @@ select.xd-section-select {
   }
   .xl-drawer-head {
     padding-left: 16px;
+  }
+  .xl-create-form {
+    padding: 18px 16px 0;
+  }
+  .xl-create-footer {
+    margin: 0 -16px;
+    padding-left: 16px;
+    padding-right: 16px;
   }
   .xl-grouphead {
     padding: 16px 14px 12px !important;
@@ -1277,8 +1315,9 @@ select.xd-section-select {
 }
 
 /* ── Documentation ────────────────────────────────────────────────────────
-   A sticky contents list beside the guide; on phones it becomes one jump
-   <select> above it. Tables scroll inside .docs-tablebox. */
+   A sticky contents list beside the guide; on narrow screens it folds into a
+   sticky "On this page" bar that opens the same list over the guide. Tables
+   scroll inside .docs-tablebox. */
 .docs-layout {
   display: flex;
   flex-wrap: wrap;
@@ -1292,13 +1331,13 @@ select.xd-section-select {
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
-.docs-toc ol {
+.docs-toc-list {
   list-style: none;
   margin: 0;
   padding: 0;
   border-left: 1px solid var(--faint);
 }
-.docs-toc a {
+.docs-toc-list a {
   display: block;
   margin-left: -1px;
   padding: 6px 0 6px 14px;
@@ -1308,41 +1347,83 @@ select.xd-section-select {
   line-height: 1.4;
   text-decoration: none;
 }
-.docs-toc a:hover {
+.docs-toc-list a:hover {
   color: var(--ink);
 }
-.docs-toc a[aria-current='true'] {
+.docs-toc-list a[aria-current='true'] {
   color: var(--ink);
   font-weight: 600;
   border-left-color: var(--accent);
 }
-.docs-toc .docs-toc-part a {
+.docs-toc-list .docs-toc-part a {
   margin-top: 10px;
   font: 600 11px var(--font-mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
-.docs-toc .docs-toc-part:first-child a {
+.docs-toc-list .docs-toc-part:first-child a {
   margin-top: 0;
 }
 .docs-toc-sm {
   display: none;
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  /* Lets a long section title truncate instead of widening the page. */
+  min-width: 0;
 }
-.docs-toc-sm span {
-  display: block;
-  font-weight: 600;
-  font-size: 13.5px;
-  margin-bottom: 6px;
-}
-.docs-toc-sm select {
+.docs-toc-sm-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   width: 100%;
-  min-height: 44px;
-  padding: 0 12px;
+  min-height: 48px;
+  padding: 0 14px;
   border: 1px solid var(--faint);
   border-radius: var(--radius-sm);
   background: var(--surface);
-  font: 14px var(--font-body);
+  box-shadow: var(--shadow);
   color: var(--ink);
+  font: 14px var(--font-body);
+  text-align: left;
+  cursor: pointer;
+}
+.docs-toc-sm-label {
+  flex: 0 0 auto;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.docs-toc-sm-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.docs-toc-sm-toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.docs-toc-sm-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 12px 32px -12px rgba(40, 36, 32, 0.35);
+}
+.docs-toc-sm-menu .docs-toc-list li:not(.docs-toc-part) a {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  font-size: 15px;
 }
 .docs-article {
   flex: 999 1 560px;
@@ -1375,6 +1456,10 @@ select.xd-section-select {
   .docs-toc-sm {
     display: block;
     flex: 1 1 100%;
+  }
+  /* Clear the sticky bar when jumping to a heading. */
+  .admin-docs .docs-anchor {
+    scroll-margin-top: 72px;
   }
 }
 

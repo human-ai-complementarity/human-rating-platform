@@ -1053,6 +1053,9 @@ function GroupCard({
               title="Edit the dataset card"
               onClick={() => onEditCard(datasetId, bucket.datasetName ?? 'dataset')}
               style={{
+                display: 'inline-flex',
+                maxWidth: '100%',
+                minWidth: 0,
                 marginLeft: 'auto',
                 border: '1px solid var(--faint)',
                 borderRadius: 999,
@@ -1064,8 +1067,11 @@ function GroupCard({
                 whiteSpace: 'nowrap',
               }}
             >
-              {bucket.datasetName} card ·{' '}
-              {!card ? 'edit' : card.complete ? 'complete' : 'incomplete'}
+              {/* A long dataset name truncates; the card status stays visible. */}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {bucket.datasetName} card
+              </span>
+              <span>&nbsp;· {!card ? 'edit' : card.complete ? 'complete' : 'incomplete'}</span>
             </button>
           )}
         </div>
@@ -1877,7 +1883,7 @@ function CreatePanel({
 
   return (
     <div data-testid="create-panel">
-      <form onSubmit={handleSubmit} style={{ padding: '20px 24px 28px' }}>
+      <form onSubmit={handleSubmit} className="xl-create-form">
         <Field
           id="experiment-name"
           testId="experiment-name-input"
@@ -2349,23 +2355,26 @@ function CreatePanel({
           After creating the experiment and uploading questions, use the Prolific section
           to run a pilot study and launch rating rounds.
         </div>
-        <button
-          type="submit"
-          disabled={submitting}
-          style={{
-            width: '100%',
-            padding: 13,
-            background: 'var(--accent)',
-            color: 'var(--accent-ink)',
-            border: 'none',
-            borderRadius: 'var(--radius-sm)',
-            fontWeight: 600,
-            fontSize: 15,
-            cursor: submitting ? 'wait' : 'pointer',
-          }}
-        >
-          Create experiment
-        </button>
+        {/* Pinned to the bottom of the scrolling panel so it's always reachable. */}
+        <div className="xl-create-footer">
+          <button
+            type="submit"
+            disabled={submitting}
+            style={{
+              width: '100%',
+              padding: 13,
+              background: 'var(--accent)',
+              color: 'var(--accent-ink)',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              fontWeight: 600,
+              fontSize: 15,
+              cursor: submitting ? 'wait' : 'pointer',
+            }}
+          >
+            Create experiment
+          </button>
+        </div>
       </form>
     </div>
   );
@@ -2373,8 +2382,8 @@ function CreatePanel({
 
 /**
  * Side panel that holds the create form, so the experiment list keeps the full
- * page width. Full screen on phones (see .xl-drawer in index.css). Escape and
- * the scrim close it; focus moves into the panel on open and back to the
+ * page width. Full screen on tablets and phones (see .xl-drawer in index.css).
+ * Escape and the scrim close it; focus moves into the panel on open and back to the
  * New experiment button on close. It renders into <body> so that, while it is
  * open, the app root can be made inert: Tab and screen readers stay in the
  * panel. It stays mounted (hidden) while closed.

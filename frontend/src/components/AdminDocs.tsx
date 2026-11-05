@@ -1,4 +1,4 @@
-import { Children, isValidElement, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Children, isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import adminGuide from '../docs/admin-guide.md?raw';
@@ -85,44 +85,79 @@ function AdminDocs() {
     return () => observer.disconnect();
   }, [toc]);
 
+  // Narrow screens: the contents list folds into a sticky bar above the guide.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    const onPointerDown = (e: PointerEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [menuOpen]);
+
   const jumpTo = (id: string) => {
+    setMenuOpen(false);
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setActiveId(id);
   };
+
+  const tocList = (
+    <ol className="docs-toc-list">
+      {toc.map((entry) => (
+        <li key={entry.id} className={entry.level === 1 ? 'docs-toc-part' : undefined}>
+          <a
+            href={`#${entry.id}`}
+            aria-current={activeId === entry.id ? 'true' : undefined}
+            onClick={(e) => {
+              e.preventDefault();
+              jumpTo(entry.id);
+            }}
+          >
+            {entry.text}
+          </a>
+        </li>
+      ))}
+    </ol>
+  );
+  const activeText = toc.find((entry) => entry.id === activeId)?.text ?? '';
 
   return (
     <div className="admin-page">
       <div className="docs-layout">
         <nav className="docs-toc" aria-label="On this page">
-          <ol>
-            {toc.map((entry) => (
-              <li key={entry.id} className={entry.level === 1 ? 'docs-toc-part' : undefined}>
-                <a
-                  href={`#${entry.id}`}
-                  aria-current={activeId === entry.id ? 'true' : undefined}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    jumpTo(entry.id);
-                  }}
-                >
-                  {entry.text}
-                </a>
-              </li>
-            ))}
-          </ol>
+          {tocList}
         </nav>
 
-        <label className="docs-toc-sm">
-          <span>On this page</span>
-          <select value={activeId} onChange={(e) => jumpTo(e.target.value)}>
-            {toc.map((entry) => (
-              <option key={entry.id} value={entry.id}>
-                {/* Non-breaking: browsers strip leading ASCII spaces from option text. */}
-                {entry.level === 2 ? `\u00a0\u00a0\u00a0${entry.text}` : entry.text}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="docs-toc-sm" ref={menuRef}>
+          <button
+            type="button"
+            className="docs-toc-sm-toggle"
+            aria-expanded={menuOpen}
+            aria-controls="docs-toc-sm-menu"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            <span className="docs-toc-sm-label">On this page</span>
+            <span className="docs-toc-sm-current">{activeText}</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+          {menuOpen && (
+            <nav id="docs-toc-sm-menu" className="docs-toc-sm-menu" aria-label="On this page">
+              {tocList}
+            </nav>
+          )}
+        </div>
 
         <article className="docs-article">
           <div className="admin-docs markdown">
