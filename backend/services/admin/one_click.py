@@ -78,6 +78,8 @@ async def launch_from_card(
     experiment_id: int,
     payload: OneClickLaunchRequest,
     db: AsyncSession,
+    *,
+    requested_by: str | None = None,
 ) -> ExperimentRoundResponse:
     experiment = await fetch_experiment_or_404(experiment_id, db)
 
@@ -116,6 +118,7 @@ async def launch_from_card(
         reward=int(card["reward"]),  # type: ignore[arg-type]
         pilot_places=payload.places or DEFAULT_PILOT_PLACES,
         excluded_experiment_ids=excluded_ids,
+        acknowledge_pilot_check=payload.acknowledge_pilot_check,
         **(
             {"study_label": card["study_label"]}  # type: ignore[dict-item]
             if card.get("study_label")
@@ -125,4 +128,10 @@ async def launch_from_card(
     )
     # The pilot form only accepts FINISHED experiments as new exclusions; these
     # are chosen here, and a sibling still collecting is exactly the one to block.
-    return await run_pilot_study(experiment_id, pilot, db, preapproved_exclusion_ids=excluded_ids)
+    return await run_pilot_study(
+        experiment_id,
+        pilot,
+        db,
+        preapproved_exclusion_ids=excluded_ids,
+        requested_by=requested_by,
+    )

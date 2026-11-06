@@ -152,6 +152,11 @@ export function PilotCheckCard({
                   {run.requested_by && ` by ${run.requested_by}`}.
                 </span>
               )}
+              {summary?.needs_acknowledgement && (
+                <div style={{ marginTop: 4, fontSize: 12.5 }}>
+                  Launching will ask you to acknowledge this.
+                </div>
+              )}
             </div>
           </Banner>
         </div>

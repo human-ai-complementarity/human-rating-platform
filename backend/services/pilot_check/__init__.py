@@ -2,4 +2,4 @@
 experiment as a rater would see it, run before a study is created.
 
 `runs` starts, executes and reads runs; `summary` turns the latest run into
-what the experiment page shows."""
+what the experiment page shows; `gate` enforces it at study creation."""

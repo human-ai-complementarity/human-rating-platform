@@ -3,11 +3,15 @@
 An admin-triggered check that samples an experiment's questions, walks each
 one through the same code path a rater hits, runs the configured assistance
 method on it, and reports anything a researcher would want to fix before
-paying Prolific participants to look at it. The experiment page says whether
-the check has been run and shows its findings.
+paying Prolific participants to look at it. The experiment and launch pages
+say whether the check has been run, show its findings, and ask before
+creating a study without a clean run. They ask; they never refuse. A
+judge will always find something to fix, so the decision stays with the
+admin and the check records who made it.
 
 Code: `backend/services/pilot_check/`, settings under `[pilot_check]` in
-`backend/config.toml`, UI in `frontend/src/components/experiment-detail/PilotCheckCard.tsx`.
+`backend/config.toml`, UI in `frontend/src/components/experiment-detail/`
+(`PilotCheckCard.tsx`, `usePilotCheckGate.tsx`).
 
 ## Why
 
@@ -57,9 +61,10 @@ The "every confidence is 0 and nothing is filled in" pattern from the brief is
 `assistance_output` on a single question and `assistance_health` across the
 sample. One question doing it is a warning; all of them doing it is an error.
 
-The launch gate's own blockers are not repeated as a check: the fingerprint
-covers every blocker input, so a run made with a blocker present is already
-stale by the time it could matter.
+The launch gate's own blockers are not repeated as a check: the pilot gate
+runs after `assert_launch_ready`, and the fingerprint covers every blocker
+input, so a run made with a blocker present is already stale by the time it
+could matter.
 
 ## Settings
 
@@ -70,6 +75,7 @@ stale by the time it could matter.
 | `sample_size` | 15 | served questions drawn per run (1 to 50) |
 | `judge_model` | `openrouter/anthropic/claude-sonnet-4-6` | `<provider>/<model-id>`, as in `assistance_models` |
 | `max_median_latency_seconds` | 20 | `assistance_health` latency threshold |
+| `gate_mode` | `warn` | `warn` asks for acknowledgement, `off` ignores the check (the UI still shows it) |
 | `severities` | `{}` | per-check overrides of the default severity, e.g. `markdown_mode = "info"` |
 
 A SHA-256 of these values is stored on every run and is part of the
@@ -141,7 +147,9 @@ what it saw in `terms_ref` (`label vN:sha256`) so a version bump is visible
 on the run detail, and `consent_configured` re-reads it on every run.
 
 The latest run is summarised onto `ExperimentResponse.pilot_check` (`state`,
-`run_id`, `counts`, `reason`) by `summary.summarise`.
+`run_id`, `counts`, `gate_mode`, `needs_acknowledgement`, `reason`) by
+`summary.summarise`, the same function the launch gate reads, so the UI and the
+409 cannot disagree.
 
 ## API
 
@@ -169,9 +177,32 @@ goes through (no `assistance` or `assistance_useful` on a control arm, no
 judged stages when the judge has no key), computed at read time. The
 deterministic checks share one stage because they finish before a poll could
 show progress; the judged ones each get a dot because they are where a run
-spends its time. The card draws them as a horizontal stepper: a dot lights
-with a glow once its stage has started, pulses while it is the current one,
-and turns red if the run died there.
+spends its time.
+
+### Launch gate
+
+`assert_launch_ready` stays as it is: hard blockers remain hard.
+`gate.gate_for` runs after it in `run_pilot_study` and
+`run_experiment_round` (`launch_from_card` goes through `run_pilot_study`):
+
+- `gate_mode == "off"`: returns.
+- Latest run `passed` and not stale: returns.
+- Otherwise: 409 with
+  `{"detail": {"code": "pilot_check", "message", "pilot_check": <summary>}}`
+  unless the request carries `acknowledge_pilot_check: true`, in which case
+  the acknowledgement is written onto the round's row (`pilot_check_run_id`,
+  `pilot_check_acknowledged_by`, both on `ExperimentRoundResponse`) and the
+  launch proceeds.
+
+There is deliberately no mode that refuses an acknowledged launch. The check
+is advisory: it surfaces what a rater would hit and who decided to go ahead
+anyway, and leaves the decision to the admin.
+
+The frontend's `ApiError` keeps the parsed `detail`; `usePilotCheckGate`
+recognises the refusal, shows it in a dialog built from the 409's own body,
+and retries the same call with the acknowledgement. The experiment list's
+attention dot reads "Run the pilot check before launching." for a DRAFT with
+questions, no rounds, and a summary that needs acknowledgement.
 
 ## Cost and time
 
@@ -196,11 +227,17 @@ assistance calls.
   lands with the provider client stubbed (the `no_provider_calls` fixture
   makes every assistance call fail, which is itself a good fixture: the run
   must report `assistance_health` as failed, not crash); a stale fingerprint;
-  a run that stopped reporting progress.
-- Playwright (`frontend/e2e/smoke.spec.ts`): the stepper mid-run and landed.
+  a run that stopped reporting progress; the gate's 409 and acknowledgement.
+  The suite runs with the gate off (`pilot_check_gate_off` in conftest); the
+  gate tests turn it on.
+- Playwright (`frontend/e2e/smoke.spec.ts`): the stepper mid-run and landed,
+  the acknowledge dialog and its cancel path.
 
 ## Open questions
 
+- Should the acknowledgement require a free-text reason? Cheap to add, and
+  it makes the audit column useful; it also adds friction to a path that is
+  meant to stay available. Default here: no reason, just the identity.
 - `sample_size` of 15 is a guess between the 10 and 20 in the brief. The
   cost table above says 20 is fine too; 15 keeps a run around a minute.
 - Whether the check should also run `advance()` for `human_as_a_tool` with

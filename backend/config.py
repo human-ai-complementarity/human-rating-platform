@@ -246,6 +246,11 @@ class PilotCheckSettings(_StrictModel):
     judge_model: str = "openrouter/anthropic/claude-sonnet-4-6"
     # assistance_health: median start() latency above this is a warning.
     max_median_latency_seconds: float = Field(default=20.0, ge=0.0)
+    # "warn": creating a study asks the admin to confirm when the latest run is
+    #         missing, stale, running, or has a warning or error. The check
+    #         never refuses a launch: a judge will always find something.
+    # "off":  creating a study ignores the check (the UI still shows it).
+    gate_mode: Literal["warn", "off"] = "warn"
     # Per-check severity overrides, keyed by check name; each check has a
     # default in code (services/pilot_check/checks).
     severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)

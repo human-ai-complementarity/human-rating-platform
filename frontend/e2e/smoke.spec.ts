@@ -61,6 +61,8 @@ type PilotCheckSummaryRecord = {
   created_at: string | null;
   finished_at: string | null;
   counts: { error: number; warning: number; info: number };
+  gate_mode: 'warn' | 'off';
+  needs_acknowledgement: boolean;
   reason: string | null;
 };
 
@@ -99,6 +101,8 @@ const PILOT_CHECK_PASSED: PilotCheckSummaryRecord = {
   created_at: '2026-03-09T00:03:00Z',
   finished_at: '2026-03-09T00:04:00Z',
   counts: { error: 0, warning: 0, info: 2 },
+  gate_mode: 'warn',
+  needs_acknowledgement: false,
   reason: null,
 };
 
@@ -108,6 +112,8 @@ const PILOT_CHECK_NOT_RUN: PilotCheckSummaryRecord = {
   created_at: null,
   finished_at: null,
   counts: { error: 0, warning: 0, info: 0 },
+  gate_mode: 'warn',
+  needs_acknowledgement: true,
   reason: 'The pilot check has not been run.',
 };
 
@@ -290,11 +296,13 @@ type MockState = {
   launchError: string | null;
   // What GET /launch/preview reports a one-click launch would exclude.
   launchExcluded: { id: number; name: string; internal_name: string | null }[];
-  // Pilot check runs per experiment, and the experiments checks were requested for.
+  // Pilot check runs per experiment, and every study creation's
+  // acknowledge_pilot_check flag, in order.
   pilotCheckRuns: Record<number, PilotCheckRunRecord>;
   pilotCheckRequests: number[];
   // How many GET polls still see the started run in flight before it lands.
   pilotCheckRunningPolls: number;
+  launchAcknowledgements: boolean[];
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
@@ -413,6 +421,27 @@ function buildPilotCheckRun(
   };
 }
 
+// The gate's 409 (docs/pilot-check.md): refused unless acknowledged.
+async function refuseUnlessAcknowledged(
+  route: Route,
+  state: MockState,
+  experiment: ExperimentRecord | undefined,
+  payload: { acknowledge_pilot_check?: boolean },
+): Promise<boolean> {
+  const acknowledged = payload.acknowledge_pilot_check === true;
+  state.launchAcknowledgements.push(acknowledged);
+  if (!experiment || !experiment.pilot_check.needs_acknowledgement) return false;
+  if (acknowledged) return false;
+  await fulfillJson(route, 409, {
+    detail: {
+      code: 'pilot_check',
+      message: `${experiment.pilot_check.reason} Run the pilot check first, or acknowledge and launch anyway.`,
+      pilot_check: experiment.pilot_check,
+    },
+  });
+  return true;
+}
+
 function listTagRecords(state: MockState): { name: string; usage_count: number }[] {
   const usage = new Map<string, { name: string; usage_count: number }>();
   for (const experiment of state.experiments) {
@@ -447,6 +476,7 @@ function createMockState(): MockState {
     pilotCheckRuns: {},
     pilotCheckRequests: [],
     pilotCheckRunningPolls: 0,
+    launchAcknowledgements: [],
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
@@ -965,6 +995,8 @@ async function installApiMocks(
           created_at: run.created_at,
           finished_at: run.finished_at,
           counts: { error: 0, warning: 1, info: 1 },
+          gate_mode: 'warn',
+          needs_acknowledgement: true,
           reason: 'The last pilot check found 0 error(s) and 1 warning(s).',
         };
       }
@@ -992,7 +1024,10 @@ async function installApiMocks(
         estimated_completion_time: number;
         reward: number;
         pilot_places: number;
+        acknowledge_pilot_check?: boolean;
       };
+      const gated = state.experiments.find((item) => item.id === experimentId);
+      if (await refuseUnlessAcknowledged(route, state, gated, payload)) return;
       const pilot = buildRound(state, {
         round_number: 0,
         prolific_study_id: 'study-pilot-1',
@@ -1426,7 +1461,10 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
   await page.getByTestId('pilot-places-input').fill('5');
   await page.getByTestId('run-pilot-button').click();
 
+  // The default mock experiment has a passed pilot check, so no gate dialog.
   await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('pilot-check-dialog')).toHaveCount(0);
+  expect(state.launchAcknowledgements).toEqual([false]);
   await expect(page.getByTestId('publish-round-0')).toBeVisible();
   await expect(page.getByTestId('recommendation-panel')).toContainText('Recommendation for next round');
   await expect(page.getByTestId('completion-url-input')).toContainText(
@@ -4256,6 +4294,13 @@ function pilotCheckExperiment(state: MockState, pilot_check: PilotCheckSummaryRe
   };
 }
 
+async function fillPilotForm(page: Page) {
+  await page.getByTestId('pilot-description-input').fill('Pilot description');
+  await page.getByTestId('pilot-estimated-completion-time-input').fill('30');
+  await page.getByTestId('pilot-reward-input').fill('900');
+  await page.getByTestId('pilot-places-input').fill('5');
+}
+
 test('the launch tab nags about an unrun pilot check and shows a run as it lands', async ({ page }) => {
   const state = createMockState();
   pilotCheckExperiment(state, PILOT_CHECK_NOT_RUN);
@@ -4270,7 +4315,7 @@ test('the launch tab nags about an unrun pilot check and shows a run as it lands
   const card = page.getByTestId('pilot-check-card');
   await expect(card.getByTestId('pilot-check-state')).toHaveText('Not run');
   await expect(card.getByTestId('pilot-check-banner')).toContainText(
-    'The pilot check has not been run.',
+    'Launching will ask you to acknowledge this.',
   );
   await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Run check');
 
@@ -4304,4 +4349,31 @@ test('the launch tab nags about an unrun pilot check and shows a run as it lands
   await expect(card.getByTestId('pilot-check-banner')).toContainText('1 warning');
   await expect(card.getByTestId('pilot-check-banner')).toContainText('by dev@local');
   await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
+});
+
+test('creating a pilot without a clean pilot check asks before launching anyway', async ({ page }) => {
+  const state = createMockState();
+  pilotCheckExperiment(state, PILOT_CHECK_NOT_RUN);
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+  await fillPilotForm(page);
+  await page.getByTestId('run-pilot-button').click();
+
+  // The 409's own sentence; "run the check first" backs out without launching.
+  const dialog = page.getByTestId('pilot-check-dialog');
+  await expect(dialog).toContainText('Launch without a clean pilot check?');
+  await expect(dialog).toContainText('The pilot check has not been run.');
+  await dialog.getByRole('button', { name: 'Run the check first' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(state.launchAcknowledgements).toEqual([false]);
+  expect(state.rounds[1]).toEqual([]);
+
+  // Trying again and launching anyway sends a second request carrying the
+  // acknowledgement.
+  await page.getByTestId('run-pilot-button').click();
+  await dialog.getByRole('button', { name: 'Launch anyway' }).click();
+  await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();
+  expect(state.launchAcknowledgements).toEqual([false, false, true]);
+  expect(state.rounds[1]).toHaveLength(1);
 });
