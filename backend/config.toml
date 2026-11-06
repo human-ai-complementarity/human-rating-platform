@@ -34,3 +34,9 @@ enable_all = false
 # Set lookahead_questions = 0 for queue-only comparison without speculation.
 experiment_ids = []
 lookahead_questions = 1
+
+[pilot_check]
+# docs/pilot-check.md. A hash of this section is stored on each run.
+sample_size = 15
+# Per-check severity overrides, e.g. markdown_mode = "info".
+[pilot_check.severities]

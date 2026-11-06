@@ -29,9 +29,9 @@ from services.assistance.methods.top_n import (
     _clamp_top_n,
     _compose_system_prompt,
     _normalize_candidates,
-    _parse_options,
+    parse_options,
     _parse_top_n_response,
-    _strip_markdown_json,
+    strip_markdown_json,
     _top_n_response_format,
 )
 
@@ -56,29 +56,29 @@ def _clear_schema_rejected_models():
 
 
 # ---------------------------------------------------------------------------
-# _parse_options
+# parse_options
 # ---------------------------------------------------------------------------
 
 
 class TestParseOptions:
     def test_none_returns_empty(self):
-        assert _parse_options(None) == []
+        assert parse_options(None) == []
 
     def test_empty_string_returns_empty(self):
-        assert _parse_options("") == []
+        assert parse_options("") == []
 
     def test_pipe_delimited(self):
-        assert _parse_options("Yes|No|Maybe") == ["Yes", "No", "Maybe"]
+        assert parse_options("Yes|No|Maybe") == ["Yes", "No", "Maybe"]
 
     def test_pipe_delimited_strips_whitespace(self):
-        assert _parse_options(" Yes | No ") == ["Yes", "No"]
+        assert parse_options(" Yes | No ") == ["Yes", "No"]
 
     def test_pipe_delimited_ignores_empty_segments(self):
-        assert _parse_options("Yes||No") == ["Yes", "No"]
+        assert parse_options("Yes||No") == ["Yes", "No"]
 
     def test_labeled_options_uppercase_letter_period(self):
         raw = "A. Option one\nB. Option two\nC. Option three"
-        result = _parse_options(raw)
+        result = parse_options(raw)
         assert len(result) == 3
         assert "A. Option one" in result[0]
         assert "B. Option two" in result[1]
@@ -86,19 +86,19 @@ class TestParseOptions:
 
     def test_labeled_options_parens(self):
         raw = "(A) Option one\n(B) Option two"
-        result = _parse_options(raw)
+        result = parse_options(raw)
         assert len(result) == 2
 
     def test_newline_delimited(self):
-        result = _parse_options("option one\noption two\noption three")
+        result = parse_options("option one\noption two\noption three")
         assert result == ["option one", "option two", "option three"]
 
     def test_comma_delimited_fallback(self):
-        result = _parse_options("alpha,beta,gamma")
+        result = parse_options("alpha,beta,gamma")
         assert result == ["alpha", "beta", "gamma"]
 
     def test_single_value_returned_as_list(self):
-        result = _parse_options("only one option")
+        result = parse_options("only one option")
         assert result == ["only one option"]
 
 
@@ -137,22 +137,22 @@ class TestClampTopN:
 
 
 # ---------------------------------------------------------------------------
-# _strip_markdown_json
+# strip_markdown_json
 # ---------------------------------------------------------------------------
 
 
 class TestStripMarkdownJson:
     def test_plain_json_unchanged(self):
         raw = '{"candidates": []}'
-        assert _strip_markdown_json(raw) == raw
+        assert strip_markdown_json(raw) == raw
 
     def test_strips_json_fence(self):
         raw = '```json\n{"candidates": []}\n```'
-        assert _strip_markdown_json(raw) == '{"candidates": []}'
+        assert strip_markdown_json(raw) == '{"candidates": []}'
 
     def test_strips_plain_fence(self):
         raw = '```\n{"candidates": []}\n```'
-        assert _strip_markdown_json(raw) == '{"candidates": []}'
+        assert strip_markdown_json(raw) == '{"candidates": []}'
 
 
 # ---------------------------------------------------------------------------

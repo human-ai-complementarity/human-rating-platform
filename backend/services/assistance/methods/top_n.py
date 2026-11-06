@@ -77,7 +77,7 @@ comparison operator as the value.
 """
 
 
-def _parse_options(raw_options: str | None) -> list[str]:
+def parse_options(raw_options: str | None) -> list[str]:
     if not raw_options:
         return []
 
@@ -111,7 +111,7 @@ def _clamp_top_n(value: Any) -> int:
     return max(1, min(_MAX_TOP_N, n))
 
 
-def _strip_markdown_json(raw: str) -> str:
+def strip_markdown_json(raw: str) -> str:
     return re.sub(r"```json?\n?|```\n?", "", raw).strip()
 
 
@@ -285,7 +285,7 @@ async def _complete_with_schema_fallback(
 
 
 def _parse_top_n_response(raw: str) -> dict:
-    content = _strip_markdown_json(raw)
+    content = strip_markdown_json(raw)
     decoder = json.JSONDecoder()
     for start_index, char in enumerate(content):
         if char != "{":
@@ -387,7 +387,7 @@ class TopNAssistance(InitialStepPreparation):
         entry = self.role_models(params)[self.primary_model_role]
         model = entry.model
         requested_n = _clamp_top_n(params.get("n", _DEFAULT_TOP_N))
-        options = _parse_options(question.options)
+        options = parse_options(question.options)
         n = min(requested_n, len(options)) if options else requested_n
 
         option_block = (
