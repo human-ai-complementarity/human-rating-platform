@@ -82,7 +82,8 @@ class InitialStepPreparation(AssistanceMethod):
     Multi-turn advance() is intentionally outside this contract.
     """
 
-    preparation_version = 1
+    # 2: the question's content blocks (images) joined the inputs.
+    preparation_version = 2
 
     def plan_preparation(self, context: PreparationContext) -> PreparationSpec:
         return PreparationSpec(
