@@ -493,6 +493,8 @@ gsutil -m rsync outputs/checkpoints/ingest_questions/media gs://<bucket>/<prefix
 
 An upload checks every referenced digest against the source and refuses the file, listing the missing ones, rather than store a question whose image a rater could not see. It also refuses an image over `MEDIA__MAX_IMAGE_BYTES` (default 7 MB): the assistance models receive each image inline, and the strictest provider in use rejects larger ones at request time. The source is `gs://bucket/prefix` in production (read with the platform's own Google credentials, `MEDIA__GCS_WIF_*` as for `TERMS__GCS_*`) or `file://folder` locally.
 
+**Delivery.** Only raters with a live session are handed image URLs. The backend serves the bytes from `/api/raters/media/<digest>` behind an HMAC token with at least four hours of life left when handed out (long enough to cover a session); the bytes are re-hashed on every read, so an object that changed after upload is refused rather than shown.
+
 ### Optional dataset-level metadata
 
 Each upload format has a natural place for dataset-level metadata. The first upload populates these fields on the experiment; later uploads that disagree are reported but never overwrite. See [dataset-file-level-metadata-construction.ipynb](https://colab.research.google.com/drive/1D4bYm0mvgOWk1v8dHqaZN8yQj-bcoqdB) for how to produce both formats from a pandas DataFrame.
@@ -748,6 +750,7 @@ model and key management.
 - `GET /api/raters/next-question` — get next question
 - `POST /api/raters/submit` — submit a rating
 - `GET /api/raters/session-status` — check session status
+- `GET /api/raters/media/{digest}` — one question image, by the expiring URL `next-question` handed out (no session header; the URL is the credential)
 - `POST /api/raters/end-session` — end session
 - `POST /api/raters/assistance/start` — start an assistance session for a question; returns an `AssistanceStepResponse` with `session_id`, `type`, and `content`
 - `POST /api/raters/assistance/advance` — advance a multi-turn assistance session; body: `{ session_id, human_input }`
