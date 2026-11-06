@@ -87,12 +87,24 @@ export const selectStyle: React.CSSProperties = {
 };
 
 /** Colored banner used for info/success/warning/error messages inside panels. */
+export type Tone = 'info' | 'ok' | 'warn' | 'danger';
+
+/** The ink colour for a tone, for pills, labels and dots outside a Banner. */
+export function toneColor(tone: Tone): string {
+  return {
+    info: 'var(--muted)',
+    ok: 'var(--accent)',
+    warn: 'var(--warn)',
+    danger: 'var(--danger)',
+  }[tone];
+}
+
 export function Banner({
   tone,
   children,
   icon = true,
 }: {
-  tone: 'info' | 'ok' | 'warn' | 'danger';
+  tone: Tone;
   children: React.ReactNode;
   icon?: boolean;
 }) {
