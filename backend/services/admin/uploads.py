@@ -24,6 +24,7 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, expand_bare_entry
 from services.question_separator import separator_upload_offenders
+from .experiments import MARKDOWN_WITH_MATH_DETAIL
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -52,16 +53,23 @@ DATASET_META_FIELDS = (
 # "assistance_models.<method>" in meta_applied / meta_conflicts.
 ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
 
-# Whether the rater card renders TeX between math delimiters. A JSON boolean,
-# not a string, so it stays out of the string-coerced tuple above; see
-# `_apply_render_math_meta`.
+# Whether the rater card renders TeX between math delimiters, and whether it
+# renders the question as Markdown (`Experiment.is_markdown`). JSON booleans,
+# not strings, so they stay out of the string-coerced tuple above; see
+# `_apply_render_math_meta` and `_apply_render_markdown_meta`.
 RENDER_MATH_META_FIELD = "render_math"
+RENDER_MARKDOWN_META_FIELD = "render_markdown"
 
 # Everything an upload may declare. Keys are matched against this allowlist so
 # unknown keys surface as a clean 400 instead of silently filling columns we
 # don't model. Applies to both the CSV `#META:` header line and the Parquet
 # schema's `dataset_meta` key — the export writes the same JSON shape for both.
-DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD, RENDER_MATH_META_FIELD)
+DATASET_META_KEYS = (
+    *DATASET_META_FIELDS,
+    ASSISTANCE_MODELS_META_FIELD,
+    RENDER_MATH_META_FIELD,
+    RENDER_MARKDOWN_META_FIELD,
+)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
@@ -142,8 +150,8 @@ def _validate_assistance_models(value: Any) -> dict[str, dict[str, Any]]:
 def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     """Validate a decoded `#META:` / `dataset_meta` payload and normalise to str.
 
-    `assistance_models` stays an object and `render_math` a bool; every other
-    value is coerced to a string.
+    `assistance_models` stays an object and `render_math` / `render_markdown`
+    bools; every other value is coerced to a string.
 
     Shared between the CSV and Parquet readers so the wire format and error
     messages stay identical. Raises HTTPException(400) for bad shapes — silently
@@ -168,6 +176,7 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     parsed = dict(parsed)
     assistance_models = parsed.pop(ASSISTANCE_MODELS_META_FIELD, None)
     render_math = parsed.pop(RENDER_MATH_META_FIELD, None)
+    render_markdown = parsed.pop(RENDER_MARKDOWN_META_FIELD, None)
     # Coerce all values to strings — JSON may have given us ints/bools for
     # `prolific_pool` etc. Drop empty strings so they don't overwrite existing values.
     values: dict[str, Any] = {
@@ -178,17 +187,24 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         if assistance_models:
             values[ASSISTANCE_MODELS_META_FIELD] = assistance_models
     if render_math is not None:
-        # Strict: "false" or 0 coerced to bool would read as the opposite.
-        if not isinstance(render_math, bool):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"dataset metadata {RENDER_MATH_META_FIELD} must be true or false, "
-                    f"got {render_math!r}"
-                ),
-            )
-        values[RENDER_MATH_META_FIELD] = render_math
+        values[RENDER_MATH_META_FIELD] = _validate_flag(RENDER_MATH_META_FIELD, render_math)
+    if render_markdown is not None:
+        values[RENDER_MARKDOWN_META_FIELD] = _validate_flag(
+            RENDER_MARKDOWN_META_FIELD, render_markdown
+        )
+    if values.get(RENDER_MATH_META_FIELD) and values.get(RENDER_MARKDOWN_META_FIELD):
+        raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
     return values
+
+
+def _validate_flag(key: str, value: Any) -> bool:
+    # Strict: "false" or 0 coerced to bool would read as the opposite.
+    if not isinstance(value, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=f"dataset metadata {key} must be true or false, got {value!r}",
+        )
+    return value
 
 
 def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, Any] | None:
@@ -258,6 +274,7 @@ def _apply_meta_to_experiment(
             conflicts.append(field_name)
     _apply_assistance_models_meta(experiment, meta, applied, conflicts)
     _apply_render_math_meta(experiment, meta, applied, conflicts)
+    _apply_render_markdown_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
 
 
@@ -286,6 +303,28 @@ def _apply_render_math_meta(
         applied.append(RENDER_MATH_META_FIELD)
     else:
         conflicts.append(RENDER_MATH_META_FIELD)
+
+
+def _apply_render_markdown_meta(
+    experiment: Experiment,
+    meta: dict[str, Any],
+    applied: list[str],
+    conflicts: list[str],
+) -> None:
+    """Turn Markdown rendering on when an upload declares it; never turn it off.
+
+    The same rules as `_apply_render_math_meta`, against `is_markdown`.
+    """
+    if RENDER_MARKDOWN_META_FIELD not in meta:
+        return
+    declared = meta[RENDER_MARKDOWN_META_FIELD]
+    if declared == experiment.is_markdown:
+        return
+    if declared and not experiment.render_math:
+        experiment.is_markdown = True
+        applied.append(RENDER_MARKDOWN_META_FIELD)
+    else:
+        conflicts.append(RENDER_MARKDOWN_META_FIELD)
 
 
 def _apply_assistance_models_meta(
