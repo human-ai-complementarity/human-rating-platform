@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import type { Question } from '../types';
 import { splitMath, useMathRenderer } from '../math';
@@ -139,7 +140,7 @@ function QuestionBody({
   }
   return (
     <div className="question-markdown markdown" style={style}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
     </div>
