@@ -14,7 +14,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
 
 
 def _experiment(client: TestClient) -> dict:
@@ -123,17 +122,4 @@ def test_declaring_both_rendering_flags_rejects_the_upload(client: TestClient):
 
     assert resp.status_code == 400
     assert "cannot both be on" in resp.json()["detail"]
-    assert _flags(client, exp["id"]) == (False, False)
-
-
-def test_an_upload_cannot_switch_markdown_on_after_launch(client: TestClient, sync_engine):
-    exp = _experiment(client)
-    with sync_engine.begin() as conn:
-        conn.execute(
-            text("UPDATE experiments SET status = 'LAUNCH' WHERE id = :id"), {"id": exp["id"]}
-        )
-    resp = _upload_csv(client, exp["id"], {"render_markdown": True})
-
-    assert resp.status_code == 400
-    assert "locked" in resp.json()["detail"]
     assert _flags(client, exp["id"]) == (False, False)

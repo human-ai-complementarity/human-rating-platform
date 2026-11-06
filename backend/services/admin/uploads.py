@@ -53,23 +53,23 @@ DATASET_META_FIELDS = (
 # "assistance_models.<method>" in meta_applied / meta_conflicts.
 ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
 
-# The rendering flags: whether the rater card renders TeX between math
-# delimiters, and whether it renders the question as Markdown. JSON booleans,
+# Whether the rater card renders TeX between math delimiters, and whether it
+# renders the question as Markdown (`Experiment.is_markdown`). JSON booleans,
 # not strings, so they stay out of the string-coerced tuple above; see
-# `_apply_rendering_flags_meta`. Each maps onto the Experiment column it
-# switches on; the two are exclusive (`MARKDOWN_WITH_MATH_DETAIL`).
+# `_apply_render_math_meta` and `_apply_render_markdown_meta`.
 RENDER_MATH_META_FIELD = "render_math"
 RENDER_MARKDOWN_META_FIELD = "render_markdown"
-RENDERING_FLAG_COLUMNS = {
-    RENDER_MATH_META_FIELD: "render_math",
-    RENDER_MARKDOWN_META_FIELD: "is_markdown",
-}
 
 # Everything an upload may declare. Keys are matched against this allowlist so
 # unknown keys surface as a clean 400 instead of silently filling columns we
 # don't model. Applies to both the CSV `#META:` header line and the Parquet
 # schema's `dataset_meta` key — the export writes the same JSON shape for both.
-DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD, *RENDERING_FLAG_COLUMNS)
+DATASET_META_KEYS = (
+    *DATASET_META_FIELDS,
+    ASSISTANCE_MODELS_META_FIELD,
+    RENDER_MATH_META_FIELD,
+    RENDER_MARKDOWN_META_FIELD,
+)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
@@ -150,8 +150,8 @@ def _validate_assistance_models(value: Any) -> dict[str, dict[str, Any]]:
 def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     """Validate a decoded `#META:` / `dataset_meta` payload and normalise to str.
 
-    `assistance_models` stays an object and the rendering flags (`render_math`,
-    `render_markdown`) bools; every other value is coerced to a string.
+    `assistance_models` stays an object and `render_math` / `render_markdown`
+    bools; every other value is coerced to a string.
 
     Shared between the CSV and Parquet readers so the wire format and error
     messages stay identical. Raises HTTPException(400) for bad shapes — silently
@@ -175,7 +175,8 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         )
     parsed = dict(parsed)
     assistance_models = parsed.pop(ASSISTANCE_MODELS_META_FIELD, None)
-    rendering_flags = {key: parsed.pop(key, None) for key in RENDERING_FLAG_COLUMNS}
+    render_math = parsed.pop(RENDER_MATH_META_FIELD, None)
+    render_markdown = parsed.pop(RENDER_MARKDOWN_META_FIELD, None)
     # Coerce all values to strings — JSON may have given us ints/bools for
     # `prolific_pool` etc. Drop empty strings so they don't overwrite existing values.
     values: dict[str, Any] = {
@@ -185,19 +186,25 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         assistance_models = _validate_assistance_models(assistance_models)
         if assistance_models:
             values[ASSISTANCE_MODELS_META_FIELD] = assistance_models
-    for key, flag in rendering_flags.items():
-        if flag is None:
-            continue
-        # Strict: "false" or 0 coerced to bool would read as the opposite.
-        if not isinstance(flag, bool):
-            raise HTTPException(
-                status_code=400,
-                detail=f"dataset metadata {key} must be true or false, got {flag!r}",
-            )
-        values[key] = flag
-    if all(values.get(key) for key in RENDERING_FLAG_COLUMNS):
+    if render_math is not None:
+        values[RENDER_MATH_META_FIELD] = _validate_flag(RENDER_MATH_META_FIELD, render_math)
+    if render_markdown is not None:
+        values[RENDER_MARKDOWN_META_FIELD] = _validate_flag(
+            RENDER_MARKDOWN_META_FIELD, render_markdown
+        )
+    if values.get(RENDER_MATH_META_FIELD) and values.get(RENDER_MARKDOWN_META_FIELD):
         raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
     return values
+
+
+def _validate_flag(key: str, value: Any) -> bool:
+    # Strict: "false" or 0 coerced to bool would read as the opposite.
+    if not isinstance(value, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=f"dataset metadata {key} must be true or false, got {value!r}",
+        )
+    return value
 
 
 def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, Any] | None:
@@ -266,41 +273,58 @@ def _apply_meta_to_experiment(
         elif current_value != new_value:
             conflicts.append(field_name)
     _apply_assistance_models_meta(experiment, meta, applied, conflicts)
-    _apply_rendering_flags_meta(experiment, meta, applied, conflicts)
+    _apply_render_math_meta(experiment, meta, applied, conflicts)
+    _apply_render_markdown_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
 
 
-def _apply_rendering_flags_meta(
+def _apply_render_math_meta(
     experiment: Experiment,
     meta: dict[str, Any],
     applied: list[str],
     conflicts: list[str],
 ) -> None:
-    """Turn a rendering flag on when an upload declares it; never turn it off.
+    """Turn math rendering on when an upload declares it; never turn it off.
 
     Off is the column default, so it cannot tell an admin's choice from an
-    untouched experiment: an upload may switch a flag on, the way the string
+    untouched experiment: an upload may switch it on, the way the string
     fields fill a blank. Declaring false on an experiment an admin switched on
-    is a conflict, not a silent switch-off. So is declaring true on one where
-    an admin switched the other flag on: the two are exclusive (see
+    is a conflict, not a silent switch-off. So is declaring true on one an
+    admin set to Markdown: the two flags are exclusive (see
     `_reject_markdown_with_math`), and the admin's choice stands.
     """
-    for key, column in RENDERING_FLAG_COLUMNS.items():
-        if key not in meta:
-            continue
-        declared = meta[key]
-        if declared == getattr(experiment, column):
-            continue
-        other_on = any(
-            getattr(experiment, other)
-            for other in RENDERING_FLAG_COLUMNS.values()
-            if other != column
-        )
-        if declared and not other_on:
-            setattr(experiment, column, True)
-            applied.append(key)
-        else:
-            conflicts.append(key)
+    if RENDER_MATH_META_FIELD not in meta:
+        return
+    declared = meta[RENDER_MATH_META_FIELD]
+    if declared == experiment.render_math:
+        return
+    if declared and not experiment.is_markdown:
+        experiment.render_math = True
+        applied.append(RENDER_MATH_META_FIELD)
+    else:
+        conflicts.append(RENDER_MATH_META_FIELD)
+
+
+def _apply_render_markdown_meta(
+    experiment: Experiment,
+    meta: dict[str, Any],
+    applied: list[str],
+    conflicts: list[str],
+) -> None:
+    """Turn Markdown rendering on when an upload declares it; never turn it off.
+
+    The same rules as `_apply_render_math_meta`, against `is_markdown`.
+    """
+    if RENDER_MARKDOWN_META_FIELD not in meta:
+        return
+    declared = meta[RENDER_MARKDOWN_META_FIELD]
+    if declared == experiment.is_markdown:
+        return
+    if declared and not experiment.render_math:
+        experiment.is_markdown = True
+        applied.append(RENDER_MARKDOWN_META_FIELD)
+    else:
+        conflicts.append(RENDER_MARKDOWN_META_FIELD)
 
 
 def _apply_assistance_models_meta(
