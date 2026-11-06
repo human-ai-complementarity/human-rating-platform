@@ -47,7 +47,7 @@ A row's `content` column holds the stimulus as an ordered list of blocks, the in
 
   The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image. It also refuses an image over 7 MB (`MEDIA__MAX_IMAGE_BYTES`), since the assistance models get each image inline and their providers reject larger ones.
 - In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
-- Raters see the blocks in order, each image full width and openable at full size. Images reach the browser by an expiring URL minted for the session; nothing is public.
+- Raters see the blocks in order, each image full width and openable at full size. Images reach the browser by an expiring URL minted for the session; nothing is public. The AI assistance methods send the same images, in the same places, to their model, so pick a vision-capable `assistance_models` entry for such a dataset.
 
 ### Dataset-level metadata (optional)
 

@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 
 from config import LLMSettings, get_settings
+from services.media import Block, text_block
+from services.media.prompt import collapse, parts_for
 
 from ...llm import complete
 from ...model_resolution import AssistanceModel
@@ -144,13 +146,38 @@ def format_history(history: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _build_user_msg(question_text: str, options: str, history: list[dict] | None = None) -> str:
-    msg = f"Question: {question_text}"
+def _user_msg_tail(options: str, history: list[dict] | None = None) -> str:
+    """What follows the question in the user message."""
+    tail = ""
     if options:
-        msg += f"\nAnswer options: {options}"
+        tail += f"\nAnswer options: {options}"
     if history:
-        msg += f"\n\nInformation gathered so far:\n{format_history(history)}"
-    return msg
+        tail += f"\n\nInformation gathered so far:\n{format_history(history)}"
+    return tail
+
+
+def _build_user_msg(question_text: str, options: str, history: list[dict] | None = None) -> str:
+    return f"Question: {question_text}" + _user_msg_tail(options, history)
+
+
+async def _build_user_content(
+    question_text: str,
+    options: str,
+    history: list[dict] | None,
+    stimulus: list[Block] | None,
+) -> str | list[dict]:
+    """The user message: one string, or parts when the stimulus has images.
+
+    ``stimulus`` is the question (with its parent context) as blocks, kept in
+    the session state so every round sends the same images in the same
+    places; without it the text form is sent exactly as before.
+    """
+    if stimulus is None:
+        return _build_user_msg(question_text, options, history)
+    parts = await parts_for(get_settings().media, question_text, stimulus)
+    return collapse(
+        [text_block("Question: "), *parts, text_block(_user_msg_tail(options, history))]
+    )
 
 
 def _parse_response(raw: str, context: str) -> dict:
@@ -224,13 +251,14 @@ class SubtaskDecomposer:
         max_subtasks: int,
         model: AssistanceModel,
         experiment_system_prompt: str | None = None,
+        stimulus: list[Block] | None = None,
     ) -> DecompositionResult:
         settings = get_settings()
         system = _append_experiment_system_prompt(
             _START_SYSTEM.format(subtask_schema=_SUBTASK_SCHEMA, max_subtasks=max_subtasks),
             experiment_system_prompt,
         )
-        user_msg = _build_user_msg(question_text, options)
+        user_msg = await _build_user_content(question_text, options, None, stimulus)
 
         raw = await complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
@@ -262,6 +290,7 @@ class SubtaskDecomposer:
         max_rounds: int,
         model: AssistanceModel,
         experiment_system_prompt: str | None = None,
+        stimulus: list[Block] | None = None,
     ) -> DecompositionResult:
         settings = get_settings()
         is_final = iteration >= max_rounds
@@ -276,7 +305,7 @@ class SubtaskDecomposer:
             ),
             experiment_system_prompt,
         )
-        user_msg = _build_user_msg(question_text, options, history)
+        user_msg = await _build_user_content(question_text, options, history, stimulus)
 
         raw = await complete(
             [{"role": "system", "content": system}, {"role": "user", "content": user_msg}],
@@ -308,6 +337,7 @@ class SubtaskDecomposer:
                     model,
                     settings.llm,
                     experiment_system_prompt,
+                    stimulus,
                 )
             return DecompositionResult(done=True, synthesis=synthesis)
 
@@ -321,6 +351,7 @@ class SubtaskDecomposer:
                 model,
                 settings.llm,
                 experiment_system_prompt,
+                stimulus,
             )
             return DecompositionResult(done=True, synthesis=synthesis)
 
@@ -334,9 +365,10 @@ class SubtaskDecomposer:
         model: AssistanceModel,
         llm_settings: LLMSettings,
         experiment_system_prompt: str | None = None,
+        stimulus: list[Block] | None = None,
     ) -> dict:
         """Make a dedicated synthesis call when the LLM failed to include one."""
-        user_msg = _build_user_msg(question_text, options, history)
+        user_msg = await _build_user_content(question_text, options, history, stimulus)
         raw = await complete(
             [
                 {

@@ -203,6 +203,48 @@ async def test_oai_with_tools_calls_the_responses_api_with_exactly_this():
 
 
 @pytest.mark.asyncio
+async def test_oai_with_tools_respells_image_parts_for_the_responses_api():
+    """Chat-completions parts (services/media/prompt.py) are not Responses API
+    parts: text goes as `input_text`, an image as `input_image` with the data
+    URL as a string. A string message passes through, and a chat completion
+    on the same provider still takes the parts as they are."""
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+    messages = [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Screen:"},
+                image,
+                {"type": "text", "text": "Allow?"},
+            ],
+        },
+    ]
+    client = _client()
+    with patch("services.assistance.llm._get_client", return_value=client):
+        await complete(
+            messages, settings=_settings(), model="oai/gpt-5.6-luna", tools=["web_search"]
+        )
+    assert client.responses.create.call_args.kwargs["input"] == [
+        {"role": "system", "content": "sys"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Screen:"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+                {"type": "input_text", "text": "Allow?"},
+            ],
+        },
+    ]
+    assert messages[1]["content"][1] is image  # the caller's parts are not touched
+
+    client = _client()
+    with patch("services.assistance.llm._get_client", return_value=client):
+        await complete(messages, settings=_settings(), model="oai/gpt-5.6-luna")
+    assert client.chat.completions.create.call_args.kwargs["messages"] == messages
+
+
+@pytest.mark.asyncio
 async def test_oai_with_tools_sends_no_option_it_was_not_given():
     client = _client()
     await _complete(client, model="oai/gpt-5.6-luna", tools=["web_search"])
