@@ -181,30 +181,57 @@ async def read_bytes(settings: MediaSettings, digest: str) -> bytes:
     return await asyncio.to_thread(_read_gcs, settings, bucket_name, prefix, digest)
 
 
-def _exists_gcs(settings: MediaSettings, bucket_name: str, prefix: str, digest: str) -> bool:
-    blob_name = gcs.blob_name_under(prefix, digest)
-    with _translating_gcs_errors(f"gs://{bucket_name}/{blob_name}"):
-        return bool(_client(settings).bucket(bucket_name).blob(blob_name).exists())
+# Digests per listing request. One `{a,b,...}` glob names them all, so an
+# upload of a thousand images costs a handful of requests, not a thousand.
+_LIST_BATCH = 100
+
+
+def _sizes_file(root: Path, digests: list[str]) -> dict[str, int]:
+    sizes: dict[str, int] = {}
+    for digest in digests:
+        path = root / digest
+        if path.is_file():
+            sizes[digest] = path.stat().st_size
+    return sizes
+
+
+def _sizes_gcs(
+    settings: MediaSettings, bucket_name: str, prefix: str, digests: list[str]
+) -> dict[str, int]:
+    client = _client(settings)
+    sizes: dict[str, int] = {}
+    for start in range(0, len(digests), _LIST_BATCH):
+        batch = digests[start : start + _LIST_BATCH]
+        glob = gcs.blob_name_under(prefix, "{" + ",".join(batch) + "}")
+        with _translating_gcs_errors(f"gs://{bucket_name}/{prefix}"):
+            blobs = client.list_blobs(
+                bucket_name, prefix=f"{prefix}/" if prefix else None, match_glob=glob
+            )
+            for blob in blobs:
+                digest = blob.name.rsplit("/", 1)[-1]
+                if digest in batch and blob.size is not None:
+                    sizes[digest] = int(blob.size)
+    return sizes
+
+
+async def object_sizes(settings: MediaSettings, digests: list[str]) -> dict[str, int]:
+    """Size in bytes of each digest the source holds; absent ones are left out.
+
+    An upload calls this before storing rows, so a dataset whose images were
+    never synced, or carry an image too large for the assistance models, is
+    refused at upload rather than discovered in front of a rater.
+    """
+    if not digests:
+        return {}
+    source = _source(settings)
+    if source.startswith("file://"):
+        return await asyncio.to_thread(_sizes_file, _file_root(source), digests)
+    bucket_name, prefix = _bucket(source)
+    # The storage client is synchronous; keep the event loop free.
+    return await asyncio.to_thread(_sizes_gcs, settings, bucket_name, prefix, digests)
 
 
 async def missing_digests(settings: MediaSettings, digests: list[str]) -> list[str]:
-    """The digests the source holds no object for, in the order given.
-
-    An upload calls this before storing rows, so a dataset whose images were
-    never synced is refused at upload rather than shown broken to raters.
-    """
-    if not digests:
-        return []
-    source = _source(settings)
-    if source.startswith("file://"):
-        root = _file_root(source)
-        return [d for d in digests if not (root / d).is_file()]
-    bucket_name, prefix = _bucket(source)
-    limit = asyncio.Semaphore(_GCS_CONCURRENCY)
-
-    async def check(digest: str) -> bool:
-        async with limit:
-            return await asyncio.to_thread(_exists_gcs, settings, bucket_name, prefix, digest)
-
-    present = await asyncio.gather(*(check(d) for d in digests))
-    return [d for d, ok in zip(digests, present) if not ok]
+    """The digests the source holds no object for, in the order given."""
+    present = await object_sizes(settings, digests)
+    return [d for d in digests if d not in present]

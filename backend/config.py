@@ -185,6 +185,23 @@ class MediaSettings(GcsAccessSettings):
     # store syncs to the bucket as is. Unset means uploads carrying image
     # blocks are refused. Layout: services/media/source.py.
     source_url: str = ""
+    # Largest image an upload admits, in bytes. The assistance models get each
+    # image inline, and the strictest provider limit in use (Claude: 10 MB of
+    # base64, about 7.5 MB raw) would otherwise fail at assistance time, where
+    # it is hard to see. Checked at upload from the source's object sizes.
+    max_image_bytes: int = 7_000_000
+
+    @field_validator("source_url")
+    @classmethod
+    def _source_url_scheme(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.startswith(("gs://", "file://")):
+            raise ValueError(
+                f"MEDIA__SOURCE_URL must be gs://bucket/prefix or file://folder, got {value!r}"
+            )
+        if value.startswith("gs://") and not value[len("gs://") :].split("/", 1)[0]:
+            raise ValueError("MEDIA__SOURCE_URL gs:// needs a bucket name")
+        return value
 
 
 class LLMModels:

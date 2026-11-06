@@ -531,9 +531,10 @@ async def _require_media_present(new_questions: list[Question]) -> None:
             ),
         )
     try:
-        missing = await media.missing_digests(settings, list(digests))
+        sizes = await media.object_sizes(settings, list(digests))
     except media.MediaSourceError as exc:
         raise HTTPException(status_code=503, detail=f"Could not check media: {exc}") from exc
+    missing = [d for d in digests if d not in sizes]
     if missing:
         shown = ", ".join(f"sha256:{d}" for d in missing[:_MISSING_MEDIA_PREVIEW])
         more = (
@@ -549,6 +550,27 @@ async def _require_media_present(new_questions: list[Question]) -> None:
                 "first: the pipeline's create_human_rating_study.py does it, or sync any "
                 "folder of files named by their SHA-256 hex digest. See README, section "
                 "'Questions with images'."
+            ),
+        )
+    oversized = [d for d in digests if sizes[d] > settings.max_image_bytes]
+    if oversized:
+        shown = ", ".join(
+            f"sha256:{d} ({sizes[d] / 1_000_000:.1f} MB)"
+            for d in oversized[:_MISSING_MEDIA_PREVIEW]
+        )
+        more = (
+            f" (and {len(oversized) - _MISSING_MEDIA_PREVIEW} more)"
+            if len(oversized) > _MISSING_MEDIA_PREVIEW
+            else ""
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(oversized)} referenced image(s) are over the "
+                f"{settings.max_image_bytes / 1_000_000:g} MB per-image limit "
+                f"(MEDIA__MAX_IMAGE_BYTES): {shown}{more}. The assistance models receive "
+                "each image inline and their providers refuse larger ones, so shrink the "
+                "images and re-reference them by their new digests."
             ),
         )
 

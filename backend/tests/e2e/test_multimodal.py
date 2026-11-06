@@ -177,3 +177,77 @@ def test_text_only_uploads_are_untouched(client: TestClient, sync_engine):
     )
     assert response.status_code == 200, response.text
     assert _stored_content(sync_engine, experiment["id"]) == {"q1": None}
+
+
+def test_upload_refuses_an_image_over_the_size_limit(client: TestClient, media_source: Path):
+    settings = get_settings().media
+    big = PNG + b"\0" * (settings.max_image_bytes + 1 - len(PNG))
+    big_digest = hashlib.sha256(big).hexdigest()
+    (media_source / big_digest).write_bytes(big)
+    experiment = _create_experiment(client)
+
+    response = _upload(
+        client,
+        experiment["id"],
+        _csv(
+            [
+                {
+                    "question_id": "q1",
+                    "question_text": "Allowed?",
+                    "content": json.dumps([_text("Allowed?"), _image(big_digest)]),
+                }
+            ]
+        ),
+    )
+
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "1 referenced image(s) are over the 7 MB per-image limit" in detail
+    assert f"sha256:{big_digest} (7.0 MB)" in detail
+
+
+def test_duplicate_copies_every_question_column(
+    client: TestClient, sync_engine, media_source: Path
+):
+    """The clone rebuilds each Question by naming columns, so a column added to
+    the model and forgotten there is silently dropped from every copy."""
+    from models import Question
+
+    experiment = _create_experiment(client)
+    blocks = [_text("Allowed?"), _image()]
+    response = _upload(
+        client,
+        experiment["id"],
+        _csv(
+            [
+                {
+                    "question_id": "q1",
+                    "question_text": "Allowed?",
+                    "options": "yes|no",
+                    "content": json.dumps(blocks),
+                }
+            ]
+        ),
+    )
+    assert response.status_code == 200, response.text
+    copy = client.post(f"/api/admin/experiments/{experiment['id']}/duplicate").json()
+
+    checked = [
+        c.name
+        for c in Question.__table__.columns
+        if c.name not in {"id", "experiment_id", "parent_question_id"}
+    ]
+    assert "content" in checked
+    with sync_engine.connect() as conn:
+        rows = {
+            row[0]: row[1:]
+            for row in conn.execute(
+                text(
+                    f"SELECT experiment_id, {', '.join(checked)} FROM questions "
+                    "WHERE experiment_id = ANY(:ids)"
+                ),
+                {"ids": [experiment["id"], copy["id"]]},
+            ).all()
+        }
+    assert rows[copy["id"]] == rows[experiment["id"]]
+    assert _stored_content(sync_engine, copy["id"]) == {"q1": media.dump_content(blocks)}

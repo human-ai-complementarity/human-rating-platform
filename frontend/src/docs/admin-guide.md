@@ -45,7 +45,7 @@ A row's `content` column holds the stimulus as an ordered list of blocks, the in
   gsutil -m rsync <folder of files named by digest> gs://<bucket>/<prefix>
   ```
 
-  The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image.
+  The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image. It also refuses an image over 7 MB (`MEDIA__MAX_IMAGE_BYTES`), since the assistance models get each image inline and their providers reject larger ones.
 - In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
 
 ### Dataset-level metadata (optional)

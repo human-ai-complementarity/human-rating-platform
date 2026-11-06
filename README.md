@@ -491,7 +491,7 @@ A row may carry its stimulus as `content`, an ordered JSON list of blocks in the
 gsutil -m rsync outputs/checkpoints/ingest_questions/media gs://<bucket>/<prefix>
 ```
 
-An upload checks every referenced digest against the source and refuses the file, listing the missing ones, rather than store a question whose image a rater could not see. The source is `gs://bucket/prefix` in production (read with the platform's own Google credentials, `MEDIA__GCS_WIF_*` as for `TERMS__GCS_*`) or `file://folder` locally.
+An upload checks every referenced digest against the source and refuses the file, listing the missing ones, rather than store a question whose image a rater could not see. It also refuses an image over `MEDIA__MAX_IMAGE_BYTES` (default 7 MB): the assistance models receive each image inline, and the strictest provider in use rejects larger ones at request time. The source is `gs://bucket/prefix` in production (read with the platform's own Google credentials, `MEDIA__GCS_WIF_*` as for `TERMS__GCS_*`) or `file://folder` locally.
 
 ### Optional dataset-level metadata
 

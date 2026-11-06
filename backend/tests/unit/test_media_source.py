@@ -7,6 +7,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from config import MediaSettings
 from services import media
@@ -30,8 +31,12 @@ def test_unset_source_is_refused_with_a_pointer():
 
 
 def test_unknown_scheme_is_refused():
+    # Caught at config load; the reader checks again for a value set by hand.
+    with pytest.raises(ValidationError, match="must be gs://bucket/prefix or file://folder"):
+        MediaSettings(source_url="https://example.com/media")
+    bypassed = MediaSettings.model_construct(source_url="https://example.com/media")
     with pytest.raises(media.MediaSourceError, match="must start with gs:// or file://"):
-        asyncio.run(media.read_bytes(MediaSettings(source_url="https://example.com/media"), DIGEST))
+        asyncio.run(media.read_bytes(bypassed, DIGEST))
 
 
 def test_file_source_reads_and_verifies_the_digest(file_source: MediaSettings, tmp_path: Path):
@@ -76,22 +81,39 @@ def test_sniff_mime_reads_the_bytes_not_the_label(data: bytes, mime: str):
     assert media.sniff_mime(data) == mime
 
 
-def test_a_few_digests_are_headed_one_by_one(monkeypatch: pytest.MonkeyPatch):
-    class _ExistsBlob:
-        def __init__(self, present: bool) -> None:
-            self.present = present
+def test_digests_are_listed_in_batches_not_one_call_each(monkeypatch: pytest.MonkeyPatch):
+    """One listing request per batch of digests, each with its size, rather
+    than an existence call per image."""
+    held = {DIGEST: len(PNG), "1" * 64: 9_000_000}
+    calls: list[dict] = []
 
-        def exists(self) -> bool:
-            return self.present
+    class _Blob:
+        def __init__(self, name: str, size: int) -> None:
+            self.name = name
+            self.size = size
 
-    class _ExistsBucket:
-        def blob(self, name: str) -> _ExistsBlob:
-            return _ExistsBlob(name.endswith(DIGEST))
+    class _Client:
+        def list_blobs(self, bucket_name: str, *, prefix: str | None, match_glob: str):
+            calls.append({"bucket": bucket_name, "prefix": prefix, "glob": match_glob})
+            assert match_glob.startswith("media/{") and match_glob.endswith("}")
+            wanted = match_glob[len("media/{") : -1].split(",")
+            return [_Blob(f"media/{d}", held[d]) for d in wanted if d in held]
 
-    class _ExistsClient:
-        def bucket(self, name: str) -> _ExistsBucket:
-            return _ExistsBucket()
-
-    monkeypatch.setattr(media_source, "_client", lambda settings: _ExistsClient())
+    monkeypatch.setattr(media_source, "_client", lambda settings: _Client())
+    monkeypatch.setattr(media_source, "_LIST_BATCH", 2)
     settings = MediaSettings(source_url="gs://bucket/media")
-    assert asyncio.run(media.missing_digests(settings, [DIGEST, "0" * 64])) == ["0" * 64]
+    digests = [DIGEST, "0" * 64, "1" * 64]
+
+    assert asyncio.run(media.object_sizes(settings, digests)) == held
+    assert asyncio.run(media.missing_digests(settings, digests)) == ["0" * 64]
+    # Three digests, batches of two: two requests per call, not three.
+    assert len(calls) == 4
+    assert calls[0] == {
+        "bucket": "bucket",
+        "prefix": "media/",
+        "glob": "media/{" + DIGEST + "," + "0" * 64 + "}",
+    }
+
+
+def test_file_source_reports_sizes(file_source: MediaSettings):
+    assert asyncio.run(media.object_sizes(file_source, [DIGEST, "0" * 64])) == {DIGEST: len(PNG)}

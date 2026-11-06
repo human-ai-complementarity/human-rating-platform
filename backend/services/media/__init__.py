@@ -21,6 +21,7 @@ from .source import (
     MediaSourceError,
     configured,
     missing_digests,
+    object_sizes,
     read_bytes,
     sniff_mime,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "image_digests",
     "load_content",
     "missing_digests",
+    "object_sizes",
     "parse_content",
     "read_bytes",
     "sniff_mime",
