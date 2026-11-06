@@ -23,8 +23,8 @@ from config import get_settings
 from database import Database
 from models import AssistancePreparation, AssistanceSession, Rater, QuestionAssignment
 
-from .events import _MethodCall, _record_call
-from .base import InteractionStep, StepType, exception_text
+from .events import _MethodCall, _call_method, _record_call
+from .base import AssistanceMethod, InteractionStep, StepType, exception_text
 from .llm import speculative_call, provider_context
 from .preparation import PreparationSpec
 from .registry import get_method, record_role_models
@@ -37,6 +37,41 @@ MAX_ATTEMPTS = 2
 WAIT_SECONDS = 90
 STARTUP_SECONDS = 10
 SHUTDOWN_SECONDS = 5
+
+
+async def start_method(
+    method: AssistanceMethod,
+    question,
+    params: dict,
+    /,
+    *,
+    parent_question_text: str | None,
+    system_prompt: str | None,
+    **context,
+) -> _MethodCall:
+    """One `method.start()` call under the runner's timeout, with `context`
+    attached to its provider events; any failure degrades to a NONE step.
+
+    The live path (`start_assistance`) and the pilot check both go through
+    here, so a probe is timed, attributed and fail-softened like a real start.
+    """
+
+    async def invoke():
+        with provider_context(**context):
+            async with asyncio.timeout(EXECUTION_SECONDS):
+                return await method.start(
+                    question,
+                    params,
+                    parent_question_text=parent_question_text,
+                    experiment_system_prompt=system_prompt,
+                )
+
+    return await _call_method(
+        invoke,
+        fallback=StepType.NONE,
+        log_message="Assistance start failed; continuing without assistance",
+        log_attributes=context,
+    )
 
 
 def preparation_identity(

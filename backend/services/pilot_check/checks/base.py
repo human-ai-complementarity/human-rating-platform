@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from config import PilotCheckSettings, PilotCheckSeverity
@@ -19,6 +19,7 @@ from models import Experiment
 if TYPE_CHECKING:
     from services.terms import RaterTerms
 
+    from ..assistance import AssistanceProbe
     from ..rater_view import RaterQuestionView
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,11 @@ class Finding:
 
 @dataclass
 class CheckContext:
-    """Everything a run gathered before the checks look at it."""
+    """Everything a run gathered before the checks look at it.
+
+    `probes` is None on a control arm: no method ran, and the assistance
+    checks say so rather than reporting "no assistance" as a failure.
+    """
 
     experiment: Experiment
     settings: PilotCheckSettings
@@ -63,6 +68,8 @@ class CheckContext:
     views: list[RaterQuestionView]
     terms: RaterTerms | None = None
     terms_error: str | None = None
+    probes: list[AssistanceProbe] | None = None
+    method_params: dict = field(default_factory=dict)
     # Set by the run while a check runs: how far along it is, for the card's
     # stepper ("9 of 15 questions reviewed"). Cosmetic, never fatal.
     report: Callable[[str], Awaitable[None]] | None = None
@@ -74,6 +81,12 @@ class CheckContext:
             await self.report(text)
         except Exception:
             logger.exception("pilot check progress note failed")
+
+    def probe_for(self, question_id: int) -> AssistanceProbe | None:
+        for probe in self.probes or []:
+            if probe.question_id == question_id:
+                return probe
+        return None
 
 
 CheckFn = Callable[[CheckContext, Severity], Awaitable[list[Finding]]]
@@ -87,6 +100,8 @@ class CheckSpec:
     run: CheckFn
     # The level its findings get unless `settings.severities` overrides it.
     severity: Severity
+    # Checks that only have something to do when an assistance method ran.
+    needs_assistance: bool = False
 
 
 def skipped(check: str, reason: str) -> Finding:
