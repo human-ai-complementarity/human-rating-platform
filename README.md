@@ -526,6 +526,8 @@ The `assistance_models` key may be omitted (the method then runs on the platform
 
 `render_math` (a JSON boolean, not a string) switches on math rendering: TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` is typeset with KaTeX in the question text, its context and the document tab only. MC options, the prompt prefix/suffix and assistance text stay as written. It is opt-in because other datasets use `$` for money: an inline `$…$` must not start or end with a space, and its closing `$` must not be followed by a digit, so most prices stay as typed. It cannot be on together with Markdown (`is_markdown`); a PATCH turning on both is refused. An upload may switch it on but never off: declaring `false` on an experiment an admin switched on, or `true` on one set to Markdown, is reported as a conflict.
 
+`render_markdown` (a JSON boolean, not a string) switches on Markdown rendering of the questions, the experiment's `is_markdown` flag: code blocks, tables, etc. are rendered as styled elements. The same rules as `render_math`: it cannot be on together with `render_math`, and an upload declaring both is refused; an upload may switch it on but never off, and declaring `false` on an experiment an admin switched on, or `true` on one set to math rendering, is reported as a conflict.
+
 A copy-pasteable example:
 
 ```

@@ -171,6 +171,7 @@ export const UPLOAD_META_KEYS = [
   'assistance_models.top_n',
   'assistance_models.human_as_a_tool',
   'render_math',
+  'render_markdown',
 ] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 // What an upload declared; `assistance_models` maps method to an entry. Rows
@@ -178,6 +179,7 @@ export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 export type DatasetMeta = Partial<Record<DatasetMetaField, string>> & {
   assistance_models?: Record<string, AssistanceModelEntry | string>;
   render_math?: boolean;
+  render_markdown?: boolean;
 };
 
 export type StudyLabel =

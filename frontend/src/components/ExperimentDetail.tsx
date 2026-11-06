@@ -81,6 +81,7 @@ const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   'assistance_models.top_n': 'Top-N model entry',
   'assistance_models.human_as_a_tool': 'Human-as-a-Tool model entry',
   render_math: 'Math rendering',
+  render_markdown: 'Markdown rendering',
 };
 
 // A key with no label (a method added since) shows as itself.
@@ -2295,6 +2296,10 @@ function MetadataPanel({
     );
   };
 
+  const renderMarkdownConflicts = uploads.filter((u) => {
+    const declared = u.dataset_meta?.render_markdown;
+    return declared !== undefined && declared !== experiment.is_markdown;
+  });
   const renderMathConflicts = uploads.filter((u) => {
     const declared = u.dataset_meta?.render_math;
     return declared !== undefined && declared !== experiment.render_math;
@@ -2320,7 +2325,10 @@ function MetadataPanel({
         onIsMarkdownChange,
         'Render questions as Markdown',
         'Code blocks, tables, etc. will be rendered as styled elements',
-        { blockedBy: renderMath ? 'Render math' : undefined },
+        {
+          blockedBy: renderMath ? 'Render math' : undefined,
+          conflicts: renderMarkdownConflicts,
+        },
       )}
       {renderToggle(
         'meta-render_math',
