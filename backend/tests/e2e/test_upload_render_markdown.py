@@ -1,8 +1,8 @@
 """`render_markdown` as a dataset_meta key: the export switches `is_markdown` on.
 
 The same treatment as `render_math` (test_upload_render_math.py): a JSON
-boolean, switched on by an upload but never off, exclusive with the other
-rendering flag, and locked with the rest of the config once launched.
+boolean, switched on by an upload but never off, and exclusive with the
+other rendering flag.
 """
 
 from __future__ import annotations
