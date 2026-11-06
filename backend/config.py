@@ -190,10 +190,6 @@ class MediaSettings(GcsAccessSettings):
     # base64, about 7.5 MB raw) would otherwise fail at assistance time, where
     # it is hard to see. Checked at upload from the source's object sizes.
     max_image_bytes: int = 7_000_000
-    # The least life a URL has when handed to a rater: long enough to cover
-    # a session, so a rater who opens a question late in theirs still sees
-    # its images.
-    url_ttl_minutes: int = Field(default=240, ge=5, le=7 * 24 * 60)
 
     @field_validator("source_url")
     @classmethod
