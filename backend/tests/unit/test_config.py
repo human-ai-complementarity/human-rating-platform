@@ -54,3 +54,15 @@ def test_cors_origins_rejects_invalid_json_env(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValidationError, match="APP__CORS_ORIGINS must be a JSON array of strings"):
         Settings(_env_file=None)
+
+
+def test_media_source_url_must_be_gs_or_file() -> None:
+    from config import MediaSettings
+
+    assert MediaSettings(source_url=" gs://bucket/media ").source_url == "gs://bucket/media"
+    assert MediaSettings(source_url="file://media").source_url == "file://media"
+    assert MediaSettings(source_url="").source_url == ""
+    with pytest.raises(ValidationError, match="must be gs://bucket/prefix or file://folder"):
+        MediaSettings(source_url="https://example.com/media")
+    with pytest.raises(ValidationError, match="needs a bucket name"):
+        MediaSettings(source_url="gs:///media")

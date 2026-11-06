@@ -24,6 +24,29 @@ Upload a CSV or Parquet file in the **Questions** section. You can upload multip
 | `metadata` | No | Per-row JSON blob you can attach for your own use. Surfaced in exports. |
 | `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. The delimiter check looks at the current file only, so a document that contains that marker as content must be referenced by a child in the same upload. |
 | `exclusion_key` | No | Marks related questions, such as two versions of one item where seeing one helps answer the other. A rater is served at most one question per key in the experiment, even within a parent group. Blank means no key. The key is included in the ratings export. |
+| `content` | No | The stimulus as a JSON list of `text` and `image` blocks, for questions that carry images (screenshots in a computer-use transcript, say). `question_text` stays the text-only form for exports and analytics. See [Questions with images](#questions-with-images). |
+
+### Questions with images
+
+A row's `content` column holds the stimulus as an ordered list of blocks, the inference pipeline's own format, so an export carries it over as is:
+
+```json
+[
+  {"type": "text", "text": "Screen after step 1:"},
+  {"type": "image", "ref": "sha256:76cac499903b2fb6f064...", "mime_type": "image/png"},
+  {"type": "text", "text": "Should the next action be allowed?"}
+]
+```
+
+- A text block is exactly `{"type": "text", "text": ...}`; an image block exactly `{"type": "image", "ref": "sha256:<64 hex>", "mime_type": ...}` with `mime_type` one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits). Anything else fails the upload, naming the row.
+- `ref` is the SHA-256 of the image's bytes. The bytes themselves are not part of the upload: they live in the platform's media source (`MEDIA__SOURCE_URL`, a `gs://bucket/prefix` or a local `file://folder`), each object named by that hex digest with no extension. Any folder of files named that way works; the inference pipeline's media store (`outputs/checkpoints/ingest_questions/media/`) is one producer, and its one-click study script copies the images for you. To sync a folder by hand:
+
+  ```bash
+  gsutil -m rsync <folder of files named by digest> gs://<bucket>/<prefix>
+  ```
+
+  The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image. It also refuses an image over 7 MB (`MEDIA__MAX_IMAGE_BYTES`), since the assistance models get each image inline and their providers reject larger ones.
+- In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
 
 ### Dataset-level metadata (optional)
 
