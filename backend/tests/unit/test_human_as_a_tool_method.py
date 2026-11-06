@@ -228,13 +228,19 @@ def test_frame_mirrors_the_text_framing_with_images_in_place():
     image = _image_block("a" * 64)
     text, blocks = _frame("Allowed?", [{"type": "text", "text": "Screen:"}, image], "Task: do X")
     assert text == "Context:\nTask: do X\n\nQuestion: Allowed?"
+    # The framing folds into the first text block, so the blocks hold only
+    # the question's own paragraph breaks.
+    assert blocks == [{"type": "text", "text": "Context:\nTask: do X\n\nQuestion: Screen:"}, image]
+    _, blocks = _frame("Allowed?", [image, {"type": "text", "text": "Allowed?"}], "Task: do X")
     assert blocks == [
-        {"type": "text", "text": "Context:\n"},
-        {"type": "text", "text": "Task: do X"},
-        {"type": "text", "text": "\n\nQuestion: "},
-        {"type": "text", "text": "Screen:"},
+        {"type": "text", "text": "Context:\nTask: do X\n\nQuestion: "},
         image,
+        {"type": "text", "text": "Allowed?"},
     ]
+    assert _frame("Allowed?", [{"type": "text", "text": "Plain"}], "Task: do X") == (
+        "Context:\nTask: do X\n\nQuestion: Allowed?",
+        None,
+    )
 
 
 @pytest.mark.asyncio

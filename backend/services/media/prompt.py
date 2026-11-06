@@ -36,13 +36,21 @@ def image_part(data_url: str) -> Part:
 
 
 async def parts_for(settings: MediaSettings, text: str, blocks: list[Block] | None) -> list[Part]:
-    """A stimulus as parts: its blocks in order, or just its text when it has none."""
+    """A stimulus as parts: its blocks in order, or just its text when it has none.
+
+    Adjacent text blocks are joined by a blank line, as `content_text` joins
+    them for the rater and the pipeline for its text-only form, so the model
+    reads the same paragraphs they do.
+    """
     if not blocks:
         return [text_block(text)]
     parts: list[Part] = []
     for block in blocks:
         if block["type"] == TEXT:
-            parts.append(text_block(block["text"]))
+            if parts and parts[-1]["type"] == TEXT:
+                parts[-1] = text_block(parts[-1]["text"] + "\n\n" + block["text"])
+            else:
+                parts.append(text_block(block["text"]))
         elif block["type"] == IMAGE:
             digest = block["ref"].removeprefix("sha256:")
             parts.append(image_part(await _data_url(settings, digest, block["mime_type"])))

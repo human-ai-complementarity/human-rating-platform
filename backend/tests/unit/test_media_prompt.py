@@ -29,6 +29,18 @@ def test_text_only_stimulus_is_one_text_part(file_source: MediaSettings):
     ]
 
 
+def test_adjacent_text_blocks_join_with_a_blank_line(file_source: MediaSettings):
+    """The same paragraphs the rater sees and the text-only form carries."""
+    blocks = [
+        text_block("Task: enable Do Not Track."),
+        text_block("Screen after step 1:"),
+        {"type": "image", "ref": f"sha256:{DIGEST}", "mime_type": "image/png"},
+    ]
+    parts = asyncio.run(prompt.parts_for(file_source, "ignored", blocks))
+    assert [p["type"] for p in parts] == ["text", "image_url"]
+    assert parts[0] == text_block("Task: enable Do Not Track.\n\nScreen after step 1:")
+
+
 def test_blocks_become_parts_in_order_with_images_inline(file_source: MediaSettings):
     blocks = [
         text_block("Screen after step 1:"),

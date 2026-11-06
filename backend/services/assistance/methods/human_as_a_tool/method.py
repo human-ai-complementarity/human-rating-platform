@@ -33,6 +33,7 @@ import openai
 
 from models import Question
 from services.media import Block, has_media, load_content, text_block
+from services.media.blocks import TEXT
 
 from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
@@ -339,21 +340,21 @@ def _frame(
 
     One framing ("Context:\n...\n\nQuestion: ...") in both forms: the text
     is what the confidence estimators and the session state read, the blocks
-    (None when nothing carries images) are what the decomposer is sent.
+    (None when nothing carries images) are what the decomposer is sent. The
+    framing is folded into the question's first text block, so the blocks
+    hold only the question's own paragraph breaks.
     """
-    segments: list[tuple[str, list[Block] | None]] = []
-    if parent_text:
-        segments.append(("Context:\n", None))
-        segments.append((parent_text, None))
-        segments.append(("\n\nQuestion: ", None))
-    segments.append((question_text, content))
-    text = "".join(segment_text for segment_text, _ in segments)
-    blocks = [
-        block
-        for segment_text, segment_blocks in segments
-        for block in (segment_blocks or [text_block(segment_text)])
-    ]
-    return text, blocks if has_media(blocks) else None
+    prefix = f"Context:\n{parent_text}\n\nQuestion: " if parent_text else ""
+    text = prefix + question_text
+    if not has_media(content):
+        return text, None
+    blocks = list(content or [])
+    if prefix:
+        if blocks[0]["type"] == TEXT:
+            blocks[0] = text_block(prefix + blocks[0]["text"])
+        else:
+            blocks.insert(0, text_block(prefix))
+    return text, blocks
 
 
 def _confidence_method(params: Mapping[str, object]) -> object:
