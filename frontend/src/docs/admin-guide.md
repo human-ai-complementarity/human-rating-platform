@@ -24,7 +24,7 @@ Upload a CSV or Parquet file in the **Questions** section. You can upload multip
 | `metadata` | No | Per-row JSON blob you can attach for your own use. Surfaced in exports. |
 | `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. The delimiter check looks at the current file only, so a document that contains that marker as content must be referenced by a child in the same upload. |
 | `exclusion_key` | No | Marks related questions, such as two versions of one item where seeing one helps answer the other. A rater is served at most one question per key in the experiment, even within a parent group. Blank means no key. The key is included in the ratings export. |
-| `content` | No | The stimulus as a JSON list of `text` and `image` blocks, for questions that carry images (screenshots in a computer-use transcript, say). `question_text` stays the text-only form for exports and analytics. See [Questions with images](#questions-with-images). |
+| `content` | No | The stimulus as a JSON list of `text` and `image` blocks, for questions that carry images (screenshots in a computer-use transcript, say). When set, raters see the blocks in order instead of `question_text`, which stays the text-only form for exports and analytics. See [Questions with images](#questions-with-images). |
 
 ### Questions with images
 
@@ -47,6 +47,7 @@ A row's `content` column holds the stimulus as an ordered list of blocks, the in
 
   The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image. It also refuses an image over 7 MB (`MEDIA__MAX_IMAGE_BYTES`), since the assistance models get each image inline and their providers reject larger ones.
 - In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
+- Raters see the blocks in order, each image full width and openable at full size. Images reach the browser by an expiring URL minted for the session; nothing is public. The AI assistance methods send the same images, in the same places, to their model, so pick a vision-capable `assistance_models` entry for such a dataset.
 
 ### Dataset-level metadata (optional)
 

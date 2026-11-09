@@ -1,10 +1,11 @@
-"""Reading media from its source."""
+"""Reading media from its source and minting URLs raters can fetch it by."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from pydantic import ValidationError
@@ -15,6 +16,7 @@ from services.media import source as media_source
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"not really a png"
 DIGEST = hashlib.sha256(PNG).hexdigest()
+SECRET = "rater-secret"
 
 
 @pytest.fixture
@@ -65,6 +67,36 @@ def test_missing_digests_names_what_the_source_lacks(file_source: MediaSettings)
         "0" * 64,
         "1" * 64,
     ]
+
+
+def test_proxy_url_is_a_bearer_link_that_expires():
+    url = media.proxy_url(SECRET, DIGEST, ttl_seconds=600, now=1_000_000)
+    parsed = urlparse(url)
+    assert parsed.path == f"{media.MEDIA_PATH}/{DIGEST}"
+    query = parse_qs(parsed.query)
+    expires, signature = int(query["exp"][0]), query["sig"][0]
+    assert expires == 1_000_600
+    assert media.verify_proxy_token(SECRET, DIGEST, expires, signature, now=1_000_599)
+    # Expired, tampered, re-pointed at another object, or signed elsewhere.
+    assert not media.verify_proxy_token(SECRET, DIGEST, expires, signature, now=1_000_600)
+    assert not media.verify_proxy_token(SECRET, DIGEST, expires, signature[:-1] + "0", now=0)
+    assert not media.verify_proxy_token(SECRET, "0" * 64, expires, signature, now=0)
+    assert not media.verify_proxy_token("other", DIGEST, expires, signature, now=0)
+
+
+def test_render_blocks_turns_refs_into_proxy_urls(file_source: MediaSettings):
+    blocks = [
+        {"type": "text", "text": "Screen:"},
+        {"type": "image", "ref": f"sha256:{DIGEST}", "mime_type": "image/png"},
+    ]
+    rendered = media.render_blocks(file_source, SECRET, blocks)
+    assert rendered[0] == blocks[0]
+    assert rendered[1]["type"] == "image"
+    assert rendered[1]["mime_type"] == "image/png"
+    assert rendered[1]["url"].startswith(f"{media.MEDIA_PATH}/{DIGEST}?exp=")
+    # The content address stays server side.
+    assert "ref" not in rendered[1]
+    assert media.render_blocks(file_source, SECRET, None) is None
 
 
 @pytest.mark.parametrize(

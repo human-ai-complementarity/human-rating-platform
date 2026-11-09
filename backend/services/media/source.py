@@ -1,4 +1,4 @@
-"""Reading question media from its source.
+"""Reading question media from its source, and handing raters a URL for it.
 
 ``MEDIA__SOURCE_URL`` is ``gs://bucket/prefix`` (a private bucket, read with
 the platform's own Google credentials) or ``file://folder`` (local dev and
@@ -13,6 +13,11 @@ This is the inference pipeline's media store layout
 (``checkpoints/ingest_questions/media/``), so that directory syncs to the
 bucket as is. A read re-hashes the bytes, so a replaced object is refused
 rather than shown under the old reference.
+
+A rater's browser fetches an image from ``/api/raters/media/<digest>``,
+served by the backend behind an expiring HMAC token
+(``services/media/urls.py``) with at least ``URL_TTL_SECONDS`` (four
+hours) of life left when handed out.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ from pathlib import Path
 
 from config import BASE_DIR, MediaSettings
 from services import gcs
+
+from .blocks import IMAGE, Block
+from .urls import proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -235,3 +243,43 @@ async def missing_digests(settings: MediaSettings, digests: list[str]) -> list[s
     """The digests the source holds no object for, in the order given."""
     present = await object_sizes(settings, digests)
     return [d for d in digests if d not in present]
+
+
+# ---------------------------------------------------------------------------
+# URLs for raters
+# ---------------------------------------------------------------------------
+
+
+# The least life a URL has when handed to a rater. Four hours covers a
+# session, so a rater who opens a question late in theirs still sees its
+# images. Fixed rather than a setting: no deployment wants it shorter, and
+# longer only widens the window in which a leaked link still works.
+URL_TTL_SECONDS = 240 * 60
+
+
+def url_for(settings: MediaSettings, secret: str, digest: str) -> str:
+    """A URL a rater's browser can fetch ``digest`` from for at least the TTL."""
+    # An unset or malformed source is refused here, before a link is handed
+    # out that the media route could never honour.
+    _source(settings)
+    return proxy_url(secret, digest, ttl_seconds=URL_TTL_SECONDS)
+
+
+def render_blocks(
+    settings: MediaSettings, secret: str, blocks: list[Block] | None
+) -> list[Block] | None:
+    """The blocks a rater is sent: text as is, each image by a fetchable URL.
+
+    The content address is not sent: the URL is all the browser needs.
+    """
+    if not blocks:
+        return None
+    rendered: list[Block] = []
+    for block in blocks:
+        if block["type"] != IMAGE:
+            rendered.append(block)
+            continue
+        digest = block["ref"].removeprefix("sha256:")
+        url = url_for(settings, secret, digest)
+        rendered.append({"type": IMAGE, "url": url, "mime_type": block["mime_type"]})
+    return rendered
