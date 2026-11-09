@@ -282,6 +282,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 - `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
+- `MEDIA__SOURCE_URL` — where question images live, `gs://bucket/prefix` or `file://folder`; unset refuses uploads that reference images. `MEDIA__GCS_WIF_AUDIENCE`, `MEDIA__GCS_WIF_TOKEN_FILE`, `MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT` as for `TERMS__GCS_*`. See [Questions with images](#questions-with-images).
 
 Top‑level convenience envs (not nested):
 
@@ -464,12 +465,37 @@ Upload questions as CSV or Parquet. Both formats accept the same columns; Parque
 | `question_type` | No | `MC` or `FT` (default `MC`) |
 | `metadata` | No | JSON string |
 | `exclusion_key` | No | Questions sharing a key (e.g. two versions of one item) are never served to the same rater in an experiment. Blank means no key. Included in the ratings export. |
+| `content` | No | The stimulus as a JSON list of `text` and `image` blocks, for questions with images. See [Questions with images](#questions-with-images). |
 
 ```csv
 question_id,question_text,gt_answer,options,question_type
 q1,"Is the sky blue?","Yes","Yes,No,Maybe",MC
 q2,"Explain photosynthesis","Plants convert sunlight...",,FT
 ```
+
+### Questions with images
+
+A row may carry its stimulus as `content`, an ordered JSON list of blocks in the inference pipeline's stored form (its `pipeline/domain/content.py`), so `export_study.py` writes it through unchanged:
+
+```json
+[{"type": "text", "text": "Screen after step 1:"},
+ {"type": "image", "ref": "sha256:<64 hex>", "mime_type": "image/png"},
+ {"type": "text", "text": "Should the next action be allowed?"}]
+```
+
+`question_text` stays required as the text-only form (the text blocks joined, as the pipeline's `message_text` does) for exports, analytics and the v1 API. Blocks carry exactly their type's keys; `mime_type` is one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits).
+
+**Storage.** Image bytes are not uploaded with the file. They live in the media source, `MEDIA__SOURCE_URL`, under the object name `<prefix>/<sha256 hex digest>`, which is the pipeline's media store layout (`checkpoints/ingest_questions/media/`), so that directory syncs to the bucket as is:
+
+```bash
+gsutil -m rsync outputs/checkpoints/ingest_questions/media gs://<bucket>/<prefix>
+```
+
+An upload checks every referenced digest against the source and refuses the file, listing the missing ones, rather than store a question whose image a rater could not see. It also refuses an image over `MEDIA__MAX_IMAGE_BYTES` (default 7 MB): the assistance models receive each image inline, and the strictest provider in use rejects larger ones at request time. The source is `gs://bucket/prefix` in production (read with the platform's own Google credentials, `MEDIA__GCS_WIF_*` as for `TERMS__GCS_*`) or `file://folder` locally.
+
+**Delivery.** Only raters with a live session are handed image URLs. The backend serves the bytes from `/api/raters/media/<digest>` behind an HMAC token with at least four hours of life left when handed out (long enough to cover a session); the bytes are re-hashed on every read, so an object that changed after upload is refused rather than shown.
+
+**Assistance.** Top-N and Human-as-a-Tool send the blocks to their model as chat-completion parts, images inline as base64 in the same order the rater sees them, so the `assistance_models` entry for such a dataset has to name a vision-capable model. Human-as-a-Tool's confidence estimators still read only the text form.
 
 ### Optional dataset-level metadata
 
@@ -503,6 +529,8 @@ Allowed keys: `description` (rater intro splash + Prolific study description; su
 The `assistance_models` key may be omitted (the method then runs on the platform default, shown on the Assistance tab), but a declared entry must be complete. It pins each assisted method's model and request options into `assistance_params` instead of a column: an object mapping method to an entry (`{"top_n": {"model": "oai/gpt-5.6-luna", "reasoning_effort": "low", "text_verbosity": "low", "temperature": null}, "human_as_a_tool": {"model": "openrouter/google/gemini-3-flash-preview", "reasoning_effort": null, "text_verbosity": null, "temperature": null}}`). Every entry key but `tools` is required and `null` means the option is not sent, so the model each method ranks or decomposes with is declared rather than left to a provider default. (The confidence and clustering instruments run the entry's model with their own options; `confidence_model` / `clustering_model` overrides are still bare ids.) Model ids are `<provider>/<model-id>` with provider `openrouter` (key `LLM__OPENROUTER_API_KEY`) or `oai`, OpenAI's own API (key `LLM__OAI_API_KEY`); note `openai/...` is an OpenRouter id, as in the pipeline's wave files, so `openrouter/openai/gpt-5.6-luna` and `oai/gpt-5.6-luna` are the same model on different transports. `reasoning_effort` is one of `minimal|low|medium|high`, `text_verbosity` one of `low|medium|high`, `temperature` a number from 0 to 2. `tools` is the one optional key: a list of the tools the model under test is given, from `web_search` and `code_interpreter` (left out or `[]`: none; the confidence and clustering instruments never get tools). An `oai/` model with tools is called through OpenAI's Responses API, which runs both; an `openrouter/` model can only do `web_search` (OpenRouter's `openrouter:web_search` server tool), so `code_interpreter` needs an `oai/` model. The upload alone still accepts a bare model id and expands it to the entry it stood for (the model with the method's default options: Top-N at temperature 0, Human-as-a-Tool with none sent), for exports written before entries existed; create/PATCH do not. Launch is blocked until the pinned model's provider has its API key configured. The old single `model` key is rejected.
 
 `render_math` (a JSON boolean, not a string) switches on math rendering: TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` is typeset with KaTeX in the question text, its MC options, its context and the document tab. The submitted answer is the option as written. The prompt prefix/suffix and assistance text stay as written. It is opt-in because other datasets use `$` for money: an inline `$…$` must not start or end with a space, and its closing `$` must not be followed by a digit, so most prices stay as typed. It cannot be on together with Markdown (`is_markdown`); a PATCH turning on both is refused. An upload may switch it on but never off: declaring `false` on an experiment an admin switched on, or `true` on one set to Markdown, is reported as a conflict.
+
+`render_markdown` (a JSON boolean, not a string) switches on Markdown rendering of the questions, the experiment's `is_markdown` flag: code blocks, tables, etc. are rendered as styled elements. Same rules as `render_math`: on but never off, and the two cannot be combined; a file that declares both is rejected with a 400.
 
 A copy-pasteable example:
 
@@ -724,6 +752,7 @@ model and key management.
 - `GET /api/raters/next-question` — get next question
 - `POST /api/raters/submit` — submit a rating
 - `GET /api/raters/session-status` — check session status
+- `GET /api/raters/media/{digest}` — one question image, by the expiring URL `next-question` handed out (no session header; the URL is the credential)
 - `POST /api/raters/end-session` — end session
 - `POST /api/raters/assistance/start` — start an assistance session for a question; returns an `AssistanceStepResponse` with `session_id`, `type`, and `content`
 - `POST /api/raters/assistance/advance` — advance a multi-turn assistance session; body: `{ session_id, human_input }`

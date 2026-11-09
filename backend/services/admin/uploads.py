@@ -12,7 +12,9 @@ from fastapi import HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import get_settings
 from models import Experiment, Question, Upload
+from services import media
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
     reject_removed_model_key,
@@ -22,6 +24,7 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, expand_bare_entry
 from services.question_separator import separator_upload_offenders
+from .experiments import MARKDOWN_WITH_MATH_DETAIL
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -50,19 +53,29 @@ DATASET_META_FIELDS = (
 # "assistance_models.<method>" in meta_applied / meta_conflicts.
 ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
 
-# Whether the rater card renders TeX between math delimiters. A JSON boolean,
-# not a string, so it stays out of the string-coerced tuple above; see
-# `_apply_render_math_meta`.
+# Whether the rater card renders TeX between math delimiters, and whether it
+# renders the question as Markdown (`Experiment.is_markdown`). JSON booleans,
+# not strings, so they stay out of the string-coerced tuple above; see
+# `_apply_render_math_meta` and `_apply_render_markdown_meta`.
 RENDER_MATH_META_FIELD = "render_math"
+RENDER_MARKDOWN_META_FIELD = "render_markdown"
 
 # Everything an upload may declare. Keys are matched against this allowlist so
 # unknown keys surface as a clean 400 instead of silently filling columns we
 # don't model. Applies to both the CSV `#META:` header line and the Parquet
 # schema's `dataset_meta` key — the export writes the same JSON shape for both.
-DATASET_META_KEYS = (*DATASET_META_FIELDS, ASSISTANCE_MODELS_META_FIELD, RENDER_MATH_META_FIELD)
+DATASET_META_KEYS = (
+    *DATASET_META_FIELDS,
+    ASSISTANCE_MODELS_META_FIELD,
+    RENDER_MATH_META_FIELD,
+    RENDER_MARKDOWN_META_FIELD,
+)
 _META_PREFIX = "#META:"
 _PARQUET_META_KEY = b"dataset_meta"
 _REQUIRED_ROW_FIELDS = ("question_id", "question_text")
+# The row column holding the stimulus as blocks (services/media/blocks.py).
+_CONTENT_FIELD = "content"
+_MISSING_MEDIA_PREVIEW = 5
 _SEPARATOR_REJECT_PREVIEW = 5
 # Matches the Question.exclusion_key String(255) column.
 _EXCLUSION_KEY_MAX_LENGTH = 255
@@ -137,8 +150,8 @@ def _validate_assistance_models(value: Any) -> dict[str, dict[str, Any]]:
 def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     """Validate a decoded `#META:` / `dataset_meta` payload and normalise to str.
 
-    `assistance_models` stays an object and `render_math` a bool; every other
-    value is coerced to a string.
+    `assistance_models` stays an object and `render_math` / `render_markdown`
+    bools; every other value is coerced to a string.
 
     Shared between the CSV and Parquet readers so the wire format and error
     messages stay identical. Raises HTTPException(400) for bad shapes — silently
@@ -163,6 +176,7 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
     parsed = dict(parsed)
     assistance_models = parsed.pop(ASSISTANCE_MODELS_META_FIELD, None)
     render_math = parsed.pop(RENDER_MATH_META_FIELD, None)
+    render_markdown = parsed.pop(RENDER_MARKDOWN_META_FIELD, None)
     # Coerce all values to strings — JSON may have given us ints/bools for
     # `prolific_pool` etc. Drop empty strings so they don't overwrite existing values.
     values: dict[str, Any] = {
@@ -173,17 +187,24 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         if assistance_models:
             values[ASSISTANCE_MODELS_META_FIELD] = assistance_models
     if render_math is not None:
-        # Strict: "false" or 0 coerced to bool would read as the opposite.
-        if not isinstance(render_math, bool):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"dataset metadata {RENDER_MATH_META_FIELD} must be true or false, "
-                    f"got {render_math!r}"
-                ),
-            )
-        values[RENDER_MATH_META_FIELD] = render_math
+        values[RENDER_MATH_META_FIELD] = _validate_flag(RENDER_MATH_META_FIELD, render_math)
+    if render_markdown is not None:
+        values[RENDER_MARKDOWN_META_FIELD] = _validate_flag(
+            RENDER_MARKDOWN_META_FIELD, render_markdown
+        )
+    if values.get(RENDER_MATH_META_FIELD) and values.get(RENDER_MARKDOWN_META_FIELD):
+        raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
     return values
+
+
+def _validate_flag(key: str, value: Any) -> bool:
+    # Strict: "false" or 0 coerced to bool would read as the opposite.
+    if not isinstance(value, bool):
+        raise HTTPException(
+            status_code=400,
+            detail=f"dataset metadata {key} must be true or false, got {value!r}",
+        )
+    return value
 
 
 def _parse_meta_header(text_stream: io.TextIOWrapper) -> dict[str, Any] | None:
@@ -253,6 +274,7 @@ def _apply_meta_to_experiment(
             conflicts.append(field_name)
     _apply_assistance_models_meta(experiment, meta, applied, conflicts)
     _apply_render_math_meta(experiment, meta, applied, conflicts)
+    _apply_render_markdown_meta(experiment, meta, applied, conflicts)
     return applied, conflicts
 
 
@@ -281,6 +303,28 @@ def _apply_render_math_meta(
         applied.append(RENDER_MATH_META_FIELD)
     else:
         conflicts.append(RENDER_MATH_META_FIELD)
+
+
+def _apply_render_markdown_meta(
+    experiment: Experiment,
+    meta: dict[str, Any],
+    applied: list[str],
+    conflicts: list[str],
+) -> None:
+    """Turn Markdown rendering on when an upload declares it; never turn it off.
+
+    The same rules as `_apply_render_math_meta`, against `is_markdown`.
+    """
+    if RENDER_MARKDOWN_META_FIELD not in meta:
+        return
+    declared = meta[RENDER_MARKDOWN_META_FIELD]
+    if declared == experiment.is_markdown:
+        return
+    if declared and not experiment.render_math:
+        experiment.is_markdown = True
+        applied.append(RENDER_MARKDOWN_META_FIELD)
+    else:
+        conflicts.append(RENDER_MARKDOWN_META_FIELD)
 
 
 def _apply_assistance_models_meta(
@@ -399,9 +443,35 @@ def _read_parquet(
 
     meta = _parse_parquet_schema_meta(table)
     rows = [
-        {key: _serialize_cell(value) for key, value in row.items()} for row in table.to_pylist()
+        {
+            key: _serialize_content_cell(value) if key == _CONTENT_FIELD else _serialize_cell(value)
+            for key, value in row.items()
+        }
+        for row in table.to_pylist()
     ]
     return rows, meta
+
+
+def _serialize_content_cell(value: Any) -> str:
+    """A Parquet `content` cell as the JSON string the CSV form carries.
+
+    A typed `list<struct>` column gives every block the union of the block
+    types' fields, the absent ones as None; those are dropped so each block
+    carries exactly its own keys, as the validator requires. A string cell
+    (JSON written by the export) passes through.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return json.dumps(
+            [
+                {k: v for k, v in block.items() if v is not None}
+                if isinstance(block, dict)
+                else block
+                for block in value
+            ]
+        )
+    return str(value)
 
 
 def _reject_separator_question_text(rows: list[dict[str, Any]]) -> None:
@@ -454,6 +524,12 @@ def _build_questions_with_parent_refs(
                     f"{_EXCLUSION_KEY_MAX_LENGTH}"
                 ),
             )
+        try:
+            blocks = media.parse_content(
+                row.get(_CONTENT_FIELD), where=f"Question '{row['question_id']}'"
+            )
+        except media.ContentError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         new_questions.append(
             Question(
                 experiment_id=experiment_id,
@@ -463,11 +539,79 @@ def _build_questions_with_parent_refs(
                 options=row.get("options") or "",
                 question_type=row.get("question_type") or "MC",
                 extra_data=row.get("metadata") or "{}",
+                content=media.dump_content(blocks),
                 exclusion_key=exclusion_key,
             )
         )
         parent_refs.append((row.get("parent_question_id") or "").strip())
     return new_questions, parent_refs
+
+
+async def _require_media_present(new_questions: list[Question]) -> None:
+    """Refuse the upload unless every image its rows reference is in the source.
+
+    Checked before any row is stored: a dataset whose images were never
+    synced to the bucket must fail here, at upload, not in front of a rater.
+    """
+    digests: dict[str, None] = {}
+    for question in new_questions:
+        for digest in media.image_digests(media.load_content(question.content)):
+            digests.setdefault(digest)
+    if not digests:
+        return
+    settings = get_settings().media
+    if not media.configured(settings):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(digests)} image(s) are referenced but MEDIA__SOURCE_URL is not set: "
+                "point it at the bucket or folder holding this dataset's images. "
+                "See README, section 'Questions with images'."
+            ),
+        )
+    try:
+        sizes = await media.object_sizes(settings, list(digests))
+    except media.MediaSourceError as exc:
+        raise HTTPException(status_code=503, detail=f"Could not check media: {exc}") from exc
+    missing = [d for d in digests if d not in sizes]
+    if missing:
+        shown = ", ".join(f"sha256:{d}" for d in missing[:_MISSING_MEDIA_PREVIEW])
+        more = (
+            f" (and {len(missing) - _MISSING_MEDIA_PREVIEW} more)"
+            if len(missing) > _MISSING_MEDIA_PREVIEW
+            else ""
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(missing)} referenced image(s) are not in the media source "
+                f"({settings.source_url.strip()}): {shown}{more}. Copy the images there "
+                "first: the pipeline's create_human_rating_study.py does it, or sync any "
+                "folder of files named by their SHA-256 hex digest. See README, section "
+                "'Questions with images'."
+            ),
+        )
+    oversized = [d for d in digests if sizes[d] > settings.max_image_bytes]
+    if oversized:
+        shown = ", ".join(
+            f"sha256:{d} ({sizes[d] / 1_000_000:.1f} MB)"
+            for d in oversized[:_MISSING_MEDIA_PREVIEW]
+        )
+        more = (
+            f" (and {len(oversized) - _MISSING_MEDIA_PREVIEW} more)"
+            if len(oversized) > _MISSING_MEDIA_PREVIEW
+            else ""
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{len(oversized)} referenced image(s) are over the "
+                f"{settings.max_image_bytes / 1_000_000:g} MB per-image limit "
+                f"(MEDIA__MAX_IMAGE_BYTES): {shown}{more}. The assistance models receive "
+                "each image inline and their providers refuse larger ones, so shrink the "
+                "images and re-reference them by their new digests."
+            ),
+        )
 
 
 async def _resolve_parent_refs(
@@ -556,6 +700,7 @@ async def upload_questions(
         meta_applied, meta_conflicts = _apply_meta_to_experiment(experiment, meta)
 
     new_questions, parent_refs = _build_questions_with_parent_refs(experiment_id, rows)
+    await _require_media_present(new_questions)
 
     # Flushes in payload-bounded batches so the rows have DB ids before we
     # resolve parent references, without handing Postgres one giant INSERT.

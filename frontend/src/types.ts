@@ -171,6 +171,7 @@ export const UPLOAD_META_KEYS = [
   'assistance_models.top_n',
   'assistance_models.human_as_a_tool',
   'render_math',
+  'render_markdown',
 ] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 // What an upload declared; `assistance_models` maps method to an entry. Rows
@@ -178,6 +179,7 @@ export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 export type DatasetMeta = Partial<Record<DatasetMetaField, string>> & {
   assistance_models?: Record<string, AssistanceModelEntry | string>;
   render_math?: boolean;
+  render_markdown?: boolean;
 };
 
 export type StudyLabel =
@@ -259,6 +261,13 @@ export interface TermsPreview {
   debrief_html: string | null;
 }
 
+// One piece of a question's stimulus. Text blocks are rendered like
+// question_text; an image block's `url` is fetchable until it expires (a
+// signed GCS URL, or an API path the client prefixes with its API host).
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; mime_type: string };
+
 export interface Question {
   assignment_id?: number | null;
   assignment_generation?: number | null;
@@ -267,6 +276,9 @@ export interface Question {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  // The stimulus as blocks when it carries images; null means render the
+  // text field.
+  content?: ContentBlock[] | null;
   is_markdown: boolean;
   render_math: boolean;
 }

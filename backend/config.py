@@ -138,25 +138,33 @@ class ProlificSettings(_StrictModel):
         return bool(self.api_token.strip())
 
 
-class TermsSettings(_StrictModel):
-    # Where rater consent and debrief statements live: `gs://bucket/prefix`
-    # (a private bucket, read with Application Default Credentials), an
-    # `https://` prefix, or a `file://` path relative to the backend
-    # directory. Read live when an admin configures or publishes an
-    # experiment; whatever an experiment pins is archived in the database.
-    # The platform deliberately ships no statement text of its own: unset, the
-    # consent screen shows a placeholder saying so. Layout: services/terms/source.py.
-    source_url: str = ""
-    # Keyless access to a gs:// source through Workload Identity Federation:
-    # the host (Render's managed OIDC) writes a short-lived identity token to
-    # a file, and the platform exchanges it for Google credentials. Set the
-    # provider's audience ("//iam.googleapis.com/projects/<n>/locations/global/
-    # workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
-    # token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
-    # account, when given, is impersonated so the bucket grant stays on it.
+class GcsAccessSettings(_StrictModel):
+    """How a reader reaches a private gs:// bucket (services/gcs.py).
+
+    Keyless access through Workload Identity Federation: the host (Render's
+    managed OIDC) writes a short-lived identity token to a file, and the
+    platform exchanges it for Google credentials. Set the provider's audience
+    ("//iam.googleapis.com/projects/<n>/locations/global/
+    workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
+    token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
+    account, when given, is impersonated so the bucket grant stays on it.
+    Unset, Application Default Credentials are used instead.
+    """
+
     gcs_wif_audience: str = ""
     gcs_wif_token_file: str = ""
     gcs_impersonate_service_account: str = ""
+
+
+class TermsSettings(GcsAccessSettings):
+    # Where rater consent and debrief statements live: `gs://bucket/prefix`
+    # (a private bucket, read with the credentials above), an `https://`
+    # prefix, or a `file://` path relative to the backend directory. Read
+    # live when an admin configures or publishes an experiment; whatever an
+    # experiment pins is archived in the database. The platform deliberately
+    # ships no statement text of its own: unset, the consent screen shows a
+    # placeholder saying so. Layout: services/terms/source.py.
+    source_url: str = ""
 
 
 class SlackSettings(_StrictModel):
@@ -166,6 +174,34 @@ class SlackSettings(_StrictModel):
     @property
     def enabled(self) -> bool:
         return bool(self.webhook_url.strip())
+
+
+class MediaSettings(GcsAccessSettings):
+    # Where the images that question `content` blocks reference live:
+    # `gs://bucket/prefix` (a private bucket, read with the credentials
+    # above) or `file://folder` (local dev and tests; relative to the
+    # backend directory). Each object is named by the SHA-256 hex digest of
+    # its bytes, the layout of the inference pipeline's media store, so that
+    # store syncs to the bucket as is. Unset means uploads carrying image
+    # blocks are refused. Layout: services/media/source.py.
+    source_url: str = ""
+    # Largest image an upload admits, in bytes. The assistance models get each
+    # image inline, and the strictest provider limit in use (Claude: 10 MB of
+    # base64, about 7.5 MB raw) would otherwise fail at assistance time, where
+    # it is hard to see. Checked at upload from the source's object sizes.
+    max_image_bytes: int = 7_000_000
+
+    @field_validator("source_url")
+    @classmethod
+    def _source_url_scheme(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.startswith(("gs://", "file://")):
+            raise ValueError(
+                f"MEDIA__SOURCE_URL must be gs://bucket/prefix or file://folder, got {value!r}"
+            )
+        if value.startswith("gs://") and not value[len("gs://") :].split("/", 1)[0]:
+            raise ValueError("MEDIA__SOURCE_URL gs:// needs a bucket name")
+        return value
 
 
 class LLMModels:
@@ -221,6 +257,7 @@ class Settings(BaseSettings):
     terms: TermsSettings = Field(default_factory=TermsSettings)
     slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)

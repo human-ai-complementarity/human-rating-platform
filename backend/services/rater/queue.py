@@ -113,14 +113,13 @@ async def snapshot(rater, experiment, assignments, db):
             if question.parent_question_id
             else None
         )
+        response = await build_question_response(question, experiment, parent_question_text=parent)
         items.append(
             QueueItem(
                 assignment_id=assignment.id,
                 generation=assignment.generation,
                 activated=assignment.activated_at is not None,
-                question=build_question_response(
-                    question, experiment, parent_question_text=parent
-                ).model_copy(
+                question=response.model_copy(
                     update={
                         "assignment_id": assignment.id,
                         "assignment_generation": assignment.generation,
