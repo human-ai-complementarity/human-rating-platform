@@ -30,6 +30,7 @@ from schemas import (
     ExperimentUpdate,
     OneClickLaunchPreview,
     OneClickLaunchRequest,
+    PilotCheckRunResponse,
     PilotStudyCreate,
     TagResponse,
     PlatformStatus,
@@ -42,8 +43,9 @@ from models import ApiKey
 from services import admin as admin_service
 from services import api_keys as api_key_service
 from services import terms as terms_service
+from services.pilot_check import runs as pilot_check_runs
 from services.admin.prolific import get_cached_workspace_currency
-from services.admin.queries import fetch_experiment_or_404
+from services.admin.queries import fetch_experiment_or_404, fetch_total_questions_for_experiment
 from services.admin.waves import CURRENT_WAVE
 from auth import (
     AdminSession,
@@ -401,6 +403,7 @@ async def run_pilot_study(
     experiment_id: int,
     payload: PilotStudyCreate,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
     return await admin_service.run_pilot_study(experiment_id=experiment_id, payload=payload, db=db)
 
@@ -414,6 +417,7 @@ async def launch_from_card(
     experiment_id: int,
     payload: OneClickLaunchRequest,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
     """Create the pilot draft from a complete dataset card, without the pilot form.
 
@@ -458,9 +462,59 @@ async def run_experiment_round(
     experiment_id: int,
     payload: ExperimentRoundCreate,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
     return await admin_service.run_experiment_round(
         experiment_id=experiment_id, payload=payload, db=db
+    )
+
+
+# --- Pilot check (docs/pilot-check.md) ------------------------------------
+
+
+@secure_router.post(
+    "/experiments/{experiment_id}/pilot-check",
+    response_model=PilotCheckRunResponse,
+    status_code=202,
+)
+async def run_pilot_check(
+    experiment_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
+):
+    """Start a pilot check run; it finishes in the background. Poll the GET."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    run = await pilot_check_runs.start_run(
+        experiment,
+        requested_by=admin.email,
+        question_count=question_count,
+        db=db,
+        database=request.app.state.database,
+    )
+    return pilot_check_runs.build_run_response(
+        run, experiment=experiment, current_fingerprint=run.fingerprint
+    )
+
+
+@secure_router.get("/experiments/{experiment_id}/pilot-check", response_model=PilotCheckRunResponse)
+async def get_latest_pilot_check(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """The experiment's latest run, findings and probed assistance steps included."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    run = await pilot_check_runs.latest_run(experiment_id, db)
+    if run is None:
+        raise HTTPException(status_code=404, detail="This experiment has no pilot check run yet.")
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    return pilot_check_runs.build_run_response(
+        run,
+        experiment=experiment,
+        current_fingerprint=await pilot_check_runs.current_fingerprint(
+            experiment, question_count=question_count, db=db
+        ),
     )
 
 
