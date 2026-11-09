@@ -1582,6 +1582,33 @@ test('the markdown flag also applies to the long-context document window', async
   await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
 });
 
+test('the math flag typesets MC options and submits the option as written', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 512,
+    question_text: 'What is the field at P?',
+    options: '$E = \\dfrac{q}{L^2}$|$E = \\dfrac{q}{l^2}$|It costs $5 and $10',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const options = page.locator('button[aria-pressed]');
+  await expect(options).toHaveCount(3);
+  await expect(options.nth(0).locator('math mfrac')).toHaveCount(1);
+  await expect(options.nth(1).locator('math mfrac')).toHaveCount(1);
+  await expect(options.nth(2)).toHaveText('It costs $5 and $10');
+
+  await options.nth(1).click();
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: '$E = \\dfrac{q}{l^2}$' });
+});
+
 test('the math flag typesets TeX in plain text and leaves prices as text', async ({ page }) => {
   const state = createMockState();
   const question: RaterQuestionRecord = {

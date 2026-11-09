@@ -660,7 +660,10 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                     />
                   )}
                 </span>
-                <span style={{ flex: 1 }}>{option}</span>
+                {/* Display only: the answer submitted is the option as written. */}
+                <span style={{ flex: 1 }}>
+                  {math ? <MathText text={option} math={math} /> : option}
+                </span>
               </button>
             );
           })}
