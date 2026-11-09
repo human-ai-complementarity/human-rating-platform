@@ -1014,3 +1014,67 @@ class TermsStatement(SQLModel, table=True):
             server_default=text("CURRENT_TIMESTAMP"),
         ),
     )
+
+
+class PilotCheckRun(SQLModel, table=True):
+    """One admin-triggered pilot check of an experiment (docs/pilot-check.md).
+
+    The run samples questions, walks each through the rater-facing view and
+    the assistance method, and stores what it found. `fingerprint` is a hash
+    of the experiment inputs the run saw; the experiment read recomputes it
+    and reports the run as stale when it differs. Nothing here touches the
+    assistance tables: the probed steps live on the run itself.
+    """
+
+    __tablename__ = "pilot_check_runs"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    experiment_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("experiments.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    # running | passed | warnings | failed | aborted
+    status: str = Field(sa_column=Column(String(16), nullable=False))
+    # Where a running run is (sampling, assistance, checks, a judged check's
+    # name, done) with a short human detail ("9 of 15 questions probed").
+    stage: Optional[str] = Field(default=None, sa_column=Column(String(32), nullable=True))
+    stage_detail: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    requested_by: Optional[str] = Field(default=None, sa_column=Column(String(255), nullable=True))
+    fingerprint: str = Field(sa_column=Column(String(64), nullable=False))
+    config_sha256: str = Field(sa_column=Column(String(64), nullable=False))
+    # The consent statement the run saw, as "label v<version>:<sha256>".
+    terms_ref: Optional[str] = Field(default=None, sa_column=Column(String(128), nullable=True))
+    sample_question_ids: str = Field(
+        default="[]", sa_column=Column(Text, nullable=False, server_default=text("'[]'"))
+    )
+    # JSON list of {check, severity, question_id?, message, detail?}.
+    findings: str = Field(
+        default="[]", sa_column=Column(Text, nullable=False, server_default=text("'[]'"))
+    )
+    # JSON list of {question_id, step_type, payload, failure_reason,
+    # failure_detail, latency_ms}; NULL for a control arm.
+    assistance_steps: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    judge_model: Optional[str] = Field(default=None, sa_column=Column(String(128), nullable=True))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    # Touched on every progress write; a running row left untouched for
+    # `runs.STALE_AFTER` reads as aborted.
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    finished_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
