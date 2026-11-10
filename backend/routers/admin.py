@@ -405,7 +405,9 @@ async def run_pilot_study(
     db: AsyncSession = Depends(get_session),
     admin: AdminSession = Depends(require_admin),
 ):
-    return await admin_service.run_pilot_study(experiment_id=experiment_id, payload=payload, db=db)
+    return await admin_service.run_pilot_study(
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
+    )
 
 
 @secure_router.post(
@@ -423,7 +425,9 @@ async def launch_from_card(
 
     Publishing stays a separate action — it spends money.
     """
-    return await admin_service.launch_from_card(experiment_id=experiment_id, payload=payload, db=db)
+    return await admin_service.launch_from_card(
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
+    )
 
 
 @secure_router.get(
@@ -465,7 +469,7 @@ async def run_experiment_round(
     admin: AdminSession = Depends(require_admin),
 ):
     return await admin_service.run_experiment_round(
-        experiment_id=experiment_id, payload=payload, db=db
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
     )
 
 

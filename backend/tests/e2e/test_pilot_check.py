@@ -1,5 +1,6 @@
 """The pilot check end to end (docs/pilot-check.md): a run starts in the
-background and lands on a status, and the experiment read summarises it.
+background and lands on a status, the experiment read summarises it, and the
+launch gate refuses a study until the check is clean or acknowledged.
 
 Every provider call is stubbed to fail (conftest), which is itself a good
 fixture: an assisted arm's run must report that, not crash.
@@ -171,6 +172,7 @@ def test_a_control_arm_whose_judge_calls_fail_lands_with_warnings(client: TestCl
     refreshed = client.get(f"/api/admin/experiments/{exp['id']}").json()
     assert refreshed["pilot_check"]["state"] == "warnings"
     assert refreshed["pilot_check"]["run_id"] == run["id"]
+    assert refreshed["pilot_check"]["needs_acknowledgement"] is False
 
 
 def test_the_placeholder_consent_fails_the_run(client: TestClient):
@@ -184,6 +186,7 @@ def test_the_placeholder_consent_fails_the_run(client: TestClient):
     summary = client.get(f"/api/admin/experiments/{exp['id']}").json()["pilot_check"]
     assert summary["state"] == "failed"
     assert summary["counts"]["error"] == 1
+    assert summary["needs_acknowledgement"] is False  # the suite runs with the gate off
 
 
 def test_an_assisted_arm_whose_provider_fails_is_reported(client: TestClient, terms_source):
@@ -302,3 +305,81 @@ def test_publishing_the_pilot_keeps_the_run_fresh(
     assert experiment["consent_statement_ref"], "the publish should have pinned the terms"
     assert experiment["pilot_check"]["state"] == run["status"]
     assert client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json()["stale"] is False
+
+
+def test_the_list_flags_a_checked_in_experiment_without_a_run(client: TestClient, pilot_check_gate):
+    exp = _ready_experiment(client)
+    listed = next(e for e in client.get("/api/admin/experiments").json() if e["id"] == exp["id"])
+    assert listed["needs_attention"] is True
+    assert listed["attention_reason"] == "Run the pilot check before launching."
+    assert listed["pilot_check"]["needs_acknowledgement"] is True
+    bare = client.post("/api/admin/experiments", json={"name": "No questions"}).json()
+    listed = next(e for e in client.get("/api/admin/experiments").json() if e["id"] == bare["id"])
+    assert listed["needs_attention"] is False
+
+
+@respx.mock
+def test_the_gate_refuses_a_pilot_until_the_check_is_clean_or_acknowledged(
+    client: TestClient, enable_prolific, terms_source, pilot_check_gate, no_judge
+):
+    _mock_prolific_study()
+    exp = _ready_experiment(client)
+    url = f"/api/admin/experiments/{exp['id']}/prolific/pilot"
+
+    refused = client.post(url, json=_PILOT)
+    assert refused.status_code == 409, refused.text
+    detail = refused.json()["detail"]
+    assert detail["code"] == "pilot_check"
+    assert detail["pilot_check"]["state"] == "not_run"
+    assert "has not been run" in detail["message"]
+
+    run = _run_check(client, exp["id"])
+    assert run["status"] == "passed"
+    created = client.post(url, json=_PILOT)
+    assert created.status_code == 200, created.text
+    assert created.json()["pilot_check_run_id"] == run["id"]
+    assert created.json()["pilot_check_acknowledged_by"] is None
+
+
+@respx.mock
+def test_launching_anyway_records_who_acknowledged(
+    client: TestClient, enable_prolific, pilot_check_gate
+):
+    _mock_prolific_study()
+    exp = _ready_experiment(client)
+    url = f"/api/admin/experiments/{exp['id']}/prolific/pilot"
+    assert client.post(url, json=_PILOT).status_code == 409
+    created = client.post(url, json={**_PILOT, "acknowledge_pilot_check": True})
+    assert created.status_code == 200, created.text
+    assert created.json()["pilot_check_run_id"] is None
+    assert created.json()["pilot_check_acknowledged_by"] == "dev@local"
+
+
+@respx.mock
+def test_a_flagged_run_is_acknowledged_once(
+    client: TestClient, enable_prolific, terms_source, pilot_check_gate
+):
+    """Nothing changed between the pilot and the next round, so the same
+    flagged run is not asked about twice; the acknowledger carries over."""
+    _mock_prolific_study()
+    exp = _ready_experiment(client)
+    run = _run_check(client, exp["id"])
+    assert run["status"] == "warnings"  # the judge calls fail (conftest)
+
+    url = f"/api/admin/experiments/{exp['id']}/prolific"
+    assert client.post(f"{url}/pilot", json=_PILOT).status_code == 409
+    pilot = client.post(f"{url}/pilot", json={**_PILOT, "acknowledge_pilot_check": True})
+    assert pilot.status_code == 200, pilot.text
+    assert pilot.json()["pilot_check_acknowledged_by"] == "dev@local"
+
+    assert client.post(f"{url}/rounds/{pilot.json()['id']}/publish").status_code == 200
+    respx.post(f"{PROLIFIC_BASE}/studies/study-pc-1/transition/").mock(
+        return_value=httpx.Response(200, json={"id": "study-pc-1", "status": "AWAITING_REVIEW"})
+    )
+    assert client.post(f"{url}/rounds/{pilot.json()['id']}/close").status_code == 200
+
+    _mock_prolific_study("study-pc-2")
+    second = client.post(f"{url}/rounds", json={"places": 4})
+    assert second.status_code == 200, second.text
+    assert second.json()["pilot_check_run_id"] == run["id"]
+    assert second.json()["pilot_check_acknowledged_by"] == "dev@local"

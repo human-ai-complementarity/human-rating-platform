@@ -467,6 +467,21 @@ class ExperimentRound(SQLModel, table=True):
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded list of experiment IDs whose participant groups block this round
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
+    # The pilot check run the admin launched against, and who acknowledged
+    # launching past a missing, stale or failing one (docs/pilot-check.md).
+    # Both NULL when the gate was off or the run was clean.
+    pilot_check_run_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("pilot_check_runs.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    pilot_check_acknowledged_by: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
     # Prolific's own `total_cost` for this round's study, in the workspace
     # currency's minor units. This is the full charge Prolific's study page
     # totals: rewards + platform fee + VAT on that fee. Captured on Prolific

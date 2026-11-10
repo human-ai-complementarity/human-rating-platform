@@ -283,7 +283,7 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 - `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
 - `MEDIA__SOURCE_URL` — where question images live, `gs://bucket/prefix` or `file://folder`; unset refuses uploads that reference images. `MEDIA__GCS_WIF_AUDIENCE`, `MEDIA__GCS_WIF_TOKEN_FILE`, `MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT` as for `TERMS__GCS_*`. See [Questions with images](#questions-with-images).
-- `PILOT_CHECK__*` — the pilot check's sample size, judge model and per-check severities (`[pilot_check]` in `backend/config.toml`). See [docs/pilot-check.md](docs/pilot-check.md).
+- `PILOT_CHECK__*` — the pilot check's sample size, judge model, launch gate mode and per-check severities (`[pilot_check]` in `backend/config.toml`). See [docs/pilot-check.md](docs/pilot-check.md).
 
 Top‑level convenience envs (not nested):
 

@@ -39,5 +39,8 @@ lookahead_questions = 1
 # docs/pilot-check.md. A hash of this section is stored on each run.
 sample_size = 15
 judge_model = "openrouter/anthropic/claude-sonnet-4-6"
+# "warn" asks the admin to confirm before a study is created past a missing,
+# stale or flagged check; "off" ignores the check. It never refuses a launch.
+gate_mode = "warn"
 # Per-check severity overrides, e.g. markdown_mode = "info".
 [pilot_check.severities]

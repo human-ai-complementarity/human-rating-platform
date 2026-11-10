@@ -238,18 +238,25 @@ PilotCheckSeverity = Literal["error", "warning", "info"]
 
 class PilotCheckSettings(_StrictModel):
     """The pilot check (docs/pilot-check.md). A hash of these values is stored
-    on every run, so changing one marks earlier runs stale."""
+    on every run, so changing one marks earlier runs stale; `gate_mode` is left
+    out, it changes what a launch asks, not what a run looked at."""
 
     # Served questions drawn per run (parent rows are header-only and skipped).
     sample_size: int = Field(default=15, ge=1, le=50)
     # <provider>/<model-id>, the same spelling as assistance_models entries.
     judge_model: str = "openrouter/anthropic/claude-sonnet-4-6"
+    # "warn": creating a study asks the admin to confirm when the latest run is
+    #         missing, stale, running, or has a warning or error. The check
+    #         never refuses a launch: a judge will always find something.
+    # "off":  creating a study ignores the check (the UI still shows it).
+    gate_mode: Literal["warn", "off"] = "warn"
     # Per-check severity overrides, keyed by check name; each check has a
     # default in code (services/pilot_check/checks).
     severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)
 
     def sha256(self) -> str:
-        return hashlib.sha256(self.model_dump_json().encode("utf-8")).hexdigest()
+        material = self.model_dump_json(exclude={"gate_mode"})
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
 class PrefetchSettings(_StrictModel):

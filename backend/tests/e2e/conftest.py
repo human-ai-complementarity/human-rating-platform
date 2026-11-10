@@ -181,3 +181,23 @@ def no_judge():
         yield
     finally:
         settings.llm.openrouter_api_key = original
+
+
+@pytest.fixture(autouse=True)
+def pilot_check_gate_off():
+    """The pilot check's launch gate is off for the suite: most tests create
+    studies without running a check first. `pilot_check_gate` turns it on."""
+    settings = get_settings().pilot_check
+    original = settings.gate_mode
+    settings.gate_mode = "off"
+    try:
+        yield settings
+    finally:
+        settings.gate_mode = original
+
+
+@pytest.fixture
+def pilot_check_gate(pilot_check_gate_off):
+    """The gate in its shipped "warn" mode."""
+    pilot_check_gate_off.gate_mode = "warn"
+    return pilot_check_gate_off

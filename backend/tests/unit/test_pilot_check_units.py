@@ -129,6 +129,8 @@ def test_every_check_has_a_unique_name_and_a_label(config):
     assert len(CHECKS_BY_NAME) == len(CHECKS)
     assert all(check.label for check in CHECKS)
     assert config.sha256() != PilotCheckSettings(sample_size=3).sha256()
+    # The gate mode is not part of what a run looked at.
+    assert config.sha256() == PilotCheckSettings(gate_mode="off").sha256()
 
 
 # --- Sampling -------------------------------------------------------------
@@ -552,38 +554,43 @@ def _run(**overrides) -> PilotCheckRun:
     return PilotCheckRun(**values)
 
 
-def test_no_run_is_not_run():
-    summary = summarise(None, current_fingerprint="fp")
+def test_no_run_needs_acknowledgement_unless_the_gate_is_off(config):
+    summary = summarise(None, current_fingerprint="fp", settings=config)
     assert summary.state == "not_run"
-    assert summary.reason == "The pilot check has not been run."
+    assert summary.needs_acknowledgement is True
+    off = PilotCheckSettings(gate_mode="off")
+    assert summarise(None, current_fingerprint="fp", settings=off).needs_acknowledgement is False
 
 
-def test_a_clean_run_has_no_reason():
-    summary = summarise(_run(), current_fingerprint="fp")
+def test_a_clean_run_needs_nothing(config):
+    summary = summarise(_run(), current_fingerprint="fp", settings=config)
     assert summary.state == "passed"
+    assert summary.needs_acknowledgement is False
     assert summary.reason is None
 
 
-def test_a_changed_experiment_makes_the_run_stale():
-    summary = summarise(_run(), current_fingerprint="other")
+def test_a_changed_experiment_makes_the_run_stale(config):
+    summary = summarise(_run(), current_fingerprint="other", settings=config)
     assert summary.state == "stale"
+    assert summary.needs_acknowledgement is True
 
 
-def test_warnings_are_counted_in_the_reason():
+def test_warnings_need_acknowledgement(config):
     findings = json.dumps([{"check": "x", "severity": "warning", "message": "m"}])
     run = _run(status="warnings", findings=findings)
-    summary = summarise(run, current_fingerprint="fp")
+    summary = summarise(run, current_fingerprint="fp", settings=config)
     assert summary.state == "warnings"
     assert summary.counts["warning"] == 1
+    assert summary.needs_acknowledgement is True
     assert "1 warning" in summary.reason
 
 
-def test_a_run_that_stopped_reporting_progress_reads_as_aborted():
+def test_a_run_that_stopped_reporting_progress_reads_as_aborted(config):
     stale = datetime.now(UTC) - timedelta(minutes=10)
     run = _run(status="running", created_at=stale, updated_at=stale)
-    assert summarise(run, current_fingerprint="fp").state == "aborted"
+    assert summarise(run, current_fingerprint="fp", settings=config).state == "aborted"
     fresh = _run(status="running", created_at=stale, updated_at=datetime.now(UTC))
-    assert summarise(fresh, current_fingerprint="fp").state == "running"
+    assert summarise(fresh, current_fingerprint="fp", settings=config).state == "running"
 
 
 def test_the_fingerprint_moves_with_what_raters_see():

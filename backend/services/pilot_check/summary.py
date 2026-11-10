@@ -1,4 +1,8 @@
-"""The latest run as the experiment page shows it."""
+"""The latest run as the experiment page shows it and the launch gate reads it.
+
+Both come from `summarise`, so the UI and the 409 (`gate.py`) cannot
+disagree about why a launch needs acknowledging.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config import PilotCheckSettings
 from models import Experiment, PilotCheckRun
 from schemas import PilotCheckSummary
 
@@ -27,12 +32,25 @@ def _counts(findings: list[dict]) -> dict[str, int]:
 
 
 def summarise(
-    run: PilotCheckRun | None, *, current_fingerprint: str, now: datetime | None = None
+    run: PilotCheckRun | None,
+    *,
+    current_fingerprint: str,
+    settings: PilotCheckSettings,
+    now: datetime | None = None,
 ) -> PilotCheckSummary:
-    """The state the experiment page shows: no run, a run still going, one
-    that died, one the experiment has changed under, or its outcome."""
+    """The state the experiment page shows and the launch gate reads.
+
+    Anything but a fresh, passed run needs acknowledging (unless the gate is
+    off): no run, a run still going, one that died, one the experiment has
+    changed under, or one with a warning or error.
+    """
+    mode = settings.gate_mode
     if run is None:
-        return PilotCheckSummary(state="not_run", reason="The pilot check has not been run.")
+        return PilotCheckSummary(
+            state="not_run",
+            needs_acknowledgement=mode != "off",
+            reason="The pilot check has not been run.",
+        )
     status = effective_status(run, now or datetime.now(UTC))
     counts = _counts(json.loads(run.findings or "[]"))
     if status == "running":
@@ -55,6 +73,7 @@ def summarise(
         created_at=run.created_at,
         finished_at=run.finished_at,
         counts=counts,
+        needs_acknowledgement=mode != "off" and state != "passed",
         reason=reason,
     )
 
@@ -77,6 +96,7 @@ async def summaries_for(
                 latest_upload_id=uploads.get(experiment.id),
                 config_sha256=settings.sha256(),
             ),
+            settings=settings,
             now=now,
         )
         for experiment, question_count in rows
