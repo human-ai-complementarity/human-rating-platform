@@ -322,12 +322,28 @@ async def test_consent_for_a_warned_study_without_details_is_an_error(config):
 
 
 @pytest.mark.asyncio
-async def test_markdown_in_the_prefix_is_flagged_even_with_rendering_on(config):
-    # The rater card shows the prefix and suffix as plain text in both modes.
+async def test_markdown_in_the_prefix_passes_with_rendering_on(config):
+    # The rater card renders the prefix and suffix under the same switch.
     exp = _experiment(is_markdown=True, human_prompt_prefix="## Instructions\n- read")
-    findings = await markdown_mode.run(_ctx(config, exp), "warning")
+    assert await markdown_mode.run(_ctx(config, exp), "warning") == []
+
+
+@pytest.mark.asyncio
+async def test_raw_html_in_the_suffix_is_flagged_only_with_rendering_on(config):
+    suffix = "Pick <b>one</b>."
+    on = _experiment(is_markdown=True, human_prompt_suffix=suffix)
+    findings = await markdown_mode.run(_ctx(config, on), "warning")
     assert _severities(findings) == ["warning"]
-    assert "always see the prefix and suffix as plain text" in findings[0].message
+    assert "prompt suffix contains raw HTML" in findings[0].message
+    off = _experiment(is_markdown=False, human_prompt_suffix=suffix)
+    assert await markdown_mode.run(_ctx(config, off), "warning") == []
+
+
+def test_the_judge_is_told_the_framing_follows_the_markdown_switch():
+    on = _experiment(is_markdown=True, human_prompt_prefix="**Read** first")
+    assert "[Shown above the question, as Markdown]" in _view(on).as_text()
+    off = _experiment(is_markdown=False, human_prompt_prefix="**Read** first")
+    assert "[Shown above the question, as plain text]" in _view(off).as_text()
 
 
 @pytest.mark.asyncio
