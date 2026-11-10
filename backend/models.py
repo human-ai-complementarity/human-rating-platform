@@ -171,7 +171,8 @@ class Experiment(SQLModel, table=True):
             Integer, ForeignKey("terms_statements.id", ondelete="RESTRICT"), nullable=True
         ),
     )
-    # Render question text and context as Markdown on the rater card.
+    # Render question text, context and the prompt prefix/suffix as Markdown on
+    # the rater card.
     is_markdown: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
