@@ -215,8 +215,17 @@ function ContentBlocks({
 
 // Researcher-supplied framing is instructional, not decorative: raters are
 // expected to read it before answering, so it gets a labelled callout rather
-// than muted italics.
-function PromptFraming({ text, style }: { text: string; style?: CSSProperties }) {
+// than muted italics. It follows the experiment's Markdown flag like the
+// question does; math stays off, the framing is shown as written.
+function PromptFraming({
+  text,
+  markdown,
+  style,
+}: {
+  text: string;
+  markdown: boolean;
+  style?: CSSProperties;
+}) {
   return (
     <div
       style={{
@@ -239,17 +248,12 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
       >
         Instructions
       </div>
-      <p
-        style={{
-          fontSize: 16,
-          lineHeight: 1.6,
-          color: 'var(--ink)',
-          margin: 0,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {text}
-      </p>
+      <QuestionBody
+        text={text}
+        markdown={markdown}
+        math={null}
+        style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--ink)', margin: 0 }}
+      />
     </div>
   );
 }
@@ -549,7 +553,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {humanPromptPrefix && humanPromptPrefix.trim() && (
-        <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
+        <PromptFraming
+          text={humanPromptPrefix}
+          markdown={question.is_markdown}
+          style={{ marginBottom: 20 }}
+        />
       )}
 
       {display.questionBlocks ? (
@@ -586,7 +594,11 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
-        <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />
+        <PromptFraming
+          text={humanPromptSuffix}
+          markdown={question.is_markdown}
+          style={{ marginTop: -4, marginBottom: 24 }}
+        />
       )}
 
       {assistanceActive && assistanceAnswer == null && (

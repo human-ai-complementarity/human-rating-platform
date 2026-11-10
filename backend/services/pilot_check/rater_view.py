@@ -36,12 +36,13 @@ class RaterQuestionView:
         mode = "Markdown" if self.response.is_markdown else "plain text"
         if self.response.render_math:
             mode += ", TeX between math delimiters typeset"
-        # The prefix and suffix are plain text whatever the mode says; the
-        # judge must not read them as rendered Markdown.
+        # The prefix and suffix follow the Markdown switch but never typeset
+        # math, so they carry their own label rather than the question's.
+        framing_mode = "Markdown" if self.response.is_markdown else "plain text"
         parts = [f"[Rendering mode for the question: {mode}]"]
         if self.human_prompt_prefix:
             parts.append(
-                f"[Shown above the question, always as plain text]\n{self.human_prompt_prefix}"
+                f"[Shown above the question, as {framing_mode}]\n{self.human_prompt_prefix}"
             )
         if self.response.parent_question_text:
             parts.append(f"[Context]\n{self.response.parent_question_text}")
@@ -59,7 +60,7 @@ class RaterQuestionView:
             )
         if self.human_prompt_suffix:
             parts.append(
-                f"[Shown below the question, always as plain text]\n{self.human_prompt_suffix}"
+                f"[Shown below the question, as {framing_mode}]\n{self.human_prompt_suffix}"
             )
         return "\n\n".join(parts)
 

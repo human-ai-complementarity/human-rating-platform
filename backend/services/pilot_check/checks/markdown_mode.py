@@ -1,9 +1,8 @@
 """Does the Markdown switch match the text: structure that will show as
 literal symbols when off, raw HTML or placeholders that will show when on.
 
-The prompt prefix and suffix are a case of their own: the rater card shows
-them as plain text whatever the switch says (`PromptFraming` in
-`QuestionCard.tsx`), so Markdown in them never renders.
+The prompt prefix and suffix follow the same switch as the question text
+(`PromptFraming` in `QuestionCard.tsx`), so both are held to the same rules.
 """
 
 from __future__ import annotations
@@ -40,20 +39,20 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
         "prompt prefix": exp.human_prompt_prefix or "",
         "prompt suffix": exp.human_prompt_suffix or "",
     }
-    framed = [label for label, text in framing.items() if looks_like_markdown(text)]
-    if framed:
-        findings.append(
-            Finding(
-                NAME,
-                severity,
-                f"The {' and '.join(framed)} contain{'s' if len(framed) == 1 else ''} "
-                "Markdown structure, but raters always see the prefix and suffix as plain "
-                "text, so the symbols will show literally.",
-                detail="'Render as Markdown' only applies to the question text. Rewrite "
-                "the prefix and suffix as plain prose.",
-            )
-        )
     if not exp.is_markdown:
+        framed = [label for label, text in framing.items() if looks_like_markdown(text)]
+        if framed:
+            findings.append(
+                Finding(
+                    NAME,
+                    severity,
+                    f"Markdown rendering is off, but the {' and '.join(framed)} "
+                    f"contain{'s' if len(framed) == 1 else ''} Markdown structure that "
+                    "raters will see as literal symbols.",
+                    detail="Turn on 'Render as Markdown' under Instructions & prompts, "
+                    "or rewrite the text as plain prose.",
+                )
+            )
         marked = [
             f"question {view.question_id}"
             for view in ctx.views
@@ -93,6 +92,15 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                 )
             )
     for label, text in framing.items():
+        if exp.is_markdown and _HTML_TAG.search(text):
+            findings.append(
+                Finding(
+                    NAME,
+                    severity,
+                    f"Markdown rendering is on and the {label} contains raw HTML tags, "
+                    "which will be escaped and shown literally.",
+                )
+            )
         if _PLACEHOLDER.search(text):
             findings.append(
                 Finding(NAME, severity, f"The {label} contains an unfilled {{{{placeholder}}}}.")

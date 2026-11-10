@@ -94,8 +94,8 @@ const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
     'Shown to raters on the intro screen and inherited as the default by each round on Launch on Prolific. Edit a round in Launch to override for that round only. Supports markdown.',
   system_prompt:
     'Used to generate AI answers and assistance. Plain text; line breaks preserved.',
-  human_prompt_prefix: 'Rendered above every question. Plain text; line breaks preserved.',
-  human_prompt_suffix: 'Rendered below every question. Plain text; line breaks preserved.',
+  human_prompt_prefix: 'Rendered above every question. Plain text with line breaks preserved, or Markdown when "Render questions as Markdown" is on.',
+  human_prompt_suffix: 'Rendered below every question. Plain text with line breaks preserved, or Markdown when "Render questions as Markdown" is on.',
   prolific_pool:
     'For your reference when configuring Prolific filters; not sent to the Prolific API.',
 };
@@ -2324,7 +2324,7 @@ function MetadataPanel({
         isMarkdown,
         onIsMarkdownChange,
         'Render questions as Markdown',
-        'Code blocks, tables, etc. will be rendered as styled elements',
+        'Code blocks, tables, etc. will be rendered as styled elements, in the question prefix and suffix too',
         {
           blockedBy: renderMath ? 'Render math' : undefined,
           conflicts: renderMarkdownConflicts,

@@ -138,6 +138,8 @@ type RaterSessionRecord = {
   consent_statement_html?: string;
   consented_at?: string | null;
   debrief_html?: string | null;
+  human_prompt_prefix?: string | null;
+  human_prompt_suffix?: string | null;
 };
 
 // The create form lives in a side panel opened from the page header.
@@ -1551,6 +1553,65 @@ test('the experiment markdown flag switches the rater card between rendered and 
   await expect(page.getByText('```python')).toBeVisible();
   await expect(page.locator('pre code')).toHaveCount(0);
   await expect(page.getByRole('table')).toHaveCount(0);
+});
+
+test('the markdown flag also applies to the question prefix and suffix', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 508,
+    question_text: 'Is the statement true?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: true,
+  };
+  seedRaterWithQuestion(state, question);
+  state.sessionsByExperimentId[1].human_prompt_prefix = 'Read the **whole** passage first.';
+  state.sessionsByExperimentId[1].human_prompt_suffix = '- Answer `Yes`\n- or `No`';
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.locator('strong')).toHaveText('whole');
+  await expect(page.getByRole('listitem')).toHaveCount(2);
+  await expect(page.locator('li code').first()).toHaveText('Yes');
+  await expect(page.getByText('**whole**')).toHaveCount(0);
+
+  // Flag off: both render as the literal text the researcher typed.
+  question.is_markdown = false;
+  await page.reload();
+  await expect(page.getByText('Read the **whole** passage first.')).toBeVisible();
+  await expect(page.getByText('- Answer `Yes`')).toBeVisible();
+  await expect(page.locator('strong')).toHaveCount(0);
+  await expect(page.getByRole('listitem')).toHaveCount(0);
+});
+
+test('the intro description keeps heading, paragraph and list spacing', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 509,
+    question_text: 'Ready?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+  state.sessionsByExperimentId[1].experiment_description_html =
+    '<p>First paragraph.</p><h2>Puzzle types</h2><ul><li>One</li><li>Two</li></ul><p>Last.</p>';
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // The global reset zeroes all of these; the description restores them.
+  const px = (selector: string, property: string) =>
+    page
+      .locator(`.rater-intro-description ${selector}`)
+      .first()
+      .evaluate((el, prop) => getComputedStyle(el).getPropertyValue(prop), property);
+  expect(await px('ul', 'padding-left')).toBe('24px');
+  expect(await px('p', 'margin-bottom')).toBe('12px');
+  expect(await px('h2', 'margin-top')).toBe('22px');
+  expect(await px('p:last-child', 'margin-bottom')).toBe('0px');
 });
 
 test('the markdown flag also applies to the long-context document window', async ({
