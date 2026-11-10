@@ -10,6 +10,7 @@ enabled: ``gcloud auth application-default set-quota-project <project>``.
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -18,18 +19,17 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from config import get_settings  # noqa: E402
-from services.admin_groups import GroupReadError, google_session, read_group_emails  # noqa: E402
+from services.admin_groups import google_session, read_group_emails  # noqa: E402
+
+# A group the platform cannot read is skipped with a warning; show those here.
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
 groups = sys.argv[1:] or get_settings().admin_groups
 if not groups:
     print("No groups: set ADMIN_GROUPS or pass group emails as arguments", file=sys.stderr)
     raise SystemExit(2)
 print(f"Reading {', '.join(groups)} ...")
-try:
-    found = read_group_emails(groups, google_session())
-except GroupReadError as exc:
-    print(f"FAILED: {exc}", file=sys.stderr)
-    raise SystemExit(1) from exc
+found = read_group_emails(groups, google_session())
 print(f"{len(found)} people would be admitted:")
 for email in sorted(found):
     print(f"  {email}")
