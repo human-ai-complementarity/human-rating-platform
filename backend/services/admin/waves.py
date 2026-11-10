@@ -14,7 +14,7 @@ KNOWN_WAVES: tuple[str, ...] = ("fall25", "sp26", "sum26", "fall26", "win26")
 
 # The wave collections are being run for now. A constant, not a setting:
 # waves change rarely, and the PR that bumps it is the record.
-CURRENT_WAVE = "fall26"
+CURRENT_WAVE = "win26"
 
 
 def normalize_wave_token(wave: str) -> str:
