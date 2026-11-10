@@ -1,6 +1,6 @@
 import React from 'react';
-import { useSignIn, useSignUp } from '@clerk/clerk-react';
 import { useLocation } from 'react-router-dom';
+import { useSignIn, useSignUp } from '../auth';
 
 type Stage = 'choose' | 'sign-in' | 'sign-up' | 'verify-email';
 
@@ -96,7 +96,9 @@ export default function LoginPage() {
         // A Google sign-in or an earlier sign-up already made this account.
         setPassword('');
         setStage('sign-in');
-        setError('An account with this email already exists. Sign in with your password, or continue with Google.');
+        setError(
+          'An account with this email already exists. Sign in with your password if you set one, or continue with Google.'
+        );
         return;
       }
       setError(err?.errors?.[0]?.longMessage || err?.message || 'Failed to create account');

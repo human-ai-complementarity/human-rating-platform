@@ -23,6 +23,8 @@ function App() {
   return (
     <Routes>
       <Route path="/sso-callback" element={<AuthenticateWithRedirectCallback />} />
+      {/* The e2e bypass is always signed in, so the login page needs its own door. */}
+      {isE2eAuthBypassed() && <Route path="/e2e/login" element={<LoginPage />} />}
       <Route path="/rate" element={<RaterView />} />
       <Route
         path="/"
