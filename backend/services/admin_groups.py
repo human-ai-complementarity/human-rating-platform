@@ -5,9 +5,10 @@ included, is admitted to the admin surface exactly as if listed in
 ``ADMIN_ALLOWLIST``. The platform reads the groups through the Cloud Identity
 Groups API as its own Google identity (the service-account key named by
 ``GOOGLE_APPLICATION_CREDENTIALS``) on boot and every few minutes after, and
-keeps the emails in memory. A nested group the platform cannot read is skipped
-with a warning. A read of a top-level group that fails after retries clears the
-set, so until the next good read only ``ADMIN_ALLOWLIST`` admits anyone.
+keeps the emails in memory. A group the platform cannot read, top-level or
+nested, is skipped with a warning and the rest are admitted. A refresh that
+fails outright after retries (no credentials, say) clears the set, so until the
+next good read only ``ADMIN_ALLOWLIST`` admits anyone.
 
 The service account must be allowed to view the members of each group it
 reads, nested ones included: a Member of each (external members allowed on
@@ -53,7 +54,7 @@ def read_group_emails(groups: list[str], session: Session) -> set[str]:
     found: set[str] = set()
     seen: set[str] = set()
     for group in groups:
-        _walk(session, group.strip().lower(), found, seen, depth=0)
+        _walk_group(session, group.strip().lower(), None, found, seen, depth=0)
     return found
 
 
@@ -77,7 +78,7 @@ def _walk(session: Session, group: str, found: set[str], seen: set[str], depth: 
             if not email:
                 continue
             if kind == "GROUP":
-                _walk_nested(session, email, group, found, seen, depth + 1)
+                _walk_group(session, email, group, found, seen, depth + 1)
             elif kind != "SERVICE_ACCOUNT" and not email.endswith(".gserviceaccount.com"):
                 # The platform's own identity is a member so it can read; it is not a person.
                 found.add(email)
@@ -86,10 +87,10 @@ def _walk(session: Session, group: str, found: set[str], seen: set[str], depth: 
             return
 
 
-def _walk_nested(
-    session: Session, group: str, parent: str, found: set[str], seen: set[str], depth: int
+def _walk_group(
+    session: Session, group: str, parent: str | None, found: set[str], seen: set[str], depth: int
 ) -> None:
-    """Walk a nested group; one the platform cannot read is skipped, not fatal.
+    """Walk one group, top-level or nested; one the platform cannot read is skipped, not fatal.
 
     Its people are added only if the whole subtree reads cleanly, so a failure
     on a later page never admits half a group.
@@ -98,7 +99,8 @@ def _walk_nested(
     try:
         _walk(session, group, sub, seen, depth)
     except GroupReadError as exc:
-        logger.warning("Skipping nested group %s under %s: %s", group, parent, exc)
+        where = f"nested group {group} under {parent}" if parent else f"group {group}"
+        logger.warning("Skipping %s: %s", where, exc)
         return
     found |= sub
 
@@ -142,10 +144,12 @@ def google_session() -> Session:
 async def refresh(groups: list[str]) -> None:
     """Replace the in-memory set from Google.
 
-    A read is retried after each delay in ``RETRY_DELAYS`` so a blip changes
-    nothing. If every attempt fails the set is cleared: only ``ADMIN_ALLOWLIST``
-    admits anyone until a later refresh succeeds, so a broken sync can never
-    keep admitting someone who has since been removed from a group.
+    A group that cannot be read is skipped inside the walk, so a refresh fails
+    only when nothing can be read at all (no credentials, say). Such a failure
+    is retried after each delay in ``RETRY_DELAYS`` so a blip changes nothing.
+    If every attempt fails the set is cleared: only ``ADMIN_ALLOWLIST`` admits
+    anyone until a later refresh succeeds, so a broken sync can never keep
+    admitting someone who has since been removed from a group.
     """
     global _emails
     for attempt, delay in enumerate((*RETRY_DELAYS, None), start=1):

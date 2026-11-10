@@ -10,7 +10,7 @@ import pytest
 from auth import allowed_emails
 from config import Settings
 from services import admin_groups
-from services.admin_groups import API, GroupReadError, read_group_emails
+from services.admin_groups import API, read_group_emails
 
 G = "team@example.com"
 COHORT = "cohort@example.com"
@@ -119,15 +119,24 @@ def test_nested_group_failing_mid_way_contributes_nobody() -> None:
     assert read_group_emails([G], session) == {"a@x.org"}
 
 
-def test_unreadable_top_level_group_fails_the_read_naming_it() -> None:
-    session = FakeSession({lookup(G): FakeResponse(403, text="PERMISSION_DENIED")})
-    with pytest.raises(GroupReadError, match=f"read {G}.*Groups Reader role"):
-        read_group_emails([G], session)
+def test_unreadable_top_level_group_is_skipped_and_the_others_read(caplog) -> None:
+    session = FakeSession(
+        {
+            lookup(G): FakeResponse(403, text="PERMISSION_DENIED"),
+            lookup(COHORT): {"name": "groups/cohort"},
+            members("groups/cohort"): {"memberships": [person("c@x.org")]},
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="services.admin_groups"):
+        assert read_group_emails([G, COHORT], session) == {"c@x.org"}
+    assert f"Skipping group {G}: No permission to read {G}" in caplog.text
+    assert "Groups Reader role" in caplog.text
 
 
-def test_unknown_group_is_a_404_pointing_at_the_setting() -> None:
-    with pytest.raises(GroupReadError, match="not found.*ADMIN_GROUPS"):
-        read_group_emails(["nope@example.com"], FakeSession({}))
+def test_unknown_group_warns_pointing_at_the_setting(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="services.admin_groups"):
+        assert read_group_emails(["nope@example.com"], FakeSession({})) == set()
+    assert "nope@example.com not found (404): check ADMIN_GROUPS" in caplog.text
 
 
 GOOD = {
@@ -146,12 +155,12 @@ async def test_refresh_replaces_on_success_and_clears_after_repeated_failure(mon
 
     attempts = 0
 
-    def broken() -> FakeSession:
+    def no_credentials() -> FakeSession:
         nonlocal attempts
         attempts += 1
-        return FakeSession({})
+        raise RuntimeError("Could not automatically determine credentials")
 
-    monkeypatch.setattr(admin_groups, "google_session", broken)
+    monkeypatch.setattr(admin_groups, "google_session", no_credentials)
     await admin_groups.refresh([G])
     assert attempts == 3
     assert admin_groups.emails() == set()
@@ -161,8 +170,12 @@ async def test_refresh_replaces_on_success_and_clears_after_repeated_failure(mon
 async def test_refresh_survives_a_transient_failure(monkeypatch) -> None:
     monkeypatch.setattr(admin_groups, "_emails", frozenset({"a@x.org"}))
     monkeypatch.setattr(admin_groups, "RETRY_DELAYS", (0, 0))
-    sessions = iter([FakeSession({}), FakeSession(GOOD)])
-    monkeypatch.setattr(admin_groups, "google_session", lambda: next(sessions))
+
+    def flaky_then_good() -> FakeSession:
+        monkeypatch.setattr(admin_groups, "google_session", lambda: FakeSession(GOOD))
+        raise RuntimeError("token refresh failed")
+
+    monkeypatch.setattr(admin_groups, "google_session", flaky_then_good)
     await admin_groups.refresh([G])
     assert admin_groups.emails() == {"a@x.org"}
 
