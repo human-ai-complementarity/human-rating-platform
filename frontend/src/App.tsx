@@ -23,6 +23,8 @@ function App() {
   return (
     <Routes>
       <Route path="/sso-callback" element={<AuthenticateWithRedirectCallback />} />
+      {/* The e2e bypass is always signed in, so the login page needs its own door. */}
+      {isE2eAuthBypassed() && <Route path="/e2e/login" element={<LoginPage />} />}
       <Route path="/rate" element={<RaterView />} />
       <Route
         path="/"
@@ -170,7 +172,7 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [ADMIN_JWT_TEMPLATE, isLoaded, isSignedIn, email, getToken]);
+  }, [isLoaded, isSignedIn, email, getToken]);
 
   if (!isLoaded || state === 'loading' || state === 'idle') {
     return (
@@ -185,7 +187,7 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
       <AdminShell>
         <InfoCard
           title="You don't have admin access."
-          body="Please contact Juliana, Andrew, or Sander to have your email added to the allowlist."
+          body="Ask a platform admin to add this email to the admin group."
         />
       </AdminShell>
     );

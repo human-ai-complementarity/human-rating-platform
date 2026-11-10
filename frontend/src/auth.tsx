@@ -7,6 +7,8 @@ import {
   SignedOut as ClerkSignedOut,
   UserButton as ClerkUserButton,
   useAuth as useClerkAuth,
+  useSignIn as useClerkSignIn,
+  useSignUp as useClerkSignUp,
   useUser as useClerkUser,
 } from '@clerk/clerk-react';
 
@@ -152,4 +154,88 @@ export function useAuth(): FakeUseAuth | ReturnType<typeof useClerkAuth> {
   }
   // eslint-disable-next-line react-hooks/rules-of-hooks
   return useClerkAuth();
+}
+
+// ── Sign-in and sign-up (the login page) ─────────────────────────────────
+// The slice of Clerk's sign-in and sign-up hooks the login page uses. In e2e
+// mode the fakes below script Clerk's responses by address so the page's
+// error handling can be driven without Clerk loaded.
+
+type AuthAttempt = { status: string | null; createdSessionId: string | null };
+
+export type SignInHandle = {
+  isLoaded: boolean;
+  signIn?: {
+    create(params: { identifier: string; password: string }): Promise<AuthAttempt>;
+    authenticateWithRedirect(params: {
+      strategy: 'oauth_google';
+      redirectUrl: string;
+      redirectUrlComplete: string;
+    }): Promise<void>;
+  };
+  setActive?: (params: { session: string | null }) => Promise<void>;
+};
+
+export type SignUpHandle = {
+  isLoaded: boolean;
+  signUp?: {
+    create(params: { emailAddress: string; password: string }): Promise<AuthAttempt>;
+    prepareEmailAddressVerification(params: { strategy: 'email_code' }): Promise<unknown>;
+    attemptEmailAddressVerification(params: { code: string }): Promise<AuthAttempt>;
+  };
+  setActive?: (params: { session: string | null }) => Promise<void>;
+};
+
+// Addresses the e2e fakes recognise; frontend/e2e/login.spec.ts uses the same ones.
+const E2E_UNKNOWN_EMAIL = 'unknown@example.com';
+const E2E_GOOGLE_ONLY_EMAIL = 'google-only@example.com';
+const E2E_EXISTING_EMAIL = 'existing@example.com';
+
+function clerkError(code: string) {
+  return { errors: [{ code, longMessage: code }] };
+}
+
+const fakeSignIn: SignInHandle = {
+  isLoaded: true,
+  signIn: {
+    create: async ({ identifier }) => {
+      if (identifier === E2E_UNKNOWN_EMAIL) throw clerkError('form_identifier_not_found');
+      if (identifier === E2E_GOOGLE_ONLY_EMAIL) throw clerkError('strategy_for_user_invalid');
+      throw clerkError('form_password_incorrect');
+    },
+    authenticateWithRedirect: async () => {},
+  },
+  setActive: async () => {},
+};
+
+const fakeSignUp: SignUpHandle = {
+  isLoaded: true,
+  signUp: {
+    create: async ({ emailAddress }) => {
+      if (emailAddress === E2E_EXISTING_EMAIL) throw clerkError('form_identifier_exists');
+      return { status: 'missing_requirements', createdSessionId: null };
+    },
+    prepareEmailAddressVerification: async () => {},
+    attemptEmailAddressVerification: async () => ({
+      status: 'complete',
+      createdSessionId: 'e2e-session',
+    }),
+  },
+  setActive: async () => {},
+};
+
+export function useSignIn(): SignInHandle {
+  if (E2E_AUTH_BYPASS_ENABLED) {
+    return fakeSignIn;
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return useClerkSignIn();
+}
+
+export function useSignUp(): SignUpHandle {
+  if (E2E_AUTH_BYPASS_ENABLED) {
+    return fakeSignUp;
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  return useClerkSignUp();
 }

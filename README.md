@@ -82,7 +82,7 @@ This project uses Clerk for frontend identity and a backend HTTP‑only cookie f
 
 - Controlled by env var `ADMIN_ALLOWLIST` (comma‑separated or JSON array of emails).
 - If your email isn’t in the allowlist, admin login returns 403 and the UI shows a friendly explanation.
-- `ADMIN_GROUPS` (same format) names Google Groups whose people are admitted too, nested groups included. The backend reads them on boot and every 5 minutes through the Cloud Identity Groups API as the platform's service account (`GOOGLE_APPLICATION_CREDENTIALS`), which must be a Member of each group or hold the Workspace Groups Reader role. A read that still fails after retries clears the group set, so until the next good read only `ADMIN_ALLOWLIST` admits anyone; keep a break-glass entry there. Keep one top-level group and nest each cohort group in it as a Member; `scripts/admin_groups_check.py` prints what the platform would admit.
+- `ADMIN_GROUPS` (same format) names Google Groups whose people are admitted too, nested groups included. The backend reads them on boot and every 5 minutes through the Cloud Identity Groups API as the platform's service account (`GOOGLE_APPLICATION_CREDENTIALS`), which needs the Workspace Groups Reader role (membership alone is not enough). A group it cannot read, top-level or nested, such as a consumer googlegroups.com list, is skipped with a warning and the rest are admitted. A refresh that fails outright after retries (no credentials, say) clears the group set, so until the next good read only `ADMIN_ALLOWLIST` admits anyone; keep a break-glass entry there. Keep one top-level group and nest each cohort group in it as a Member; `scripts/admin_groups_check.py` prints what the platform would admit.
 
 ```bash
 # Admin allowlist + session cookie
