@@ -30,6 +30,8 @@ test('signing up with an existing email moves to sign-in with the email kept', a
   await expect(page.getByPlaceholder('Email')).toHaveValue(EXISTING);
   await expect(page.getByPlaceholder('Password')).toHaveValue('');
   await expect(page.getByText('An account with this email already exists')).toBeVisible();
+  // The message offers Google, so the button must be on this screen, not a Back click away.
+  await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
 });
 
 test('signing in tells an unknown email, a Google-only account, and a wrong password apart', async ({
@@ -43,6 +45,7 @@ test('signing in tells an unknown email, a Google-only account, and a wrong pass
 
   await submitSignIn(page, GOOGLE_ONLY);
   await expect(page.getByText('This account signs in with Google')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
 
   await submitSignIn(page, 'someone@example.com');
   await expect(page.getByText('Invalid email or password.')).toBeVisible();

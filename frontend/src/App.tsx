@@ -172,7 +172,7 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [ADMIN_JWT_TEMPLATE, isLoaded, isSignedIn, email, getToken]);
+  }, [isLoaded, isSignedIn, email, getToken]);
 
   if (!isLoaded || state === 'loading' || state === 'idle') {
     return (
