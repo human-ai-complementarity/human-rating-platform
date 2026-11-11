@@ -11,16 +11,24 @@ import pytest
 from config import PilotCheckSettings
 from models import Experiment, ExperimentStatus, PilotCheckRun, Question
 from schemas import QuestionResponse
+from services.assistance.base import InteractionStep, StepType
+from services.assistance.events import _MethodCall
+from services.assistance.llm import speculative_call
+from services.pilot_check import assistance as probe_runner
+from services.pilot_check.assistance import AssistanceProbe
 from services.pilot_check.checks import (
     CHECKS,
     CHECKS_BY_NAME,
     CheckContext,
     CheckSpec,
+    assistance_health,
+    assistance_output,
     consent,
     markdown_mode,
     question_renders,
     validate_severities,
 )
+from services.pilot_check.checks.base import Finding, merge_findings
 from services.pilot_check.summary import summarise
 from services.pilot_check.rater_view import RaterQuestionView
 from services.pilot_check.runs import _run_check, compute_fingerprint
@@ -92,6 +100,17 @@ def _ctx(config, experiment: Experiment, views=None, **kwargs) -> CheckContext:
         question_count=kwargs.pop("question_count", 10),
         views=views if views is not None else [_view(experiment)],
         **kwargs,
+    )
+
+
+def _probe(qid: int, step_type: str = "ask_input", payload: dict | None = None, **kw):
+    return AssistanceProbe(
+        question_id=qid,
+        step_type=step_type,
+        payload=payload or {},
+        failure_reason=kw.get("failure_reason"),
+        failure_detail=kw.get("failure_detail"),
+        latency_ms=kw.get("latency_ms", 1200),
     )
 
 
@@ -194,7 +213,7 @@ async def test_unfilled_placeholder_in_a_question_is_flagged(config):
     exp = _experiment()
     view = _view(exp, text="Rate {{passage}} now")
     findings = await markdown_mode.run(_ctx(config, exp, [view]), "warning")
-    assert [f.question_id for f in findings] == [1]
+    assert [f.question_ids for f in findings] == [[1]]
 
 
 @pytest.mark.asyncio
@@ -208,13 +227,150 @@ async def test_a_choice_question_without_options_is_an_error(config):
         _view(exp, qid=5),
     ]
     findings = await question_renders.run(_ctx(config, exp, views), "error")
-    by_question = {f.question_id: f for f in findings}
+    by_question = {f.question_ids[0]: f for f in findings}
     assert set(by_question) == {1, 2, 3, 4}
     assert by_question[1].severity == "error"
     assert by_question[2].severity == "warning"
     assert "duplicates" in by_question[2].message
     assert by_question[3].severity == "error"
     assert "parent" in by_question[4].message
+
+
+@pytest.mark.asyncio
+async def test_assistance_checks_skip_on_a_control_arm(config):
+    ctx = _ctx(config, _experiment(), probes=None)
+    for check in (assistance_output, assistance_health):
+        findings = await check.run(ctx, "error")
+        assert _severities(findings) == ["info"]
+        assert findings[0].message.startswith("Skipped")
+
+
+@pytest.mark.asyncio
+async def test_zero_confidence_empty_subtasks_are_an_error(config):
+    exp = _experiment(assistance_method="human_as_a_tool")
+    payload = {
+        "subtasks": [
+            {"index": 0, "question": "Is it true?", "my_answer": "", "confidence": 0},
+            {"index": 1, "question": "Is it cited?", "my_answer": "", "confidence": 0},
+        ],
+        "confidence_threshold": 75,
+    }
+    ctx = _ctx(config, exp, probes=[_probe(1, "ask_input", payload)])
+    findings = await assistance_output.run(ctx, "error")
+    assert len(findings) == 1
+    assert "every confidence is 0%" in findings[0].message
+    assert (findings[0].severity, findings[0].question_ids) == ("error", [1])
+
+
+@pytest.mark.asyncio
+async def test_a_null_synthesis_answer_is_empty(config):
+    exp = _experiment(assistance_method="human_as_a_tool")
+    payload = {"synthesis": {"answer": None, "confidence": 80}}
+    ctx = _ctx(config, exp, probes=[_probe(1, "complete", payload)])
+    findings = await assistance_output.run(ctx, "error")
+    assert len(findings) == 1
+    assert "the answer is empty" in findings[0].message
+
+
+@pytest.mark.asyncio
+async def test_probes_run_as_speculative_calls(monkeypatch):
+    exp = _experiment(assistance_method="top_n", assistance_params=None)
+    seen: list[bool] = []
+
+    async def fake_start(method, question, params, /, **kw):
+        seen.append(speculative_call.get())
+        step = InteractionStep(type=StepType.DISPLAY, payload={"kind": "top_n"})
+        return _MethodCall(step=step, latency_ms=5, error=None)
+
+    monkeypatch.setattr(probe_runner, "start_method", fake_start)
+    probes = await probe_runner.probe_all(exp, [_view(exp, qid=1), _view(exp, qid=2)])
+    assert [p.question_id for p in probes] == [1, 2]
+    assert seen == [True, True]
+    assert speculative_call.get() is False
+
+
+@pytest.mark.asyncio
+async def test_a_healthy_subtask_list_passes(config):
+    exp = _experiment(assistance_method="human_as_a_tool")
+    payload = {
+        "subtasks": [
+            {"index": 0, "question": "Is it true?", "my_answer": "yes", "confidence": 90},
+            {"index": 1, "question": "Is it cited?", "my_answer": "no", "confidence": 40},
+        ],
+        "confidence_threshold": 75,
+    }
+    ctx = _ctx(config, exp, probes=[_probe(1, "ask_input", payload)])
+    assert await assistance_output.run(ctx, "error") == []
+
+
+@pytest.mark.asyncio
+async def test_top_n_without_candidates_is_an_error(config):
+    exp = _experiment(assistance_method="top_n")
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[
+            _probe(1, "display", {"kind": "top_n", "candidates": []}),
+            _probe(
+                2,
+                "none",
+                {"kind": "top_n", "parse_status": "no_candidates"},
+                failure_reason="invalid_response",
+            ),
+        ],
+    )
+    findings = await assistance_output.run(ctx, "error")
+    assert [(f.question_ids, f.severity) for f in findings] == [([1], "error"), ([2], "error")]
+    assert "invalid_response" in findings[1].message
+
+
+@pytest.mark.asyncio
+async def test_health_reports_failures_and_identical_output(config):
+    exp = _experiment(assistance_method="top_n")
+    same = {"kind": "top_n", "candidates": [{"rank": 1, "answer": "Yes"}]}
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[
+            _probe(1, "display", same),
+            _probe(2, "display", same),
+            _probe(3, "none", failure_reason="provider_error", failure_detail="401"),
+        ],
+    )
+    findings = await assistance_health.run(ctx, "error")
+    messages = [f.message for f in findings]
+    assert any("1 of 3" in m and "provider_error" in m for m in messages)
+    assert any("byte-identical" in m for m in messages)
+    assert findings[0].detail == "401"
+
+
+@pytest.mark.asyncio
+async def test_health_passes_with_an_info_line(config):
+    exp = _experiment(assistance_method="top_n")
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[
+            _probe(1, "display", {"candidates": [{"answer": "Yes"}]}),
+            _probe(2, "display", {"candidates": [{"answer": "No"}]}),
+        ],
+    )
+    findings = await assistance_health.run(ctx, "error")
+    assert _severities(findings) == ["info"]
+    assert "2 of 2" in findings[0].message
+
+
+@pytest.mark.asyncio
+async def test_slow_assistance_is_a_warning(config):
+    exp = _experiment(assistance_method="top_n")
+    ctx = _ctx(
+        config,
+        exp,
+        probes=[_probe(1, "display", {"candidates": [{"answer": "Yes"}]}, latency_ms=45_000)],
+    )
+    findings = await assistance_health.run(ctx, "error")
+    assert _severities(findings) == ["warning"]
+    assert "45.0s" in findings[0].message
 
 
 # --- Summary and fingerprint ---------------------------------------------
@@ -381,3 +537,22 @@ def test_the_fingerprint_ignores_the_pinned_statement_ids():
     assert base == compute_fingerprint(
         exp, question_count=10, latest_upload_id=1, config_sha256="c"
     )
+
+
+def test_findings_that_say_the_same_thing_merge_into_one_row():
+    same = "The options contain duplicates."
+    merged = merge_findings(
+        [
+            Finding("question_renders", "warning", same, question_ids=[1], detail="a|a"),
+            Finding("question_renders", "warning", same, question_ids=[2], detail="a|a"),
+            Finding("question_renders", "warning", same, question_ids=[3], detail="b|b"),
+            Finding("question_renders", "error", "The question text is empty.", question_ids=[2]),
+            Finding("consent_configured", "info", "Raters see v1."),
+        ]
+    )
+    assert [(f.message, f.question_ids, f.detail) for f in merged] == [
+        (same, [1, 2], "a|a"),
+        (same, [3], "b|b"),
+        ("The question text is empty.", [2], None),
+        ("Raters see v1.", [], None),
+    ]
