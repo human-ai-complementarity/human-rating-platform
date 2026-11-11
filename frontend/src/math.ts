@@ -220,15 +220,23 @@ function codeRanges(markdown: string): Array<[number, number]> {
 export function maskMath(markdown: string): MaskedMarkdown {
   const source = markdown.replace(/[]/g, '');
   const formulas: MaskedFormula[] = [];
+  // A formula written twice gets one token, so the two still match where
+  // Markdown compares text (a link reference and its definition).
+  const indexBySource = new Map<string, number>();
   let masked = '';
   const mask = (from: number, to: number) => {
     for (const segment of scanMath(source.slice(from, to), true)) {
       if (segment.kind === 'text') {
         masked += segment.text;
-      } else {
-        masked += `${TOKEN_OPEN}${formulas.length}${TOKEN_CLOSE}`;
+        continue;
+      }
+      let index = indexBySource.get(segment.source);
+      if (index === undefined) {
+        index = formulas.length;
+        indexBySource.set(segment.source, index);
         formulas.push({ tex: segment.tex, display: segment.display, source: segment.source });
       }
+      masked += `${TOKEN_OPEN}${index}${TOKEN_CLOSE}`;
     }
   };
   let cursor = 0;

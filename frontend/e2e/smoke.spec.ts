@@ -1784,7 +1784,7 @@ test('Markdown and math typeset together, leaving code and prices as written', a
   await page.goto(RATER_URL);
   await agreeToConsent(page);
 
-  const body = page.locator('.question-markdown');
+  const body = page.locator('div.question-markdown');
   await expect(body.getByRole('heading', { name: 'Field of a charged sphere' })).toBeVisible();
   await expect(body.locator('strong')).toHaveText('charged');
   // Subscripts are not read as emphasis, \( keeps its backslash.
@@ -1801,6 +1801,94 @@ test('Markdown and math typeset together, leaving code and prices as written', a
   await expect(body.locator('pre code')).toHaveText('cost = $x$\n');
   await expect(body.locator('code math')).toHaveCount(0);
   await expect(page.locator('button[aria-pressed]').first().locator('math')).toHaveCount(1);
+});
+
+test('Markdown with math keeps code, escapes and link references intact', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 515,
+    question_text: [
+      'Pay \\$5 for $x$, see [the note][$k$], and ``a ` $y$`` stays code.',
+      '',
+      '[$k$]: https://example.com/note',
+      '',
+      '~~~',
+      'tilde = $t$',
+      '~~~',
+      '',
+      '    indented = $i$',
+      '',
+      'After $z$.',
+      '',
+      '```',
+      'unclosed = $u$',
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const body = page.locator('div.question-markdown');
+  // $x$ and $z$ are typeset; nothing inside code is.
+  await expect(body.locator('math')).toHaveCount(2);
+  await expect(body.locator('code math')).toHaveCount(0);
+  await expect(body.getByText('Pay $5 for')).toBeVisible();
+  // The same formula labels the reference and its definition, so it resolves.
+  await expect(body.getByRole('link', { name: 'the note' })).toHaveAttribute(
+    'href',
+    'https://example.com/note',
+  );
+  await expect(body.locator('p code')).toHaveText('a ` $y$');
+  await expect(body.locator('pre code')).toHaveText([
+    'tilde = $t$\n',
+    'indented = $i$\n',
+    'unclosed = $u$\n',
+  ]);
+});
+
+test('MC options follow the Markdown flag, inline syntax only', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 516,
+    question_text: 'Pick one.',
+    options: '**Bold** and $x^2$|1. Paris|# of items|List<int> or `code`|[site](https://example.com)',
+    question_type: 'MC',
+    is_markdown: true,
+    render_math: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const options = page.locator('button[aria-pressed]');
+  await expect(options).toHaveCount(5);
+  await expect(options.nth(0).locator('strong')).toHaveText('Bold');
+  await expect(options.nth(0).locator('math msup')).toHaveCount(1);
+  // Not a list, not a heading, not swallowed as an HTML tag, not a link.
+  await expect(options.nth(1)).toHaveText('1. Paris');
+  await expect(options.nth(2)).toHaveText('# of items');
+  await expect(options.nth(3)).toHaveText('List<int> or code');
+  await expect(options.nth(3).locator('code')).toHaveText('code');
+  await expect(options.nth(4)).toHaveText('site');
+  await expect(options.locator('ol, h1, a, p')).toHaveCount(0);
+
+  await options.nth(0).click();
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: '**Bold** and $x^2$' });
+
+  // Markdown off: the option is shown as written, math still typeset.
+  question.is_markdown = false;
+  await page.reload();
+  await expect(options.nth(0)).toContainText('**Bold** and');
+  await expect(options.nth(0).locator('math')).toHaveCount(1);
 });
 
 test('the Markdown and math checkboxes combine and show an upload that disagrees', async ({

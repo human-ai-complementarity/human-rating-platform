@@ -122,31 +122,66 @@ function MathText({ text, math }: { text: string; math: MathRenderer }) {
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
 
+// An MC option is one line in a button, so it takes Markdown's inline syntax
+// (bold, code, strikethrough) and none of its blocks: "1. Paris" stays as
+// written instead of becoming a list, "# of items" is not a heading, and
+// "List<int>" keeps its brackets.
+const BLOCK_CONSTRUCTS = [
+  'list',
+  'headingAtx',
+  'setextUnderline',
+  'blockQuote',
+  'codeIndented',
+  'codeFenced',
+  'thematicBreak',
+  'htmlFlow',
+  'htmlText',
+  'definition',
+  'table',
+  'gfmFootnoteDefinition',
+];
+function remarkInlineOnly(this: unknown) {
+  // The parser reads its syntax extensions from the processor's data.
+  const data = (this as { data: () => { micromarkExtensions?: unknown[] } }).data();
+  (data.micromarkExtensions ??= []).push({ disable: { null: BLOCK_CONSTRUCTS } });
+}
+const INLINE_MARKDOWN_PLUGINS = [...MARKDOWN_PLUGINS, remarkInlineOnly];
+const INLINE_MARKDOWN_COMPONENTS: Components = {
+  p: ({ children }) => <>{children}</>,
+  // The option is a button: a link inside it would open instead of select.
+  a: ({ children }) => <>{children}</>,
+};
+
 // Markdown, with its math typeset when `math` is given. The formulas are
 // masked out of the source before Markdown parses it and typeset where their
 // tokens come out (see `maskMath`), once per text like `MathText`.
 function MarkdownBody({
   text,
   math,
+  inline = false,
   style,
 }: {
   text: string;
   math: MathRenderer | null;
+  // Inline syntax only, in a span: for an MC option.
+  inline?: boolean;
   style?: CSSProperties;
 }) {
   const rendering = useMemo(() => {
-    if (!math) return { source: text, plugins: MARKDOWN_PLUGINS, components: MARKDOWN_COMPONENTS };
+    const basePlugins = inline ? INLINE_MARKDOWN_PLUGINS : MARKDOWN_PLUGINS;
+    const baseComponents = inline ? INLINE_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS;
+    if (!math) return { source: text, plugins: basePlugins, components: baseComponents };
     const { markdown, formulas } = maskMath(text);
     const typeset = formulas.map((formula) => ({
       display: formula.display,
       html: math.toHtml(formula.tex, formula.display),
     }));
     const components: Components = {
-      ...MARKDOWN_COMPONENTS,
-      // Markdown itself produces no span: every one is a formula.
-      span: ({ node }) => {
+      ...baseComponents,
+      // Markdown itself produces no span, so in practice every one is a formula.
+      span: ({ node, children }) => {
         const formula = typeset[Number(node?.properties[FORMULA_PROPERTY])];
-        if (!formula) return null;
+        if (!formula) return <span>{children}</span>;
         return (
           <span
             style={formula.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
@@ -157,17 +192,36 @@ function MarkdownBody({
     };
     return {
       source: markdown,
-      plugins: [...MARKDOWN_PLUGINS, remarkMaskedMath(formulas)],
+      plugins: [...basePlugins, remarkMaskedMath(formulas)],
       components,
     };
-  }, [text, math]);
+  }, [text, math, inline]);
+  const Wrapper = inline ? 'span' : 'div';
   return (
-    <div className="question-markdown markdown rater-prose" style={style}>
+    <Wrapper
+      // An option keeps its button's type; only a block takes the prose style.
+      className={inline ? 'question-markdown markdown' : 'question-markdown markdown rater-prose'}
+      style={style}
+    >
       <ReactMarkdown remarkPlugins={rendering.plugins} components={rendering.components}>
         {rendering.source}
       </ReactMarkdown>
-    </div>
+    </Wrapper>
   );
+}
+
+// An MC option as shown in its button, following both rendering flags.
+function OptionText({
+  text,
+  markdown,
+  math,
+}: {
+  text: string;
+  markdown: boolean;
+  math: MathRenderer | null;
+}) {
+  if (markdown) return <MarkdownBody text={text} math={math} inline />;
+  return math ? <MathText text={text} math={math} /> : <>{text}</>;
 }
 
 function QuestionBody({
@@ -710,7 +764,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                 </span>
                 {/* Display only: the answer submitted is the option as written. */}
                 <span style={{ flex: 1 }}>
-                  {math ? <MathText text={option} math={math} /> : option}
+                  <OptionText text={option} markdown={question.is_markdown} math={math} />
                 </span>
               </button>
             );

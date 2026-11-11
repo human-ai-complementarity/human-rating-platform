@@ -2246,7 +2246,6 @@ function MetadataPanel({
     hint: string,
     conflicts: Upload[],
   ) => {
-    const disabled = isLocked;
     return (
       <div>
         <label
@@ -2258,14 +2257,14 @@ function MetadataPanel({
             fontSize: 13.5,
             lineHeight: 1.4,
             fontWeight: 600,
-            cursor: disabled ? 'not-allowed' : 'pointer',
+            cursor: isLocked ? 'not-allowed' : 'pointer',
           }}
         >
           <input
             id={id}
             type="checkbox"
             checked={checked}
-            disabled={disabled}
+            disabled={isLocked}
             aria-describedby={`${id}-hint`}
             onChange={(e) => onChange(e.target.checked)}
             style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
