@@ -69,7 +69,10 @@ check, not a toggle.
   least one sub-question when the upload has any", so a dataset with one odd
   row type is not missed by chance.
 - The sample's question ids are stored on the run, so the report links each
-  finding to a question.
+  finding to its questions.
+- A finding names every question it applies to (`question_ids`), and the run
+  merges findings that say the same thing into one row, so a problem shared by
+  nine questions is one line with nine links, not nine lines.
 
 ## Data model
 

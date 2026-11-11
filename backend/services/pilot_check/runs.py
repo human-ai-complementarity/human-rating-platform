@@ -30,6 +30,7 @@ from services.terms import terms_for_rater
 
 from .checks import CHECKS, CHECKS_BY_NAME, SEVERITY_RANK, CheckContext, CheckSpec, Finding
 from .checks import severity_of
+from .checks.base import merge_findings
 from .rater_view import build_views
 from .sampling import sample_questions
 
@@ -172,6 +173,15 @@ def plan_stages(experiment: Experiment, settings: PilotCheckSettings) -> list[Pi
     ]
 
 
+def _finding_row(row: dict) -> dict:
+    """A stored finding; rows written before findings named several questions
+    carry one `question_id`."""
+    if "question_ids" not in row:
+        row = {**row, "question_ids": [row["question_id"]] if row.get("question_id") else []}
+        row.pop("question_id", None)
+    return row
+
+
 def build_run_response(
     run: PilotCheckRun, *, experiment: Experiment, current_fingerprint: str
 ) -> PilotCheckRunResponse:
@@ -180,7 +190,7 @@ def build_run_response(
     steps = json.loads(run.assistance_steps) if run.assistance_steps else None
     findings = [
         PilotCheckFinding(
-            **f,
+            **_finding_row(f),
             check_label=CHECKS_BY_NAME[f["check"]].label
             if f["check"] in CHECKS_BY_NAME
             else f["check"],
@@ -336,7 +346,7 @@ async def _perform(run_id: int, database: Database, settings: PilotCheckSettings
     findings: list[Finding] = []
     await _set_stage(run_id, database, "checks")
     for check in CHECKS:
-        findings.extend(await _run_check(run_id, ctx, check))
+        findings.extend(merge_findings(await _run_check(run_id, ctx, check)))
 
     terms = ctx.terms
     await _finish(

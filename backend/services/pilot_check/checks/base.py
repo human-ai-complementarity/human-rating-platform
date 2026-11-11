@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from config import PilotCheckSettings, PilotCheckSeverity
@@ -38,9 +38,9 @@ class Finding:
     check: str
     severity: Severity
     message: str
-    # Set on question-level findings so the report can open that question in
-    # the participant preview.
-    question_id: int | None = None
+    # The questions this applies to, so the report can open each in the
+    # participant preview. Empty for an experiment-level finding.
+    question_ids: list[int] = field(default_factory=list)
     detail: str | None = None
 
     def to_dict(self) -> dict:
@@ -48,9 +48,30 @@ class Finding:
             "check": self.check,
             "severity": self.severity,
             "message": self.message,
-            "question_id": self.question_id,
+            "question_ids": self.question_ids,
             "detail": self.detail,
         }
+
+
+def merge_findings(findings: list[Finding]) -> list[Finding]:
+    """One row per problem: findings that say the same thing (check, severity,
+    message, detail) become one, naming every question they came from, in
+    first-seen order."""
+    merged: dict[tuple, Finding] = {}
+    for finding in findings:
+        key = (finding.check, finding.severity, finding.message, finding.detail)
+        if key in merged:
+            seen = merged[key].question_ids
+            seen.extend(qid for qid in finding.question_ids if qid not in seen)
+        else:
+            merged[key] = Finding(
+                finding.check,
+                finding.severity,
+                finding.message,
+                question_ids=list(finding.question_ids),
+                detail=finding.detail,
+            )
+    return list(merged.values())
 
 
 @dataclass

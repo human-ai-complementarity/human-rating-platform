@@ -21,6 +21,7 @@ from services.pilot_check.checks import (
     question_renders,
     validate_severities,
 )
+from services.pilot_check.checks.base import Finding, merge_findings
 from services.pilot_check.summary import summarise
 from services.pilot_check.rater_view import RaterQuestionView
 from services.pilot_check.runs import _run_check, compute_fingerprint
@@ -194,7 +195,7 @@ async def test_unfilled_placeholder_in_a_question_is_flagged(config):
     exp = _experiment()
     view = _view(exp, text="Rate {{passage}} now")
     findings = await markdown_mode.run(_ctx(config, exp, [view]), "warning")
-    assert [f.question_id for f in findings] == [1]
+    assert [f.question_ids for f in findings] == [[1]]
 
 
 @pytest.mark.asyncio
@@ -208,7 +209,7 @@ async def test_a_choice_question_without_options_is_an_error(config):
         _view(exp, qid=5),
     ]
     findings = await question_renders.run(_ctx(config, exp, views), "error")
-    by_question = {f.question_id: f for f in findings}
+    by_question = {f.question_ids[0]: f for f in findings}
     assert set(by_question) == {1, 2, 3, 4}
     assert by_question[1].severity == "error"
     assert by_question[2].severity == "warning"
@@ -381,3 +382,22 @@ def test_the_fingerprint_ignores_the_pinned_statement_ids():
     assert base == compute_fingerprint(
         exp, question_count=10, latest_upload_id=1, config_sha256="c"
     )
+
+
+def test_findings_that_say_the_same_thing_merge_into_one_row():
+    same = "The options contain duplicates."
+    merged = merge_findings(
+        [
+            Finding("question_renders", "warning", same, question_ids=[1], detail="a|a"),
+            Finding("question_renders", "warning", same, question_ids=[2], detail="a|a"),
+            Finding("question_renders", "warning", same, question_ids=[3], detail="b|b"),
+            Finding("question_renders", "error", "The question text is empty.", question_ids=[2]),
+            Finding("consent_configured", "info", "Raters see v1."),
+        ]
+    )
+    assert [(f.message, f.question_ids, f.detail) for f in merged] == [
+        (same, [1, 2], "a|a"),
+        (same, [3], "b|b"),
+        ("The question text is empty.", [2], None),
+        ("Raters see v1.", [], None),
+    ]

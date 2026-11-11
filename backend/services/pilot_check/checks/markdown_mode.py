@@ -54,7 +54,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                 )
             )
         marked = [
-            f"question {view.question_id}"
+            view.question_id
             for view in ctx.views
             if looks_like_markdown(view.response.question_text)
         ]
@@ -64,7 +64,8 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     NAME,
                     severity,
                     "Markdown rendering is off, but these questions contain Markdown "
-                    "structure that raters will see as literal symbols: " + ", ".join(marked[:8]),
+                    "structure that raters will see as literal symbols.",
+                    question_ids=marked,
                     detail="Turn on 'Render as Markdown' under Instructions & prompts, "
                     "or rewrite the text as plain prose.",
                 )
@@ -78,7 +79,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     severity,
                     "Markdown rendering is on and the question text contains raw HTML "
                     "tags, which will be escaped and shown literally.",
-                    question_id=view.question_id,
+                    question_ids=[view.question_id],
                 )
             )
         if _PLACEHOLDER.search(text):
@@ -87,7 +88,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     NAME,
                     severity,
                     "The question text contains an unfilled {{placeholder}}.",
-                    question_id=view.question_id,
+                    question_ids=[view.question_id],
                     detail=_PLACEHOLDER.search(text).group(0),  # type: ignore[union-attr]
                 )
             )

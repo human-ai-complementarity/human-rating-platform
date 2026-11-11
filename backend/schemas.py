@@ -265,7 +265,8 @@ class PilotCheckFinding(BaseModel):
     check_label: str = ""
     severity: Literal["error", "warning", "info"]
     message: str
-    question_id: Optional[int] = None
+    # Every question the finding applies to; empty for an experiment-level one.
+    question_ids: list[int] = Field(default_factory=list)
     detail: Optional[str] = None
 
 
