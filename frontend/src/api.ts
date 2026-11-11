@@ -72,6 +72,8 @@ type RequestOptions = {
 
 const API_PREFIX = '/api';
 const JSON_CONTENT_TYPE = 'application/json';
+// The largest page the admin experiments list will serve (`limit` max).
+const EXPERIMENT_PAGE_SIZE = 1000;
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 // Paths are relative to the API mount point (/api). buildUrl() prepends the
@@ -494,13 +496,22 @@ export const api = {
     status?: ExperimentStatus;
     search?: string;
   } = {}): Promise<Experiment[]> {
-    return requestJson<Experiment[]>(routes.admin.experiments, {
-      query: {
-        ...(includeArchived ? { include_archived: 'true' } : archived ? { archived: 'true' } : {}),
-        ...(status ? { status } : {}),
-        ...(search ? { search } : {}),
-      },
-    });
+    // Callers search and total spend over the full set, and the server pages
+    // (100 newest by default), so walk every page instead of taking the first.
+    const all: Experiment[] = [];
+    for (;;) {
+      const page = await requestJson<Experiment[]>(routes.admin.experiments, {
+        query: {
+          skip: all.length,
+          limit: EXPERIMENT_PAGE_SIZE,
+          ...(includeArchived ? { include_archived: 'true' } : archived ? { archived: 'true' } : {}),
+          ...(status ? { status } : {}),
+          ...(search ? { search } : {}),
+        },
+      });
+      all.push(...page);
+      if (page.length < EXPERIMENT_PAGE_SIZE) return all;
+    }
   },
 
   // Single-experiment fetch. Resolves by id regardless of archived state, so
