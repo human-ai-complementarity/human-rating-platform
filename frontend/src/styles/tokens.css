@@ -55,4 +55,13 @@
   --text-label: 0.75rem; /* 12px: uppercase mono labels */
   --leading-body: 1.6;
   --leading-heading: 1.25;
+
+  /* Rater page frame. The single-column width is set by line length, not by
+     device: it gives about 80 characters of body text per line inside a
+     card, the WCAG 1.4.8 ceiling, and is in rem so it holds when the reader
+     changes their font size. Gutter and card padding shrink fluidly, so a
+     phone keeps most of its width for text. */
+  --rater-measure: 49rem;
+  --rater-gutter: clamp(16px, 4vw, 24px);
+  --rater-card-pad: clamp(20px, 6vw, 48px);
 }

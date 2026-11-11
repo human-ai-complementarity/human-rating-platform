@@ -477,9 +477,9 @@ function RaterView() {
 
   const styles = {
     container: {
-      maxWidth: hasAssistance ? '1200px' : '720px',
+      maxWidth: hasAssistance ? '1200px' : 'var(--rater-measure)',
       margin: '0 auto',
-      padding: '32px 24px',
+      padding: '32px var(--rater-gutter)',
       minHeight: '100vh',
     },
     header: {
@@ -526,7 +526,7 @@ function RaterView() {
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '64px 40px',
+      padding: '64px var(--rater-card-pad)',
       textAlign: 'center' as const,
     },
     completionTitle: {
@@ -585,7 +585,7 @@ function RaterView() {
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '64px 40px',
+      padding: '64px var(--rater-card-pad)',
       textAlign: 'center' as const,
       color: 'var(--muted)',
       fontSize: 'var(--text-body)',
@@ -630,7 +630,7 @@ function RaterView() {
 
     if (session?.debrief_html) {
       return (
-        <div style={{ ...styles.container, maxWidth: '720px' }}>
+        <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
           <RaterDebrief
             statementHtml={session.debrief_html}
             completionUrl={completionUrl ?? null}
@@ -685,7 +685,7 @@ function RaterView() {
 
   if (showConsent) {
     return (
-      <div style={{ ...styles.container, maxWidth: '720px' }}>
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.
@@ -704,7 +704,7 @@ function RaterView() {
 
   if (showIntro) {
     return (
-      <div style={{ ...styles.container, maxWidth: '720px' }}>
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.

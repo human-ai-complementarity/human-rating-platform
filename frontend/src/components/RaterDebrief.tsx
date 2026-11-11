@@ -25,7 +25,7 @@ function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: Rate
         border: '1px solid var(--faint)',
         borderRadius: 'var(--radius)',
         boxShadow: 'var(--shadow)',
-        padding: '44px 48px 40px',
+        padding: 'clamp(24px, 6vw, 44px) var(--rater-card-pad) clamp(24px, 6vw, 40px)',
       }}
     >
       <div

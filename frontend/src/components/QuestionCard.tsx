@@ -473,7 +473,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     borderRadius: 'var(--radius)',
     border: '1px solid var(--faint)',
     boxShadow: 'var(--shadow)',
-    padding: 32,
+    padding: 'clamp(20px, 5vw, 32px)',
   };
 
   // Rather than raw TeX that reflows once KaTeX arrives (first math question).
