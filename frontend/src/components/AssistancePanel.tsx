@@ -8,7 +8,7 @@ interface AssistancePanelProps {
 }
 
 const monoLabel = {
-  font: '600 10px/1 var(--font-mono)',
+  font: '600 var(--text-label)/1 var(--font-mono)',
   letterSpacing: '0.16em',
   textTransform: 'uppercase' as const,
   color: 'var(--muted)',
@@ -37,10 +37,9 @@ function OptionTile({
         border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
         borderRadius: 'var(--radius-sm)',
         cursor: 'pointer',
-        fontSize: 14,
         textAlign: 'left',
         color: 'var(--ink)',
-        font: '500 14px/1.4 var(--font-body)',
+        font: '500 var(--text-body)/1.5 var(--font-body)',
         width: '100%',
       }}
     >
@@ -91,7 +90,7 @@ function SubtaskInput({
     <div>
       <p
         style={{
-          fontSize: 14,
+          fontSize: 'var(--text-body)',
           fontWeight: 600,
           color: 'var(--ink)',
           margin: '0 0 10px',
@@ -101,7 +100,7 @@ function SubtaskInput({
         {subtask.question}
       </p>
       {subtask.my_answer && subtask.confidence !== undefined && (
-        <p style={{ fontSize: 11, color: 'var(--muted)', margin: '0 0 10px', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
+        <p style={{ fontSize: 'var(--text-label)', color: 'var(--muted)', margin: '0 0 10px', fontFamily: 'var(--font-mono)', letterSpacing: '0.06em' }}>
           AI confidence: {subtask.confidence}%
         </p>
       )}
@@ -131,7 +130,7 @@ function SubtaskInput({
           onChange={e => onChange(e.target.value)}
           rows={3}
           placeholder="Your answer..."
-          style={{ ...textareaStyle, fontSize: 14, padding: '10px 12px' }}
+          style={{ ...textareaStyle, fontSize: 'var(--text-body)', padding: '10px 12px' }}
         />
       )}
       {subtask.type === 'rating_scale' && (
@@ -144,7 +143,7 @@ function SubtaskInput({
             onChange={e => onChange(e.target.value)}
             style={{ flex: 1, accentColor: 'var(--accent)' }}
           />
-          <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--accent-soft-ink)', minWidth: 26 }}>
+          <span style={{ fontSize: 'var(--text-secondary)', fontWeight: 700, color: 'var(--accent-soft-ink)', minWidth: 26 }}>
             {value || '3'}/5
           </span>
         </div>
@@ -158,7 +157,7 @@ function SubtaskInput({
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
           <span style={monoLabel}>Your confidence</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--accent-soft-ink)' }}>{confidence}/5</span>
+          <span style={{ fontSize: 'var(--text-secondary)', fontWeight: 700, color: 'var(--accent-soft-ink)' }}>{confidence}/5</span>
         </div>
         <input
           type="range"
@@ -172,9 +171,7 @@ function SubtaskInput({
           style={{
             display: 'flex',
             justifyContent: 'space-between',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            letterSpacing: '0.04em',
+            fontSize: 'var(--text-label)',
             color: 'var(--muted)',
             marginTop: 4,
           }}
@@ -214,7 +211,7 @@ const stepLabelStyle: React.CSSProperties = {
 
 const panelTitleStyle: React.CSSProperties = {
   fontFamily: 'var(--font-head)',
-  fontSize: 17,
+  fontSize: 'var(--text-heading)',
   fontWeight: 600,
   color: 'var(--ink)',
   letterSpacing: '-0.005em',
@@ -291,7 +288,7 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
           <span style={stepLabelStyle}>AI Assistance</span>
           <p style={panelTitleStyle}>Analyzing question…</p>
         </div>
-        <div style={{ ...panelBodyStyle, textAlign: 'center', color: 'var(--muted)', fontSize: 14 }}>
+        <div style={{ ...panelBodyStyle, textAlign: 'center', color: 'var(--muted)', fontSize: 'var(--text-secondary)' }}>
           Preparing guidance, please wait…
         </div>
       </div>
@@ -306,14 +303,24 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
           <p style={panelTitleStyle}>Could not load assistance</p>
         </div>
         <div style={panelBodyStyle}>
-          <Banner tone="danger">{error}</Banner>
+          <Banner tone="danger">
+            <span style={{ fontSize: 'var(--text-secondary)' }}>{error}</span>
+          </Banner>
           <button type="button" onClick={() => void resource.retry()}>Retry assistance</button>
         </div>
       </div>
     );
   }
 
-  if (step?.type === 'skip') return <Banner tone="danger">Assistance could not complete. You can answer without it.</Banner>;
+  if (step?.type === 'skip') {
+    return (
+      <Banner tone="danger">
+        <span style={{ fontSize: 'var(--text-secondary)' }}>
+          Assistance could not complete. You can answer without it.
+        </span>
+      </Banner>
+    );
+  }
   if (!step || step.type === 'none') return null;
 
   if (step.type === 'display' && step.payload.kind === 'top_n') {
@@ -340,7 +347,7 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
                     arrive shuffled so the model's ordering can't anchor the rater. */}
                 <div
                   style={{
-                    fontSize: 14,
+                    fontSize: 'var(--text-body)',
                     fontWeight: 600,
                     color: 'var(--ink)',
                     lineHeight: 1.4,
@@ -350,7 +357,7 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
                   {candidate.answer}
                 </div>
                 {candidate.rationale && (
-                  <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: 'var(--muted)' }}>
+                  <p style={{ margin: 0, fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)', color: 'var(--muted)' }}>
                     {candidate.rationale}
                   </p>
                 )}
@@ -377,7 +384,7 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
             <div style={{ marginBottom: 18 }}>
               <div style={{ ...monoLabel, marginBottom: 8 }}>Suggested answer</div>
               <Banner tone="ok" icon={false}>
-                <span style={{ fontWeight: 600, color: 'var(--ink)' }}>{synthesis.answer}</span>
+                <span style={{ fontSize: 'var(--text-body)', fontWeight: 600, color: 'var(--ink)' }}>{synthesis.answer}</span>
               </Banner>
             </div>
           )}
@@ -385,12 +392,12 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
           {completedHistory.map((round, ri) =>
             round.subtasks.map(st => (
               <div key={`${ri}-${st.index}`} style={answeredRowStyle}>
-                <span style={{ fontSize: 13, color: 'var(--muted)', flex: 1, lineHeight: 1.45 }}>
+                <span style={{ fontSize: 'var(--text-secondary)', color: 'var(--muted)', flex: 1, lineHeight: 1.45 }}>
                   {st.question}
                 </span>
                 <span
                   style={{
-                    fontSize: 13,
+                    fontSize: 'var(--text-secondary)',
                     fontWeight: 600,
                     color: 'var(--ink)',
                     textAlign: 'right',
@@ -427,10 +434,10 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
             {history.map((round, ri) =>
               round.subtasks.map(st => (
                 <div key={`${ri}-${st.index}`} style={{ ...answeredRowStyle, opacity: 0.7 }}>
-                  <span style={{ fontSize: 13, color: 'var(--muted)', flex: 1, lineHeight: 1.45 }}>
+                  <span style={{ fontSize: 'var(--text-secondary)', color: 'var(--muted)', flex: 1, lineHeight: 1.45 }}>
                     {st.question}
                   </span>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--ink)', textAlign: 'right' }}>
+                  <span style={{ fontSize: 'var(--text-secondary)', fontWeight: 600, color: 'var(--ink)', textAlign: 'right' }}>
                     {round.answers[String(st.index)]?.answer ?? '—'}
                   </span>
                 </div>
@@ -465,7 +472,7 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
             color: allAnswered && !submitting ? 'var(--accent-ink)' : 'var(--muted)',
             border: 'none',
             borderRadius: 'var(--radius-sm)',
-            font: '600 14px var(--font-body)',
+            font: '600 var(--text-body) var(--font-body)',
             cursor: allAnswered && !submitting ? 'pointer' : 'not-allowed',
           }}
         >

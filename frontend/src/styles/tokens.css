@@ -43,4 +43,25 @@
   --font-head: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-body: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Type scale for everything a rater sees: one size per role, on every
+     screen. In rem so a rater's browser font-size setting is respected.
+     Anything a rater must read to do the task is body size or larger. */
+  --text-title: 1.75rem; /* 28px: screen titles (serif) */
+  --text-heading: 1.25rem; /* 20px: the question, panel and header titles (serif) */
+  --text-body: 1rem; /* 16px: reading text, options, inputs, buttons */
+  --text-secondary: 0.875rem; /* 14px: notes, hints, banners, code blocks */
+  --text-fine: 0.8125rem; /* 13px: footers, progress counter */
+  --text-label: 0.75rem; /* 12px: uppercase mono labels */
+  --leading-body: 1.6;
+  --leading-heading: 1.25;
+
+  /* Rater page frame. The single-column width is set by line length, not by
+     device: it gives about 80 characters of body text per line inside a
+     card, the WCAG 1.4.8 ceiling, and is in rem so it holds when the reader
+     changes their font size. Gutter and card padding shrink fluidly, so a
+     phone keeps most of its width for text. */
+  --rater-measure: 49rem;
+  --rater-gutter: clamp(16px, 4vw, 24px);
+  --rater-card-pad: clamp(20px, 6vw, 48px);
 }

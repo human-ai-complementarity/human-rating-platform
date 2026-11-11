@@ -143,7 +143,10 @@ jobs:
 
       - name: Install Playwright browsers
         working-directory: frontend
-        run: npx playwright install --with-deps chromium
+        # No --with-deps: the runner image already has Chromium's system
+        # libraries, and the apt step it adds fails the job whenever the
+        # Ubuntu mirrors are unreachable.
+        run: npx playwright install chromium
 
       - name: Run Playwright tests
         working-directory: frontend

@@ -141,7 +141,7 @@ function QuestionBody({
     );
   }
   return (
-    <div className="question-markdown markdown" style={style}>
+    <div className="question-markdown markdown rater-prose" style={style}>
       <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MARKDOWN_COMPONENTS}>
         {text}
       </ReactMarkdown>
@@ -239,7 +239,7 @@ function PromptFraming({
       <div
         style={{
           fontFamily: 'var(--font-mono)',
-          fontSize: 11,
+          fontSize: 'var(--text-label)',
           letterSpacing: '0.1em',
           textTransform: 'uppercase',
           color: 'var(--accent-soft-ink)',
@@ -252,7 +252,7 @@ function PromptFraming({
         text={text}
         markdown={markdown}
         math={null}
-        style={{ fontSize: 16, lineHeight: 1.6, color: 'var(--ink)', margin: 0 }}
+        style={{ fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)', color: 'var(--ink)', margin: 0 }}
       />
     </div>
   );
@@ -349,7 +349,7 @@ async function buildLongContextDocumentHtml(
     h1 {
       margin: 0 0 20px;
       font-family: "Source Serif 4", Georgia, serif;
-      font-size: 26px;
+      font-size: 1.75rem;
       line-height: 1.25;
       font-weight: 600;
       letter-spacing: -0.01em;
@@ -473,7 +473,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     borderRadius: 'var(--radius)',
     border: '1px solid var(--faint)',
     boxShadow: 'var(--shadow)',
-    padding: 32,
+    padding: 'clamp(20px, 5vw, 32px)',
   };
 
   // Rather than raw TeX that reflows once KaTeX arrives (first math question).
@@ -489,7 +489,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     <div style={cardStyle}>
       <div
         style={{
-          font: '600 11px/1 var(--font-mono)',
+          font: '600 var(--text-label)/1 var(--font-mono)',
           letterSpacing: '0.16em',
           textTransform: 'uppercase',
           color: 'var(--muted)',
@@ -511,7 +511,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         >
           <div
             style={{
-              font: '600 10px/1 var(--font-mono)',
+              font: '600 var(--text-label)/1 var(--font-mono)',
               letterSpacing: '0.16em',
               textTransform: 'uppercase',
               color: 'var(--muted)',
@@ -524,7 +524,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             text={display.inlineContext}
             markdown={question.is_markdown}
             math={math}
-            style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
+            style={{ fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)', color: 'var(--ink)', margin: 0 }}
           />
         </div>
       )}
@@ -542,7 +542,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             border: '1px solid var(--accent)',
             borderRadius: 'var(--radius-sm)',
             color: 'var(--accent-ink)',
-            fontSize: 15,
+            fontSize: 'var(--text-body)',
             fontWeight: 600,
             textDecoration: 'none',
             marginBottom: 20,
@@ -568,8 +568,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             math={math}
             textStyle={{
               fontFamily: 'var(--font-head)',
-              fontSize: 22,
-              lineHeight: 1.35,
+              fontSize: 'var(--text-heading)',
+              lineHeight: 1.4,
               letterSpacing: '-0.005em',
               color: 'var(--ink)',
               margin: 0,
@@ -583,8 +583,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           math={math}
           style={{
             fontFamily: 'var(--font-head)',
-            fontSize: 22,
-            lineHeight: 1.35,
+            fontSize: 'var(--text-heading)',
+            lineHeight: 1.4,
             letterSpacing: '-0.005em',
             color: 'var(--ink)',
             marginTop: 0,
@@ -602,7 +602,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {assistanceActive && assistanceAnswer == null && (
-        <p style={{ fontSize: 14, color: 'var(--muted)', fontStyle: 'italic', marginBottom: 16 }}>
+        <p style={{ fontSize: 'var(--text-secondary)', color: 'var(--muted)', fontStyle: 'italic', marginBottom: 16 }}>
           Answer the questions on the right to help inform your response.
         </p>
       )}
@@ -639,10 +639,9 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                   border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
                   borderRadius: 'var(--radius-sm)',
                   cursor: 'pointer',
-                  fontSize: 15,
                   textAlign: 'left',
                   color: 'var(--ink)',
-                  font: '500 15px/1.5 var(--font-body)',
+                  font: '500 var(--text-body)/1.5 var(--font-body)',
                   transition: 'background 0.12s, border-color 0.12s',
                 }}
               >
@@ -686,7 +685,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           onChange={(e) => setFreeTextAnswer(e.target.value)}
           placeholder="Type your answer here..."
           rows={4}
-          style={{ ...textareaStyle, marginBottom: 26 }}
+          style={{ ...textareaStyle, fontSize: 'var(--text-body)', marginBottom: 26 }}
         />
       ))}
 
@@ -710,7 +709,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           >
             <span
               style={{
-                font: '600 10px/1 var(--font-mono)',
+                font: '600 var(--text-label)/1 var(--font-mono)',
                 letterSpacing: '0.16em',
                 textTransform: 'uppercase',
                 color: 'var(--muted)',
@@ -720,7 +719,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             </span>
             <span
               style={{
-                fontSize: 14,
+                fontSize: 'var(--text-secondary)',
                 fontWeight: 600,
                 color: 'var(--accent-soft-ink)',
               }}
@@ -747,9 +746,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           <div
             style={{
               position: 'relative',
-              height: 14,
+              height: 16,
               marginTop: 10,
-              fontSize: 11,
             }}
           >
             {CONFIDENCE_LABELS.map((label, i) => {
@@ -760,6 +758,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
               return (
                 <span
                   key={label}
+                  className={isFirst || isLast ? undefined : 'confidence-mid-label'}
                   style={{
                     position: 'absolute',
                     whiteSpace: 'nowrap',
@@ -767,9 +766,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                     transform: isFirst ? 'none' : isLast ? 'translateX(-100%)' : 'translateX(-50%)',
                     fontWeight: isActive ? 700 : 500,
                     color: isActive ? 'var(--accent-soft-ink)' : 'var(--muted)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 10,
-                    letterSpacing: '0.04em',
+                    fontSize: 'var(--text-label)',
                   }}
                 >
                   {label}
@@ -789,7 +786,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             ...primaryButton,
             width: '100%',
             padding: '14px 22px',
-            fontSize: 15,
+            fontSize: 'var(--text-body)',
             background: canSubmit ? 'var(--accent)' : 'var(--faint)',
             color: canSubmit ? 'var(--accent-ink)' : 'var(--muted)',
             cursor: canSubmit ? 'pointer' : 'not-allowed',

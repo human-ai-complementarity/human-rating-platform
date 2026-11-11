@@ -477,9 +477,9 @@ function RaterView() {
 
   const styles = {
     container: {
-      maxWidth: hasAssistance ? '1200px' : '720px',
+      maxWidth: hasAssistance ? '1200px' : 'var(--rater-measure)',
       margin: '0 auto',
-      padding: '32px 24px',
+      padding: '32px var(--rater-gutter)',
       minHeight: '100vh',
     },
     header: {
@@ -495,14 +495,14 @@ function RaterView() {
     },
     experimentName: {
       fontFamily: 'var(--font-head)',
-      fontSize: 20,
+      fontSize: 'var(--text-heading)',
       fontWeight: 600,
       color: 'var(--ink)',
       letterSpacing: '-0.005em',
       margin: 0,
     },
     progress: {
-      fontSize: 13,
+      fontSize: 'var(--text-fine)',
       color: 'var(--muted)',
       display: 'flex',
       alignItems: 'center',
@@ -519,38 +519,38 @@ function RaterView() {
       fontWeight: 700,
       fontFamily: 'var(--font-mono)',
       letterSpacing: '0.03em',
-      fontSize: 13,
+      fontSize: 'var(--text-fine)',
     },
     completionCard: {
       background: 'var(--surface)',
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '64px 40px',
+      padding: '64px var(--rater-card-pad)',
       textAlign: 'center' as const,
     },
     completionTitle: {
       fontFamily: 'var(--font-head)',
-      fontSize: 34,
+      fontSize: 'var(--text-title)',
       fontWeight: 600,
       color: 'var(--accent-soft-ink)',
       letterSpacing: '-0.01em',
       marginBottom: 14,
     },
     completionText: {
-      fontSize: 16,
+      fontSize: 'var(--text-body)',
       color: 'var(--muted)',
       marginBottom: 26,
-      lineHeight: 1.55,
+      lineHeight: 'var(--leading-body)',
     },
     completionStats: {
-      fontSize: 15,
+      fontSize: 'var(--text-body)',
       color: 'var(--ink)',
       marginBottom: 32,
     },
     completionCount: {
       fontFamily: 'var(--font-head)',
-      fontSize: 52,
+      fontSize: '3.25rem',
       fontWeight: 600,
       color: 'var(--accent)',
       display: 'block',
@@ -558,7 +558,7 @@ function RaterView() {
       letterSpacing: '-0.02em',
     },
     redirectText: {
-      fontSize: 13,
+      fontSize: 'var(--text-secondary)',
       color: 'var(--muted)',
       lineHeight: 1.6,
     },
@@ -577,18 +577,18 @@ function RaterView() {
     },
     errorText: {
       color: 'var(--danger)',
-      fontSize: 15,
-      lineHeight: 1.55,
+      fontSize: 'var(--text-body)',
+      lineHeight: 'var(--leading-body)',
     },
     loadingCard: {
       background: 'var(--surface)',
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '64px 40px',
+      padding: '64px var(--rater-card-pad)',
       textAlign: 'center' as const,
       color: 'var(--muted)',
-      fontSize: 15,
+      fontSize: 'var(--text-body)',
     },
   };
 
@@ -598,7 +598,7 @@ function RaterView() {
     borderRadius: 'var(--radius-sm)',
     padding: '11px 16px',
     marginBottom: 16,
-    fontSize: 13,
+    fontSize: 'var(--text-secondary)',
     color: 'var(--danger)',
     lineHeight: 1.5,
   };
@@ -609,7 +609,7 @@ function RaterView() {
     borderRadius: 'var(--radius-sm)',
     padding: '11px 16px',
     marginBottom: 16,
-    fontSize: 13,
+    fontSize: 'var(--text-secondary)',
     color: 'var(--warn)',
     lineHeight: 1.5,
   };
@@ -630,7 +630,7 @@ function RaterView() {
 
     if (session?.debrief_html) {
       return (
-        <div style={{ ...styles.container, maxWidth: '720px' }}>
+        <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
           <RaterDebrief
             statementHtml={session.debrief_html}
             completionUrl={completionUrl ?? null}
@@ -685,7 +685,7 @@ function RaterView() {
 
   if (showConsent) {
     return (
-      <div style={{ ...styles.container, maxWidth: '720px' }}>
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.
@@ -704,7 +704,7 @@ function RaterView() {
 
   if (showIntro) {
     return (
-      <div style={{ ...styles.container, maxWidth: '720px' }}>
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.

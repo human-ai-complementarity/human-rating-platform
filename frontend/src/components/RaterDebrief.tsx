@@ -25,12 +25,12 @@ function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: Rate
         border: '1px solid var(--faint)',
         borderRadius: 'var(--radius)',
         boxShadow: 'var(--shadow)',
-        padding: '44px 48px 40px',
+        padding: 'clamp(24px, 6vw, 44px) var(--rater-card-pad) clamp(24px, 6vw, 40px)',
       }}
     >
       <div
         style={{
-          font: '600 11px/1 var(--font-mono)',
+          font: '600 var(--text-label)/1 var(--font-mono)',
           letterSpacing: '0.18em',
           textTransform: 'uppercase',
           color: 'var(--accent-soft-ink)',
@@ -38,15 +38,15 @@ function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: Rate
       >
         Session complete
       </div>
-      <p style={{ color: 'var(--muted)', fontSize: 14, margin: '12px 0 24px' }}>
+      <p style={{ color: 'var(--muted)', fontSize: 'var(--text-secondary)', margin: '12px 0 24px' }}>
         You answered {questionsCompleted} {questionsCompleted === 1 ? 'question' : 'questions'}.
         Everything you submitted is saved.
       </p>
 
       <div
-        className="rater-consent-statement"
+        className="rater-consent-statement rater-prose"
         dangerouslySetInnerHTML={{ __html: statementHtml }}
-        style={{ fontSize: 15, lineHeight: 1.65, color: 'var(--ink)' }}
+        style={{ color: 'var(--ink)' }}
       />
 
       {completionUrl ? (
@@ -59,7 +59,7 @@ function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: Rate
             width: '100%',
             boxSizing: 'border-box',
             padding: '13px 22px',
-            fontSize: 15,
+            fontSize: 'var(--text-body)',
             marginTop: 28,
             textAlign: 'center',
             textDecoration: 'none',
@@ -68,7 +68,7 @@ function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: Rate
           Continue to Prolific
         </a>
       ) : (
-        <p style={{ color: 'var(--muted)', fontSize: 14, margin: '28px 0 0', textAlign: 'center' }}>
+        <p style={{ color: 'var(--muted)', fontSize: 'var(--text-secondary)', margin: '28px 0 0', textAlign: 'center' }}>
           Thank you for your participation. You may now close this window.
         </p>
       )}

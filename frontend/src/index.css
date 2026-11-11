@@ -491,42 +491,9 @@ button:disabled {
   margin-bottom: 0;
 }
 
-.question-markdown p,
-.question-markdown ul,
-.question-markdown ol,
-.question-markdown blockquote,
-.question-markdown pre,
-.question-markdown .question-markdown-table-scroll {
-  margin: 0 0 0.7em 0;
-}
-
-.question-markdown h1,
-.question-markdown h2,
-.question-markdown h3,
-.question-markdown h4 {
-  font-family: var(--font-head);
-  font-size: 1.1em;
-  font-weight: 600;
-  margin: 0 0 0.5em 0;
-}
-
-.question-markdown ul,
-.question-markdown ol {
-  padding-left: 1.4em;
-}
-
-.question-markdown li {
-  margin-bottom: 0.25em;
-}
-
-.question-markdown code {
-  font-size: 0.82em;
-}
-
 .question-markdown pre {
   border: 1px solid var(--faint);
   overflow-x: auto;
-  font-size: 14px;
   font-weight: 400;
   letter-spacing: 0;
 }
@@ -536,7 +503,6 @@ button:disabled {
 }
 
 .question-markdown table {
-  font: 400 15px/1.5 var(--font-body);
   letter-spacing: 0;
   /* Cells keep their natural width; the wrapper above scrolls. */
   overflow-wrap: normal;
@@ -582,39 +548,62 @@ button:disabled {
   box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }
 
-/* Consent statement and the study description on the intro screen that
-   follows it. Both are server-rendered HTML from the Prolific-markdown
-   converter (h1/h2, lists, bold), so the scale is set here rather than
-   inline; the global reset would otherwise strip every margin and the list
-   indent. */
-:is(.rater-consent-statement, .rater-intro-description) h1,
-:is(.rater-consent-statement, .rater-intro-description) h2 {
+/* Long-form text on every rater screen: the consent and debrief statements,
+   the study description (server-rendered HTML from the Prolific-markdown
+   converter) and Markdown questions, context and instructions. One rule set,
+   so a heading, list or table looks the same wherever a rater meets it. The
+   global reset would otherwise strip every margin and the list indent.
+   Headings are in em: they scale with the text they sit in, which is body
+   size everywhere except the question itself. */
+.rater-prose {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.rater-prose :is(h1, h2, h3, h4) {
   font-family: var(--font-head);
   font-weight: 600;
-  line-height: 1.25;
+  line-height: var(--leading-heading);
   margin: 22px 0 8px;
 }
-:is(.rater-consent-statement, .rater-intro-description) h1 {
-  font-size: 22px;
+.rater-prose h1 {
+  font-size: 1.25em;
 }
-:is(.rater-consent-statement, .rater-intro-description) h2 {
-  font-size: 18px;
+.rater-prose h2 {
+  font-size: 1.125em;
 }
-:is(.rater-consent-statement, .rater-intro-description) h1:first-child,
-:is(.rater-consent-statement, .rater-intro-description) h2:first-child {
+.rater-prose :is(h3, h4) {
+  font-size: 1em;
+}
+.rater-prose :is(h1, h2, h3, h4):first-child {
   margin-top: 0;
 }
-:is(.rater-consent-statement, .rater-intro-description) p {
+/* :where keeps this below the per-surface first/last-child margin resets. */
+.rater-prose :where(p, ul, ol, blockquote, pre, .question-markdown-table-scroll) {
   margin: 0 0 12px;
 }
-:is(.rater-consent-statement, .rater-intro-description) ul,
-:is(.rater-consent-statement, .rater-intro-description) ol {
-  margin: 0 0 12px;
+.rater-prose :is(ul, ol) {
   padding-left: 24px;
 }
-:is(.rater-consent-statement, .rater-intro-description) li {
+.rater-prose li {
   margin-bottom: 4px;
 }
+.rater-prose code {
+  font-size: 0.875em;
+}
+.rater-prose pre {
+  font-size: var(--text-secondary);
+}
+.rater-prose table {
+  font: 400 var(--text-body) / 1.5 var(--font-body);
+}
+/* Five scale labels do not fit across a phone-width card. The end labels
+   stay; the selected value is always shown above the slider. */
+@media (max-width: 480px) {
+  .confidence-mid-label {
+    display: none;
+  }
+}
+
 /* The intro sets the gap below the description on its container. */
 .rater-intro-description > :last-child {
   margin-bottom: 0;
