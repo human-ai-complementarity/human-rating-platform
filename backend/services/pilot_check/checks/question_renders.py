@@ -21,7 +21,9 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
         qid = view.question_id
         text = response.question_text or ""
         if not text.strip():
-            findings.append(Finding(NAME, severity, "The question text is empty.", question_id=qid))
+            findings.append(
+                Finding(NAME, severity, "The question text is empty.", question_ids=[qid])
+            )
         options = parse_options(response.options)
         if response.question_type == "MC":
             if not options:
@@ -31,7 +33,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                         severity,
                         "A multiple-choice question has no options, so the rater would "
                         "get a free-text box instead of choices.",
-                        question_id=qid,
+                        question_ids=[qid],
                     )
                 )
             elif len(options) < 2:
@@ -40,7 +42,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                         NAME,
                         softer,
                         "A multiple-choice question has only one option.",
-                        question_id=qid,
+                        question_ids=[qid],
                         detail=response.options,
                     )
                 )
@@ -50,7 +52,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     NAME,
                     softer,
                     "The options contain duplicates.",
-                    question_id=qid,
+                    question_ids=[qid],
                     detail=response.options,
                 )
             )
@@ -63,7 +65,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     NAME,
                     severity,
                     "This is a sub-question but its parent's context text is empty.",
-                    question_id=qid,
+                    question_ids=[qid],
                 )
             )
         if len(text) > _MAX_QUESTION_CHARS:
@@ -73,7 +75,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     softer,
                     f"The question text is {len(text):,} characters, over the "
                     f"{_MAX_QUESTION_CHARS:,} the card shows without heavy scrolling.",
-                    question_id=qid,
+                    question_ids=[qid],
                 )
             )
     return findings

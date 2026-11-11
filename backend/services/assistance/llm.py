@@ -50,6 +50,8 @@ Message = dict[str, Any]
 
 # Shared by foreground calls and preparation fan-out on the same event loop.
 # Speculation uses at most half the slots, leaving capacity for visible work.
+PROVIDER_SLOTS = 8
+SPECULATIVE_SLOTS = 4
 speculative_call: ContextVar[bool] = ContextVar("speculative_call", default=False)
 _call_limits: WeakKeyDictionary = WeakKeyDictionary()
 _provider_context: ContextVar[dict | None] = ContextVar("provider_context", default=None)
@@ -69,7 +71,10 @@ def provider_context(**attributes):
 async def provider_slot():
     loop = asyncio.get_running_loop()
     if loop not in _call_limits:
-        _call_limits[loop] = (asyncio.Semaphore(8), asyncio.Semaphore(4))
+        _call_limits[loop] = (
+            asyncio.Semaphore(PROVIDER_SLOTS),
+            asyncio.Semaphore(SPECULATIVE_SLOTS),
+        )
     total, speculative = _call_limits[loop]
     if speculative_call.get():
         async with speculative, total:
