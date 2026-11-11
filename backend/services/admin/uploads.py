@@ -24,7 +24,6 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, expand_bare_entry
 from services.question_separator import separator_upload_offenders
-from .experiments import MARKDOWN_WITH_MATH_DETAIL
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -192,8 +191,6 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         values[RENDER_MARKDOWN_META_FIELD] = _validate_flag(
             RENDER_MARKDOWN_META_FIELD, render_markdown
         )
-    if values.get(RENDER_MATH_META_FIELD) and values.get(RENDER_MARKDOWN_META_FIELD):
-        raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
     return values
 
 
@@ -289,16 +286,15 @@ def _apply_render_math_meta(
     Off is the column default, so it cannot tell an admin's choice from an
     untouched experiment: an upload may switch it on, the way the string
     fields fill a blank. Declaring false on an experiment an admin switched on
-    is a conflict, not a silent switch-off. So is declaring true on one an
-    admin set to Markdown: the two flags are exclusive (see
-    `_reject_markdown_with_math`), and the admin's choice stands.
+    is a conflict, not a silent switch-off. Independent of Markdown: the card
+    renders the two together.
     """
     if RENDER_MATH_META_FIELD not in meta:
         return
     declared = meta[RENDER_MATH_META_FIELD]
     if declared == experiment.render_math:
         return
-    if declared and not experiment.is_markdown:
+    if declared:
         experiment.render_math = True
         applied.append(RENDER_MATH_META_FIELD)
     else:
@@ -320,7 +316,7 @@ def _apply_render_markdown_meta(
     declared = meta[RENDER_MARKDOWN_META_FIELD]
     if declared == experiment.is_markdown:
         return
-    if declared and not experiment.render_math:
+    if declared:
         experiment.is_markdown = True
         applied.append(RENDER_MARKDOWN_META_FIELD)
     else:

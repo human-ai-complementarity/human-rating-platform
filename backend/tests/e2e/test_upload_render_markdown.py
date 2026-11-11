@@ -1,8 +1,8 @@
 """`render_markdown` as a dataset_meta key: the export switches `is_markdown` on.
 
 The same treatment as `render_math` (test_upload_render_math.py): a JSON
-boolean, switched on by an upload but never off, and exclusive with the
-other rendering flag.
+boolean, switched on by an upload but never off, and free to combine with
+the other rendering flag.
 """
 
 from __future__ import annotations
@@ -106,20 +106,21 @@ def test_declaring_false_leaves_an_admins_choice_and_is_reported(client: TestCli
     assert _flags(client, exp["id"]) == (True, False)
 
 
-def test_declaring_true_on_a_math_experiment_is_a_conflict(client: TestClient):
+def test_declaring_true_switches_markdown_on_for_a_math_experiment(client: TestClient):
     exp = _experiment(client)
     _patch(client, exp["id"], render_math=True)
     body = _upload_csv(client, exp["id"], {"render_markdown": True}).json()
 
-    assert body["meta_applied"] == []
-    assert body["meta_conflicts"] == ["render_markdown"]
-    assert _flags(client, exp["id"]) == (False, True)
+    assert body["meta_applied"] == ["render_markdown"]
+    assert body["meta_conflicts"] == []
+    assert _flags(client, exp["id"]) == (True, True)
 
 
-def test_declaring_both_rendering_flags_rejects_the_upload(client: TestClient):
+def test_declaring_both_rendering_flags_switches_both_on(client: TestClient):
     exp = _experiment(client)
     resp = _upload_csv(client, exp["id"], {"render_markdown": True, "render_math": True})
 
-    assert resp.status_code == 400
-    assert "cannot both be on" in resp.json()["detail"]
-    assert _flags(client, exp["id"]) == (False, False)
+    assert resp.status_code == 200, resp.text
+    assert sorted(resp.json()["meta_applied"]) == ["render_markdown", "render_math"]
+    assert resp.json()["meta_conflicts"] == []
+    assert _flags(client, exp["id"]) == (True, True)

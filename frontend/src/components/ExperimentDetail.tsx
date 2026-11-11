@@ -2244,11 +2244,9 @@ function MetadataPanel({
     onChange: (value: boolean) => void,
     label: string,
     hint: string,
-    options: { blockedBy?: string; conflicts?: Upload[] } = {},
+    conflicts: Upload[],
   ) => {
-    // The other rendering flag is on: the two are exclusive.
-    const blocked = !checked && options.blockedBy !== undefined;
-    const disabled = isLocked || blocked;
+    const disabled = isLocked;
     return (
       <div>
         <label
@@ -2261,7 +2259,6 @@ function MetadataPanel({
             lineHeight: 1.4,
             fontWeight: 600,
             cursor: disabled ? 'not-allowed' : 'pointer',
-            opacity: blocked ? 0.6 : 1,
           }}
         >
           <input
@@ -2285,10 +2282,9 @@ function MetadataPanel({
           }}
         >
           {hint}
-          {blocked && <div>Turn off {options.blockedBy} to use this.</div>}
-          {options.conflicts && options.conflicts.length > 0 && (
+          {conflicts.length > 0 && (
             <div style={{ color: 'var(--warn)', marginTop: 6 }}>
-              Declared differently by: {options.conflicts.map((c) => c.filename).join(', ')}.
+              Declared differently by: {conflicts.map((c) => c.filename).join(', ')}.
             </div>
           )}
         </div>
@@ -2325,10 +2321,7 @@ function MetadataPanel({
         onIsMarkdownChange,
         'Render questions as Markdown',
         'Code blocks, tables, etc. will be rendered as styled elements, in the question prefix and suffix too',
-        {
-          blockedBy: renderMath ? 'Render math' : undefined,
-          conflicts: renderMarkdownConflicts,
-        },
+        renderMarkdownConflicts,
       )}
       {renderToggle(
         'meta-render_math',
@@ -2336,10 +2329,7 @@ function MetadataPanel({
         onRenderMathChange,
         'Render math',
         'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] in the question, its options, its context and the document is typeset. Leave off when questions use $ for money.',
-        {
-          blockedBy: isMarkdown ? 'Markdown' : undefined,
-          conflicts: renderMathConflicts,
-        },
+        renderMathConflicts,
       )}
     </section>
   );

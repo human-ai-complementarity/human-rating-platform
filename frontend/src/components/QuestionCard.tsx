@@ -6,7 +6,7 @@ import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import type { ContentBlock, Question } from '../types';
 import { resolveMediaUrl } from '../api';
-import { splitMath, useMathRenderer } from '../math';
+import { FORMULA_PROPERTY, maskMath, remarkMaskedMath, splitMath, useMathRenderer } from '../math';
 import type { MathRenderer } from '../math';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
@@ -120,6 +120,56 @@ function MathText({ text, math }: { text: string; math: MathRenderer }) {
   );
 }
 
+const MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
+
+// Markdown, with its math typeset when `math` is given. The formulas are
+// masked out of the source before Markdown parses it and typeset where their
+// tokens come out (see `maskMath`), once per text like `MathText`.
+function MarkdownBody({
+  text,
+  math,
+  style,
+}: {
+  text: string;
+  math: MathRenderer | null;
+  style?: CSSProperties;
+}) {
+  const rendering = useMemo(() => {
+    if (!math) return { source: text, plugins: MARKDOWN_PLUGINS, components: MARKDOWN_COMPONENTS };
+    const { markdown, formulas } = maskMath(text);
+    const typeset = formulas.map((formula) => ({
+      display: formula.display,
+      html: math.toHtml(formula.tex, formula.display),
+    }));
+    const components: Components = {
+      ...MARKDOWN_COMPONENTS,
+      // Markdown itself produces no span: every one is a formula.
+      span: ({ node }) => {
+        const formula = typeset[Number(node?.properties[FORMULA_PROPERTY])];
+        if (!formula) return null;
+        return (
+          <span
+            style={formula.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
+            dangerouslySetInnerHTML={{ __html: formula.html }}
+          />
+        );
+      },
+    };
+    return {
+      source: markdown,
+      plugins: [...MARKDOWN_PLUGINS, remarkMaskedMath(formulas)],
+      components,
+    };
+  }, [text, math]);
+  return (
+    <div className="question-markdown markdown rater-prose" style={style}>
+      <ReactMarkdown remarkPlugins={rendering.plugins} components={rendering.components}>
+        {rendering.source}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
 function QuestionBody({
   text,
   markdown,
@@ -129,23 +179,14 @@ function QuestionBody({
   text: string;
   markdown: boolean;
   // Null when the experiment does not render math, or KaTeX failed to load.
-  // Ignored under Markdown, which the backend keeps exclusive with math.
   math: MathRenderer | null;
   style?: CSSProperties;
 }) {
-  if (!markdown) {
-    return (
-      <p style={{ ...style, whiteSpace: 'pre-wrap' }}>
-        {math ? <MathText text={text} math={math} /> : text}
-      </p>
-    );
-  }
+  if (markdown) return <MarkdownBody text={text} math={math} style={style} />;
   return (
-    <div className="question-markdown markdown rater-prose" style={style}>
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={MARKDOWN_COMPONENTS}>
-        {text}
-      </ReactMarkdown>
-    </div>
+    <p style={{ ...style, whiteSpace: 'pre-wrap' }}>
+      {math ? <MathText text={text} math={math} /> : text}
+    </p>
   );
 }
 
@@ -321,7 +362,7 @@ async function buildLongContextDocumentHtml(
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
     if (isMarkdown) {
-      body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={null} />);
+      body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={math} />);
       appStyles = `<style>${tokensCss}${appCss}</style>`;
     } else if (math) {
       body = `<pre>${renderToStaticMarkup(<MathText text={documentText} math={math} />)}</pre>`;
@@ -393,11 +434,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question]
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
-  // Markdown and math are exclusive (the backend enforces it); Markdown wins.
-  const { ready: mathReady, renderer: math } = useMathRenderer(
-    question.render_math && !question.is_markdown,
-    question.id,
-  );
+  const { ready: mathReady, renderer: math } = useMathRenderer(question.render_math, question.id);
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
