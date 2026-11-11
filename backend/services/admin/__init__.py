@@ -26,6 +26,7 @@ from .experiments import (
     get_experiment,
     get_experiment_stats,
     list_experiments,
+    list_experiments_page,
     unarchive_experiment,
     update_experiment,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "list_assistance_sessions",
     "list_datasets",
     "list_experiments",
+    "list_experiments_page",
     "list_groups",
     "list_tags",
     "list_experiment_rounds",

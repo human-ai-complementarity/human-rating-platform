@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Annotated, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -398,6 +399,60 @@ class ExperimentDuplicateResponse(ExperimentResponse):
     # Set when the copy kept a group from another wave than the current one;
     # it may be a new wave's collection that belongs in a new group.
     wave_warning: Optional[WaveWarning] = None
+
+
+# --- Paged experiment list (GET /admin/experiments/page) ------------------
+# The bare list (GET /admin/experiments) stays as it was for the dashboard;
+# this envelope is what a paging UI reads instead. A page's rows are full
+# ExperimentResponses, so the enrichment cost scales with `limit`: hence the
+# smaller default and maximum than the bare list's 100 / 1000.
+EXPERIMENT_PAGE_DEFAULT_LIMIT = 50
+EXPERIMENT_PAGE_MAX_LIMIT = 200
+
+
+class ArchivedScope(str, Enum):
+    """Which rows the archived flag lets through."""
+
+    EXCLUDE = "exclude"  # active rows only (default)
+    ONLY = "only"  # archived rows only
+    INCLUDE = "include"  # both
+
+
+class ExperimentSort(str, Enum):
+    """Page order. Each one ends on `id`, so equal keys still page stably."""
+
+    NEWEST = "newest"  # created_at desc, id desc (default)
+    OLDEST = "oldest"  # created_at asc, id asc
+    NAME = "name"  # internal name, else public name, case-insensitive A-Z; id asc
+    SPEND = "spend"  # spend_minor_units desc, id desc
+    RATINGS = "ratings"  # rating_count desc, id desc
+
+
+class ExperimentListCounts(BaseModel):
+    """Per-tab counts for the status/archived/attention selectors.
+
+    Counted over every filter except that selection (`status`, `archived`,
+    `needs_attention`), so each tab shows what picking it would return. The
+    status counts and `needs_attention` cover active rows, as the status tabs
+    do; `archived` covers archived rows of any status. Active rows in total
+    are DRAFT + LAUNCH + FINISHED.
+    """
+
+    DRAFT: int = 0
+    LAUNCH: int = 0
+    FINISHED: int = 0
+    archived: int = 0
+    needs_attention: int = 0
+
+
+class ExperimentPage(BaseModel):
+    items: list[ExperimentResponse]
+    # Every row matching all filters, not just this page: page until
+    # `skip + len(items) >= total`.
+    total: int
+    skip: int
+    limit: int
+    counts: ExperimentListCounts
 
 
 class ExperimentUpdate(BaseModel):

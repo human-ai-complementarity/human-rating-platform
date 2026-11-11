@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import (
@@ -51,6 +51,9 @@ def compute_attention_reason(
 
     A round still collecting (any non-terminal published status) means "just
     wait", and a FINISHED experiment is terminal — neither is actionable.
+
+    `needs_attention_clause` is the same rule in SQL, for the paged list's
+    filter and counts: change the two together.
     """
     if status == ExperimentStatus.FINISHED:
         return None
@@ -63,6 +66,42 @@ def compute_attention_reason(
     if remaining_actions > 0:
         return "All rounds have closed but the rating target isn't met — launch another round."
     return "The rating target is met — mark the experiment finished."
+
+
+def needs_attention_clause() -> ColumnElement[bool]:
+    """SQL twin of `compute_attention_reason(...) is not None`, correlated on
+    `Experiment`, so the list can filter and count flagged rows in the
+    database instead of loading every row's rounds.
+
+    The reason's wording needs the rating shortfall, but whether there is a
+    reason does not: a LAUNCH experiment whose rounds have all closed is
+    flagged either way (launch another round, or mark it finished). Keep the
+    two in step; the list tests compare them row by row.
+    """
+    rounds = (
+        select(ExperimentRound.id)
+        .where(ExperimentRound.experiment_id == Experiment.id)
+        .correlate(Experiment)
+    )
+    has_unpublished = rounds.where(
+        ExperimentRound.prolific_study_status == ProlificStudyStatus.UNPUBLISHED.value
+    ).exists()
+    has_open_round = rounds.where(
+        ExperimentRound.prolific_study_status.notin_(
+            sorted(status.value for status in ROUND_TERMINAL_STATUSES)
+        )
+    ).exists()
+    return and_(
+        Experiment.status != ExperimentStatus.FINISHED.value,
+        or_(
+            has_unpublished,
+            and_(
+                Experiment.status == ExperimentStatus.LAUNCH.value,
+                rounds.exists(),
+                ~has_open_round,
+            ),
+        ),
+    )
 
 
 # --- Launch readiness (#96) ----------------------------------------------
