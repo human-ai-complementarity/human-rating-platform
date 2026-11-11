@@ -2244,11 +2244,8 @@ function MetadataPanel({
     onChange: (value: boolean) => void,
     label: string,
     hint: string,
-    options: { blockedBy?: string; conflicts?: Upload[] } = {},
+    conflicts: Upload[],
   ) => {
-    // The other rendering flag is on: the two are exclusive.
-    const blocked = !checked && options.blockedBy !== undefined;
-    const disabled = isLocked || blocked;
     return (
       <div>
         <label
@@ -2260,15 +2257,14 @@ function MetadataPanel({
             fontSize: 13.5,
             lineHeight: 1.4,
             fontWeight: 600,
-            cursor: disabled ? 'not-allowed' : 'pointer',
-            opacity: blocked ? 0.6 : 1,
+            cursor: isLocked ? 'not-allowed' : 'pointer',
           }}
         >
           <input
             id={id}
             type="checkbox"
             checked={checked}
-            disabled={disabled}
+            disabled={isLocked}
             aria-describedby={`${id}-hint`}
             onChange={(e) => onChange(e.target.checked)}
             style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
@@ -2285,10 +2281,9 @@ function MetadataPanel({
           }}
         >
           {hint}
-          {blocked && <div>Turn off {options.blockedBy} to use this.</div>}
-          {options.conflicts && options.conflicts.length > 0 && (
+          {conflicts.length > 0 && (
             <div style={{ color: 'var(--warn)', marginTop: 6 }}>
-              Declared differently by: {options.conflicts.map((c) => c.filename).join(', ')}.
+              Declared differently by: {conflicts.map((c) => c.filename).join(', ')}.
             </div>
           )}
         </div>
@@ -2325,10 +2320,7 @@ function MetadataPanel({
         onIsMarkdownChange,
         'Render questions as Markdown',
         'Code blocks, tables, etc. will be rendered as styled elements, in the question prefix and suffix too',
-        {
-          blockedBy: renderMath ? 'Render math' : undefined,
-          conflicts: renderMarkdownConflicts,
-        },
+        renderMarkdownConflicts,
       )}
       {renderToggle(
         'meta-render_math',
@@ -2336,10 +2328,7 @@ function MetadataPanel({
         onRenderMathChange,
         'Render math',
         'TeX between $…$, $$…$$, \\(…\\) or \\[…\\] in the question, its options, its context and the document is typeset. Leave off when questions use $ for money.',
-        {
-          blockedBy: isMarkdown ? 'Markdown' : undefined,
-          conflicts: renderMathConflicts,
-        },
+        renderMathConflicts,
       )}
     </section>
   );

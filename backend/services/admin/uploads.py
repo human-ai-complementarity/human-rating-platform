@@ -24,7 +24,6 @@ from services.assistance.model_resolution import (
 )
 from services.assistance.registry import assisted_methods, expand_bare_entry
 from services.question_separator import separator_upload_offenders
-from .experiments import MARKDOWN_WITH_MATH_DETAIL
 from .mappers import build_upload_response
 from .queries import fetch_experiment_or_404
 from .question_inserts import insert_questions_in_batches
@@ -56,9 +55,14 @@ ASSISTANCE_MODELS_META_FIELD = ASSISTANCE_MODELS_KEY
 # Whether the rater card renders TeX between math delimiters, and whether it
 # renders the question as Markdown (`Experiment.is_markdown`). JSON booleans,
 # not strings, so they stay out of the string-coerced tuple above; see
-# `_apply_render_math_meta` and `_apply_render_markdown_meta`.
+# `_apply_render_flag_meta`.
 RENDER_MATH_META_FIELD = "render_math"
 RENDER_MARKDOWN_META_FIELD = "render_markdown"
+# Each key's Experiment column.
+RENDER_FLAG_META_COLUMNS = {
+    RENDER_MATH_META_FIELD: "render_math",
+    RENDER_MARKDOWN_META_FIELD: "is_markdown",
+}
 
 # Everything an upload may declare. Keys are matched against this allowlist so
 # unknown keys surface as a clean 400 instead of silently filling columns we
@@ -192,8 +196,6 @@ def _validate_meta_dict(parsed: Any) -> dict[str, Any]:
         values[RENDER_MARKDOWN_META_FIELD] = _validate_flag(
             RENDER_MARKDOWN_META_FIELD, render_markdown
         )
-    if values.get(RENDER_MATH_META_FIELD) and values.get(RENDER_MARKDOWN_META_FIELD):
-        raise HTTPException(status_code=400, detail=MARKDOWN_WITH_MATH_DETAIL)
     return values
 
 
@@ -273,58 +275,37 @@ def _apply_meta_to_experiment(
         elif current_value != new_value:
             conflicts.append(field_name)
     _apply_assistance_models_meta(experiment, meta, applied, conflicts)
-    _apply_render_math_meta(experiment, meta, applied, conflicts)
-    _apply_render_markdown_meta(experiment, meta, applied, conflicts)
+    for key, column in RENDER_FLAG_META_COLUMNS.items():
+        _apply_render_flag_meta(experiment, meta, key, column, applied, conflicts)
     return applied, conflicts
 
 
-def _apply_render_math_meta(
+def _apply_render_flag_meta(
     experiment: Experiment,
     meta: dict[str, Any],
+    key: str,
+    column: str,
     applied: list[str],
     conflicts: list[str],
 ) -> None:
-    """Turn math rendering on when an upload declares it; never turn it off.
+    """Turn a rendering flag on when an upload declares it; never turn it off.
 
     Off is the column default, so it cannot tell an admin's choice from an
     untouched experiment: an upload may switch it on, the way the string
     fields fill a blank. Declaring false on an experiment an admin switched on
-    is a conflict, not a silent switch-off. So is declaring true on one an
-    admin set to Markdown: the two flags are exclusive (see
-    `_reject_markdown_with_math`), and the admin's choice stands.
+    is a conflict, not a silent switch-off. The two flags are independent: the
+    card renders Markdown and math together.
     """
-    if RENDER_MATH_META_FIELD not in meta:
+    if key not in meta:
         return
-    declared = meta[RENDER_MATH_META_FIELD]
-    if declared == experiment.render_math:
+    declared = meta[key]
+    if declared == getattr(experiment, column):
         return
-    if declared and not experiment.is_markdown:
-        experiment.render_math = True
-        applied.append(RENDER_MATH_META_FIELD)
+    if declared:
+        setattr(experiment, column, True)
+        applied.append(key)
     else:
-        conflicts.append(RENDER_MATH_META_FIELD)
-
-
-def _apply_render_markdown_meta(
-    experiment: Experiment,
-    meta: dict[str, Any],
-    applied: list[str],
-    conflicts: list[str],
-) -> None:
-    """Turn Markdown rendering on when an upload declares it; never turn it off.
-
-    The same rules as `_apply_render_math_meta`, against `is_markdown`.
-    """
-    if RENDER_MARKDOWN_META_FIELD not in meta:
-        return
-    declared = meta[RENDER_MARKDOWN_META_FIELD]
-    if declared == experiment.is_markdown:
-        return
-    if declared and not experiment.render_math:
-        experiment.is_markdown = True
-        applied.append(RENDER_MARKDOWN_META_FIELD)
-    else:
-        conflicts.append(RENDER_MARKDOWN_META_FIELD)
+        conflicts.append(key)
 
 
 def _apply_assistance_models_meta(
