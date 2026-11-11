@@ -407,6 +407,20 @@ def test_list_include_archived_returns_active_and_archived(client: TestClient):
     assert {item["id"] for item in default} == {active["id"]}
 
 
+def test_list_pages_cover_every_experiment_once(client: TestClient):
+    created = {_create_experiment(client)["id"] for _ in range(5)}
+
+    seen: list[int] = []
+    for skip in range(0, 6, 2):
+        page = client.get("/api/admin/experiments", params={"skip": skip, "limit": 2}).json()
+        seen.extend(item["id"] for item in page)
+
+    # Rows created in the same instant still page deterministically: no row
+    # repeats across pages and none is skipped.
+    assert len(seen) == len(set(seen))
+    assert created <= set(seen)
+
+
 def test_list_spend_sums_round_total_cost(client: TestClient, sync_engine):
     exp = _create_experiment(client)
     _insert_round(sync_engine, experiment_id=exp["id"], round_number=0, total_cost=620)

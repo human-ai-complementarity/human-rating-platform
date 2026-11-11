@@ -339,7 +339,8 @@ async def list_experiments(
             )
         )
 
-    stmt = stmt.order_by(Experiment.created_at.desc())
+    # `id` breaks created_at ties so skip/limit pages never overlap or skip rows.
+    stmt = stmt.order_by(Experiment.created_at.desc(), Experiment.id.desc())
     # An explicit id batch is already bounded by the caller's id list, so return
     # exactly those rows (per the endpoint contract) instead of paginating and
     # silently truncating a batch larger than `limit`.
