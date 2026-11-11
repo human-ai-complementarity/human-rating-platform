@@ -40,7 +40,7 @@ function RaterConsent({
     >
       <div
         style={{
-          font: '600 11px/1 var(--font-mono)',
+          font: '600 var(--text-label)/1 var(--font-mono)',
           letterSpacing: '0.18em',
           textTransform: 'uppercase',
           color: 'var(--accent-soft-ink)',
@@ -53,8 +53,8 @@ function RaterConsent({
         style={{
           fontFamily: 'var(--font-head)',
           fontWeight: 600,
-          fontSize: 28,
-          lineHeight: 1.18,
+          fontSize: 'var(--text-title)',
+          lineHeight: 'var(--leading-heading)',
           letterSpacing: '-0.012em',
           color: 'var(--ink)',
           margin: '14px 0 8px',
@@ -62,14 +62,14 @@ function RaterConsent({
       >
         {experimentName}
       </h1>
-      <p style={{ color: 'var(--muted)', fontSize: 14, margin: '0 0 24px' }}>
+      <p style={{ color: 'var(--muted)', fontSize: 'var(--text-secondary)', margin: '0 0 24px' }}>
         Please read the following before you begin.
       </p>
 
       <div
-        className="rater-consent-statement"
+        className="rater-consent-statement rater-prose"
         dangerouslySetInnerHTML={{ __html: statementHtml }}
-        style={{ fontSize: 15, lineHeight: 1.65, color: 'var(--ink)' }}
+        style={{ color: 'var(--ink)' }}
       />
 
       <label
@@ -81,8 +81,8 @@ function RaterConsent({
           padding: '14px 16px',
           border: '1px solid var(--faint)',
           borderRadius: 'var(--radius-sm)',
-          fontSize: 14,
-          lineHeight: 1.5,
+          fontSize: 'var(--text-body)',
+          lineHeight: 'var(--leading-body)',
           color: 'var(--ink)',
           cursor: 'pointer',
         }}
@@ -101,7 +101,7 @@ function RaterConsent({
       </label>
 
       {error && (
-        <p style={{ color: 'var(--danger, #b42318)', fontSize: 14, margin: '0 0 14px' }}>
+        <p style={{ color: 'var(--danger, #b42318)', fontSize: 'var(--text-secondary)', margin: '0 0 14px' }}>
           {error}
         </p>
       )}
@@ -114,7 +114,7 @@ function RaterConsent({
           ...primaryButton,
           width: '100%',
           padding: '13px 22px',
-          fontSize: 15,
+          fontSize: 'var(--text-body)',
           opacity: !ticked || submitting ? 0.55 : 1,
           cursor: !ticked || submitting ? 'not-allowed' : 'pointer',
         }}
@@ -122,7 +122,7 @@ function RaterConsent({
         {submitting ? 'Saving…' : 'I agree'}
       </button>
 
-      <p style={{ color: 'var(--muted)', fontSize: 13, margin: '16px 0 0', textAlign: 'center' }}>
+      <p style={{ color: 'var(--muted)', fontSize: 'var(--text-fine)', margin: '16px 0 0', textAlign: 'center' }}>
         Take your time: the session timer only starts once you agree. If you do not wish to
         take part, close this tab and return the study on Prolific.
       </p>

@@ -55,7 +55,7 @@ function RaterIntro({
     >
       <div
         style={{
-          font: '600 11px/1 var(--font-mono)',
+          font: '600 var(--text-label)/1 var(--font-mono)',
           letterSpacing: '0.18em',
           textTransform: 'uppercase',
           color: 'var(--accent-soft-ink)',
@@ -68,8 +68,8 @@ function RaterIntro({
         style={{
           fontFamily: 'var(--font-head)',
           fontWeight: 600,
-          fontSize: 32,
-          lineHeight: 1.18,
+          fontSize: 'var(--text-title)',
+          lineHeight: 'var(--leading-heading)',
           letterSpacing: '-0.012em',
           color: 'var(--ink)',
           margin: '14px 0 24px',
@@ -88,8 +88,8 @@ function RaterIntro({
           borderRadius: 'var(--radius-sm)',
           padding: '14px 16px',
           marginBottom: 24,
-          fontSize: 14,
-          lineHeight: 1.6,
+          fontSize: 'var(--text-body)',
+          lineHeight: 'var(--leading-body)',
           color: 'var(--ink)',
         }}
       >
@@ -108,11 +108,9 @@ function RaterIntro({
 
       {descriptionHtml && (
         <div
-          className="rater-intro-description"
+          className="rater-intro-description rater-prose"
           dangerouslySetInnerHTML={{ __html: descriptionHtml }}
           style={{
-            fontSize: 16,
-            lineHeight: 1.65,
             color: 'var(--ink)',
             marginBottom: 28,
           }}
@@ -123,7 +121,7 @@ function RaterIntro({
         <div style={{ marginBottom: 28 }}>
           <div
             style={{
-              font: '600 10px/1 var(--font-mono)',
+              font: '600 var(--text-label)/1 var(--font-mono)',
               letterSpacing: '0.16em',
               textTransform: 'uppercase',
               color: 'var(--muted)',
@@ -133,7 +131,7 @@ function RaterIntro({
             How this study works
           </div>
           <Banner tone="info" icon={false}>
-            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ink)' }}>
+            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ink)', fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)' }}>
               {assistanceInstructions}
             </div>
           </Banner>
@@ -143,7 +141,7 @@ function RaterIntro({
       <button
         type="button"
         onClick={onContinue}
-        style={{ ...primaryButton, width: '100%', padding: '13px 22px', fontSize: 15 }}
+        style={{ ...primaryButton, width: '100%', padding: '13px 22px', fontSize: 'var(--text-body)' }}
       >
         Continue
       </button>

@@ -69,7 +69,7 @@ function Timer({ sessionEndTime, graceSeconds = 0, onDeadline, onExpire }: Timer
       color: '#fff',
       padding: '10px 16px',
       borderRadius: 'var(--radius-sm)',
-      fontSize: 16,
+      fontSize: 'var(--text-body)',
       fontWeight: 700,
       fontFamily: 'var(--font-mono)',
       letterSpacing: '0.04em',
@@ -80,7 +80,7 @@ function Timer({ sessionEndTime, graceSeconds = 0, onDeadline, onExpire }: Timer
       animation: isWarning || inGrace ? 'pulse 1s infinite' : 'none',
     },
     warning: {
-      fontSize: 11,
+      fontSize: 'var(--text-label)',
       fontWeight: 500,
       opacity: 0.9,
       textTransform: 'uppercase' as const,
