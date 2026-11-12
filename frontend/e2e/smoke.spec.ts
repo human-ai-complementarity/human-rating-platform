@@ -1803,8 +1803,21 @@ test('the experiment markdown flag switches the rater card between rendered and 
 
   await expect(page.locator('pre code')).toContainText('def f(n):');
   await expect(page.getByText('```python')).toHaveCount(0);
+
+  // The fence's language colours the code, and each line is numbered in a
+  // gutter that is not part of the text, so copying the block gives clean code.
+  await expect(page.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(page.locator('.code-gutter')).toHaveAttribute('data-lines', '1\n2');
+  const copied = await page.locator('.code-block').evaluate((block) => {
+    const selection = window.getSelection()!;
+    selection.selectAllChildren(block);
+    return selection.toString();
+  });
+  expect(copied.trim()).toBe('def f(n):\n    return n');
   await expect(page.getByText('Keep <b>this</b> literal.')).toBeVisible();
   await expect(page.locator('b, strong')).toHaveCount(0);
+  // A Markdown question is reading text: body size, not the heading size.
+  await expect(page.getByText('Keep <b>this</b> literal.')).toHaveCSS('font-size', '16px');
 
   // The wide table scrolls inside the card instead of widening the page.
   await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();
@@ -1820,6 +1833,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
   question.is_markdown = false;
   await page.reload();
   await expect(page.getByText('```python')).toBeVisible();
+  await expect(page.getByText('```python')).toHaveCSS('font-size', '20px');
   await expect(page.locator('pre code')).toHaveCount(0);
   await expect(page.getByRole('table')).toHaveCount(0);
 });

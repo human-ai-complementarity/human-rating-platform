@@ -2,12 +2,14 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
+import rehypeHighlight from 'rehype-highlight';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import type { ContentBlock, Question } from '../types';
 import { resolveMediaUrl } from '../api';
 import { FORMULA_PROPERTY, maskMath, remarkMaskedMath, splitMath, useMathRenderer } from '../math';
 import type { MathRenderer } from '../math';
+import { CodeBlock } from './CodeBlock';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
 import appCss from '../index.css?raw';
@@ -18,6 +20,17 @@ import appCss from '../index.css?raw';
 // of characters, a long-context document runs six figures), so the exact value
 // only matters if a dataset ever lands in between.
 const INLINE_CONTEXT_MAX_CHARS = 2000;
+// A plain question is a line or two, set as a heading. A Markdown question is
+// a page of reading text (a PR, a transcript, code and a summary), so it takes
+// the body size of the prose around it and keeps the serif for its headings.
+const QUESTION_HEADING_STYLE: CSSProperties = {
+  fontFamily: 'var(--font-head)',
+  fontSize: 'var(--text-heading)',
+  lineHeight: 1.4,
+  letterSpacing: '-0.005em',
+  color: 'var(--ink)',
+};
+const QUESTION_PROSE_STYLE: CSSProperties = { color: 'var(--ink)' };
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
 const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
@@ -73,6 +86,7 @@ const MARKDOWN_COMPONENTS: Components = {
       <table>{children}</table>
     </div>
   ),
+  pre: CodeBlock,
 };
 
 // A formula keeps its full height in the line, so a tall \dfrac pushes the
@@ -121,6 +135,9 @@ function MathText({ text, math }: { text: string; math: MathRenderer }) {
 }
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
+// Colours a fenced block by the language on its fence (```python). A fence
+// with no language, or one the highlighter does not know, stays plain.
+const CODE_PLUGINS = [rehypeHighlight];
 
 // An MC option is one line in a button, so it takes Markdown's inline syntax
 // (bold, code, strikethrough) and none of its blocks: "1. Paris" stays as
@@ -178,10 +195,10 @@ function MarkdownBody({
     }));
     const components: Components = {
       ...baseComponents,
-      // Markdown itself produces no span, so in practice every one is a formula.
-      span: ({ node, children }) => {
+      // A span is a formula or, in a code block, a highlighted token.
+      span: ({ node, className, children }) => {
         const formula = typeset[Number(node?.properties[FORMULA_PROPERTY])];
-        if (!formula) return <span>{children}</span>;
+        if (!formula) return <span className={className}>{children}</span>;
         return (
           <span
             style={formula.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
@@ -203,7 +220,12 @@ function MarkdownBody({
       className={inline ? 'question-markdown markdown' : 'question-markdown markdown rater-prose'}
       style={style}
     >
-      <ReactMarkdown remarkPlugins={rendering.plugins} components={rendering.components}>
+      <ReactMarkdown
+        remarkPlugins={rendering.plugins}
+        // An option has no code blocks to colour.
+        rehypePlugins={inline ? undefined : CODE_PLUGINS}
+        components={rendering.components}
+      >
         {rendering.source}
       </ReactMarkdown>
     </Wrapper>
@@ -489,6 +511,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
   const { ready: mathReady, renderer: math } = useMathRenderer(question.render_math, question.id);
+  const questionStyle = question.is_markdown ? QUESTION_PROSE_STYLE : QUESTION_HEADING_STYLE;
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
@@ -657,14 +680,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             blocks={display.questionBlocks}
             markdown={question.is_markdown}
             math={math}
-            textStyle={{
-              fontFamily: 'var(--font-head)',
-              fontSize: 'var(--text-heading)',
-              lineHeight: 1.4,
-              letterSpacing: '-0.005em',
-              color: 'var(--ink)',
-              margin: 0,
-            }}
+            textStyle={{ ...questionStyle, margin: 0 }}
           />
         </div>
       ) : (
@@ -672,15 +688,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           text={display.questionText}
           markdown={question.is_markdown}
           math={math}
-          style={{
-            fontFamily: 'var(--font-head)',
-            fontSize: 'var(--text-heading)',
-            lineHeight: 1.4,
-            letterSpacing: '-0.005em',
-            color: 'var(--ink)',
-            marginTop: 0,
-            marginBottom: 24,
-          }}
+          style={{ ...questionStyle, marginTop: 0, marginBottom: 24 }}
         />
       )}
 
