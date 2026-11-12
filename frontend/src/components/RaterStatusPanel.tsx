@@ -20,13 +20,12 @@ function RaterStatusPanel({ graceMinutes, children }: RaterStatusPanelProps) {
       top: 20,
       right: 20,
       zIndex: 30,
-      minWidth: 190,
-      background: 'var(--ink)',
+      // Width, background and shadow come from .rater-status-panel (index.css),
+      // which owns the small see-through rest state and the solid expanded one.
       color: '#fff',
       padding: 5,
       borderRadius: 'var(--radius-sm)',
       fontFamily: 'var(--font-mono)',
-      boxShadow: '0 6px 18px rgba(40, 36, 32, 0.18)',
       display: 'flex',
       flexDirection: 'column' as const,
       gap: 2,
@@ -65,6 +64,7 @@ function RaterStatusPanel({ graceMinutes, children }: RaterStatusPanelProps) {
 
   return (
     <div
+      className="rater-status-panel"
       style={styles.panel}
       tabIndex={0}
       aria-describedby={helpOpen ? 'rater-status-help' : undefined}

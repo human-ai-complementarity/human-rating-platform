@@ -68,6 +68,7 @@ function QuestionTimer({ questionId, onOverLimitChange }: QuestionTimerProps) {
   return (
     <TimerChip
       label="Current question"
+      restLabel="Question"
       time={`${overLimit ? '+' : ''}${formatClock(Math.abs(limitSeconds - elapsed))}`}
       alert={overLimit}
       note="Please move on"

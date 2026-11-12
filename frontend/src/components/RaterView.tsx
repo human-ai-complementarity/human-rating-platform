@@ -735,7 +735,12 @@ function RaterView() {
             onOverLimitChange={setQuestionOverLimit}
           />
         )}
-        <TimerChip label="Completed" time={String(questionsCompleted)} testId="completed-count" />
+        <TimerChip
+          label="Completed"
+          time={String(questionsCompleted)}
+          testId="completed-count"
+          hideAtRest
+        />
       </RaterStatusPanel>
 
       <div style={styles.header}>

@@ -1,5 +1,9 @@
 interface TimerChipProps {
   label: string;
+  /** Shorter label for the panel's collapsed (at rest) state. */
+  restLabel?: string;
+  /** Leave this row out of the collapsed panel. */
+  hideAtRest?: boolean;
   /** Already formatted, e.g. "19:48", "+01:23", or a plain count. */
   time: string;
   /** Red and pulsing: the rater should act on this clock now. */
@@ -17,7 +21,15 @@ export function formatClock(totalSeconds: number): string {
 
 /** One row of the floating rater status panel: label on the left, value on the
  *  right, so stacked rows line up as a single readout. */
-function TimerChip({ label, time, alert = false, note, testId }: TimerChipProps) {
+function TimerChip({
+  label,
+  restLabel,
+  hideAtRest = false,
+  time,
+  alert = false,
+  note,
+  testId,
+}: TimerChipProps) {
   const styles = {
     row: {
       background: alert ? 'var(--danger)' : 'transparent',
@@ -54,9 +66,23 @@ function TimerChip({ label, time, alert = false, note, testId }: TimerChipProps)
   };
 
   return (
-    <div style={styles.row} data-testid={testId}>
+    <div
+      style={styles.row}
+      data-testid={testId}
+      data-alert={alert}
+      data-hide-at-rest={hideAtRest}
+    >
       <div style={styles.line}>
-        <span style={styles.label}>{label}</span>
+        <span style={styles.label}>
+          {restLabel ? (
+            <>
+              <span className="rsp-rest">{restLabel}</span>
+              <span className="rsp-full">{label}</span>
+            </>
+          ) : (
+            label
+          )}
+        </span>
         <span style={styles.value}>{time}</span>
       </div>
       {alert && note && <div style={styles.note}>{note}</div>}

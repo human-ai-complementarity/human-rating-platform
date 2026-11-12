@@ -150,23 +150,41 @@ button:disabled {
   padding: 40px 44px 60px;
 }
 
-/* Rater-view floating timer. */
-.timer {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  background: var(--ink);
-  color: var(--bg);
-  padding: 10px 16px;
-  border-radius: var(--radius-sm);
-  font: 600 15px var(--font-mono);
-  letter-spacing: 0.02em;
-  z-index: 30;
+/* Rater-view floating status panel. It sits over the page's top-right corner,
+   so at rest it is see-through; it turns solid when the rater points at it or
+   when one of its clocks is asking for attention. */
+.rater-status-panel {
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+  backdrop-filter: blur(3px);
+  box-shadow: none;
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.timer.warning {
-  background: var(--danger);
-  animation: pulse 1s infinite;
+.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) {
+  min-width: 190px;
+  background: var(--ink);
+  box-shadow: 0 6px 18px rgba(40, 36, 32, 0.18);
+}
+
+/* At rest the panel is as small as it can be: short labels, clocks only. The
+   full labels and the remaining rows appear with the solid state. */
+.rater-status-panel .rsp-full,
+.rater-status-panel [data-hide-at-rest='true'] {
+  display: none;
+}
+
+.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) .rsp-rest {
+  display: none;
+}
+
+.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) .rsp-full {
+  display: inline;
+}
+
+.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) [data-hide-at-rest='true'] {
+  display: block;
 }
 
 @keyframes pulse {
