@@ -23,6 +23,7 @@ import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
 import { testingPreviewFix } from './experiment-detail/launchBlockers';
 import { PilotCheckCard, StatePill, describeSummary } from './experiment-detail/PilotCheckCard';
+import { usePilotCheckGate } from './experiment-detail/usePilotCheckGate';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import { HeaderMenu } from './experiment-detail/HeaderMenu';
 import { EthicsPanel } from './experiment-detail/EthicsPanel';
@@ -941,19 +942,26 @@ function ExperimentDetail({
     }
   };
 
+  // Study creation goes through the pilot check gate (docs/pilot-check.md):
+  // its 409 becomes a dialog, and "Launch anyway" repeats the call acknowledged.
+  const pilotCheckGate = usePilotCheckGate();
+
   const handleRunPilot = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
-      await api.runPilotStudy(experiment.id, {
-        ...pilotForm,
-        reward: rewardInputToMinor(pilotRewardInput, currencyCode),
+      await pilotCheckGate.attempt(async (acknowledgePilotCheck) => {
+        await api.runPilotStudy(experiment.id, {
+          ...pilotForm,
+          reward: rewardInputToMinor(pilotRewardInput, currencyCode),
+          ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}),
+        });
+        showSuccess('Pilot draft created on Prolific. Publish it when ready.', 4000);
+        pilotDescriptionDirtyRef.current = false;
+        onRefresh();
+        await loadRounds();
+        await loadRecommendation();
       });
-      showSuccess('Pilot draft created on Prolific. Publish it when ready.', 4000);
-      pilotDescriptionDirtyRef.current = false;
-      onRefresh();
-      await loadRounds();
-      await loadRecommendation();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create pilot study');
     }
@@ -973,10 +981,12 @@ function ExperimentDetail({
     const places = recommendation.recommended_places;
     setError(null);
     try {
-      await api.runExperimentRound(experiment.id, places);
-      showSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`, 4000);
-      await loadRounds();
-      await loadRecommendation();
+      await pilotCheckGate.attempt(async (acknowledgePilotCheck) => {
+        await api.runExperimentRound(experiment.id, places, { acknowledgePilotCheck });
+        showSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`, 4000);
+        await loadRounds();
+        await loadRecommendation();
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create study round');
     }
@@ -1475,9 +1485,11 @@ function ExperimentDetail({
             otherExperiments={otherExperiments}
             onBack={() => setTab('assistance')}
             onPilotCheckChanged={onRefresh}
+            attemptLaunch={pilotCheckGate.attempt}
           />
         )}
       </div>
+      {pilotCheckGate.dialog}
     </div>
   );
 }
@@ -2784,6 +2796,7 @@ function LaunchPanel(props: {
   onBack: () => void;
   // Refreshes the experiment (and so `experiment.pilot_check`) when a run lands.
   onPilotCheckChanged: () => void;
+  attemptLaunch: (launch: (acknowledgePilotCheck: boolean) => Promise<void>) => Promise<boolean>;
 }) {
   const {
     experiment,
@@ -2822,6 +2835,7 @@ function LaunchPanel(props: {
     otherExperiments,
     onBack,
     onPilotCheckChanged,
+    attemptLaunch,
   } = props;
 
   // Past the pilot the launch gate no longer shows, but a testing preview
@@ -3003,6 +3017,7 @@ function LaunchPanel(props: {
                   currencyCode={currencyCode}
                   currencySymbol={currencySymbol}
                   onLaunched={onLaunchedFromCard}
+                  attemptLaunch={attemptLaunch}
                 />
               )}
 
