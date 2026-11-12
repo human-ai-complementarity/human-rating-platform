@@ -1902,7 +1902,7 @@ test('the markdown flag also applies to the long-context document window', async
   context,
 }) => {
   const state = createMockState();
-  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}`;
+  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}\n\n\`\`\`python\ndef f(n):\n    return n\n\`\`\`\n`;
   expect(document.length).toBeGreaterThan(2000);
 
   seedRaterWithQuestion(state, {
@@ -1924,6 +1924,9 @@ test('the markdown flag also applies to the long-context document window', async
   await popup.waitForLoadState('domcontentloaded');
 
   await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+  // The document is a static page: its code is coloured and numbered up front.
+  await expect(popup.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(popup.locator('.code-gutter')).toHaveAttribute('data-lines', '1\n2');
 });
 
 test('the math flag typesets MC options and submits the option as written', async ({ page }) => {
@@ -2056,6 +2059,11 @@ test('Markdown and math typeset together, leaving code and prices as written', a
       '```',
       'cost = $x$',
       '```',
+      '',
+      '```python',
+      'def cost(x):',
+      '    return "$x$"',
+      '```',
     ].join('\n'),
     options: '$x^2$|B',
     question_type: 'MC',
@@ -2081,8 +2089,10 @@ test('Markdown and math typeset together, leaving code and prices as written', a
   await expect(body.locator('td')).toHaveCount(2);
   await expect(body.locator('td math')).toHaveCount(1);
   await expect(body.locator('code').first()).toHaveText('echo $HOME and $PATH');
-  await expect(body.locator('pre code')).toHaveText('cost = $x$\n');
+  await expect(body.locator('pre code').first()).toHaveText('cost = $x$\n');
   await expect(body.locator('code math')).toHaveCount(0);
+  // Code is still coloured with math on: a token keeps its highlight class.
+  await expect(body.locator('pre code .hljs-keyword').first()).toHaveText('def');
   await expect(page.locator('button[aria-pressed]').first().locator('math')).toHaveCount(1);
 });
 

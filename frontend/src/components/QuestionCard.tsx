@@ -2,11 +2,11 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
-import rehypeHighlight from 'rehype-highlight';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import type { ContentBlock, Question } from '../types';
 import { resolveMediaUrl } from '../api';
+import { hasCodeFence, loadCodeHighlighter, useCodeHighlighter } from '../codeHighlight';
 import { FORMULA_PROPERTY, maskMath, remarkMaskedMath, splitMath, useMathRenderer } from '../math';
 import type { MathRenderer } from '../math';
 import { CodeBlock } from './CodeBlock';
@@ -135,9 +135,6 @@ function MathText({ text, math }: { text: string; math: MathRenderer }) {
 }
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
-// Colours a fenced block by the language on its fence (```python). A fence
-// with no language, or one the highlighter does not know, stays plain.
-const CODE_PLUGINS = [rehypeHighlight];
 
 // An MC option is one line in a button, so it takes Markdown's inline syntax
 // (bold, code, strikethrough) and none of its blocks: "1. Paris" stays as
@@ -213,6 +210,23 @@ function MarkdownBody({
       components,
     };
   }, [text, math, inline]);
+  // An option has no code blocks to colour.
+  const codePlugins = useCodeHighlighter(!inline && hasCodeFence(text));
+  // One element per source: the card re-renders on every keystroke in the
+  // free-text box, and React skips an element it has already rendered, so the
+  // Markdown is not parsed and highlighted again each time.
+  const rendered = useMemo(
+    () => (
+      <ReactMarkdown
+        remarkPlugins={rendering.plugins}
+        rehypePlugins={codePlugins ?? undefined}
+        components={rendering.components}
+      >
+        {rendering.source}
+      </ReactMarkdown>
+    ),
+    [rendering, codePlugins],
+  );
   const Wrapper = inline ? 'span' : 'div';
   return (
     <Wrapper
@@ -220,14 +234,7 @@ function MarkdownBody({
       className={inline ? 'question-markdown markdown' : 'question-markdown markdown rater-prose'}
       style={style}
     >
-      <ReactMarkdown
-        remarkPlugins={rendering.plugins}
-        // An option has no code blocks to colour.
-        rehypePlugins={inline ? undefined : CODE_PLUGINS}
-        components={rendering.components}
-      >
-        {rendering.source}
-      </ReactMarkdown>
+      {rendered}
     </Wrapper>
   );
 }
@@ -438,6 +445,9 @@ async function buildLongContextDocumentHtml(
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
     if (isMarkdown) {
+      // A static render runs no effects, so the highlighter has to be loaded
+      // before it; a failed load leaves the document's code uncoloured.
+      if (hasCodeFence(documentText)) await loadCodeHighlighter().catch(() => null);
       body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={math} />);
       appStyles = `<style>${tokensCss}${appCss}</style>`;
     } else if (math) {
