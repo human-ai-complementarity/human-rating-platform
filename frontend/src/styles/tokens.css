@@ -48,7 +48,7 @@
      screen. In rem so a rater's browser font-size setting is respected.
      Anything a rater must read to do the task is body size or larger. */
   --text-title: 1.75rem; /* 28px: screen titles (serif) */
-  --text-heading: 1.25rem; /* 20px: the question, panel and header titles (serif) */
+  --text-heading: 1.25rem; /* 20px: a plain-text question, panel and header titles (serif) */
   --text-body: 1rem; /* 16px: reading text, options, inputs, buttons */
   --text-secondary: 0.875rem; /* 14px: notes, hints, banners, code blocks */
   --text-fine: 0.8125rem; /* 13px: footers, progress counter */

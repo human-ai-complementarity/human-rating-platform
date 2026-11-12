@@ -1803,8 +1803,21 @@ test('the experiment markdown flag switches the rater card between rendered and 
 
   await expect(page.locator('pre code')).toContainText('def f(n):');
   await expect(page.getByText('```python')).toHaveCount(0);
+
+  // The fence's language colours the code, and each line is numbered in a
+  // gutter that is not part of the text, so copying the block gives clean code.
+  await expect(page.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(page.locator('.code-gutter')).toHaveAttribute('data-lines', '1\n2');
+  const copied = await page.locator('.code-block').evaluate((block) => {
+    const selection = window.getSelection()!;
+    selection.selectAllChildren(block);
+    return selection.toString();
+  });
+  expect(copied.trim()).toBe('def f(n):\n    return n');
   await expect(page.getByText('Keep <b>this</b> literal.')).toBeVisible();
   await expect(page.locator('b, strong')).toHaveCount(0);
+  // A Markdown question is reading text: body size, not the heading size.
+  await expect(page.getByText('Keep <b>this</b> literal.')).toHaveCSS('font-size', '16px');
 
   // The wide table scrolls inside the card instead of widening the page.
   await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();
@@ -1820,6 +1833,7 @@ test('the experiment markdown flag switches the rater card between rendered and 
   question.is_markdown = false;
   await page.reload();
   await expect(page.getByText('```python')).toBeVisible();
+  await expect(page.getByText('```python')).toHaveCSS('font-size', '20px');
   await expect(page.locator('pre code')).toHaveCount(0);
   await expect(page.getByRole('table')).toHaveCount(0);
 });
@@ -1888,7 +1902,7 @@ test('the markdown flag also applies to the long-context document window', async
   context,
 }) => {
   const state = createMockState();
-  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}`;
+  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}\n\n\`\`\`python\ndef f(n):\n    return n\n\`\`\`\n`;
   expect(document.length).toBeGreaterThan(2000);
 
   seedRaterWithQuestion(state, {
@@ -1910,6 +1924,9 @@ test('the markdown flag also applies to the long-context document window', async
   await popup.waitForLoadState('domcontentloaded');
 
   await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+  // The document is a static page: its code is coloured and numbered up front.
+  await expect(popup.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(popup.locator('.code-gutter')).toHaveAttribute('data-lines', '1\n2');
 });
 
 test('the math flag typesets MC options and submits the option as written', async ({ page }) => {
@@ -2042,6 +2059,11 @@ test('Markdown and math typeset together, leaving code and prices as written', a
       '```',
       'cost = $x$',
       '```',
+      '',
+      '```python',
+      'def cost(x):',
+      '    return "$x$"',
+      '```',
     ].join('\n'),
     options: '$x^2$|B',
     question_type: 'MC',
@@ -2067,8 +2089,10 @@ test('Markdown and math typeset together, leaving code and prices as written', a
   await expect(body.locator('td')).toHaveCount(2);
   await expect(body.locator('td math')).toHaveCount(1);
   await expect(body.locator('code').first()).toHaveText('echo $HOME and $PATH');
-  await expect(body.locator('pre code')).toHaveText('cost = $x$\n');
+  await expect(body.locator('pre code').first()).toHaveText('cost = $x$\n');
   await expect(body.locator('code math')).toHaveCount(0);
+  // Code is still coloured with math on: a token keeps its highlight class.
+  await expect(body.locator('pre code .hljs-keyword').first()).toHaveText('def');
   await expect(page.locator('button[aria-pressed]').first().locator('math')).toHaveCount(1);
 });
 

@@ -522,11 +522,96 @@ button:disabled {
   margin-bottom: 0;
 }
 
-.question-markdown pre {
+/* A fenced code block: line numbers in a gutter, the code scrolling beside
+   it. Both share one font and line height so they stay level line for line. */
+.question-markdown .code-block {
+  display: flex;
   border: 1px solid var(--faint);
-  overflow-x: auto;
-  font-weight: 400;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font: 400 var(--text-secondary) / 1.5 var(--font-mono);
   letter-spacing: 0;
+}
+
+.question-markdown .code-gutter {
+  flex: none;
+  padding: 12px 10px 12px 14px;
+  border-right: 1px solid var(--faint);
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+}
+
+/* Drawn as generated content so the numbers are never selected or copied. */
+.question-markdown .code-gutter::before {
+  content: attr(data-lines);
+  white-space: pre;
+}
+
+.question-markdown .code-block pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  overflow-x: auto;
+}
+
+/* Syntax colours for highlighted code (highlight.js token classes), each at
+   least 4.5:1 against the code block's background. */
+.question-markdown .hljs-comment,
+.question-markdown .hljs-quote {
+  color: #6b6458;
+  font-style: italic;
+}
+
+.question-markdown .hljs-keyword,
+.question-markdown .hljs-selector-tag,
+.question-markdown .hljs-doctag {
+  color: #7a3e9d;
+}
+
+.question-markdown .hljs-string,
+.question-markdown .hljs-regexp,
+.question-markdown .hljs-addition {
+  color: #2f5548;
+}
+
+.question-markdown .hljs-number,
+.question-markdown .hljs-literal,
+.question-markdown .hljs-symbol,
+.question-markdown .hljs-bullet {
+  color: #96480a;
+}
+
+.question-markdown .hljs-title,
+.question-markdown .hljs-section,
+.question-markdown .hljs-selector-id,
+.question-markdown .hljs-selector-class {
+  color: #1f5a8a;
+}
+
+.question-markdown .hljs-built_in,
+.question-markdown .hljs-type,
+.question-markdown .hljs-attr,
+.question-markdown .hljs-attribute,
+.question-markdown .hljs-variable,
+.question-markdown .hljs-template-variable {
+  color: #0f6464;
+}
+
+.question-markdown .hljs-meta,
+.question-markdown .hljs-deletion {
+  color: #9e3b2c;
+}
+
+.question-markdown .hljs-emphasis {
+  font-style: italic;
+}
+
+.question-markdown .hljs-strong {
+  font-weight: 600;
 }
 
 .question-markdown .question-markdown-table-scroll {
@@ -585,7 +670,7 @@ button:disabled {
    so a heading, list or table looks the same wherever a rater meets it. The
    global reset would otherwise strip every margin and the list indent.
    Headings are in em: they scale with the text they sit in, which is body
-   size everywhere except the question itself. */
+   size everywhere except a plain-text question, which is set as a heading. */
 .rater-prose {
   font-size: var(--text-body);
   line-height: var(--leading-body);
@@ -609,7 +694,7 @@ button:disabled {
   margin-top: 0;
 }
 /* :where keeps this below the per-surface first/last-child margin resets. */
-.rater-prose :where(p, ul, ol, blockquote, pre, .question-markdown-table-scroll) {
+.rater-prose :where(p, ul, ol, blockquote, pre, .code-block, .question-markdown-table-scroll) {
   margin: 0 0 12px;
 }
 .rater-prose :is(ul, ol) {
