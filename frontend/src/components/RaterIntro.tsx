@@ -1,4 +1,5 @@
 import { Banner, primaryButton } from './experiment-detail/ui';
+import { QUESTION_TIME_LIMIT_MINUTES } from './QuestionTimer';
 
 interface RaterIntroProps {
   experimentName: string;
@@ -103,7 +104,10 @@ function RaterIntro({
           </>
         ) : (
           <>Everything you submit is kept.</>
-        )}
+        )}{' '}
+        We strongly recommend spending no more than {QUESTION_TIME_LIMIT_MINUTES} minutes on any
+        one question: a second timer counts down for the current one, and when it runs out
+        please give your best answer and move on.
       </div>
 
       {descriptionHtml && (

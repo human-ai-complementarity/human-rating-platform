@@ -2,6 +2,9 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import Timer from './Timer';
+import QuestionTimer, { clearQuestionTimer, QUESTION_TIME_LIMIT_MINUTES } from './QuestionTimer';
+import TimerChip from './TimerChip';
+import RaterStatusPanel from './RaterStatusPanel';
 import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
@@ -146,6 +149,9 @@ function RaterView() {
   // one already on screen can still be finished and submitted.
   const [deadlinePassed, setDeadlinePassed] = useState(false);
   const [allDone, setAllDone] = useState(false);
+  // Advisory only: past the per-question limit the rater is told to move on,
+  // never made to.
+  const [questionOverLimit, setQuestionOverLimit] = useState(false);
   const [showIntro, setShowIntro] = useState(false);
   // Consent comes before everything else, the intro included. Driven by
   // `session.consented_at`; the backend refuses questions until it is set.
@@ -183,6 +189,7 @@ function RaterView() {
     } catch {
       // Ignore storage failures (private mode, quota, etc.)
     }
+    clearQuestionTimer();
   }, []);
 
   const persistSession = useCallback((nextSession: Session, introAcknowledged: boolean) => {
@@ -413,6 +420,7 @@ function RaterView() {
 
   const afterSubmitted = async () => {
     setQuestionsCompleted(prev => prev + 1);
+    clearQuestionTimer();
     if (deadlinePassed) {
       clear();
       setSessionExpired(true);
@@ -500,26 +508,6 @@ function RaterView() {
       color: 'var(--ink)',
       letterSpacing: '-0.005em',
       margin: 0,
-    },
-    progress: {
-      fontSize: 'var(--text-fine)',
-      color: 'var(--muted)',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      fontFamily: 'var(--font-mono)',
-      letterSpacing: '0.06em',
-      textTransform: 'uppercase' as const,
-    },
-    progressCount: {
-      background: 'var(--accent-soft)',
-      color: 'var(--accent-soft-ink)',
-      padding: '4px 12px',
-      borderRadius: 999,
-      fontWeight: 700,
-      fontFamily: 'var(--font-mono)',
-      letterSpacing: '0.03em',
-      fontSize: 'var(--text-fine)',
     },
     completionCard: {
       background: 'var(--surface)',
@@ -729,12 +717,30 @@ function RaterView() {
           Preview mode — ratings submitted here are real and will appear in your data.
         </div>
       )}
-      <Timer
-        sessionEndTime={session.session_end_time}
-        graceSeconds={session.session_grace_seconds}
-        onDeadline={handleDeadlineReached}
-        onExpire={handleSessionExpired}
-      />
+      {/* One floating readout for everything the rater tracks. The count lives
+          here rather than in the header so the panel never sits on top of it. */}
+      <RaterStatusPanel graceMinutes={Math.round(session.session_grace_seconds / 60)}>
+        <Timer
+          sessionEndTime={session.session_end_time}
+          graceSeconds={session.session_grace_seconds}
+          onDeadline={handleDeadlineReached}
+          onExpire={handleSessionExpired}
+        />
+        {/* Once the session clock is out the only message is "finish this
+            one", so the per-question nudge steps aside. */}
+        {question && !deadlinePassed && (
+          <QuestionTimer
+            key={question.id}
+            questionId={question.id}
+            onOverLimitChange={setQuestionOverLimit}
+          />
+        )}
+        <TimerChip label="Completed" time={String(questionsCompleted)} testId="completed-count" />
+      </RaterStatusPanel>
+
+      <div style={styles.header}>
+        <h2 style={styles.experimentName}>{session.experiment_name}</h2>
+      </div>
 
       {queue.submissionError && (
         <div role="alert" style={graceBannerStyle}>
@@ -751,13 +757,12 @@ function RaterView() {
         </div>
       )}
 
-      <div style={styles.header}>
-        <h2 style={styles.experimentName}>{session.experiment_name}</h2>
-        <div style={styles.progress}>
-          Completed
-          <span style={styles.progressCount}>{questionsCompleted}</span>
+      {questionOverLimit && question && !deadlinePassed && (
+        <div role="alert" style={graceBannerStyle} data-testid="question-time-banner">
+          You have spent more than {QUESTION_TIME_LIMIT_MINUTES} minutes on this question. Please
+          give your best answer and move on to the next one.
         </div>
-      </div>
+      )}
 
       {hasAssistance && question && sessionToken ? (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', alignItems: 'start' }}>
