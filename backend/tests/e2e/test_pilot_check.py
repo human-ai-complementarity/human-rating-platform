@@ -88,10 +88,8 @@ def _ready_experiment(client: TestClient, method: str = "none", **params) -> dic
     return resp.json()
 
 
-def _run_check(client: TestClient, experiment_id: int, timeout: float = 20.0) -> dict:
-    started = client.post(f"/api/admin/experiments/{experiment_id}/pilot-check")
-    assert started.status_code == 202, started.text
-    assert started.json()["status"] == "running"
+def _wait_for_run(client: TestClient, experiment_id: int, timeout: float = 20.0) -> dict:
+    """The latest run once it is no longer running."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         run = client.get(f"/api/admin/experiments/{experiment_id}/pilot-check").json()
@@ -99,6 +97,27 @@ def _run_check(client: TestClient, experiment_id: int, timeout: float = 20.0) ->
             return run
         time.sleep(0.1)
     raise AssertionError("pilot check did not finish in time")
+
+
+def _run_check(client: TestClient, experiment_id: int, timeout: float = 20.0) -> dict:
+    started = client.post(f"/api/admin/experiments/{experiment_id}/pilot-check")
+    assert started.status_code == 202, started.text
+    assert started.json()["status"] == "running"
+    return _wait_for_run(client, experiment_id, timeout)
+
+
+def _upload(client: TestClient, experiment_id: int, rows: str) -> None:
+    resp = client.post(
+        f"/api/admin/experiments/{experiment_id}/upload",
+        files={
+            "file": (
+                "q.csv",
+                "question_id,question_text,gt_answer,options,question_type\n" + rows,
+                "text/csv",
+            )
+        },
+    )
+    assert resp.status_code == 200, resp.text
 
 
 def _by_check(run: dict) -> dict[str, list[dict]]:
@@ -383,3 +402,45 @@ def test_a_flagged_run_is_acknowledged_once(
     assert second.status_code == 200, second.text
     assert second.json()["pilot_check_run_id"] == run["id"]
     assert second.json()["pilot_check_acknowledged_by"] == "dev@local"
+def test_an_upload_starts_a_run_unless_one_is_in_progress(
+    client: TestClient, sync_engine, terms_source, no_judge, pilot_check_autostart
+):
+    """With `run_on_upload` on (the suite turns it off), the upload itself
+    starts the check, recorded against the uploading admin; a second upload
+    while a run is going leaves that run alone."""
+    exp = client.post("/api/admin/experiments", json={"name": "Auto"}).json()
+    assert client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json() is None
+
+    _upload(client, exp["id"], "q1,Is this useful?,Yes,Yes|No,MC\n")
+    run = _wait_for_run(client, exp["id"])
+    assert run["requested_by"] == "dev@local"
+    assert run["status"] == "passed", run["findings"]
+    assert run["stale"] is False
+    assert run["sample_question_ids"] and len(run["sample_question_ids"]) == 1
+
+    # More questions: the finished run no longer covers the experiment, so the
+    # next upload starts another.
+    _upload(client, exp["id"], "q2,Is this clear?,Yes,Yes|No,MC\n")
+    rerun = _wait_for_run(client, exp["id"])
+    assert rerun["id"] != run["id"]
+    assert len(rerun["sample_question_ids"]) == 2
+
+    # A run still going (its row recently touched) is left to finish.
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO pilot_check_runs"
+                " (experiment_id, status, fingerprint, config_sha256, updated_at)"
+                " VALUES (:eid, 'running', 'fp', 'cfg', NOW())"
+            ),
+            {"eid": exp["id"]},
+        )
+    _upload(client, exp["id"], "q3,Summarise the passage.,,,free_text\n")
+    latest = client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json()
+    assert latest["status"] == "running" and latest["fingerprint"] == "fp"
+    with sync_engine.connect() as conn:
+        count = conn.execute(
+            text("SELECT COUNT(*) FROM pilot_check_runs WHERE experiment_id = :eid"),
+            {"eid": exp["id"]},
+        ).scalar_one()
+    assert count == 3

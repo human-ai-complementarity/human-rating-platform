@@ -169,6 +169,28 @@ def terms_source(tmp_path: Path):
     settings.terms.source_url = original
 
 
+@pytest.fixture(autouse=True)
+def pilot_check_autostart_off():
+    """Uploads do not start pilot checks in the suite: most tests upload
+    questions and never look at the check, and a run still going when the
+    client closes is a shutdown to wait for. `pilot_check_autostart` turns
+    it on."""
+    settings = get_settings().pilot_check
+    original = settings.run_on_upload
+    settings.run_on_upload = False
+    try:
+        yield settings
+    finally:
+        settings.run_on_upload = original
+
+
+@pytest.fixture
+def pilot_check_autostart(pilot_check_autostart_off):
+    """Uploads start a run, as shipped."""
+    pilot_check_autostart_off.run_on_upload = True
+    return pilot_check_autostart_off
+
+
 @pytest.fixture
 def no_judge():
     """No key for the judge model's provider, so a run skips the judged checks

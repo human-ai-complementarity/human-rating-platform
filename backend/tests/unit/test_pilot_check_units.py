@@ -35,7 +35,7 @@ from services.pilot_check.checks.base import Finding, merge_findings
 from services.pilot_check.summary import summarise
 from services.pilot_check.judge import JudgeError, Problem, Verdict, parse_problems, parse_verdict
 from services.pilot_check.rater_view import RaterQuestionView
-from services.pilot_check.runs import _run_check, compute_fingerprint
+from services.pilot_check.runs import _run_check, autostart_skip_reason, compute_fingerprint
 from services.pilot_check.sampling import choose_sample
 from services.terms.service import PLACEHOLDER_CONSENT, RaterTerms, StatementText
 
@@ -131,6 +131,8 @@ def test_every_check_has_a_unique_name_and_a_label(config):
     assert config.sha256() != PilotCheckSettings(sample_size=3).sha256()
     # The gate mode is not part of what a run looked at.
     assert config.sha256() == PilotCheckSettings(gate_mode="off").sha256()
+    # When a run starts is not part of what it looked at.
+    assert config.sha256() == PilotCheckSettings(run_on_upload=False).sha256()
 
 
 # --- Sampling -------------------------------------------------------------
@@ -567,6 +569,24 @@ def test_a_clean_run_needs_nothing(config):
     assert summary.state == "passed"
     assert summary.needs_acknowledgement is False
     assert summary.reason is None
+
+
+def test_an_upload_starts_a_run_only_when_there_is_something_new_to_check():
+    now = datetime.now(UTC)
+
+    def reason(run, fingerprint="fp"):
+        return autostart_skip_reason(run, current_fingerprint=fingerprint, now=now)
+
+    assert reason(None) is None
+    assert reason(_run()) == "the latest run is still fresh"
+    assert reason(_run(status="failed")) == "the latest run is still fresh"
+    assert reason(_run(), fingerprint="other") is None
+    live = _run(status="running", finished_at=None, updated_at=now)
+    assert reason(live, fingerprint="other") == "a run is already in progress"
+    # Stopped reporting progress, so aborted: nothing covers the experiment.
+    gone = _run(status="running", finished_at=None, updated_at=now - timedelta(minutes=10))
+    assert reason(gone) is None
+    assert reason(_run(status="aborted")) is None
 
 
 def test_a_changed_experiment_makes_the_run_stale(config):

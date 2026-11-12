@@ -238,8 +238,9 @@ PilotCheckSeverity = Literal["error", "warning", "info"]
 
 class PilotCheckSettings(_StrictModel):
     """The pilot check (docs/pilot-check.md). A hash of these values is stored
-    on every run, so changing one marks earlier runs stale; `gate_mode` is left
-    out, it changes what a launch asks, not what a run looked at."""
+    on every run, so changing one marks earlier runs stale; `gate_mode` and
+    `run_on_upload` are left out, they change what a launch asks and when a
+    run starts, not what a run looked at."""
 
     # Served questions drawn per run (parent rows are header-only and skipped).
     sample_size: int = Field(default=15, ge=1, le=50)
@@ -250,12 +251,16 @@ class PilotCheckSettings(_StrictModel):
     #         never refuses a launch: a judge will always find something.
     # "off":  creating a study ignores the check (the UI still shows it).
     gate_mode: Literal["warn", "off"] = "warn"
+    # Start a run on its own when a question upload lands, so the result is
+    # ready by the time an admin reaches the launch step. Skipped while a run
+    # is in progress or the latest run already covers the experiment as it is.
+    run_on_upload: bool = True
     # Per-check severity overrides, keyed by check name; each check has a
     # default in code (services/pilot_check/checks).
     severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)
 
     def sha256(self) -> str:
-        material = self.model_dump_json(exclude={"gate_mode"})
+        material = self.model_dump_json(exclude={"gate_mode", "run_on_upload"})
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

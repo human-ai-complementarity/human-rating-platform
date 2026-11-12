@@ -221,14 +221,25 @@ async def list_tags(db: AsyncSession = Depends(get_session)):
 @secure_router.post("/experiments/{experiment_id}/upload")
 async def upload_questions(
     experiment_id: int,
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
-    return await admin_service.upload_questions(
+    result = await admin_service.upload_questions(
         experiment_id=experiment_id,
         file=file,
         db=db,
     )
+    # The questions are in; a pilot check can start now rather than when the
+    # admin reaches the launch step (docs/pilot-check.md). Never fails the upload.
+    await pilot_check_runs.start_after_upload(
+        experiment_id,
+        requested_by=admin.email,
+        db=db,
+        database=request.app.state.database,
+    )
+    return result
 
 
 @secure_router.get("/experiments/{experiment_id}/uploads")

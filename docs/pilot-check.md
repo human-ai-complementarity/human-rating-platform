@@ -1,9 +1,10 @@
 # Pilot check: an AI spot check before a study goes to raters
 
-An admin-triggered check that samples an experiment's questions, walks each
-one through the same code path a rater hits, runs the configured assistance
-method on it, and reports anything a researcher would want to fix before
-paying Prolific participants to look at it. The experiment and launch pages
+A check that samples an experiment's questions, walks each one through the
+same code path a rater hits, runs the configured assistance method on it,
+and reports anything a researcher would want to fix before paying Prolific
+participants to look at it. It starts on its own when a question upload
+lands, and an admin can start it by hand. The experiment and launch pages
 say whether the check has been run, show its findings, and ask before
 creating a study without a clean run. They ask; they never refuse. A
 judge will always find something to fix, so the decision stays with the
@@ -78,11 +79,35 @@ could matter.
 | `judge_model` | `openrouter/anthropic/claude-sonnet-4-6` | `<provider>/<model-id>`, as in `assistance_models` |
 | `gate_mode` | `warn` | `warn` asks for acknowledgement, `off` ignores the check (the UI still shows it) |
 | `severities` | `{}` | per-check overrides of the default severity, e.g. `markdown_mode = "info"` |
+| `run_on_upload` | `true` | start a run when a question upload lands (see below) |
 
-A SHA-256 of these values is stored on every run and is part of the
+A SHA-256 of these values, `run_on_upload` excepted (it changes when a run
+starts, not what a run looked at), is stored on every run and is part of the
 fingerprint, so changing one marks earlier runs stale. Which checks run is
 not configurable: a check that should not run is a conversation about the
 check, not a toggle.
+
+## Starting on upload
+
+Most of what the check needs is there as soon as the questions are, and the
+run takes about a minute; left to the admin, that minute is spent waiting at
+the launch step. So the upload endpoint (`POST
+/api/admin/experiments/{id}/upload`, the one path the UI and the API both
+use; the inference pipeline uploads through it with an admin-scoped key)
+starts a run once the upload has committed, with `requested_by` the
+uploading admin, the same identity the manual POST records. It is skipped,
+with a log line saying why, when:
+
+- `run_on_upload` is off;
+- the experiment has no questions after the upload, or is FINISHED;
+- a run is in progress (its row touched within the last five minutes);
+- the latest run is still fresh: its fingerprint matches the experiment as
+  it now stands. An aborted run counts for nothing, whatever its fingerprint.
+
+The trigger never fails or delays the upload: every exception is logged and
+the upload response is returned as it was. Duplicating an experiment copies
+its questions and uploads but does not start a run; the copy is usually
+edited before launch, and the admin can start one by hand.
 
 ## Sampling
 
@@ -166,11 +191,13 @@ All under the admin session.
   `null` when none has been started.
 
 The run executes in the API process as an `asyncio` task started by the
-POST handler, with its own short-lived DB sessions. It touches the row's
-`updated_at` after every probe and every judge call; a `running` row left
-untouched for five minutes belongs to a process that is gone, reads as
-`aborted`, and can be re-run. This is simpler than a durable claim in the
-preparation queue and enough for a job an admin starts by hand and watches.
+POST handler or by an upload, with its own short-lived DB sessions. It
+touches the row's `updated_at` after every probe and every judge call; a
+`running` row left untouched for five minutes belongs to a process that is
+gone, reads as `aborted`, and can be re-run. A clean shutdown cancels the
+tasks still going and marks their rows `aborted` before the database
+closes. This is simpler than a durable claim in the preparation queue and
+enough for a job an admin starts, or an upload starts, and watches.
 
 The UI polls the GET every 3 s while `running`. The row carries where the
 run is: `stage` (`sampling`, `assistance`, `checks`, then one stage per
@@ -229,14 +256,17 @@ assistance calls.
 
 - Unit (`tests/unit/test_pilot_check_units.py`): each check against
   hand-built `CheckContext`s; the judge is a fake that returns a canned
-  verdict; the summary and fingerprint.
+  verdict; the summary, the fingerprint, and the upload trigger's skip rules.
 - E2E (`tests/e2e/test_pilot_check.py`, under `make test`): a run starts and
   lands with the provider client stubbed (the `no_provider_calls` fixture
   makes every assistance call fail, which is itself a good fixture: the run
   must report `assistance_health` as failed, not crash); a stale fingerprint;
-  a run that stopped reporting progress; the gate's 409 and acknowledgement.
-  The suite runs with the gate off (`pilot_check_gate_off` in conftest); the
-  gate tests turn it on.
+  a run that stopped reporting progress; the gate's 409 and acknowledgement;
+  an upload starting a run. The suite runs with the gate off
+  (`pilot_check_gate_off` in conftest) and `run_on_upload` off
+  (`pilot_check_autostart_off`), since most tests upload questions and
+  never look at the check; the `pilot_check_gate` and
+  `pilot_check_autostart` fixtures turn them back on.
 - Playwright (`frontend/e2e/smoke.spec.ts`): the stepper mid-run and landed,
   the acknowledge dialog and its cancel path.
 
