@@ -1579,6 +1579,82 @@ test('the question in hand survives the deadline and can still be submitted', as
   await expect(page.getByRole('heading', { name: 'Session Complete' })).toBeVisible();
 });
 
+test('twenty minutes on one question warns the rater but still takes the answer', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Question Timer Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 304,
+    session_start: new Date().toISOString(),
+    session_end_time: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Question Timer Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-question-timer',
+  };
+  state.questionsBySessionToken['token-question-timer'] = {
+    id: 602,
+    question_id: 'slow-q',
+    question_text: 'Is this question taking too long?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // A fresh question counts down with no warning.
+  await expect(page.getByText('Is this question taking too long?')).toBeVisible();
+  await expect(page.getByTestId('question-timer')).toBeVisible();
+  await expect(page.getByTestId('question-time-banner')).toHaveCount(0);
+
+  // Hovering the readout explains both clocks.
+  await page.getByTestId('rater-status-panel').hover();
+  await expect(page.getByTestId('rater-status-help')).toContainText('no more than 20 minutes');
+  await expect(page.getByTestId('rater-status-help')).toContainText('5 more minutes');
+  await page.mouse.move(0, 0);
+  await expect(page.getByTestId('rater-status-help')).toHaveCount(0);
+
+  // The rater has been on it for 21 minutes; the start time survives a reload.
+  await page.evaluate(() => {
+    sessionStorage.setItem(
+      'hrp_question_started',
+      JSON.stringify({ id: 602, at: Date.now() - 21 * 60 * 1000 })
+    );
+  });
+  await page.reload();
+
+  await expect(page.getByTestId('question-timer-over')).toBeVisible();
+  await expect(page.getByTestId('question-time-banner')).toContainText('more than 20 minutes');
+  // The session clock is nowhere near done, so this is the only warning.
+  await expect(page.getByTestId('grace-banner')).toHaveCount(0);
+
+  // Advisory only: the answer is still accepted.
+  await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: /submit/i }).click();
+  await expect(page.getByTestId('question-time-banner')).toHaveCount(0);
+});
+
 // Seeds a rater session serving exactly one question, for the parent-context
 // rendering cases below.
 function seedRaterWithQuestion(state: MockState, question: RaterQuestionRecord) {
