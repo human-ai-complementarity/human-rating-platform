@@ -517,7 +517,10 @@ async function installApiMocks(
         : archivedOnly
           ? state.experiments.filter((item) => item.archived_at !== null)
           : state.experiments.filter((item) => item.archived_at === null);
-      await fulfillJson(route, 200, rows);
+      // Page like the backend does: 100 rows unless the caller asks for more.
+      const skip = Number(url.searchParams.get('skip') ?? 0);
+      const limit = Number(url.searchParams.get('limit') ?? 100);
+      await fulfillJson(route, 200, rows.slice(skip, skip + limit));
       return;
     }
 
@@ -4265,4 +4268,24 @@ test('a question with image content renders its blocks in order and fetches the 
     '_blank',
   );
   await expect(page.getByRole('button', { name: 'allow' })).toBeVisible();
+});
+
+test('the dashboard loads experiments past the first page, so search and total spend cover them', async ({
+  page,
+}) => {
+  const state = createMockState();
+  // The list is newest first, so the oldest experiment sits past row 100.
+  state.experiments = [
+    ...Array.from({ length: 100 }, (_, index) =>
+      buildExperiment(state, { name: `Recent draft ${index + 1}` }),
+    ),
+    buildExperiment(state, { name: 'Spring collection', status: 'FINISHED', spend_minor_units: 1250 }),
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await expect(page.getByText('Total spent')).toContainText('12.50');
+  await page.getByPlaceholder('Search experiments, groups, datasets…').fill('Spring collection');
+  await expect(page.getByText('Spring collection')).toBeVisible();
 });
