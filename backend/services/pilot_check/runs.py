@@ -3,9 +3,9 @@
 A run is one row in `pilot_check_runs`. The POST handler inserts it as
 `running` and hands the work to an asyncio task in the API process; the task
 gathers what a rater would see, probes the assistance method, applies the
-checks, and writes the result back, touching `updated_at` as it goes. A `running` row that has not been
-touched for `STALE_AFTER` belongs to a process that is gone: it reads as
-aborted and can be re-run.
+checks, and writes the result back, touching `updated_at` as it goes. A
+`running` row that has not been touched for `STALE_AFTER` belongs to a
+process that is gone: it reads as aborted and can be re-run.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from database import Database
 from models import Experiment, ExperimentStatus, PilotCheckRun, Upload
 from schemas import PilotCheckFinding, PilotCheckProbe, PilotCheckRunResponse, PilotCheckStage
 from services.assistance.base import exception_text
+from services.assistance.registry import get_rater_instructions
 from services.queries import fetch_experiment_or_404
 from services.terms import terms_for_rater
 
@@ -32,14 +33,15 @@ from .assistance import probe_all
 from .checks import CHECKS, CHECKS_BY_NAME, SEVERITY_RANK, CheckContext, CheckSpec, Finding
 from .checks import severity_of
 from .checks.base import merge_findings
+from .judge import LLMJudge, judge_unavailable_reason
 from .rater_view import build_views
 from .sampling import sample_questions
 
 logger = logging.getLogger(__name__)
 
 # A running row not written to for this long belongs to a process that is
-# gone. Every awaited step inside a run is bounded well under this, and
-# progress is written after each one.
+# gone. Every awaited step inside a run (a method start, a judge call) is
+# bounded well under this, and progress is written after each one.
 STALE_AFTER = timedelta(minutes=5)
 ABORTED_MESSAGE = "The run stopped reporting progress; the server may have restarted."
 # Strong references so the event loop does not drop a run mid-way.
@@ -168,11 +170,21 @@ def status_from(findings: list[Finding]) -> str:
 
 def plan_stages(experiment: Experiment, settings: PilotCheckSettings) -> list[PilotCheckStage]:
     """The stages a run of this experiment goes through, in order, for the
-    card's stepper: sampling, assistance (assisted arms), the checks as a
-    group, done."""
+    card's stepper: sampling, assistance (assisted arms), the deterministic
+    checks as a group, one stage per judged check that applies (when a judge
+    is available), done."""
     assisted = experiment.assistance_method != "none"
-    ids = ["sampling"] + (["assistance"] if assisted else []) + ["checks", "done"]
-    return [PilotCheckStage(id=stage_id, label=_STAGE_LABELS[stage_id]) for stage_id in ids]
+    ids = ["sampling"] + (["assistance"] if assisted else []) + ["checks"]
+    if not judge_unavailable_reason(settings.judge_model):
+        ids += [c.name for c in CHECKS if c.judged and (assisted or not c.needs_assistance)]
+    ids.append("done")
+    return [PilotCheckStage(id=stage_id, label=_stage_label(stage_id)) for stage_id in ids]
+
+
+def _stage_label(stage_id: str) -> str:
+    if stage_id in CHECKS_BY_NAME:
+        return f"Review {CHECKS_BY_NAME[stage_id].label.lower()}"
+    return _STAGE_LABELS[stage_id]
 
 
 def _finding_row(row: dict) -> dict:
@@ -298,6 +310,7 @@ async def _gather(
             settings=settings,
             question_count=question_count,
             views=await build_views(experiment, questions, db),
+            assistance_instructions=get_rater_instructions(experiment.assistance_method) or None,
         )
         try:
             ctx.terms = await terms_for_rater(experiment, db)
@@ -358,10 +371,30 @@ async def _perform(run_id: int, database: Database, settings: PilotCheckSettings
         await _set_stage(run_id, database, "assistance", f"0 of {total} questions probed")
         ctx.probes = await probe_all(experiment, ctx.views, on_progress=probed)
 
+    unavailable = judge_unavailable_reason(settings.judge_model)
+    ctx.judge_unavailable_reason = unavailable
+    ctx.judge = None if unavailable else LLMJudge(settings.judge_model)
+
+    # Deterministic checks first, then the judged ones: the judge calls are
+    # the slow part, and the stepper shows each as its own stage with the
+    # check reporting how far through the sample it is.
     findings: list[Finding] = []
     await _set_stage(run_id, database, "checks")
     for check in CHECKS:
+        if not check.judged:
+            findings.extend(merge_findings(await _run_check(run_id, ctx, check)))
+    for check in CHECKS:
+        if not check.judged:
+            continue
+        if ctx.judge is not None:
+            await _set_stage(run_id, database, check.name)
+
+            async def report(text: str, _stage: str = check.name) -> None:
+                await _set_stage(run_id, database, _stage, text)
+
+            ctx.report = report
         findings.extend(merge_findings(await _run_check(run_id, ctx, check)))
+    ctx.report = None
 
     terms = ctx.terms
     await _finish(
@@ -372,6 +405,7 @@ async def _perform(run_id: int, database: Database, settings: PilotCheckSettings
         probes=ctx.probes,
         sample_ids=[view.question_id for view in ctx.views],
         terms_ref=f"{terms.consent.ref}:{terms.consent.sha256}" if terms else None,
+        judge_model=ctx.judge.model if ctx.judge else None,
     )
 
 
@@ -385,6 +419,7 @@ async def _finish(
     probes=None,
     sample_ids: list[int] | None = None,
     terms_ref: str | None = None,
+    judge_model: str | None = None,
 ) -> None:
     try:
         async with database.session() as db:
@@ -407,6 +442,7 @@ async def _finish(
             if sample_ids is not None:
                 run.sample_question_ids = json.dumps(sample_ids)
             run.terms_ref = terms_ref
+            run.judge_model = judge_model
             await db.commit()
     except Exception:
         logger.exception("pilot check result not saved", extra={"attributes": {"run_id": run_id}})

@@ -1,5 +1,6 @@
 """Unit tests for the pilot check (docs/pilot-check.md): the sample, the
-checks against hand-built contexts, and the summary the UI reads."""
+deterministic checks against hand-built contexts, the judge's reply parsing,
+and the summary the gate and the UI read."""
 
 from __future__ import annotations
 
@@ -24,12 +25,15 @@ from services.pilot_check.checks import (
     assistance_health,
     assistance_output,
     consent,
+    instructions,
+    question_coherent,
     markdown_mode,
     question_renders,
     validate_severities,
 )
 from services.pilot_check.checks.base import Finding, merge_findings
 from services.pilot_check.summary import summarise
+from services.pilot_check.judge import JudgeError, Problem, Verdict, parse_problems, parse_verdict
 from services.pilot_check.rater_view import RaterQuestionView
 from services.pilot_check.runs import _run_check, compute_fingerprint
 from services.pilot_check.sampling import choose_sample
@@ -371,6 +375,163 @@ async def test_slow_assistance_is_a_warning(config):
     findings = await assistance_health.run(ctx, "error")
     assert _severities(findings) == ["warning"]
     assert "45.0s" in findings[0].message
+
+
+# --- Judged checks --------------------------------------------------------
+
+
+def test_verdict_parsing_tolerates_fences_and_rejects_junk():
+    verdict = parse_verdict('```json\n{"ok": false, "issues": ["bad"], "summary": "no"}\n```')
+    assert verdict == Verdict(ok=False, issues=["bad"], summary="no")
+    with pytest.raises(JudgeError):
+        parse_verdict("not json")
+    with pytest.raises(JudgeError):
+        parse_verdict('{"issues": []}')
+
+
+class _FakeJudge:
+    model = "fake/judge"
+
+    def __init__(
+        self,
+        verdict: Verdict | Exception,
+        problems: list[Problem] | Exception | None = None,
+    ):
+        self.verdict = verdict
+        self.problems = problems if problems is not None else JudgeError("no grouping")
+        self.calls: list[str] = []
+        self.group_calls: list[str] = []
+
+    async def __call__(self, *, task: str, material: str) -> Verdict:
+        self.calls.append(material)
+        if isinstance(self.verdict, Exception):
+            raise self.verdict
+        return self.verdict
+
+    async def group(self, *, task: str, material: str) -> list[Problem]:
+        self.group_calls.append(material)
+        if isinstance(self.problems, Exception):
+            raise self.problems
+        return self.problems
+
+
+def test_problem_parsing_keeps_only_numeric_ids():
+    problems = parse_problems(
+        '{"problems": [{"summary": "Options missing", "question_ids": [1, "2", "x"], '
+        '"issues": ["no option 4", ""]}, "junk"]}'
+    )
+    assert problems == [Problem("Options missing", [1, 2], ["no option 4"])]
+    with pytest.raises(JudgeError):
+        parse_problems('{"ok": true}')
+
+
+@pytest.mark.asyncio
+async def test_flagged_questions_are_merged_into_one_finding_per_problem(config):
+    exp = _experiment()
+    views = [_view(exp, qid=1), _view(exp, qid=2), _view(exp, qid=3)]
+    judge = _FakeJudge(
+        Verdict(ok=False, issues=["type says FT but the task is true/false"], summary="Mismatch"),
+        problems=[Problem("Declared free text, really true/false", [1, 2], ["per option"])],
+    )
+    findings = await question_coherent.run(_ctx(config, exp, views, judge=judge), "warning")
+    assert [(f.message, f.question_ids) for f in findings] == [
+        ("Declared free text, really true/false", [1, 2]),
+        ("Mismatch", [3]),  # left out of the merge, so it keeps its own row
+    ]
+    assert findings[0].detail == "- per option"
+    assert len(judge.group_calls) == 1
+    assert "[Question 3]" in judge.group_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_merge_keeps_the_per_question_findings(config):
+    exp = _experiment()
+    views = [_view(exp, qid=1), _view(exp, qid=2)]
+    judge = _FakeJudge(Verdict(ok=False, issues=["x"], summary="Bad"))
+    findings = await question_coherent.run(_ctx(config, exp, views, judge=judge), "warning")
+    assert [(f.message, f.question_ids) for f in findings] == [("Bad", [1]), ("Bad", [2])]
+
+
+@pytest.mark.asyncio
+async def test_one_flagged_question_is_not_sent_for_merging(config):
+    exp = _experiment()
+    judge = _FakeJudge(Verdict(ok=False, issues=["x"], summary="Bad"), problems=[])
+    findings = await question_coherent.run(_ctx(config, exp, [_view(exp)], judge=judge), "warning")
+    assert [f.question_ids for f in findings] == [[1]]
+    assert judge.group_calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_judged_check_without_a_judge_is_skipped(config):
+    ctx = _ctx(config, _experiment(), judge=None, judge_unavailable_reason="no key")
+    findings = await instructions.run(ctx, "warning")
+    assert _severities(findings) == ["info"]
+    assert "no key" in findings[0].message
+
+
+@pytest.mark.asyncio
+async def test_a_judged_check_turns_the_verdict_into_a_finding(config):
+    judge = _FakeJudge(Verdict(ok=False, issues=["names a 1-5 scale"], summary="Scale mismatch"))
+    exp = _experiment(human_prompt_suffix="Pick one.")
+    findings = await instructions.run(_ctx(config, exp, judge=judge), "warning")
+    assert len(findings) == 1
+    assert findings[0].message == "Scale mismatch"
+    assert findings[0].detail == "- names a 1-5 scale"
+    # The judge saw the instructions, the framing and an example question.
+    assert "Rate each passage" in judge.calls[0]
+    assert "Pick one." in judge.calls[0]
+    assert "[Example question 1]" in judge.calls[0]
+
+
+class _FlakyJudge(_FakeJudge):
+    """Answers from a script of verdicts and exceptions, one per call."""
+
+    def __init__(self, script: list[Verdict | Exception]):
+        super().__init__(Verdict(ok=True, summary="", issues=[]))
+        self.script = list(script)
+
+    async def __call__(self, *, task: str, material: str) -> Verdict:
+        self.calls.append(material)
+        outcome = self.script.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.asyncio
+async def test_one_failed_judge_call_does_not_stop_the_others(config):
+    exp = _experiment()
+    views = [_view(exp, qid=qid) for qid in (1, 2, 3)]
+    bad = Verdict(ok=False, summary="Options missing", issues=["no options"])
+    judge = _FlakyJudge([JudgeError("timeout"), Verdict(ok=True, summary="", issues=[]), bad])
+    findings = await question_coherent.run(_ctx(config, exp, views=views, judge=judge), "warning")
+    assert len(judge.calls) == 3
+    assert [(f.message, f.question_ids) for f in findings] == [
+        ("The judge call failed on this question.", [1]),
+        ("Options missing", [3]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_three_judge_failures_in_a_row_stop_the_check(config):
+    exp = _experiment()
+    views = [_view(exp, qid=qid) for qid in (1, 2, 3, 4, 5)]
+    judge = _FakeJudge(JudgeError("boom"))
+    findings = await question_coherent.run(_ctx(config, exp, views=views, judge=judge), "warning")
+    assert len(judge.calls) == 3
+    assert [f.question_ids for f in findings] == [[1], [2], [3], []]
+    assert findings[-1].message == (
+        "The judge failed 3 times in a row, so the remaining 2 questions were not reviewed."
+    )
+    assert {f.severity for f in findings} == {"warning"}
+
+
+@pytest.mark.asyncio
+async def test_a_failing_judge_is_a_warning(config):
+    judge = _FakeJudge(JudgeError("boom"))
+    findings = await instructions.run(_ctx(config, _experiment(), judge=judge), "warning")
+    assert _severities(findings) == ["warning"]
+    assert findings[0].detail == "boom"
 
 
 # --- Summary and fingerprint ---------------------------------------------

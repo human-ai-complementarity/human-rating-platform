@@ -1,6 +1,6 @@
 """The checks a pilot run applies, in report order: experiment-level
 configuration first, then what each sampled question looks like, then the
-assistance on it.
+assistance on it, then the judge's reads.
 
 Adding a check: write a module with `NAME`, `run(ctx, severity)` and a
 `CHECK = CheckSpec(...)`, and add it to `CHECKS`.
@@ -10,7 +10,16 @@ from __future__ import annotations
 
 from config import PilotCheckSettings
 
-from . import assistance_health, assistance_output, consent, markdown_mode, question_renders
+from . import (
+    assistance_health,
+    assistance_output,
+    assistance_useful,
+    consent,
+    instructions,
+    markdown_mode,
+    question_coherent,
+    question_renders,
+)
 from .base import SEVERITY_RANK, CheckContext, CheckSpec, Finding, Severity
 
 CHECKS: tuple[CheckSpec, ...] = (
@@ -19,6 +28,9 @@ CHECKS: tuple[CheckSpec, ...] = (
     question_renders.CHECK,
     assistance_output.CHECK,
     assistance_health.CHECK,
+    instructions.CHECK,
+    question_coherent.CHECK,
+    assistance_useful.CHECK,
 )
 CHECKS_BY_NAME: dict[str, CheckSpec] = {check.name: check for check in CHECKS}
 assert len(CHECKS_BY_NAME) == len(CHECKS), "duplicate check name"

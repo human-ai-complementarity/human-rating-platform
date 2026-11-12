@@ -242,6 +242,8 @@ class PilotCheckSettings(_StrictModel):
 
     # Served questions drawn per run (parent rows are header-only and skipped).
     sample_size: int = Field(default=15, ge=1, le=50)
+    # <provider>/<model-id>, the same spelling as assistance_models entries.
+    judge_model: str = "openrouter/anthropic/claude-sonnet-4-6"
     # Per-check severity overrides, keyed by check name; each check has a
     # default in code (services/pilot_check/checks).
     severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)

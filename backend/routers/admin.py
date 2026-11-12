@@ -498,16 +498,19 @@ async def run_pilot_check(
     )
 
 
-@secure_router.get("/experiments/{experiment_id}/pilot-check", response_model=PilotCheckRunResponse)
+@secure_router.get(
+    "/experiments/{experiment_id}/pilot-check", response_model=Optional[PilotCheckRunResponse]
+)
 async def get_latest_pilot_check(
     experiment_id: int,
     db: AsyncSession = Depends(get_session),
 ):
-    """The experiment's latest run, findings and probed assistance steps included."""
+    """The experiment's latest run, findings and probed assistance steps
+    included; null when none has been started, which every new experiment is."""
     experiment = await fetch_experiment_or_404(experiment_id, db)
     run = await pilot_check_runs.latest_run(experiment_id, db)
     if run is None:
-        raise HTTPException(status_code=404, detail="This experiment has no pilot check run yet.")
+        return None
     question_count = await fetch_total_questions_for_experiment(experiment_id, db)
     return pilot_check_runs.build_run_response(
         run,

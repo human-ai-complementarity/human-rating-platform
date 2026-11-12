@@ -112,19 +112,44 @@ def test_an_experiment_without_questions_cannot_be_checked(client: TestClient):
     resp = client.post(f"/api/admin/experiments/{exp['id']}/pilot-check")
     assert resp.status_code == 400
     assert "Upload questions" in resp.json()["detail"]
-    assert client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").status_code == 404
+    latest = client.get(f"/api/admin/experiments/{exp['id']}/pilot-check")
+    assert (latest.status_code, latest.json()) == (200, None)
 
 
-def test_a_control_arm_with_a_consent_source_passes(client: TestClient, terms_source):
+def test_a_control_arm_with_a_consent_source_and_no_judge_passes(
+    client: TestClient, terms_source, no_judge
+):
+    exp = _ready_experiment(client)
+    run = _run_check(client, exp["id"])
+    assert run["status"] == "passed", run["findings"]
+    assert [stage["id"] for stage in run["stages"]] == ["sampling", "checks", "done"]
+    grouped = _by_check(run)
+    for name in ("instructions_coherent", "question_coherent"):
+        assert grouped[name][0]["severity"] == "info"
+        assert "no API key" in grouped[name][0]["message"]
+    assert client.get(f"/api/admin/experiments/{exp['id']}").json()["pilot_check"]["state"] == (
+        "passed"
+    )
+
+
+def test_a_control_arm_whose_judge_calls_fail_lands_with_warnings(client: TestClient, terms_source):
     exp = _ready_experiment(client)
     assert exp["pilot_check"]["state"] == "not_run"
 
     run = _run_check(client, exp["id"])
-    assert run["status"] == "passed", run["findings"]
+    assert run["status"] == "warnings", run["findings"]
     assert run["requested_by"] == "dev@local"
     assert run["assistance_steps"] is None
-    assert [stage["id"] for stage in run["stages"]] == ["sampling", "checks", "done"]
-    assert run["stages"][1]["label"] == "Check rendering"
+    # A control arm has no assistance stages; the judge has (test) keys, so the
+    # judged checks that apply are stages of their own.
+    assert [stage["id"] for stage in run["stages"]] == [
+        "sampling",
+        "checks",
+        "instructions_coherent",
+        "question_coherent",
+        "done",
+    ]
+    assert run["stages"][2]["label"] == "Review instructions"
     assert run["stage"] == "done" and run["stage_detail"] is None
     assert run["stale"] is False
     assert sorted(run["sample_question_ids"]) == run["sample_question_ids"]
@@ -135,9 +160,16 @@ def test_a_control_arm_with_a_consent_source_passes(client: TestClient, terms_so
     assert grouped["consent_configured"][0]["severity"] == "info"
     assert grouped["consent_configured"][0]["check_label"] == "Consent statement"
     assert "standard v1" in grouped["consent_configured"][0]["message"]
+    # The judge is "available" (test keys) but every call is stubbed to fail.
+    # A judge that never answered is a warning, not a pass: the admin is asked
+    # before launching on it.
+    for name in ("instructions_coherent", "question_coherent"):
+        assert grouped[name][0]["severity"] == "warning"
+        assert "judge call failed" in grouped[name][0]["message"]
+    assert grouped["assistance_output"][0]["message"].startswith("Skipped")
 
     refreshed = client.get(f"/api/admin/experiments/{exp['id']}").json()
-    assert refreshed["pilot_check"]["state"] == "passed"
+    assert refreshed["pilot_check"]["state"] == "warnings"
     assert refreshed["pilot_check"]["run_id"] == run["id"]
 
 
@@ -169,7 +201,15 @@ def test_an_assisted_arm_whose_provider_fails_is_reported(client: TestClient, te
     )
     run = _run_check(client, exp["id"])
     assert run["status"] == "failed"
-    assert [stage["id"] for stage in run["stages"]] == ["sampling", "assistance", "checks", "done"]
+    assert [stage["id"] for stage in run["stages"]] == [
+        "sampling",
+        "assistance",
+        "checks",
+        "instructions_coherent",
+        "question_coherent",
+        "assistance_useful",
+        "done",
+    ]
     assert run["stage"] == "done"
     assert len(run["assistance_steps"]) == 3
     assert all(step["step_type"] == "none" for step in run["assistance_steps"])
@@ -181,7 +221,7 @@ def test_an_assisted_arm_whose_provider_fails_is_reported(client: TestClient, te
     )
 
 
-def test_editing_the_experiment_makes_the_run_stale(client: TestClient, terms_source):
+def test_editing_the_experiment_makes_the_run_stale(client: TestClient, terms_source, no_judge):
     exp = _ready_experiment(client)
     run = _run_check(client, exp["id"])
     assert run["status"] == "passed"
@@ -218,7 +258,7 @@ def test_a_second_run_cannot_start_while_one_is_running(client: TestClient, sync
 
 
 def test_a_run_that_stopped_reporting_progress_is_aborted_and_replaced(
-    client: TestClient, sync_engine, terms_source
+    client: TestClient, sync_engine, terms_source, no_judge
 ):
     exp = _ready_experiment(client)
     with sync_engine.begin() as conn:
