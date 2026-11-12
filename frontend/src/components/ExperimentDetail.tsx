@@ -22,6 +22,7 @@ import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
 import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
 import { testingPreviewFix } from './experiment-detail/launchBlockers';
+import { PilotCheckCard, StatePill, describeSummary } from './experiment-detail/PilotCheckCard';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
 import { HeaderMenu } from './experiment-detail/HeaderMenu';
 import { EthicsPanel } from './experiment-detail/EthicsPanel';
@@ -1473,6 +1474,7 @@ function ExperimentDetail({
             onRunRound={handleRunRound}
             otherExperiments={otherExperiments}
             onBack={() => setTab('assistance')}
+            onPilotCheckChanged={onRefresh}
           />
         )}
       </div>
@@ -1595,6 +1597,41 @@ function OverviewPanel({
               <StepChip key={s.key} step={s} onClick={() => onGoto(s.key)} />
             ))}
           </div>
+          {/* The pilot check (docs/pilot-check.md) verifies the steps rather
+              than being one, so it sits under them. Shown once there is
+              something to check. */}
+          {experiment.question_count > 0 && (
+            <div
+              data-testid="overview-pilot-check"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                marginTop: 14,
+                padding: '12px 14px',
+                border: '1px solid var(--faint)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--surface-2)',
+                fontSize: 13.5,
+              }}
+            >
+              <StatePill state={experiment.pilot_check?.state ?? 'not_run'} />
+              <span style={{ flex: 1, color: 'var(--ink)' }}>
+                {describeSummary(experiment.pilot_check)}
+              </span>
+              <button
+                type="button"
+                onClick={() => onGoto('launch')}
+                style={{ ...secondaryButton, padding: '6px 12px', fontSize: 13 }}
+              >
+                {(() => {
+                  const state = experiment.pilot_check?.state ?? 'not_run';
+                  if (state === 'passed' || state === 'running') return 'View check';
+                  return state === 'not_run' ? 'Run the pilot check' : 'Re-run check';
+                })()}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -2745,6 +2782,8 @@ function LaunchPanel(props: {
   onRunRound: () => void;
   otherExperiments: Experiment[];
   onBack: () => void;
+  // Refreshes the experiment (and so `experiment.pilot_check`) when a run lands.
+  onPilotCheckChanged: () => void;
 }) {
   const {
     experiment,
@@ -2782,6 +2821,7 @@ function LaunchPanel(props: {
     onRunRound,
     otherExperiments,
     onBack,
+    onPilotCheckChanged,
   } = props;
 
   // Past the pilot the launch gate no longer shows, but a testing preview
@@ -2865,6 +2905,17 @@ function LaunchPanel(props: {
 
       <div className="xd-split">
         <div className="xd-split-main">
+
+          {/* The pilot check (docs/pilot-check.md) sits above every launch
+              control: it is what the gate on those controls reads. Hidden once
+              the experiment is finished, when nothing can launch. */}
+          {experiment.status !== 'FINISHED' && (
+            <PilotCheckCard
+              experiment={experiment}
+              summary={experiment.pilot_check}
+              onRunStateChange={onPilotCheckChanged}
+            />
+          )}
 
           {prolificEnabled === true && (
             <>

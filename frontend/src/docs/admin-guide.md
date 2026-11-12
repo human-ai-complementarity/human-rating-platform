@@ -92,7 +92,7 @@ The **first** upload that declares a value populates the experiment. Later uploa
 
 ### Always preview
 
-Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect.
+Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect. The [pilot check](#run-the-pilot-check) on the Launch tab automates the first pass over a sample of questions; the preview is still how you look at one with your own eyes.
 
 ## 3. Pick an assistance method (optional)
 
@@ -109,6 +109,14 @@ Keep the **estimated completion time** at or under the session length. It is the
 The pilot can't be created until the experiment has at least one uploaded question, rater instructions, an internal study name, and (when assisted) an assistance model. The prompt prefix and suffix are optional. The pilot form lists anything missing and how to fix it.
 
 `preview-testing` is a reserved tag. The inference pipeline's `scripts/create_human_rating_study.py --mode testing` sets it on its `-TESTONLY` drafts, which hold a subsample of the real questions for clicking through. An experiment with that tag can't go to Prolific at all: no pilot, no one-click pilot, no new round and no publish. The Launch tab says so: before the pilot with the pilot form's list of blockers, and after it with a banner over the rounds, whose Publish and Create Round buttons are turned off. That covers a tag added after a pilot draft was made. Create the real study with `--mode prod`. If an experiment carries the tag by mistake, remove the tag to launch it.
+
+### Run the pilot check
+
+Before creating any study, press **Run check** on the **Pilot check** card at the top of the Launch tab. It samples a handful of questions (15 by default), builds exactly what a rater would see for each, runs the assistance method on it, and reports anything a rater would trip over: a missing or placeholder consent statement, Markdown that will show as literal symbols, a choice question with no options, assistance that comes back empty or with every subtask at 0% confidence, instructions that describe a different task than the questions pose. Deterministic rules catch the structural problems; an LLM judge reads the instructions, each sampled question and its assistance for the rest. A run takes about a minute.
+
+Findings are grouped by check with a severity each; a problem shared by several questions is one line that links to each of them in the participant preview. The card says when the check was last run and by whom. Editing the instructions, prompts, Markdown switch, assistance settings or questions makes the run **stale**, so run it again after changes.
+
+The sample size, the judge model and per-check severities live under `[pilot_check]` in `backend/config.toml`.
 
 ### Dataset cards and the one-click pilot
 

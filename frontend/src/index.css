@@ -195,10 +195,23 @@ button:disabled {
   }
 }
 
+/* The pilot check stepper's current stage. */
+@keyframes pilot-step-glow {
+  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--step-color) 22%, transparent), 0 0 10px var(--step-color); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--step-color) 22%, transparent), 0 0 22px var(--step-color); }
+}
+
+.pilot-step-active {
+  animation: pilot-step-glow 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .indeterminate-bar {
     width: 100%;
     animation: pulse 1.4s ease-in-out infinite;
+  }
+  .pilot-step-active {
+    animation: none;
   }
 }
 

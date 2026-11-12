@@ -40,6 +40,10 @@ type ExperimentRecord = {
   content_warning_details: string | null;
   consent_statement_ref: string | null;
   debrief_statement_ref: string | null;
+  launch_ready?: boolean;
+  launch_blockers?: string[];
+  launch_blocker_fixes?: string[];
+  pilot_check: PilotCheckSummaryRecord;
 };
 
 const MOCK_TERMS_STATUS = {
@@ -47,6 +51,64 @@ const MOCK_TERMS_STATUS = {
   ok: true,
   error: null,
   documents: { 'consent/standard': 1, 'consent/warned': 1, debrief: 1 },
+};
+
+// The pilot check (docs/pilot-check.md): the summary the experiment carries
+// and the run the Launch tab's card fetches.
+type PilotCheckSummaryRecord = {
+  state: 'not_run' | 'running' | 'stale' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  run_id: number | null;
+  created_at: string | null;
+  finished_at: string | null;
+  counts: { error: number; warning: number; info: number };
+  reason: string | null;
+};
+
+type PilotCheckRunRecord = {
+  id: number;
+  experiment_id: number;
+  status: 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  stage: string | null;
+  stage_detail: string | null;
+  stages: { id: string; label: string }[];
+  requested_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+  fingerprint: string;
+  config_sha256: string;
+  terms_ref: string | null;
+  sample_question_ids: number[];
+  findings: {
+    check: string;
+    check_label: string;
+    severity: 'error' | 'warning' | 'info';
+    message: string;
+    question_ids: number[];
+    detail: string | null;
+  }[];
+  assistance_steps: null;
+  judge_model: string | null;
+  error: string | null;
+  stale: boolean;
+  sample_size: number;
+};
+
+const PILOT_CHECK_PASSED: PilotCheckSummaryRecord = {
+  state: 'passed',
+  run_id: 1,
+  created_at: '2026-03-09T00:03:00Z',
+  finished_at: '2026-03-09T00:04:00Z',
+  counts: { error: 0, warning: 0, info: 2 },
+  reason: null,
+};
+
+const PILOT_CHECK_NOT_RUN: PilotCheckSummaryRecord = {
+  state: 'not_run',
+  run_id: null,
+  created_at: null,
+  finished_at: null,
+  counts: { error: 0, warning: 0, info: 0 },
+  reason: 'The pilot check has not been run.',
 };
 
 type DatasetRecord = {
@@ -230,6 +292,11 @@ type MockState = {
   launchError: string | null;
   // What GET /launch/preview reports a one-click launch would exclude.
   launchExcluded: { id: number; name: string; internal_name: string | null }[];
+  // Pilot check runs per experiment, and the experiments checks were requested for.
+  pilotCheckRuns: Record<number, PilotCheckRunRecord>;
+  pilotCheckRequests: number[];
+  // How many GET polls still see the started run in flight before it lands.
+  pilotCheckRunningPolls: number;
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
@@ -284,6 +351,66 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     content_warning_details: null,
     consent_statement_ref: null,
     debrief_statement_ref: null,
+    // Clean by default so existing launch coverage is unaffected; the gate
+    // has its own tests below.
+    pilot_check: PILOT_CHECK_PASSED,
+    ...partial,
+  };
+}
+
+/** The same run while still probing assistance: what the stepper shows mid-run. */
+function inFlight(run: PilotCheckRunRecord): PilotCheckRunRecord {
+  return {
+    ...run,
+    status: 'running',
+    stage: 'assistance',
+    stage_detail: '3 of 15 questions probed',
+    finished_at: null,
+    findings: [],
+  };
+}
+
+function buildPilotCheckRun(
+  experimentId: number,
+  partial: Partial<PilotCheckRunRecord> = {},
+): PilotCheckRunRecord {
+  return {
+    id: 1,
+    experiment_id: experimentId,
+    status: 'passed',
+    stage: 'done',
+    stage_detail: null,
+    stages: [
+      { id: 'sampling', label: 'Sample questions' },
+      { id: 'assistance', label: 'Probe assistance' },
+      { id: 'checks', label: 'Check rendering' },
+      { id: 'instructions_coherent', label: 'Review instructions' },
+      { id: 'question_coherent', label: 'Review question coherence' },
+      { id: 'assistance_useful', label: 'Review assistance usefulness' },
+      { id: 'done', label: 'Result' },
+    ],
+    requested_by: 'dev@local',
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: '2026-03-09T00:04:00Z',
+    fingerprint: 'fp',
+    config_sha256: 'cfg',
+    terms_ref: 'standard v1:abc',
+    sample_question_ids: [11, 12],
+    findings: [
+      {
+        check: 'consent_configured',
+        check_label: 'Consent statement',
+        severity: 'info',
+        message: 'Raters will be shown the standard v1 consent statement.',
+        question_ids: [],
+        detail: null,
+      },
+    ],
+    assistance_steps: null,
+    judge_model: 'openrouter/anthropic/claude-sonnet-4-6',
+    error: null,
+    stale: false,
+    sample_size: 15,
     ...partial,
   };
 }
@@ -319,6 +446,9 @@ function createMockState(): MockState {
     launchRequests: [],
     launchError: null,
     launchExcluded: [],
+    pilotCheckRuns: {},
+    pilotCheckRequests: [],
+    pilotCheckRunningPolls: 0,
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
@@ -786,6 +916,66 @@ async function installApiMocks(
       const experimentId = extractExperimentId(url);
       state.recommendationRequests.push(search);
       await fulfillJson(route, 200, state.recommendations[experimentId]);
+      return;
+    }
+
+    if (pathname.endsWith('/pilot-check') && method === 'GET') {
+      const experimentId = extractExperimentId(url);
+      const run = state.pilotCheckRuns[experimentId];
+      if (!run) {
+        await fulfillJson(route, 200, null);
+        return;
+      }
+      if (state.pilotCheckRunningPolls > 0) {
+        state.pilotCheckRunningPolls -= 1;
+        await fulfillJson(route, 200, inFlight(run));
+        return;
+      }
+      await fulfillJson(route, 200, run);
+      return;
+    }
+
+    if (pathname.endsWith('/pilot-check') && method === 'POST') {
+      // The run lands at once: the card's next poll sees it finished.
+      const experimentId = extractExperimentId(url);
+      state.pilotCheckRequests.push(experimentId);
+      const run = buildPilotCheckRun(experimentId, {
+        id: state.pilotCheckRequests.length,
+        status: 'warnings',
+        findings: [
+          {
+            check: 'question_renders',
+            check_label: 'Question rendering',
+            severity: 'warning',
+            message: 'The options contain duplicates.',
+            question_ids: [12],
+            detail: 'Yes|Yes',
+          },
+          {
+            check: 'consent_configured',
+            check_label: 'Consent statement',
+            severity: 'info',
+            message: 'Raters will be shown the standard v1 consent statement.',
+            question_ids: [],
+            detail: null,
+          },
+        ],
+      });
+      state.pilotCheckRuns[experimentId] = run;
+      const experiment = state.experiments.find((item) => item.id === experimentId);
+      if (experiment) {
+        experiment.pilot_check = {
+          state: 'warnings',
+          run_id: run.id,
+          created_at: run.created_at,
+          finished_at: run.finished_at,
+          counts: { error: 0, warning: 1, info: 1 },
+          reason: 'The last pilot check found 0 error(s) and 1 warning(s).',
+        };
+      }
+      // The card sees the run probing assistance once, then lands on the next poll.
+      state.pilotCheckRunningPolls = 1;
+      await fulfillJson(route, 202, inFlight(run));
       return;
     }
 
@@ -4288,4 +4478,81 @@ test('the dashboard loads experiments past the first page, so search and total s
   await expect(page.getByText('Total spent')).toContainText('12.50');
   await page.getByPlaceholder('Search experiments, groups, datasets…').fill('Spring collection');
   await expect(page.getByText('Spring collection')).toBeVisible();
+});
+
+// ── Pilot check (docs/pilot-check.md) ─────────────────────────────────────
+
+function pilotCheckExperiment(state: MockState, pilot_check: PilotCheckSummaryRecord) {
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Checked Experiment',
+      question_count: 2,
+      pilot_check,
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+}
+
+test('the launch tab nags about an unrun pilot check and shows a run as it lands', async ({ page }) => {
+  const state = createMockState();
+  pilotCheckExperiment(state, PILOT_CHECK_NOT_RUN);
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // The overview says so too, and sends the admin to the Launch tab.
+  const overview = page.getByTestId('overview-pilot-check');
+  await expect(overview).toContainText('The pilot check has not been run.');
+  await overview.getByRole('button', { name: 'Run the pilot check' }).click();
+
+  const card = page.getByTestId('pilot-check-card');
+  await expect(card.getByTestId('pilot-check-state')).toHaveText('Not run');
+  await expect(card.getByTestId('pilot-check-banner')).toContainText(
+    'The pilot check has not been run.',
+  );
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Run check');
+
+  await card.getByTestId('run-pilot-check-button').click();
+  await expect.poll(() => state.pilotCheckRequests).toEqual([1]);
+
+  // While it runs, the stepper lights the stages done so far, pulses the
+  // current one and shows its progress line.
+  const stepper = card.getByTestId('pilot-check-stepper');
+  await expect(stepper.getByTestId('pilot-check-step-sampling')).toHaveAttribute('data-status', 'done');
+  await expect(stepper.getByTestId('pilot-check-step-assistance')).toHaveAttribute('data-status', 'active');
+  await expect(stepper.getByTestId('pilot-check-stage-detail')).toHaveText('3 of 15 questions probed');
+  await expect(stepper.getByTestId('pilot-check-step-question_coherent')).toHaveAttribute(
+    'data-status',
+    'pending',
+  );
+
+  // The mock's run lands on the next poll, with its findings grouped by check
+  // and the question-level one linking into the participant preview. The
+  // stepper follows the card's own poll, so wait on it before the pill, which
+  // the mock flips as soon as the run is requested.
+  await expect(stepper.getByTestId('pilot-check-step-done')).toHaveAttribute('data-status', 'done', {
+    timeout: 10_000,
+  });
+  await expect(card.getByTestId('pilot-check-state')).toHaveText('Warnings');
+  await expect(stepper.getByTestId('pilot-check-stage-detail')).toHaveCount(0);
+  const findings = card.getByTestId('pilot-check-findings');
+  await expect(findings).toContainText('Question rendering');
+  await expect(findings).toContainText('The options contain duplicates.');
+  await expect(findings).toContainText('Yes|Yes');
+  await expect(findings.getByRole('link', { name: 'Open question 12 in preview' })).toHaveAttribute(
+    'href',
+    /\/rate\?.*experiment_id=1.*question_id=12/,
+  );
+  await expect(card.getByTestId('pilot-check-banner')).toContainText('1 warning');
+  await expect(card.getByTestId('pilot-check-banner')).toContainText('by dev@local');
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
 });
