@@ -52,10 +52,16 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
     if ctx.judge is None:
         return [no_judge(NAME, ctx)]
     question_ids = [view.question_id for view in ctx.views]
-    total = len(question_ids) + 2  # consent and intro; the intro may not exist
+    # Named per screen rather than "n of total": whether an intro screen
+    # exists is only known once the browser gets past consent.
+    position = {qid: index for index, qid in enumerate(question_ids, start=1)}
 
-    async def captured(done: int) -> None:
-        await ctx.note(f"captured {done} of about {total} screens")
+    async def captured(shot: browser.Screen) -> None:
+        if shot.question_id is None:
+            name = "the consent form" if shot.key == browser.CONSENT else "the intro"
+            await ctx.note(f"captured {name}")
+        else:
+            await ctx.note(f"captured question {position[shot.question_id]} of {len(question_ids)}")
 
     await ctx.note("opening the rater page")
     try:

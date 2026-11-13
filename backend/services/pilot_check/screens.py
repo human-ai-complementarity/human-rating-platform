@@ -68,7 +68,7 @@ async def capture(
     experiment_id: int,
     run_id: int,
     question_ids: list[int],
-    on_progress: Callable[[int], Awaitable[None]] | None = None,
+    on_progress: Callable[[Screen], Awaitable[None]] | None = None,
 ) -> list[Screen]:
     """The consent, intro and question screens, in the order a rater meets
     them. A screen that does not finish loading is still captured, with a
@@ -105,7 +105,7 @@ async def capture(
                 page_errors.clear()
                 screens.append(Screen(key, png, question_id, found))
                 if on_progress is not None:
-                    await on_progress(len(screens))
+                    await on_progress(screens[-1])
 
             for index, question_id in enumerate(question_ids):
                 await page.goto(preview_url(app_url, experiment_id, run_id, question_id))

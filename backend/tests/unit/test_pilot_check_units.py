@@ -913,3 +913,32 @@ def test_merging_findings_keeps_every_screenshot():
     (merged,) = merge_findings([a, b])
     assert merged.question_ids == [1, 2]
     assert merged.screens == ["question-1", "question-2"]
+
+
+@pytest.mark.asyncio
+async def test_screen_capture_progress_names_each_screen(monkeypatch):
+    settings = PilotCheckSettings(rater_app_url="https://app.example")
+    exp = _experiment()
+    shots = _shots(4, 9)
+
+    async def fake_capture(*, on_progress, **kwargs):
+        for shot in shots:
+            await on_progress(shot)
+        return shots
+
+    monkeypatch.setattr(browser, "capture", fake_capture)
+    notes: list[str] = []
+
+    async def report(text: str) -> None:
+        notes.append(text)
+
+    views = [_view(exp, qid=4), _view(exp, qid=9)]
+    ctx = _ctx(settings, exp, views, judge=_LookingJudge({}), report=report)
+    await rater_screens.run(ctx, "warning")
+    captured = [note for note in notes if note.startswith("captured")]
+    assert captured == [
+        "captured the consent form",
+        "captured the intro",
+        "captured question 1 of 2",
+        "captured question 2 of 2",
+    ]
