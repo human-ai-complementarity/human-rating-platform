@@ -148,7 +148,8 @@ export interface PilotCheckStage {
 export interface PilotCheckRun {
   id: number;
   experiment_id: number;
-  status: 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  // queued: waiting for the pilot check worker to claim it.
+  status: 'queued' | 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
   // Where the run is and the stages it goes through (the card's stepper).
   stage: string | null;
   stage_detail: string | null;

@@ -301,7 +301,7 @@ class PilotCheckStage(BaseModel):
 class PilotCheckRunResponse(BaseModel):
     id: int
     experiment_id: int
-    status: Literal["running", "passed", "warnings", "failed", "aborted"]
+    status: Literal["queued", "running", "passed", "warnings", "failed", "aborted"]
     # Where the run is, a short detail for that stage while it runs, and the
     # stages a run of this experiment goes through, for the card's stepper.
     stage: Optional[str] = None

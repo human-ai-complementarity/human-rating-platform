@@ -80,9 +80,12 @@ could matter.
 | `gate_mode` | `warn` | `warn` asks for acknowledgement, `off` ignores the check (the UI still shows it) |
 | `severities` | `{}` | per-check overrides of the default severity, e.g. `markdown_mode = "info"` |
 | `auto_start` | `true` | start a run when an upload or an edit leaves the experiment ready to launch (see below) |
+| `runner` | `inline` | `inline` runs checks in the API process; `worker` queues them for the worker process (see "Where runs happen") |
+| `worker_concurrency` | 1 | runs one worker process takes on at once; the rest wait queued |
 
-A SHA-256 of these values, `gate_mode` and `auto_start` excepted (they change
-what a launch asks and when a run starts, not what a run looked at), is
+A SHA-256 of these values, `gate_mode`, `auto_start`, `runner` and
+`worker_concurrency` excepted (they change what a launch asks and when and
+where a run happens, not what a run looked at), is
 stored on every run and is part of the fingerprint, so changing one marks
 earlier runs stale. Which checks run is not configurable: a check that
 should not run is a conversation about the check, not a toggle.
@@ -124,6 +127,30 @@ The trigger never fails or delays the write: every exception is logged and
 the response is returned as it was. Duplicating an experiment copies its
 questions and uploads but does not start a run; the copy is usually edited
 before launch, and the edit starts one.
+
+## Where runs happen
+
+A run makes dozens of LLM calls and, with the screenshot stage, holds a
+browser. In the API process that serves raters, those calls take the same
+provider slots and rate limit as raters' assistance, and the memory comes
+out of the same instance. So in production `runner = "worker"`: starting a
+run (the POST, or an upload or edit) only inserts it as `queued`, and a
+separate process, `python -m pilot_check_worker` (`services/pilot_check/worker.py`,
+a Render background worker), claims queued runs (`runs.claim_next`, `FOR UPDATE
+SKIP LOCKED`, oldest first), at most `worker_concurrency` at a time, and runs
+them exactly as the inline path does. The worker has its own OpenRouter key.
+
+- A queued run reads as in progress everywhere: the card says so, a second
+  start gets the 409, auto-start skips it, the launch gate asks.
+- One left unclaimed for 30 minutes (no worker running) reads as aborted,
+  with an error saying so, and can be started again.
+- Stopping the worker (a deploy, SIGTERM) cancels its runs, which mark
+  themselves aborted; the next change or a manual start runs them again.
+- A run's follow-up (an edit that landed mid-run) is queued by the worker
+  like any other.
+
+`inline`, the default, keeps the old behaviour: the API runs the check as a
+background task. Local development and the test suite use it.
 
 ## Sampling
 

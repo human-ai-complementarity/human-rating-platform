@@ -18,7 +18,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import PilotCheckSettings, get_settings
@@ -45,6 +45,12 @@ logger = logging.getLogger(__name__)
 # bounded well under this, and progress is written after each one.
 STALE_AFTER = timedelta(minutes=5)
 ABORTED_MESSAGE = "The run stopped reporting progress; the server may have restarted."
+# With `runner = "worker"` a run waits as `queued` until the worker process
+# claims it (`claim_next`). One left unclaimed this long has no worker to
+# claim it, and reads as aborted.
+QUEUE_TIMEOUT = timedelta(minutes=30)
+UNCLAIMED_MESSAGE = "No pilot check worker picked this run up within 30 minutes."
+IN_PROGRESS = ("queued", "running")
 # Strong references so the event loop does not drop a run mid-way.
 _tasks: set[asyncio.Task] = set()
 
@@ -154,10 +160,17 @@ async def _load_run(run_id: int, db: AsyncSession) -> PilotCheckRun | None:
 
 
 def effective_status(run: PilotCheckRun, now: datetime) -> str:
-    """`running` only while the task keeps touching the row."""
+    """`running` only while the task keeps touching the row; `queued` only
+    until `QUEUE_TIMEOUT`."""
     if run.status == "running" and now - (run.updated_at or run.created_at) > STALE_AFTER:
         return "aborted"
+    if run.status == "queued" and now - run.created_at > QUEUE_TIMEOUT:
+        return "aborted"
     return run.status
+
+
+def _aborted_message(run: PilotCheckRun) -> str:
+    return UNCLAIMED_MESSAGE if run.status == "queued" else ABORTED_MESSAGE
 
 
 def status_from(findings: list[Finding]) -> str:
@@ -232,7 +245,7 @@ def build_run_response(
         findings=findings,
         assistance_steps=[PilotCheckProbe(**s) for s in steps] if steps is not None else None,
         judge_model=run.judge_model,
-        error=run.error if status != "aborted" or run.error else ABORTED_MESSAGE,
+        error=run.error if status != "aborted" or run.error else _aborted_message(run),
         stale=run.fingerprint != current_fingerprint,
         sample_size=settings.sample_size,
     )
@@ -257,19 +270,22 @@ async def start_run(
         )
     now = datetime.now(UTC)
     current = await latest_run(experiment.id, db)
-    if current is not None and current.status == "running":
-        if effective_status(current, now) == "running":
+    if current is not None and current.status in IN_PROGRESS:
+        if effective_status(current, now) in IN_PROGRESS:
             raise HTTPException(
                 status_code=409, detail="A pilot check is already running for this experiment."
             )
-        # Stopped reporting progress: the process that owned it is gone.
+        # Stopped reporting progress, or never claimed: nothing owns it.
+        current.error = _aborted_message(current)
         current.status = "aborted"
-        current.error = ABORTED_MESSAGE
         current.finished_at = now
+    # In worker mode the run waits for the worker process; inline, this
+    # process runs it now.
+    queued = pilot_settings().runner == "worker"
     run = PilotCheckRun(
         experiment_id=experiment.id,
-        status="running",
-        stage="sampling",
+        status="queued" if queued else "running",
+        stage=None if queued else "sampling",
         requested_by=requested_by,
         fingerprint=await current_fingerprint(experiment, question_count=question_count, db=db),
         config_sha256=pilot_settings().sha256(),
@@ -279,10 +295,40 @@ async def start_run(
     db.add(run)
     await db.commit()
     await db.refresh(run)
-    task = asyncio.create_task(execute_run(run.id, database), name=f"pilot-check-{run.id}")
-    _tasks.add(task)
-    task.add_done_callback(_tasks.discard)
+    if not queued:
+        task = asyncio.create_task(execute_run(run.id, database), name=f"pilot-check-{run.id}")
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
     return run
+
+
+async def claim_next(database: Database) -> int | None:
+    """Take the oldest queued run for this process, marking it running; None
+    when there is none. `SKIP LOCKED` lets several workers claim at once
+    without taking the same run. Runs past `QUEUE_TIMEOUT` already read as
+    aborted and are left alone."""
+    async with database.session() as db:
+        claimed = (
+            await db.execute(
+                text(
+                    """
+                    UPDATE pilot_check_runs
+                    SET status = 'running', stage = 'sampling', updated_at = now()
+                    WHERE id = (
+                        SELECT id FROM pilot_check_runs
+                        WHERE status = 'queued' AND created_at > :cutoff
+                        ORDER BY id
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    RETURNING id
+                    """
+                ),
+                {"cutoff": datetime.now(UTC) - QUEUE_TIMEOUT},
+            )
+        ).scalar_one_or_none()
+        await db.commit()
+        return claimed
 
 
 def autostart_skip_reason(
@@ -294,7 +340,7 @@ def autostart_skip_reason(
     if latest is None:
         return None
     status = effective_status(latest, now)
-    if status == "running":
+    if status in IN_PROGRESS:
         return "a run is already in progress"
     if status != "aborted" and latest.fingerprint == current_fingerprint:
         return "the latest run is still fresh"

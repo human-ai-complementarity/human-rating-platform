@@ -35,7 +35,13 @@ from services.pilot_check.checks.base import Finding, merge_findings
 from services.pilot_check.summary import summarise
 from services.pilot_check.judge import JudgeError, Problem, Verdict, parse_problems, parse_verdict
 from services.pilot_check.rater_view import RaterQuestionView
-from services.pilot_check.runs import _run_check, autostart_skip_reason, compute_fingerprint
+from services.pilot_check.runs import (
+    QUEUE_TIMEOUT,
+    _run_check,
+    autostart_skip_reason,
+    compute_fingerprint,
+    effective_status,
+)
 from services.pilot_check.sampling import choose_sample
 from services.terms.service import PLACEHOLDER_CONSENT, RaterTerms, StatementText
 
@@ -133,6 +139,9 @@ def test_every_check_has_a_unique_name_and_a_label(config):
     assert config.sha256() == PilotCheckSettings(gate_mode="off").sha256()
     # When a run starts is not part of what it looked at.
     assert config.sha256() == PilotCheckSettings(auto_start=False).sha256()
+    # Nor where it runs.
+    worker = PilotCheckSettings(runner="worker", worker_concurrency=3)
+    assert config.sha256() == worker.sha256()
 
 
 # --- Sampling -------------------------------------------------------------
@@ -587,6 +596,24 @@ def test_an_upload_starts_a_run_only_when_there_is_something_new_to_check():
     gone = _run(status="running", finished_at=None, updated_at=now - timedelta(minutes=10))
     assert reason(gone) is None
     assert reason(_run(status="aborted")) is None
+
+
+def test_a_queued_run_is_in_progress_until_no_worker_could_have_claimed_it(config):
+    now = datetime.now(UTC)
+    queued = _run(status="queued", finished_at=None, created_at=now - timedelta(minutes=2))
+    assert effective_status(queued, now) == "queued"
+    summary = summarise(queued, current_fingerprint="fp", settings=config, now=now)
+    assert summary.state == "running"
+    assert summary.reason == "The pilot check is queued and starts shortly."
+    assert summary.needs_acknowledgement is True
+    skip = autostart_skip_reason(queued, current_fingerprint="other", now=now)
+    assert skip == "a run is already in progress"
+
+    unclaimed = _run(
+        status="queued", finished_at=None, created_at=now - QUEUE_TIMEOUT - timedelta(seconds=1)
+    )
+    assert effective_status(unclaimed, now) == "aborted"
+    assert autostart_skip_reason(unclaimed, current_fingerprint="fp", now=now) is None
 
 
 def test_a_changed_experiment_makes_the_run_stale(config):

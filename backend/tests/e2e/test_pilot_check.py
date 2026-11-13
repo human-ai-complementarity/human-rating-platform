@@ -8,6 +8,7 @@ fixture: an assisted arm's run must report that, not crash.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 import httpx
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from config import get_settings
+from database import build_database
 from models import Experiment
 
 PROLIFIC_BASE = "https://api.prolific.com/api/v1"
@@ -523,3 +525,124 @@ def test_an_edit_that_lands_mid_run_gets_a_follow_up_run(
     assert first_fingerprint != latest["fingerprint"]
     time.sleep(0.5)  # a third run would have started by now
     assert _run_count(sync_engine, exp["id"]) == 2
+
+
+@pytest.fixture
+def pilot_check_worker():
+    """Runs queued for the worker process, as production runs them."""
+    settings = get_settings().pilot_check
+    original = settings.runner
+    settings.runner = "worker"
+    try:
+        yield settings
+    finally:
+        settings.runner = original
+
+
+def _work() -> list[int]:
+    """Be the worker for a moment: claim what is queued (one run, as the
+    default concurrency allows), run it to the end; the ids claimed."""
+    from services.pilot_check import worker
+
+    async def go() -> list[int]:
+        database = build_database(get_settings())
+        await database.connect()
+        try:
+            running: set[asyncio.Task] = set()
+            await worker.fill(database, running, concurrency=1)
+            claimed = [int(task.get_name().rsplit("-", 1)[1]) for task in running]
+            await asyncio.gather(*running)
+            return claimed
+        finally:
+            await database.disconnect()
+
+    return asyncio.run(go())
+
+
+def test_in_worker_mode_a_run_waits_queued_until_the_worker_runs_it(
+    client: TestClient, terms_source, no_judge, pilot_check_worker
+):
+    exp = _ready_experiment(client)
+    url = f"/api/admin/experiments/{exp['id']}/pilot-check"
+    started = client.post(url)
+    assert started.status_code == 202, started.text
+    assert started.json()["status"] == "queued"
+    time.sleep(0.3)  # nothing in the API process picks it up
+    queued = client.get(url).json()
+    assert queued["status"] == "queued"
+    assert client.get(f"/api/admin/experiments/{exp['id']}").json()["pilot_check"]["state"] == (
+        "running"
+    )
+    assert client.post(url).status_code == 409
+
+    assert _work() == [queued["id"]]
+    landed = client.get(url).json()
+    assert landed["id"] == queued["id"]
+    assert landed["status"] == "passed", landed["findings"]
+    assert landed["stale"] is False
+
+
+def test_a_run_no_worker_claimed_reads_as_aborted_and_can_be_started_again(
+    client: TestClient, sync_engine, terms_source, no_judge, pilot_check_worker
+):
+    exp = _ready_experiment(client)
+    url = f"/api/admin/experiments/{exp['id']}/pilot-check"
+    first = client.post(url).json()
+    with sync_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE pilot_check_runs SET created_at = NOW() - INTERVAL '31 minutes' WHERE id = :id"
+            ),
+            {"id": first["id"]},
+        )
+    stuck = client.get(url).json()
+    assert stuck["status"] == "aborted"
+    assert "No pilot check worker" in stuck["error"]
+    # The worker leaves it alone; a new start replaces it.
+    assert _work() == []
+    second = client.post(url)
+    assert second.status_code == 202, second.text
+    assert _work() == [second.json()["id"]]
+    with sync_engine.connect() as conn:
+        status = conn.execute(
+            text("SELECT status FROM pilot_check_runs WHERE id = :id"), {"id": first["id"]}
+        ).scalar_one()
+    assert status == "aborted"
+
+
+def test_the_worker_loop_runs_queued_checks_and_stops_cleanly(
+    client: TestClient, terms_source, no_judge, pilot_check_worker
+):
+    from services.pilot_check import worker
+
+    exp = _ready_experiment(client)
+    url = f"/api/admin/experiments/{exp['id']}/pilot-check"
+    run_id = client.post(url).json()["id"]
+
+    async def go() -> None:
+        database = build_database(get_settings())
+        await database.connect()
+        stop = asyncio.Event()
+        try:
+            loop = asyncio.create_task(
+                worker.serve(database, get_settings().pilot_check, stop, poll_seconds=0.05)
+            )
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                async with database.session() as db:
+                    status = (
+                        await db.execute(
+                            text("SELECT status FROM pilot_check_runs WHERE id = :id"),
+                            {"id": run_id},
+                        )
+                    ).scalar_one()
+                if status not in ("queued", "running"):
+                    break
+                await asyncio.sleep(0.1)
+            stop.set()
+            await asyncio.wait_for(loop, 5)
+        finally:
+            await database.disconnect()
+
+    asyncio.run(go())
+    assert client.get(url).json()["status"] == "passed"
