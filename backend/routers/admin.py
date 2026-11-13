@@ -10,9 +10,12 @@ from config import get_settings
 from database import get_session
 from models import ExperimentStatus, StudyFlag
 from schemas import (
+    EXPERIMENT_PAGE_DEFAULT_LIMIT,
+    EXPERIMENT_PAGE_MAX_LIMIT,
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyResponse,
+    ArchivedScope,
     AssistanceSessionDetail,
     AssistanceSessionResponse,
     DatasetCreate,
@@ -26,7 +29,9 @@ from schemas import (
     ExperimentRoundUpdate,
     ExperimentCreate,
     ExperimentDuplicateResponse,
+    ExperimentPage,
     ExperimentResponse,
+    ExperimentSort,
     ExperimentUpdate,
     OneClickLaunchPreview,
     OneClickLaunchRequest,
@@ -165,6 +170,66 @@ async def list_experiments(
         wave=wave,
         tag=tag,
         db=db,
+    )
+
+
+# Declared before /experiments/{experiment_id}, which would otherwise claim
+# "page" as an id and 422.
+@secure_router.get("/experiments/page", response_model=ExperimentPage)
+async def list_experiments_page(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(
+        EXPERIMENT_PAGE_DEFAULT_LIMIT,
+        ge=1,
+        le=EXPERIMENT_PAGE_MAX_LIMIT,
+        description=(
+            f"Rows per page: default {EXPERIMENT_PAGE_DEFAULT_LIMIT}, "
+            f"at most {EXPERIMENT_PAGE_MAX_LIMIT}."
+        ),
+    ),
+    status: ExperimentStatus | None = Query(None),
+    archived: ArchivedScope = Query(
+        ArchivedScope.EXCLUDE,
+        description="exclude: active rows only; only: archived rows only; include: both.",
+    ),
+    needs_attention: bool | None = Query(
+        None, description="true: only flagged rows; false: only unflagged; omit: either."
+    ),
+    group_id: int | None = Query(None),
+    ungrouped: bool = Query(False, description="Only experiments in no group."),
+    wave: str | None = Query(None, max_length=64),
+    dataset_id: int | None = Query(None),
+    tag: str | None = Query(None, max_length=64, description="Exact tag, any casing."),
+    assistance_method: str | None = Query(None, max_length=64),
+    search: str | None = Query(
+        None,
+        max_length=255,
+        description=(
+            "Case-insensitive substring of the public or internal name, "
+            "the group name, the dataset name or a tag."
+        ),
+    ),
+    sort: ExperimentSort = Query(ExperimentSort.NEWEST),
+    db: AsyncSession = Depends(get_session),
+):
+    """One page of experiments, with the total matching every filter and
+    per-tab counts that ignore the status/archived/needs_attention selection.
+    Page until `skip + len(items) >= total`."""
+    return await admin_service.list_experiments_page(
+        db=db,
+        skip=skip,
+        limit=limit,
+        status=status,
+        archived=archived,
+        needs_attention=needs_attention,
+        group_id=group_id,
+        ungrouped=ungrouped,
+        wave=wave,
+        dataset_id=dataset_id,
+        tag=tag,
+        assistance_method=assistance_method,
+        search=search,
+        sort=sort,
     )
 
 
