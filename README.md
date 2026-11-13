@@ -375,6 +375,7 @@ Deploys are GitHub-driven and API-triggered (Render auto-deploy is off):
 
 - `human-rating-platform-web` — static frontend
 - `human-rating-platform-api` — FastAPI backend
+- `human-rating-platform-pilot-check` — background worker that runs pilot checks ([docs/pilot-check.md](docs/pilot-check.md))
 - `human-rating-platform-db` — Postgres
 
 ### Backend runtime on Render
@@ -382,6 +383,12 @@ Deploys are GitHub-driven and API-triggered (Render auto-deploy is off):
 - **Build:** `uv sync --frozen --no-dev --no-install-project`
 - **Predeploy:** `sh scripts/predeploy.sh`
 - **Start:** `uv run --no-sync uvicorn main:app --host 0.0.0.0 --port $PORT`
+
+The pilot check worker is a Render **Background Worker** on the same repo and
+root directory, with the same build command, no predeploy (the API's runs
+the migrations), and:
+
+- **Start:** `uv run --no-sync python -m pilot_check_worker`
 
 ### Required GitHub Actions secrets
 
@@ -392,6 +399,7 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 | `RENDER_API_KEY` | Render Dashboard → Account Settings → API Keys |
 | `RENDER_API_SERVICE_ID` | Render Dashboard → API service → Settings → ID (`srv-...`) |
 | `RENDER_WEB_SERVICE_ID` | Render Dashboard → Web service → Settings → ID (`srv-...`) |
+| `RENDER_WORKER_SERVICE_ID` | Render Dashboard → pilot check worker → Settings → ID (`srv-...`); optional, deployed with every api deploy |
 
 ### Required Render service env vars
 
@@ -402,6 +410,15 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 - `PROLIFIC__API_TOKEN` — Prolific API token (set to enable automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under (recommended on multi-workspace accounts to avoid wrong-currency studies; workspace and currency are auto-derived)
 - `PROLIFIC__ENV_LABEL` — leave unset in prod (dev sets it to `dev` to distinguish participant groups created locally from prod ones)
+
+**API service and pilot check worker**:
+- `PILOT_CHECK__RUNNER=worker` on both, so the API only queues runs and the worker runs them.
+
+**Pilot check worker** (Render Dashboard → worker → Environment): the API's
+variables (it reads the same database and settings), except
+`LLM__OPENROUTER_API_KEY`, which is its own key so pilot checks never use up
+the rate limit raters' assistance runs on, and their spend shows separately.
+`PILOT_CHECK__WORKER_CONCURRENCY` caps runs at once (default 1).
 
 **Web service** (set in Render Dashboard → Web service → Environment):
 - `VITE_API_HOST` — public API origin, e.g. `https://api.platform.complementarities.org`

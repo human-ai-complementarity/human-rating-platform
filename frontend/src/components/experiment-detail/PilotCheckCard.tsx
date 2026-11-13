@@ -52,6 +52,10 @@ const SEVERITY_TONE: Record<PilotCheckSeverity, Tone> = {
   info: 'info',
 };
 
+// Still going: waiting for the worker, or running.
+const inFlight = (status: PilotCheckRun['status'] | undefined) =>
+  status === 'queued' || status === 'running';
+
 export function describeSummary(summary: PilotCheckSummary | null | undefined): string {
   if (!summary) return 'Pilot check state unknown.';
   if (summary.state === 'passed') return 'Pilot check passed.';
@@ -93,7 +97,7 @@ export function PilotCheckCard({
         if (cancelled) return;
         setRun(latest);
         setLoaded(true);
-        if (latest?.status === 'running') {
+        if (inFlight(latest?.status)) {
           timer = window.setTimeout(() => void poll(true), POLL_MS);
         } else if (wasRunning || summaryRunning) {
           // Landed here, or landed before this card mounted while the page
@@ -129,7 +133,7 @@ export function PilotCheckCard({
     }
   };
 
-  const polling = state === 'running' || run?.status === 'running';
+  const polling = state === 'running' || inFlight(run?.status);
   const canRun = !polling && !starting && experiment.status !== 'FINISHED';
   const probes = new Map((run?.assistance_steps ?? []).map((probe) => [probe.question_id, probe]));
 
@@ -190,10 +194,18 @@ export function PilotCheckCard({
             ...(canRun ? {} : { opacity: 0.5, cursor: 'not-allowed' }),
           }}
         >
-          {starting ? 'Starting…' : polling ? 'Running…' : run ? 'Re-run check' : 'Run check'}
+          {starting
+            ? 'Starting…'
+            : run?.status === 'queued'
+              ? 'Queued…'
+              : polling
+                ? 'Running…'
+                : run
+                  ? 'Re-run check'
+                  : 'Run check'}
         </button>
 
-        {loaded && run && run.status !== 'running' && (
+        {loaded && run && !inFlight(run.status) && (
           <div style={{ marginTop: 18 }}>
             {run.findings.length === 0 ? (
               <div style={{ fontSize: 13, color: 'var(--muted)' }}>No findings.</div>
@@ -365,6 +377,8 @@ function Stepper({ run }: { run: PilotCheckRun }) {
     run.stages.findIndex((stage) => stage.id === run.stage),
   );
   const statusOf = (i: number) => {
+    // Not claimed by the worker yet: nothing has started.
+    if (run.status === 'queued') return 'pending';
     if (run.status !== 'running' && run.status !== 'aborted') return 'done';
     if (i < at) return 'done';
     if (i > at) return 'pending';

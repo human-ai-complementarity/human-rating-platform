@@ -238,9 +238,10 @@ PilotCheckSeverity = Literal["error", "warning", "info"]
 
 class PilotCheckSettings(_StrictModel):
     """The pilot check (docs/pilot-check.md). A hash of these values is stored
-    on every run, so changing one marks earlier runs stale; `gate_mode` and
-    `auto_start` are left out, they change what a launch asks and when a
-    run starts, not what a run looked at."""
+    on every run, so changing one marks earlier runs stale; `gate_mode`,
+    `auto_start`, `runner` and `worker_concurrency` are left out, they change
+    what a launch asks and when and where a run happens, not what it looked
+    at."""
 
     # Served questions drawn per run (parent rows are header-only and skipped).
     sample_size: int = Field(default=15, ge=1, le=50)
@@ -256,12 +257,21 @@ class PilotCheckSettings(_StrictModel):
     # launch step. Skipped while a run is in progress or the latest run
     # already covers the experiment as it is.
     auto_start: bool = True
+    # "inline": the API process runs each check as a background task.
+    # "worker": the API only queues it; the worker process
+    #           (`python -m pilot_check_worker`) claims and runs it, so a run's
+    #           LLM calls and memory stay off the process serving raters.
+    runner: Literal["inline", "worker"] = "inline"
+    # Runs one worker process takes on at once; the rest wait in the queue.
+    worker_concurrency: int = Field(default=1, ge=1, le=8)
     # Per-check severity overrides, keyed by check name; each check has a
     # default in code (services/pilot_check/checks).
     severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)
 
     def sha256(self) -> str:
-        material = self.model_dump_json(exclude={"gate_mode", "auto_start"})
+        material = self.model_dump_json(
+            exclude={"gate_mode", "auto_start", "runner", "worker_concurrency"}
+        )
         return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

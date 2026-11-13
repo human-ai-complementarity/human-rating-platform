@@ -68,7 +68,7 @@ type PilotCheckSummaryRecord = {
 type PilotCheckRunRecord = {
   id: number;
   experiment_id: number;
-  status: 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  status: 'queued' | 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
   stage: string | null;
   stage_detail: string | null;
   stages: { id: string; label: string }[];
@@ -4733,6 +4733,40 @@ test('a run that started on its own and landed before the Launch tab opened sett
   await expect(card.getByTestId('pilot-check-state')).toHaveText('Warnings');
   await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
   await expect(card.getByTestId('pilot-check-findings')).toContainText('Consent statement');
+});
+
+test('a run waiting for the pilot check worker shows as queued with nothing started', async ({ page }) => {
+  const state = createMockState();
+  pilotCheckExperiment(state, {
+    state: 'running',
+    run_id: 1,
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: null,
+    counts: { error: 0, warning: 0, info: 0 },
+    needs_acknowledgement: true,
+    reason: 'The pilot check is queued and starts shortly.',
+  });
+  state.pilotCheckRuns[1] = buildPilotCheckRun(1, {
+    status: 'queued',
+    stage: null,
+    finished_at: null,
+    findings: [],
+  });
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  const card = page.getByTestId('pilot-check-card');
+  await expect(card.getByTestId('pilot-check-banner')).toContainText(
+    'The pilot check is queued and starts shortly.',
+  );
+  const button = card.getByTestId('run-pilot-check-button');
+  await expect(button).toHaveText('Queued…');
+  await expect(button).toBeDisabled();
+  const stepper = card.getByTestId('pilot-check-stepper');
+  await expect(stepper.getByTestId('pilot-check-step-sampling')).toHaveAttribute('data-status', 'pending');
+  await expect(stepper.getByTestId('pilot-check-step-done')).toHaveAttribute('data-status', 'pending');
+  await expect(card.getByTestId('pilot-check-findings')).toHaveCount(0);
 });
 
 test('creating a pilot without a clean pilot check asks before launching anyway', async ({ page }) => {
