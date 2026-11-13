@@ -102,11 +102,13 @@ fills them in. A write is skipped, with a log line saying why, when:
 
 - `auto_start` is off;
 - the experiment is FINISHED;
-- the experiment is not ready to launch (`experiment_launch_blockers` in
-  `services/admin/status.py`: questions, rater instructions, an internal
-  name, and for an assisted arm a pinned model with a key). A run before
-  that would report the gaps the launch gate already names, and be stale as
-  soon as they are filled;
+- the experiment is still missing something to fill in
+  (`experiment_launch_blockers` in `services/admin/status.py`: questions,
+  rater instructions, an internal name, and for an assisted arm a pinned
+  model with a key). A run before that would report the gaps the launch gate
+  already names, and be stale as soon as they are filled. The gate's testing
+  preview blocker is not one of these: a preview is where the check is
+  wanted, so a `preview-testing` draft is checked like any other;
 - a run is in progress (its row touched within the last five minutes);
 - the latest run is still fresh: its fingerprint matches the experiment as
   it now stands, so edits a run does not look at (the public name, tags)

@@ -305,10 +305,11 @@ async def start_after_change(
     experiment_id: int, *, requested_by: str | None, db: AsyncSession, database: Database
 ) -> PilotCheckRun | None:
     """Start a run once an upload or an edit has landed, unless `auto_start`
-    is off, the experiment is not yet ready to launch (`experiment_launch_blockers`:
-    questions, instructions, a model with a key), it is FINISHED, or
-    `autostart_skip_reason` says why not. Never raises: the write has
-    succeeded and its response must say so."""
+    is off, the experiment is still missing something to fill in
+    (`experiment_launch_blockers`: questions, instructions, a model with a
+    key; a testing preview is not that, it is where the check is wanted
+    most), it is FINISHED, or `autostart_skip_reason` says why not. Never
+    raises: the write has succeeded and its response must say so."""
     attributes = {"experiment_id": experiment_id}
     try:
         if not pilot_settings().auto_start:
@@ -318,7 +319,7 @@ async def start_after_change(
             return None
         # Local: services.admin imports this module.
         from services.admin.queries import fetch_total_questions_for_experiment
-        from services.admin.status import experiment_launch_blockers
+        from services.admin.status import TESTING_PREVIEW_BLOCKER, experiment_launch_blockers
         from services.admin.tags import fetch_tag_names_for_experiment
 
         question_count = await fetch_total_questions_for_experiment(experiment_id, db)
@@ -327,6 +328,7 @@ async def start_after_change(
             question_count=question_count,
             tags=await fetch_tag_names_for_experiment(experiment_id, db),
         )
+        blockers = [blocker for blocker in blockers if blocker != TESTING_PREVIEW_BLOCKER]
         if blockers:
             logger.info(
                 "pilot check not started: the experiment is missing %s",

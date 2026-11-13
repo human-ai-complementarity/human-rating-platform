@@ -429,8 +429,10 @@ def test_a_run_starts_on_its_own_once_the_experiment_is_ready(
     the admin who made it. The pipeline's upload carries the instructions, so
     there it is the upload; on the website it is usually the edit after.
     Edits a finished run already covers start nothing; a run still going is
-    left alone."""
-    exp = client.post("/api/admin/experiments", json={"name": "Auto"}).json()
+    left alone. A testing preview cannot launch but is still checked."""
+    exp = client.post(
+        "/api/admin/experiments", json={"name": "Auto", "tags": ["preview-testing"]}
+    ).json()
     _upload(client, exp["id"], "q1,Is this useful?,Yes,Yes|No,MC\n")
     # Questions alone are not launchable: no rater instructions yet.
     assert client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json() is None
