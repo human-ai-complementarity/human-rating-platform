@@ -95,7 +95,9 @@ export function PilotCheckCard({
         setLoaded(true);
         if (latest?.status === 'running') {
           timer = window.setTimeout(() => void poll(true), POLL_MS);
-        } else if (wasRunning) {
+        } else if (wasRunning || summaryRunning) {
+          // Landed here, or landed before this card mounted while the page
+          // still holds the summary from when the run started.
           onRunStateChange();
         }
       } catch (err) {

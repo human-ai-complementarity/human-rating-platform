@@ -4698,6 +4698,43 @@ test('the launch tab nags about an unrun pilot check and shows a run as it lands
   await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
 });
 
+test('a run that started on its own and landed before the Launch tab opened settles the card', async ({ page }) => {
+  // An upload or an edit starts a run (docs/pilot-check.md); the page hears
+  // of it through its summary and still says running once the run has
+  // landed. The card finds the landed run on its first fetch and has the
+  // page refresh, rather than showing the result under a running pill.
+  const state = createMockState();
+  pilotCheckExperiment(state, {
+    state: 'running',
+    run_id: 1,
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: null,
+    counts: { error: 0, warning: 0, info: 0 },
+    needs_acknowledgement: true,
+    reason: 'The pilot check is still running.',
+  });
+  state.pilotCheckRuns[1] = buildPilotCheckRun(1, { status: 'warnings' });
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await expect(page.getByTestId('overview-pilot-check')).toContainText('still running');
+
+  // The run lands server-side while the admin is on another tab.
+  state.experiments[0].pilot_check = {
+    state: 'warnings',
+    run_id: 1,
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: '2026-03-09T00:04:00Z',
+    counts: { error: 0, warning: 0, info: 1 },
+    needs_acknowledgement: true,
+    reason: 'The last pilot check found 0 error(s) and 0 warning(s).',
+  };
+  await page.getByTestId('tab-launch').click();
+  const card = page.getByTestId('pilot-check-card');
+  await expect(card.getByTestId('pilot-check-state')).toHaveText('Warnings');
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
+  await expect(card.getByTestId('pilot-check-findings')).toContainText('Consent statement');
+});
+
 test('creating a pilot without a clean pilot check asks before launching anyway', async ({ page }) => {
   const state = createMockState();
   pilotCheckExperiment(state, PILOT_CHECK_NOT_RUN);
