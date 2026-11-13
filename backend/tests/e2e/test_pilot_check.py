@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from config import get_settings
+from models import Experiment
 
 PROLIFIC_BASE = "https://api.prolific.com/api/v1"
 
@@ -402,24 +403,51 @@ def test_a_flagged_run_is_acknowledged_once(
     assert second.status_code == 200, second.text
     assert second.json()["pilot_check_run_id"] == run["id"]
     assert second.json()["pilot_check_acknowledged_by"] == "dev@local"
-def test_an_upload_starts_a_run_unless_one_is_in_progress(
+
+
+def _run_count(sync_engine, experiment_id: int) -> int:
+    with sync_engine.connect() as conn:
+        return conn.execute(
+            text("SELECT COUNT(*) FROM pilot_check_runs WHERE experiment_id = :eid"),
+            {"eid": experiment_id},
+        ).scalar_one()
+
+
+def _edit(client: TestClient, experiment_id: int, **fields) -> dict:
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}", json={"assistance_method": "none", **fields}
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_a_run_starts_on_its_own_once_the_experiment_is_ready(
     client: TestClient, sync_engine, terms_source, no_judge, pilot_check_autostart
 ):
-    """With `run_on_upload` on (the suite turns it off), the upload itself
-    starts the check, recorded against the uploading admin; a second upload
-    while a run is going leaves that run alone."""
+    """With `auto_start` on (the suite turns it off), the upload or edit that
+    leaves the experiment ready to launch starts the check, recorded against
+    the admin who made it. The pipeline's upload carries the instructions, so
+    there it is the upload; on the website it is usually the edit after.
+    Edits a finished run already covers start nothing; a run still going is
+    left alone."""
     exp = client.post("/api/admin/experiments", json={"name": "Auto"}).json()
+    _upload(client, exp["id"], "q1,Is this useful?,Yes,Yes|No,MC\n")
+    # Questions alone are not launchable: no rater instructions yet.
     assert client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json() is None
 
-    _upload(client, exp["id"], "q1,Is this useful?,Yes,Yes|No,MC\n")
+    _edit(client, exp["id"], description="Answer using only the passage.", internal_name="auto")
     run = _wait_for_run(client, exp["id"])
     assert run["requested_by"] == "dev@local"
     assert run["status"] == "passed", run["findings"]
     assert run["stale"] is False
     assert run["sample_question_ids"] and len(run["sample_question_ids"]) == 1
 
+    # An edit the run does not look at (the public name) changes nothing.
+    _edit(client, exp["id"], name="Renamed")
+    assert _run_count(sync_engine, exp["id"]) == 1
+
     # More questions: the finished run no longer covers the experiment, so the
-    # next upload starts another.
+    # upload starts another.
     _upload(client, exp["id"], "q2,Is this clear?,Yes,Yes|No,MC\n")
     rerun = _wait_for_run(client, exp["id"])
     assert rerun["id"] != run["id"]
@@ -438,9 +466,58 @@ def test_an_upload_starts_a_run_unless_one_is_in_progress(
     _upload(client, exp["id"], "q3,Summarise the passage.,,,free_text\n")
     latest = client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json()
     assert latest["status"] == "running" and latest["fingerprint"] == "fp"
+    assert _run_count(sync_engine, exp["id"]) == 3
+
+
+def test_an_edit_that_lands_mid_run_gets_a_follow_up_run(
+    client: TestClient, sync_engine, monkeypatch, terms_source, no_judge, pilot_check_autostart
+):
+    """An edit while a run is going is skipped (one run at a time), so the
+    run that finishes is stale. Finishing then starts one more, which covers
+    the edit; that one is fresh, so it starts no third."""
+    from services.pilot_check import runs
+
+    real_perform = runs._perform
+    edited = False
+    experiment_id: dict[str, int] = {}
+
+    async def perform_after_an_edit(run_id, database, settings):
+        nonlocal edited
+        if not edited:
+            edited = True
+            async with database.session() as db:
+                experiment = await db.get(Experiment, experiment_id["value"])
+                experiment.description = "Changed while the run was going."
+                await db.commit()
+        await real_perform(run_id, database, settings)
+
+    monkeypatch.setattr(runs, "_perform", perform_after_an_edit)
+    exp = client.post("/api/admin/experiments", json={"name": "Auto"}).json()
+    experiment_id["value"] = exp["id"]
+    _upload(client, exp["id"], "q1,Is this useful?,Yes,Yes|No,MC\n")
+    _edit(client, exp["id"], description="Answer using only the passage.", internal_name="auto")
+
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if _run_count(sync_engine, exp["id"]) == 2:
+            latest = client.get(f"/api/admin/experiments/{exp['id']}/pilot-check").json()
+            if latest["status"] != "running":
+                break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("the follow-up run did not finish in time")
+    assert latest["stale"] is False
     with sync_engine.connect() as conn:
-        count = conn.execute(
-            text("SELECT COUNT(*) FROM pilot_check_runs WHERE experiment_id = :eid"),
-            {"eid": exp["id"]},
-        ).scalar_one()
-    assert count == 3
+        first_fingerprint = (
+            conn.execute(
+                text(
+                    "SELECT fingerprint FROM pilot_check_runs WHERE experiment_id = :eid ORDER BY id"
+                ),
+                {"eid": exp["id"]},
+            )
+            .scalars()
+            .first()
+        )
+    assert first_fingerprint != latest["fingerprint"]
+    time.sleep(0.5)  # a third run would have started by now
+    assert _run_count(sync_engine, exp["id"]) == 2

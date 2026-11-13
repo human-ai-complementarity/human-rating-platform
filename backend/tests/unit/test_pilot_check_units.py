@@ -132,7 +132,7 @@ def test_every_check_has_a_unique_name_and_a_label(config):
     # The gate mode is not part of what a run looked at.
     assert config.sha256() == PilotCheckSettings(gate_mode="off").sha256()
     # When a run starts is not part of what it looked at.
-    assert config.sha256() == PilotCheckSettings(run_on_upload=False).sha256()
+    assert config.sha256() == PilotCheckSettings(auto_start=False).sha256()
 
 
 # --- Sampling -------------------------------------------------------------

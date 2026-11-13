@@ -76,10 +76,14 @@ export function PilotCheckCard({
   const [started, setStarted] = useState(0);
 
   const state: PilotCheckState = summary?.state ?? 'not_run';
+  // An upload or an edit can start a run on its own; the refreshed summary
+  // is how this card hears of it, and it then polls that run to its end.
+  const summaryRunning = state === 'running';
 
   // Load the latest run; while it is in flight keep polling, and tell the
-  // parent once it lands so the summary follows. Keyed on `started`, not the
-  // summary, so starting a run here fetches once rather than once per refresh.
+  // parent once it lands so the summary follows. Keyed on `started` and on
+  // the summary turning to running, not the summary itself, so a run fetches
+  // once rather than once per refresh.
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
@@ -107,7 +111,7 @@ export function PilotCheckCard({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [experiment.id, started, onRunStateChange]);
+  }, [experiment.id, started, summaryRunning, onRunStateChange]);
 
   const handleRun = async () => {
     setError(null);
