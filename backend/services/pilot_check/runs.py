@@ -1,7 +1,8 @@
 """Starting, executing and reading pilot check runs.
 
-A run is one row in `pilot_check_runs`. The POST handler inserts it as
-`running` and hands the work to an asyncio task in the API process; the task
+A run is one row in `pilot_check_runs`. The POST handler, or an admin write
+that leaves the experiment ready to launch (`start_after_change`), inserts it
+as `running` and hands the work to an asyncio task in the API process; the task
 gathers what a rater would see, probes the assistance method, applies the
 checks, and writes the result back, touching `updated_at` as it goes. A
 `running` row that has not been touched for `STALE_AFTER` belongs to a
@@ -284,9 +285,118 @@ async def start_run(
     return run
 
 
+def autostart_skip_reason(
+    latest: PilotCheckRun | None, *, current_fingerprint: str, now: datetime
+) -> str | None:
+    """Why a change should not start a run: one is in progress, or the
+    latest run already covers the experiment as it is. An aborted run covers
+    nothing, whatever its fingerprint says."""
+    if latest is None:
+        return None
+    status = effective_status(latest, now)
+    if status == "running":
+        return "a run is already in progress"
+    if status != "aborted" and latest.fingerprint == current_fingerprint:
+        return "the latest run is still fresh"
+    return None
+
+
+async def start_after_change(
+    experiment_id: int, *, requested_by: str | None, db: AsyncSession, database: Database
+) -> PilotCheckRun | None:
+    """Start a run once an upload or an edit has landed, unless `auto_start`
+    is off, the experiment is still missing something to fill in
+    (`experiment_launch_blockers`: questions, instructions, a model with a
+    key; a testing preview is not that, it is where the check is wanted
+    most), it is FINISHED, or `autostart_skip_reason` says why not. Never
+    raises: the write has succeeded and its response must say so."""
+    attributes = {"experiment_id": experiment_id}
+    try:
+        if not pilot_settings().auto_start:
+            return None
+        experiment = await fetch_experiment_or_404(experiment_id, db)
+        if experiment.status == ExperimentStatus.FINISHED:
+            return None
+        # Local: services.admin imports this module.
+        from services.admin.queries import fetch_total_questions_for_experiment
+        from services.admin.status import TESTING_PREVIEW_BLOCKER, experiment_launch_blockers
+        from services.admin.tags import fetch_tag_names_for_experiment
+
+        question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+        blockers = experiment_launch_blockers(
+            experiment,
+            question_count=question_count,
+            tags=await fetch_tag_names_for_experiment(experiment_id, db),
+        )
+        blockers = [blocker for blocker in blockers if blocker != TESTING_PREVIEW_BLOCKER]
+        if blockers:
+            logger.info(
+                "pilot check not started: the experiment is missing %s",
+                ", ".join(blockers),
+                extra={"attributes": attributes},
+            )
+            return None
+        skip = autostart_skip_reason(
+            await latest_run(experiment_id, db),
+            current_fingerprint=await current_fingerprint(
+                experiment, question_count=question_count, db=db
+            ),
+            now=datetime.now(UTC),
+        )
+        if skip:
+            logger.info("pilot check not started: %s", skip, extra={"attributes": attributes})
+            return None
+        run = await start_run(
+            experiment,
+            requested_by=requested_by,
+            question_count=question_count,
+            db=db,
+            database=database,
+        )
+        logger.info(
+            "pilot check started by a change",
+            extra={"attributes": {**attributes, "run_id": run.id}},
+        )
+        return run
+    except Exception:
+        logger.exception("pilot check not started", extra={"attributes": attributes})
+        return None
+
+
+async def _start_follow_up(run_id: int, database: Database) -> None:
+    """An edit that lands while a run is going is not checked by that run;
+    once it finishes, start another if the experiment has moved on. Bounded:
+    the next run's fingerprint matches, so it starts no third. Never raises:
+    the run that just landed must not be marked aborted by this."""
+    try:
+        async with database.session() as db:
+            run = await _load_run(run_id, db)
+            if run is None or run.status == "aborted":
+                return
+            await start_after_change(
+                run.experiment_id, requested_by=run.requested_by, db=db, database=database
+            )
+    except Exception:
+        logger.exception(
+            "pilot check follow-up not started", extra={"attributes": {"run_id": run_id}}
+        )
+
+
+async def cancel_runs() -> None:
+    """Stop the runs still going at shutdown; each marks its row aborted."""
+    tasks = list(_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def execute_run(run_id: int, database: Database) -> None:
     try:
         await _perform(run_id, database, pilot_settings())
+        await _start_follow_up(run_id, database)
+    except asyncio.CancelledError:
+        await _finish(run_id, database, status="aborted", error="The server stopped mid-run.")
+        raise
     except Exception as exc:  # the row must say why, not a log line alone
         logger.exception("pilot check run failed", extra={"attributes": {"run_id": run_id}})
         await _finish(run_id, database, status="aborted", error=exception_text(exc))

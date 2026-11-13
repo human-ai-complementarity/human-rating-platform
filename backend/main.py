@@ -19,6 +19,7 @@ from logging_config import configure_logging
 from routers import admin, raters, v1
 from services import admin_groups, prolific_to_slack
 from services.assistance.runner import PreparationRunner
+from services.pilot_check import runs as pilot_check_runs
 from services.pilot_check.checks import validate_severities
 
 logger = logging.getLogger(__name__)
@@ -169,6 +170,8 @@ def create_app() -> FastAPI:
                 with suppress(asyncio.CancelledError):
                     await prolific_to_slack_task
             try:
+                # Before the database goes: a cancelled run marks its row aborted.
+                await pilot_check_runs.cancel_runs()
                 await runner.close()
             finally:
                 await database.disconnect()

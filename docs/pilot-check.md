@@ -1,9 +1,10 @@
 # Pilot check: an AI spot check before a study goes to raters
 
-An admin-triggered check that samples an experiment's questions, walks each
-one through the same code path a rater hits, runs the configured assistance
-method on it, and reports anything a researcher would want to fix before
-paying Prolific participants to look at it. The experiment and launch pages
+A check that samples an experiment's questions, walks each one through the
+same code path a rater hits, runs the configured assistance method on it,
+and reports anything a researcher would want to fix before paying Prolific
+participants to look at it. It starts on its own when a question upload
+lands, and an admin can start it by hand. The experiment and launch pages
 say whether the check has been run, show its findings, and ask before
 creating a study without a clean run. They ask; they never refuse. A
 judge will always find something to fix, so the decision stays with the
@@ -78,11 +79,51 @@ could matter.
 | `judge_model` | `openrouter/anthropic/claude-sonnet-4-6` | `<provider>/<model-id>`, as in `assistance_models` |
 | `gate_mode` | `warn` | `warn` asks for acknowledgement, `off` ignores the check (the UI still shows it) |
 | `severities` | `{}` | per-check overrides of the default severity, e.g. `markdown_mode = "info"` |
+| `auto_start` | `true` | start a run when an upload or an edit leaves the experiment ready to launch (see below) |
 
-A SHA-256 of these values is stored on every run and is part of the
-fingerprint, so changing one marks earlier runs stale. Which checks run is
-not configurable: a check that should not run is a conversation about the
-check, not a toggle.
+A SHA-256 of these values, `gate_mode` and `auto_start` excepted (they change
+what a launch asks and when a run starts, not what a run looked at), is
+stored on every run and is part of the fingerprint, so changing one marks
+earlier runs stale. Which checks run is not configurable: a check that
+should not run is a conversation about the check, not a toggle.
+
+## Starting on its own
+
+The run takes about a minute; left to the admin, that minute is spent
+waiting at the launch step. So the two admin writes that shape what a rater
+sees, a question upload (`POST /api/admin/experiments/{id}/upload`) and an
+experiment edit (`PATCH /api/admin/experiments/{id}`), start a run once they
+have committed, with `requested_by` the admin who made the write, the same
+identity the manual POST records. The inference pipeline creates the
+experiment and then uploads an export that carries the instructions and the
+model, so there the upload is the write that starts the run. On the website
+the questions usually land before the instructions, so it is the edit that
+fills them in. A write is skipped, with a log line saying why, when:
+
+- `auto_start` is off;
+- the experiment is FINISHED;
+- the experiment is still missing something to fill in
+  (`experiment_launch_blockers` in `services/admin/status.py`: questions,
+  rater instructions, an internal name, and for an assisted arm a pinned
+  model with a key). A run before that would report the gaps the launch gate
+  already names, and be stale as soon as they are filled. The gate's testing
+  preview blocker is not one of these: a preview is where the check is
+  wanted, so a `preview-testing` draft is checked like any other;
+- a run is in progress (its row touched within the last five minutes);
+- the latest run is still fresh: its fingerprint matches the experiment as
+  it now stands, so edits a run does not look at (the public name, tags)
+  start nothing. An aborted run counts for nothing, whatever its fingerprint.
+
+An edit that lands while a run is going is not seen by that run. When a run
+finishes cleanly it asks the same question once more and starts a follow-up
+if the experiment has moved on; the follow-up's fingerprint matches, so
+there is no third. An aborted run starts nothing, or a failure that repeats
+would loop.
+
+The trigger never fails or delays the write: every exception is logged and
+the response is returned as it was. Duplicating an experiment copies its
+questions and uploads but does not start a run; the copy is usually edited
+before launch, and the edit starts one.
 
 ## Sampling
 
@@ -166,11 +207,13 @@ All under the admin session.
   `null` when none has been started.
 
 The run executes in the API process as an `asyncio` task started by the
-POST handler, with its own short-lived DB sessions. It touches the row's
-`updated_at` after every probe and every judge call; a `running` row left
-untouched for five minutes belongs to a process that is gone, reads as
-`aborted`, and can be re-run. This is simpler than a durable claim in the
-preparation queue and enough for a job an admin starts by hand and watches.
+POST handler or by an upload, with its own short-lived DB sessions. It
+touches the row's `updated_at` after every probe and every judge call; a
+`running` row left untouched for five minutes belongs to a process that is
+gone, reads as `aborted`, and can be re-run. A clean shutdown cancels the
+tasks still going and marks their rows `aborted` before the database
+closes. This is simpler than a durable claim in the preparation queue and
+enough for a job an admin starts, or an upload starts, and watches.
 
 The UI polls the GET every 3 s while `running`. The row carries where the
 run is: `stage` (`sampling`, `assistance`, `checks`, then one stage per
@@ -229,14 +272,17 @@ assistance calls.
 
 - Unit (`tests/unit/test_pilot_check_units.py`): each check against
   hand-built `CheckContext`s; the judge is a fake that returns a canned
-  verdict; the summary and fingerprint.
+  verdict; the summary, the fingerprint, and the auto-start skip rules.
 - E2E (`tests/e2e/test_pilot_check.py`, under `make test`): a run starts and
   lands with the provider client stubbed (the `no_provider_calls` fixture
   makes every assistance call fail, which is itself a good fixture: the run
   must report `assistance_health` as failed, not crash); a stale fingerprint;
-  a run that stopped reporting progress; the gate's 409 and acknowledgement.
-  The suite runs with the gate off (`pilot_check_gate_off` in conftest); the
-  gate tests turn it on.
+  a run that stopped reporting progress; the gate's 409 and acknowledgement;
+  an upload or edit starting a run, and the follow-up after a mid-run edit.
+  The suite runs with the gate off (`pilot_check_gate_off` in conftest) and
+  `auto_start` off (`pilot_check_autostart_off`), since most tests set up
+  experiments and never look at the check; the `pilot_check_gate` and
+  `pilot_check_autostart` fixtures turn them back on.
 - Playwright (`frontend/e2e/smoke.spec.ts`): the stepper mid-run and landed,
   the acknowledge dialog and its cancel path.
 
