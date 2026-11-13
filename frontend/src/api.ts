@@ -106,6 +106,8 @@ const routes = {
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
     launch: (id: number) => `/admin/experiments/${id}/launch`,
     pilotCheck: (id: number) => `/admin/experiments/${id}/pilot-check`,
+    pilotCheckScreen: (id: number, runId: number, screen: string) =>
+      `/admin/experiments/${id}/pilot-check/runs/${runId}/screens/${encodeURIComponent(screen)}`,
     launchPreview: (id: number) => `/admin/experiments/${id}/launch/preview`,
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
@@ -203,6 +205,15 @@ export function resolveMediaUrl(url: string): string {
   }
   const rebased = `${API_BASE}${url.slice(API_PREFIX.length)}`;
   return new URL(rebased, window.location.origin).href;
+}
+
+// A screenshot a pilot check finding names, opened in a new tab. Absolute, as
+// the API may live on another origin; the admin cookie goes with it.
+export function pilotCheckScreenUrl(experimentId: number, runId: number, screen: string): string {
+  return new URL(
+    buildUrl(routes.admin.pilotCheckScreen(experimentId, runId, screen)),
+    window.location.origin,
+  ).href;
 }
 
 // ── Error handling ───────────────────────────────────────────────────────────

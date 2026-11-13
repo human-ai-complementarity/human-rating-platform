@@ -46,6 +46,9 @@ class Finding:
     # participant preview. Empty for an experiment-level finding.
     question_ids: list[int] = field(default_factory=list)
     detail: str | None = None
+    # Screenshots the admin can open for this finding (`screens.Screen.key`);
+    # the run stores only the ones a finding names.
+    screens: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +57,7 @@ class Finding:
             "message": self.message,
             "question_ids": self.question_ids,
             "detail": self.detail,
+            "screens": self.screens,
         }
 
 
@@ -67,6 +71,8 @@ def merge_findings(findings: list[Finding]) -> list[Finding]:
         if key in merged:
             seen = merged[key].question_ids
             seen.extend(qid for qid in finding.question_ids if qid not in seen)
+            shots = merged[key].screens
+            shots.extend(screen for screen in finding.screens if screen not in shots)
         else:
             merged[key] = Finding(
                 finding.check,
@@ -74,6 +80,7 @@ def merge_findings(findings: list[Finding]) -> list[Finding]:
                 finding.message,
                 question_ids=list(finding.question_ids),
                 detail=finding.detail,
+                screens=list(finding.screens),
             )
     return list(merged.values())
 
@@ -92,6 +99,7 @@ class CheckContext:
     settings: PilotCheckSettings
     question_count: int
     views: list[RaterQuestionView]
+    run_id: int = 0
     terms: RaterTerms | None = None
     terms_error: str | None = None
     probes: list[AssistanceProbe] | None = None
@@ -101,6 +109,9 @@ class CheckContext:
     # Set by the run while a check runs: how far along it is, for the card's
     # stepper ("9 of 15 questions reviewed"). Cosmetic, never fatal.
     report: Callable[[str], Awaitable[None]] | None = None
+    # Screenshots a check took, by screen key; the run keeps the ones its
+    # findings name.
+    screenshots: dict[str, bytes] = field(default_factory=dict)
 
     async def note(self, text: str) -> None:
         if self.report is None:
@@ -132,6 +143,9 @@ class CheckSpec:
     judged: bool = False
     # Checks that only have something to do when an assistance method ran.
     needs_assistance: bool = False
+    # Checks that open the rater page in a browser, which needs
+    # `settings.rater_app_url`.
+    needs_browser: bool = False
 
 
 def skipped(check: str, reason: str) -> Finding:

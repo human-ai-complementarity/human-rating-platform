@@ -127,6 +127,8 @@ export interface PilotCheckFinding {
   // Every question the finding applies to; empty for an experiment-level one.
   question_ids: number[];
   detail: string | null;
+  // Screenshots to open for this finding: consent | intro | question-<id>.
+  screens?: string[];
 }
 
 export interface PilotCheckProbe {

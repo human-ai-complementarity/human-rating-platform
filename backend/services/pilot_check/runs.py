@@ -18,12 +18,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from fastapi import HTTPException
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import PilotCheckSettings, get_settings
 from database import Database
-from models import Experiment, ExperimentStatus, PilotCheckRun, Upload
+from models import Experiment, ExperimentStatus, PilotCheckRun, PilotCheckScreenshot, Upload
 from schemas import PilotCheckFinding, PilotCheckProbe, PilotCheckRunResponse, PilotCheckStage
 from services.assistance.base import exception_text
 from services.assistance.registry import get_rater_instructions
@@ -186,11 +186,17 @@ def plan_stages(experiment: Experiment, settings: PilotCheckSettings) -> list[Pi
     """The stages a run of this experiment goes through, in order, for the
     card's stepper: sampling, assistance (assisted arms), the deterministic
     checks as a group, one stage per judged check that applies (when a judge
-    is available), done."""
+    is available; the screenshot check also needs a rater app URL), done."""
     assisted = experiment.assistance_method != "none"
     ids = ["sampling"] + (["assistance"] if assisted else []) + ["checks"]
     if not judge_unavailable_reason(settings.judge_model):
-        ids += [c.name for c in CHECKS if c.judged and (assisted or not c.needs_assistance)]
+        ids += [
+            c.name
+            for c in CHECKS
+            if c.judged
+            and (assisted or not c.needs_assistance)
+            and (settings.rater_app_url or not c.needs_browser)
+        ]
     ids.append("done")
     return [PilotCheckStage(id=stage_id, label=_stage_label(stage_id)) for stage_id in ids]
 
@@ -465,6 +471,7 @@ async def _gather(
             experiment=experiment,
             settings=settings,
             question_count=question_count,
+            run_id=run_id,
             views=await build_views(experiment, questions, db),
             assistance_instructions=get_rater_instructions(experiment.assistance_method) or None,
         )
@@ -562,7 +569,39 @@ async def _perform(run_id: int, database: Database, settings: PilotCheckSettings
         sample_ids=[view.question_id for view in ctx.views],
         terms_ref=f"{terms.consent.ref}:{terms.consent.sha256}" if terms else None,
         judge_model=ctx.judge.model if ctx.judge else None,
+        screenshots=ctx.screenshots,
     )
+
+
+async def _keep_screenshots(
+    run: PilotCheckRun, findings: list[Finding], screenshots: dict[str, bytes], db: AsyncSession
+) -> None:
+    """Store the screenshots this run's findings name, and drop the ones
+    earlier runs of the experiment stored: the card shows the latest run."""
+    named = {screen for finding in findings for screen in finding.screens}
+    earlier = select(PilotCheckRun.id).where(
+        PilotCheckRun.experiment_id == run.experiment_id, PilotCheckRun.id != run.id
+    )
+    await db.execute(delete(PilotCheckScreenshot).where(PilotCheckScreenshot.run_id.in_(earlier)))
+    for screen in sorted(named & screenshots.keys()):
+        db.add(PilotCheckScreenshot(run_id=run.id, screen=screen, png=screenshots[screen]))
+
+
+async def screenshot_png(
+    experiment_id: int, run_id: int, screen: str, db: AsyncSession
+) -> bytes | None:
+    row = (
+        await db.execute(
+            select(PilotCheckScreenshot.png)
+            .join(PilotCheckRun, PilotCheckRun.id == PilotCheckScreenshot.run_id)
+            .where(
+                PilotCheckRun.experiment_id == experiment_id,
+                PilotCheckScreenshot.run_id == run_id,
+                PilotCheckScreenshot.screen == screen,
+            )
+        )
+    ).first()
+    return row[0] if row else None
 
 
 async def _finish(
@@ -576,12 +615,15 @@ async def _finish(
     sample_ids: list[int] | None = None,
     terms_ref: str | None = None,
     judge_model: str | None = None,
+    screenshots: dict[str, bytes] | None = None,
 ) -> None:
     try:
         async with database.session() as db:
             run = await _load_run(run_id, db)
             if run is None:
                 return  # experiment deleted mid-run; the cascade took the row
+            if findings is not None:
+                await _keep_screenshots(run, findings, screenshots or {}, db)
             now = datetime.now(UTC)
             run.status = status
             run.error = error

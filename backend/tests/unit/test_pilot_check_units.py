@@ -29,18 +29,21 @@ from services.pilot_check.checks import (
     question_coherent,
     markdown_mode,
     question_renders,
+    rater_screens,
     validate_severities,
 )
 from services.pilot_check.checks.base import Finding, merge_findings
 from services.pilot_check.summary import summarise
 from services.pilot_check.judge import JudgeError, Problem, Verdict, parse_problems, parse_verdict
 from services.pilot_check.rater_view import RaterQuestionView
+from services.pilot_check import screens as browser
 from services.pilot_check.runs import (
     QUEUE_TIMEOUT,
     _run_check,
     autostart_skip_reason,
     compute_fingerprint,
     effective_status,
+    plan_stages,
 )
 from services.pilot_check.sampling import choose_sample
 from services.terms.service import PLACEHOLDER_CONSENT, RaterTerms, StatementText
@@ -771,3 +774,142 @@ def test_findings_that_say_the_same_thing_merge_into_one_row():
         ("The question text is empty.", [2], None),
         ("Raters see v1.", [], None),
     ]
+
+
+# --- Rater screens ----------------------------------------------------------
+
+
+class _LookingJudge(_FakeJudge):
+    """Reads screenshots: the verdict for each PNG's bytes, ok when unlisted."""
+
+    def __init__(self, by_png: dict[bytes, Verdict | Exception]):
+        super().__init__(Verdict(ok=True, summary="", issues=[]))
+        self.by_png = by_png
+        self.looked: list[bytes] = []
+
+    async def look(self, *, task: str, png: bytes) -> Verdict:
+        self.looked.append(png)
+        outcome = self.by_png.get(png, Verdict(ok=True, summary="", issues=[]))
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _shots(*question_ids: int, intro: bool = True) -> list[browser.Screen]:
+    shots = [browser.Screen(browser.CONSENT, b"consent")]
+    if intro:
+        shots.append(browser.Screen(browser.INTRO, b"intro"))
+    shots += [
+        browser.Screen(browser.question_screen(q), f"q{q}".encode(), question_id=q)
+        for q in question_ids
+    ]
+    return shots
+
+
+def _browser_returns(monkeypatch, result):
+    calls = []
+
+    async def fake_capture(**kwargs):
+        calls.append(kwargs)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(browser, "capture", fake_capture)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_rater_screens_skip_without_an_app_url(config, monkeypatch):
+    calls = _browser_returns(monkeypatch, _shots(1))
+    ctx = _ctx(config, _experiment(), judge=_LookingJudge({}))
+    findings = await rater_screens.run(ctx, "warning")
+    assert [f.severity for f in findings] == ["info"]
+    assert "rater_app_url" in findings[0].message
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_rater_screens_flag_what_the_judge_sees_and_link_the_screenshot(monkeypatch):
+    settings = PilotCheckSettings(rater_app_url="https://app.example")
+    exp = _experiment()
+    views = [_view(exp, qid=1), _view(exp, qid=2)]
+    calls = _browser_returns(monkeypatch, _shots(1, 2))
+    judge = _LookingJudge(
+        {
+            b"consent": Verdict(ok=False, summary="The consent text is cut off.", issues=["x"]),
+            b"q2": Verdict(ok=False, summary="Raw LaTeX shows.", issues=["$x^2$"]),
+        }
+    )
+    ctx = _ctx(settings, exp, views, judge=judge, run_id=42)
+    findings = await rater_screens.run(ctx, "warning")
+
+    assert calls[0]["app_url"] == "https://app.example"
+    assert calls[0]["question_ids"] == [1, 2] and calls[0]["run_id"] == 42
+    assert judge.looked == [b"consent", b"intro", b"q1", b"q2"]
+    by_message = {f.message: f for f in findings}
+    assert by_message["The consent text is cut off."].screens == ["consent"]
+    assert by_message["The consent text is cut off."].question_ids == []
+    latex = by_message["Raw LaTeX shows."]
+    assert latex.question_ids == [2] and latex.screens == ["question-2"]
+    assert latex.detail == "- $x^2$"
+    # Every screen is handed to the run; it keeps only the ones findings name.
+    assert set(ctx.screenshots) == {"consent", "intro", "question-1", "question-2"}
+
+
+@pytest.mark.asyncio
+async def test_a_screen_that_never_loaded_is_a_finding_with_its_screenshot(monkeypatch):
+    settings = PilotCheckSettings(rater_app_url="https://app.example")
+    exp = _experiment()
+    shots = _shots(1, intro=False)
+    shots[1].problems.append("The assistance was still loading after two minutes.")
+    _browser_returns(monkeypatch, shots)
+    ctx = _ctx(settings, exp, [_view(exp, qid=1)], judge=_LookingJudge({}))
+    findings = await rater_screens.run(ctx, "warning")
+    assert [(f.message, f.question_ids, f.screens) for f in findings] == [
+        ("The assistance was still loading after two minutes.", [1], ["question-1"])
+    ]
+
+
+@pytest.mark.asyncio
+async def test_no_browser_on_the_server_is_a_warning(monkeypatch):
+    settings = PilotCheckSettings(rater_app_url="https://app.example")
+    _browser_returns(monkeypatch, browser.BrowserUnavailable("Executable doesn't exist"))
+    ctx = _ctx(settings, _experiment(), judge=_LookingJudge({}))
+    findings = await rater_screens.run(ctx, "warning")
+    assert [f.severity for f in findings] == ["warning"]
+    assert "could not open a browser" in findings[0].message
+    assert findings[0].detail == "Executable doesn't exist"
+
+
+@pytest.mark.asyncio
+async def test_three_failed_looks_in_a_row_stop_the_screen_review(monkeypatch):
+    settings = PilotCheckSettings(rater_app_url="https://app.example")
+    exp = _experiment()
+    _browser_returns(monkeypatch, _shots(1, 2, 3))
+    failing = {png: JudgeError("down") for png in (b"consent", b"intro", b"q1", b"q2", b"q3")}
+    judge = _LookingJudge(failing)
+    ctx = _ctx(settings, exp, [_view(exp, qid=q) for q in (1, 2, 3)], judge=judge)
+    findings = await rater_screens.run(ctx, "warning")
+    assert len(judge.looked) == 3
+    assert "remaining 2 screens were not reviewed" in findings[-1].message
+
+
+def test_the_screen_stage_needs_a_rater_app_url(monkeypatch):
+    monkeypatch.setattr("services.pilot_check.runs.judge_unavailable_reason", lambda model: None)
+    exp = _experiment()
+    without = [stage.id for stage in plan_stages(exp, PilotCheckSettings())]
+    with_url = [
+        stage.id
+        for stage in plan_stages(exp, PilotCheckSettings(rater_app_url="https://app.example"))
+    ]
+    assert "rater_screens" not in without
+    assert with_url[-2:] == ["rater_screens", "done"]
+
+
+def test_merging_findings_keeps_every_screenshot():
+    a = Finding("rater_screens", "warning", "Same", question_ids=[1], screens=["question-1"])
+    b = Finding("rater_screens", "warning", "Same", question_ids=[2], screens=["question-2"])
+    (merged,) = merge_findings([a, b])
+    assert merged.question_ids == [1, 2]
+    assert merged.screens == ["question-1", "question-2"]

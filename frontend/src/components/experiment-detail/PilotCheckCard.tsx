@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { api } from '../../api';
+import { api, pilotCheckScreenUrl } from '../../api';
 import { buildRaterPreviewUrl } from '../../raterPreview';
 import type {
   Experiment,
@@ -230,6 +230,7 @@ export function PilotCheckCard({
                           key={index}
                           finding={finding}
                           experimentId={experiment.id}
+                          runId={run.id}
                           probes={probes}
                         />
                       ))}
@@ -273,10 +274,12 @@ function groupFindings(findings: PilotCheckFinding[]) {
 function FindingRow({
   finding,
   experimentId,
+  runId,
   probes,
 }: {
   finding: PilotCheckFinding;
   experimentId: number;
+  runId: number;
   probes: Map<number, PilotCheckProbe>;
 }) {
   const ids = finding.question_ids;
@@ -331,6 +334,25 @@ function FindingRow({
                 style={{ color: 'var(--accent)' }}
               >
                 {ids.length === 1 ? `Open question ${id} in preview` : id}
+              </a>
+            ))}
+          </div>
+        )}
+        {(finding.screens ?? []).length > 0 && (
+          <div
+            data-testid="pilot-check-finding-screens"
+            style={{ marginTop: 6, fontSize: 12.5, display: 'flex', flexWrap: 'wrap', gap: '2px 8px' }}
+          >
+            <span style={{ color: 'var(--muted)' }}>Screenshot:</span>
+            {(finding.screens ?? []).map((screen) => (
+              <a
+                key={screen}
+                href={pilotCheckScreenUrl(experimentId, runId, screen)}
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: 'var(--accent)' }}
+              >
+                {screen.replace('-', ' ')}
               </a>
             ))}
           </div>

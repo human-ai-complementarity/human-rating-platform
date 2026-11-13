@@ -646,3 +646,77 @@ def test_the_worker_loop_runs_queued_checks_and_stops_cleanly(
 
     asyncio.run(go())
     assert client.get(url).json()["status"] == "passed"
+
+
+class _ScreenJudge:
+    """Passes every text check; flags the consent screenshot only."""
+
+    model = "fake/judge"
+
+    def __init__(self, model: str):
+        pass
+
+    async def __call__(self, *, task, material):
+        from services.pilot_check.judge import Verdict
+
+        return Verdict(ok=True)
+
+    async def group(self, *, task, material):
+        return []
+
+    async def look(self, *, task, png):
+        from services.pilot_check.judge import Verdict
+
+        if png == b"consent-png":
+            return Verdict(ok=False, summary="The consent text is cut off.", issues=["bottom"])
+        return Verdict(ok=True)
+
+
+def test_a_flagged_screenshot_is_kept_and_served_until_the_next_run(
+    client: TestClient, monkeypatch, terms_source
+):
+    """The screenshot check (browser and judge stood in for) stores only the
+    screenshots its findings name, serves them as PNG, and a later run of the
+    experiment drops the earlier run's."""
+    from services.pilot_check import runs
+    from services.pilot_check import screens as browser
+
+    async def fake_capture(*, question_ids, **kwargs):
+        shots = [browser.Screen(browser.CONSENT, b"consent-png")]
+        return shots + [
+            browser.Screen(browser.question_screen(q), b"question-png", question_id=q)
+            for q in question_ids
+        ]
+
+    monkeypatch.setattr(browser, "capture", fake_capture)
+    monkeypatch.setattr(runs, "LLMJudge", _ScreenJudge)
+    monkeypatch.setattr(runs, "judge_unavailable_reason", lambda model: None)
+    settings = get_settings().pilot_check
+    monkeypatch.setattr(settings, "rater_app_url", "https://app.example")
+
+    exp = _ready_experiment(client)
+    run = _run_check(client, exp["id"])
+    assert "rater_screens" in [stage["id"] for stage in run["stages"]]
+    flagged = [f for f in run["findings"] if f["check"] == "rater_screens"]
+    assert [(f["message"], f["screens"]) for f in flagged] == [
+        ("The consent text is cut off.", ["consent"])
+    ]
+
+    base = f"/api/admin/experiments/{exp['id']}/pilot-check/runs/{run['id']}/screens"
+    shot = client.get(f"{base}/consent")
+    assert shot.status_code == 200
+    assert shot.headers["content-type"] == "image/png"
+    assert shot.content == b"consent-png"
+    # Unflagged screens are not kept.
+    assert client.get(f"{base}/question-1").status_code == 404
+
+    rerun = _run_check(client, exp["id"])
+    assert client.get(f"{base}/consent").status_code == 404
+    again = f"/api/admin/experiments/{exp['id']}/pilot-check/runs/{rerun['id']}/screens/consent"
+    assert client.get(again).content == b"consent-png"
+    # Another experiment's path does not reach this run's screenshots.
+    other = client.post("/api/admin/experiments", json={"name": "Other"}).json()
+    other_url = (
+        f"/api/admin/experiments/{other['id']}/pilot-check/runs/{rerun['id']}/screens/consent"
+    )
+    assert client.get(other_url).status_code == 404

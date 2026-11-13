@@ -264,6 +264,10 @@ class PilotCheckSettings(_StrictModel):
     runner: Literal["inline", "worker"] = "inline"
     # Runs one worker process takes on at once; the rest wait in the queue.
     worker_concurrency: int = Field(default=1, ge=1, le=8)
+    # Origin of the rater-facing frontend the server's own browser opens for
+    # the screenshot check (`rater_screens`), e.g.
+    # https://platform.complementarities.org. Empty skips that check.
+    rater_app_url: str = ""
     # Per-check severity overrides, keyed by check name; each check has a
     # default in code (services/pilot_check/checks).
     severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)

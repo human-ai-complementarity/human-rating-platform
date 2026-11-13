@@ -64,6 +64,25 @@ finding; if the call fails the per-question findings stand.
 | `assistance_output` | deterministic | Any method: step type `none` or `skip`, with the `failure_reason` and detail. `top_n`: zero candidates. `human_as_a_tool`: zero subtasks, no subtask with an AI answer filled in (the brief's "every confidence 0 and nothing filled in" shape), `COMPLETE` on the first step with an empty synthesis answer. Whether what came back is any good is `assistance_useful`'s call. |
 | `assistance_useful` | judged | Given the question and the first assistance step's payload, is the assistance about this question, plausible, and in the form the rater instructions describe. Catches a method that returns fluent nonsense without tripping a deterministic rule. |
 
+### Screenshots (the last stage)
+
+`rater_screens` (judged) opens the rater page in headless Chromium on the
+server (`services/pilot_check/screens.py`), in preview mode with the sampled
+questions pinned by id: the consent screen, the intro when there is one, then
+each question, waiting for the assistance to arrive on an assisted arm.
+Nothing is answered. A vision judge reads each screenshot for what would
+confuse, block or mislead a rater: raw Markdown or LaTeX, cut-off or
+overlapping text, a missing image, an error, assistance that failed, options
+that do not fit the question. A screen that never finished loading is a
+finding too. Each finding names its screenshots, and only those are stored
+(`pilot_check_screenshots`, the latest run of an experiment only); the card
+links each one, served by `GET .../pilot-check/runs/{run_id}/screens/{screen}`.
+
+It is skipped (info) when `rater_app_url` is empty, and a warning when the
+server cannot start a browser. It reads the same screens the other checks
+read as text, end to end; if its findings prove good enough, it can replace
+some of them.
+
 The launch gate's own blockers are not repeated as a check: the pilot gate
 runs after `assert_launch_ready`, and the fingerprint covers every blocker
 input, so a run made with a blocker present is already stale by the time it
@@ -82,6 +101,16 @@ could matter.
 | `auto_start` | `true` | start a run when an upload or an edit leaves the experiment ready to launch (see below) |
 | `runner` | `inline` | `inline` runs checks in the API process; `worker` queues them for the worker process (see "Where runs happen") |
 | `worker_concurrency` | 1 | runs one worker process takes on at once; the rest wait queued |
+| `rater_app_url` | `""` | frontend origin the screenshot check opens, e.g. `https://platform.complementarities.org`; empty skips it |
+
+The screenshot check needs Chromium where runs happen: the pilot check
+worker in production. On Render, add `PLAYWRIGHT_BROWSERS_PATH=0` to the
+worker's environment (the browser then lives inside the project's venv, which
+the runtime keeps) and append `&& uv run --no-sync playwright install chromium`
+to its build command. In the Docker dev stack (inline), install it into the
+running api container once:
+`docker compose exec api sh -c 'apt-get update && apt-get install -y libatomic1 && PLAYWRIGHT_BROWSERS_PATH=/uv-env/ms-playwright playwright install --with-deps chromium'`
+with `PLAYWRIGHT_BROWSERS_PATH=/uv-env/ms-playwright` in the api environment.
 
 A SHA-256 of these values, `gate_mode`, `auto_start`, `runner` and
 `worker_concurrency` excepted (they change what a launch asks and when and
