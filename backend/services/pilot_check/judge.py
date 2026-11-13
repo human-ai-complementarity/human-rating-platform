@@ -8,6 +8,7 @@ knows how to ask.
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -50,6 +51,8 @@ class Judge(Protocol):
     async def __call__(self, *, task: str, material: str) -> Verdict: ...
 
     async def group(self, *, task: str, material: str) -> list[Problem]: ...
+
+    async def look(self, *, task: str, png: bytes) -> Verdict: ...
 
 
 def _json_object(raw: str) -> dict:
@@ -118,15 +121,24 @@ class LLMJudge:
     async def group(self, *, task: str, material: str) -> list[Problem]:
         return parse_problems(await self._ask(task, material, _PROBLEMS_SHAPE))
 
+    async def look(self, *, task: str, png: bytes) -> Verdict:
+        """The verdict on a screenshot: the task, then the image."""
+        data_url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+        content = [
+            {"type": "text", "text": f"{task}\n\n{_VERDICT_SHAPE}"},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+        return parse_verdict(await self._send(content))
+
     async def _ask(self, task: str, material: str, shape: str) -> str:
+        return await self._send(
+            f"{task}\n\n=== Material ===\n{material}\n=== End of material ===\n\n{shape}"
+        )
+
+    async def _send(self, content: str | list[dict]) -> str:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"{task}\n\n=== Material ===\n{material}\n=== End of material ===\n\n{shape}"
-                ),
-            },
+            {"role": "user", "content": content},
         ]
         try:
             return await complete(

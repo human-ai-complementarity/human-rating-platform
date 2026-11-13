@@ -21,6 +21,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    LargeBinary,
     UniqueConstraint,
     text,
 )
@@ -1094,3 +1095,24 @@ class PilotCheckRun(SQLModel, table=True):
         default=None,
         sa_column=Column(DateTime(timezone=True), nullable=True),
     )
+
+
+class PilotCheckScreenshot(SQLModel, table=True):
+    """A screenshot of a rater screen that a pilot check finding names, for
+    the admin to open from that finding. Only the latest run of an
+    experiment keeps its screenshots."""
+
+    __tablename__ = "pilot_check_screenshots"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    run_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("pilot_check_runs.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    # consent | intro | question-<id>
+    screen: str = Field(sa_column=Column(String(32), nullable=False))
+    png: bytes = Field(sa_column=Column(LargeBinary, nullable=False))

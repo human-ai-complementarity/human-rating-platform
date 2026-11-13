@@ -86,6 +86,7 @@ type PilotCheckRunRecord = {
     message: string;
     question_ids: number[];
     detail: string | null;
+    screens?: string[];
   }[];
   assistance_steps: null;
   judge_model: string | null;
@@ -4767,6 +4768,46 @@ test('a run waiting for the pilot check worker shows as queued with nothing star
   await expect(stepper.getByTestId('pilot-check-step-sampling')).toHaveAttribute('data-status', 'pending');
   await expect(stepper.getByTestId('pilot-check-step-done')).toHaveAttribute('data-status', 'pending');
   await expect(card.getByTestId('pilot-check-findings')).toHaveCount(0);
+});
+
+test('a finding from the screenshot check links the screenshot it came from', async ({ page }) => {
+  const state = createMockState();
+  pilotCheckExperiment(state, {
+    state: 'warnings',
+    run_id: 3,
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: '2026-03-09T00:04:00Z',
+    counts: { error: 0, warning: 1, info: 0 },
+    needs_acknowledgement: true,
+    reason: 'The last pilot check found 0 error(s) and 1 warning(s).',
+  });
+  state.pilotCheckRuns[1] = buildPilotCheckRun(1, {
+    id: 3,
+    status: 'warnings',
+    findings: [
+      {
+        check: 'rater_screens',
+        check_label: 'Rater screens',
+        severity: 'warning',
+        message: 'Raw LaTeX shows instead of the formula.',
+        question_ids: [12],
+        detail: null,
+        screens: ['question-12'],
+      },
+    ],
+  });
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  const screens = page.getByTestId('pilot-check-finding-screens');
+  await expect(screens).toContainText('Screenshot:');
+  const link = screens.getByRole('link', { name: 'question 12' });
+  await expect(link).toHaveAttribute(
+    'href',
+    /\/api\/admin\/experiments\/1\/pilot-check\/runs\/3\/screens\/question-12$/,
+  );
+  await expect(link).toHaveAttribute('target', '_blank');
 });
 
 test('creating a pilot without a clean pilot check asks before launching anyway', async ({ page }) => {

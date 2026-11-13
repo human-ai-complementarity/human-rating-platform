@@ -281,6 +281,8 @@ class PilotCheckFinding(BaseModel):
     # Every question the finding applies to; empty for an experiment-level one.
     question_ids: list[int] = Field(default_factory=list)
     detail: Optional[str] = None
+    # Screenshots to open for this finding: consent | intro | question-<id>.
+    screens: list[str] = Field(default_factory=list)
 
 
 class PilotCheckProbe(BaseModel):

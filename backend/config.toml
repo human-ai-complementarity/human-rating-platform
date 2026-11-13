@@ -50,5 +50,8 @@ auto_start = true
 runner = "inline"
 # Runs the worker takes on at once; the rest queue.
 worker_concurrency = 1
+# Frontend origin the screenshot check opens in a headless browser; empty
+# skips it. Set per deployment (PILOT_CHECK__RATER_APP_URL).
+rater_app_url = ""
 # Per-check severity overrides, e.g. markdown_mode = "info".
 [pilot_check.severities]

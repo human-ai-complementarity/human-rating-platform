@@ -610,7 +610,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   }
 
   return (
-    <div style={cardStyle}>
+    // The pilot check's browser waits for this before its screenshot.
+    <div style={cardStyle} data-testid="question-card">
       <div
         style={{
           font: '600 var(--text-label)/1 var(--font-mono)',

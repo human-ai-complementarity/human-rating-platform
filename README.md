@@ -385,10 +385,11 @@ Deploys are GitHub-driven and API-triggered (Render auto-deploy is off):
 - **Start:** `uv run --no-sync uvicorn main:app --host 0.0.0.0 --port $PORT`
 
 The pilot check worker is a Render **Background Worker** on the same repo and
-root directory, with the same build command, no predeploy (the API's runs
-the migrations), and:
+root directory, with no predeploy (the API's runs the migrations), and:
 
+- **Build:** `uv sync --frozen --no-dev --no-install-project && uv run --no-sync playwright install chromium` (the browser for the screenshot check; set `PLAYWRIGHT_BROWSERS_PATH=0` so it lands in the venv)
 - **Start:** `uv run --no-sync python -m pilot_check_worker`
+- **Env, besides the API's:** `PILOT_CHECK__RATER_APP_URL=https://platform.complementarities.org`
 
 ### Required GitHub Actions secrets
 

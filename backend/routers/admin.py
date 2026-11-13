@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -522,6 +522,20 @@ async def run_pilot_check(
     return pilot_check_runs.build_run_response(
         run, experiment=experiment, current_fingerprint=run.fingerprint
     )
+
+
+@secure_router.get("/experiments/{experiment_id}/pilot-check/runs/{run_id}/screens/{screen}")
+async def get_pilot_check_screenshot(
+    experiment_id: int,
+    run_id: int,
+    screen: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """A screenshot a finding of the run names, as PNG (docs/pilot-check.md)."""
+    png = await pilot_check_runs.screenshot_png(experiment_id, run_id, screen, db)
+    if png is None:
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "private"})
 
 
 @secure_router.get(

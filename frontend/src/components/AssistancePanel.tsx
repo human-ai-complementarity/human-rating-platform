@@ -283,7 +283,8 @@ function AssistancePanel({ resource }: AssistancePanelProps) {
 
   if (loading) {
     return (
-      <div style={panelStyle}>
+      // The pilot check's browser waits for this to go before its screenshot.
+      <div style={panelStyle} data-testid="assistance-loading">
         <div style={panelHeaderStyle}>
           <span style={stepLabelStyle}>AI Assistance</span>
           <p style={panelTitleStyle}>Analyzing question…</p>
