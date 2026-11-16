@@ -1990,6 +1990,79 @@ test('the math flag typesets MC options and submits the option as written', asyn
   expect(state.submittedRatings[0]).toMatchObject({ answer: '$E = \\dfrac{q}{l^2}$' });
 });
 
+test('an MC option keeps its line breaks with and without the markdown flag', async ({ page }) => {
+  const state = createMockState();
+  const multiLine = '1. Devil laundered money.\n2. Devil committed perjury.';
+  const question: RaterQuestionRecord = {
+    id: 513,
+    question_text: 'What crimes has Devil committed?',
+    options: `Sorry, I cannot assist with that.|${multiLine}|First paragraph.\n\nSecond paragraph.`,
+    question_type: 'MC',
+    is_markdown: false,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // Each numbered item sits on its own line: the option is two lines tall.
+  const lineCount = (index: number) =>
+    page
+      .locator('button[aria-pressed]')
+      .nth(index)
+      .evaluate((button) => {
+        const range = document.createRange();
+        range.selectNodeContents(button.lastElementChild!);
+        const tops = new Set(Array.from(range.getClientRects(), (rect) => Math.round(rect.top)));
+        return tops.size;
+      });
+  expect(await lineCount(0)).toBe(1);
+  expect(await lineCount(1)).toBe(2);
+
+  // Markdown on: the items are a list and the blank line separates paragraphs.
+  question.is_markdown = true;
+  await page.reload();
+  const options = page.locator('button[aria-pressed]');
+  await expect(options).toHaveCount(3);
+  await expect(options.nth(1).getByRole('listitem')).toHaveCount(2);
+  await expect(options.nth(2).locator('p')).toHaveCount(2);
+
+  // The answer submitted is the option as written, newline included.
+  await page.locator('button[aria-pressed]').nth(1).click();
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: multiLine });
+});
+
+test('a long unbroken token wraps inside its MC option', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 514,
+    question_text: 'Which hash matches?',
+    options: `Token: ${'a3f5c9e1b7d2'.repeat(20)}|None of them`,
+    question_type: 'MC',
+    is_markdown: false,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const overflows = () =>
+    page
+      .locator('button[aria-pressed]')
+      .first()
+      .evaluate((button) => button.scrollWidth > button.clientWidth);
+  expect(await overflows()).toBe(false);
+
+  question.is_markdown = true;
+  await page.reload();
+  await expect(page.locator('button[aria-pressed]')).toHaveCount(2);
+  expect(await overflows()).toBe(false);
+});
+
 test('the math flag typesets TeX in plain text and leaves prices as text', async ({ page }) => {
   const state = createMockState();
   const question: RaterQuestionRecord = {
@@ -2109,7 +2182,8 @@ test('Markdown and math typeset together, leaving code and prices as written', a
   await page.goto(RATER_URL);
   await agreeToConsent(page);
 
-  const body = page.locator('div.question-markdown');
+  // The question; the options after it render Markdown too.
+  const body = page.locator('div.question-markdown').first();
   await expect(body.getByRole('heading', { name: 'Field of a charged sphere' })).toBeVisible();
   await expect(body.locator('strong')).toHaveText('charged');
   // Subscripts are not read as emphasis, \( keeps its backslash.
@@ -2160,7 +2234,7 @@ test('Markdown with math keeps code, escapes and link references intact', async 
   await page.goto(RATER_URL);
   await agreeToConsent(page);
 
-  const body = page.locator('div.question-markdown');
+  const body = page.locator('div.question-markdown').first();
   // $x$ and $z$ are typeset; nothing inside code is.
   await expect(body.locator('math')).toHaveCount(2);
   await expect(body.locator('code math')).toHaveCount(0);
@@ -2178,12 +2252,19 @@ test('Markdown with math keeps code, escapes and link references intact', async 
   ]);
 });
 
-test('MC options follow the Markdown flag, inline syntax only', async ({ page }) => {
+test('MC options render Markdown like the question, without links', async ({ page }) => {
   const state = createMockState();
   const question: RaterQuestionRecord = {
     id: 516,
     question_text: 'Pick one.',
-    options: '**Bold** and $x^2$|1. Paris|# of items|List<int> or `code`|[site](https://example.com)',
+    options: [
+      '**Bold** and $x^2$',
+      '1. Paris',
+      '# of items',
+      'List<int> or `code`',
+      '[site](https://example.com)',
+      '```python\ndef f(n):\n    return n\n```',
+    ].join('|'),
     question_type: 'MC',
     is_markdown: true,
     render_math: true,
@@ -2195,16 +2276,18 @@ test('MC options follow the Markdown flag, inline syntax only', async ({ page })
   await agreeToConsent(page);
 
   const options = page.locator('button[aria-pressed]');
-  await expect(options).toHaveCount(5);
+  await expect(options).toHaveCount(6);
   await expect(options.nth(0).locator('strong')).toHaveText('Bold');
   await expect(options.nth(0).locator('math msup')).toHaveCount(1);
-  // Not a list, not a heading, not swallowed as an HTML tag, not a link.
-  await expect(options.nth(1)).toHaveText('1. Paris');
-  await expect(options.nth(2)).toHaveText('# of items');
+  // Block syntax renders as it does in the question.
+  await expect(options.nth(1).locator('ol li')).toHaveText('Paris');
+  await expect(options.nth(2).locator('h1')).toHaveText('of items');
+  await expect(options.nth(5).locator('pre code .hljs-keyword').first()).toHaveText('def');
+  // Raw HTML stays text, and a link shows as its text: it would open, not select.
   await expect(options.nth(3)).toHaveText('List<int> or code');
   await expect(options.nth(3).locator('code')).toHaveText('code');
   await expect(options.nth(4)).toHaveText('site');
-  await expect(options.locator('ol, h1, a, p')).toHaveCount(0);
+  await expect(options.locator('a')).toHaveCount(0);
 
   await options.nth(0).click();
   await page.getByRole('button', { name: 'Submit answer' }).click();

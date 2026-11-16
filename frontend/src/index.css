@@ -703,6 +703,12 @@ button:disabled {
 .rater-prose li {
   margin-bottom: 4px;
 }
+/* In an MC option the list number sits in the text, not out in the indent,
+   so a wide one ("2018.") does not run over the radio circle. */
+.question-option :is(ul, ol) {
+  list-style-position: inside;
+  padding-left: 0;
+}
 .rater-prose code {
   font-size: 0.875em;
 }

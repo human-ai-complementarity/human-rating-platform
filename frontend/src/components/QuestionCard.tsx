@@ -136,33 +136,10 @@ function MathText({ text, math }: { text: string; math: MathRenderer }) {
 
 const MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
 
-// An MC option is one line in a button, so it takes Markdown's inline syntax
-// (bold, code, strikethrough) and none of its blocks: "1. Paris" stays as
-// written instead of becoming a list, "# of items" is not a heading, and
-// "List<int>" keeps its brackets.
-const BLOCK_CONSTRUCTS = [
-  'list',
-  'headingAtx',
-  'setextUnderline',
-  'blockQuote',
-  'codeIndented',
-  'codeFenced',
-  'thematicBreak',
-  'htmlFlow',
-  'htmlText',
-  'definition',
-  'table',
-  'gfmFootnoteDefinition',
-];
-function remarkInlineOnly(this: unknown) {
-  // The parser reads its syntax extensions from the processor's data.
-  const data = (this as { data: () => { micromarkExtensions?: unknown[] } }).data();
-  (data.micromarkExtensions ??= []).push({ disable: { null: BLOCK_CONSTRUCTS } });
-}
-const INLINE_MARKDOWN_PLUGINS = [...MARKDOWN_PLUGINS, remarkInlineOnly];
-const INLINE_MARKDOWN_COMPONENTS: Components = {
-  p: ({ children }) => <>{children}</>,
-  // The option is a button: a link inside it would open instead of select.
+// An MC option renders like the question, except that a link inside the
+// button would open instead of selecting the option, so it shows as its text.
+const OPTION_MARKDOWN_COMPONENTS: Components = {
+  ...MARKDOWN_COMPONENTS,
   a: ({ children }) => <>{children}</>,
 };
 
@@ -172,19 +149,16 @@ const INLINE_MARKDOWN_COMPONENTS: Components = {
 function MarkdownBody({
   text,
   math,
-  inline = false,
+  components: baseComponents = MARKDOWN_COMPONENTS,
   style,
 }: {
   text: string;
   math: MathRenderer | null;
-  // Inline syntax only, in a span: for an MC option.
-  inline?: boolean;
+  components?: Components;
   style?: CSSProperties;
 }) {
   const rendering = useMemo(() => {
-    const basePlugins = inline ? INLINE_MARKDOWN_PLUGINS : MARKDOWN_PLUGINS;
-    const baseComponents = inline ? INLINE_MARKDOWN_COMPONENTS : MARKDOWN_COMPONENTS;
-    if (!math) return { source: text, plugins: basePlugins, components: baseComponents };
+    if (!math) return { source: text, plugins: MARKDOWN_PLUGINS, components: baseComponents };
     const { markdown, formulas } = maskMath(text);
     const typeset = formulas.map((formula) => ({
       display: formula.display,
@@ -206,12 +180,11 @@ function MarkdownBody({
     };
     return {
       source: markdown,
-      plugins: [...basePlugins, remarkMaskedMath(formulas)],
+      plugins: [...MARKDOWN_PLUGINS, remarkMaskedMath(formulas)],
       components,
     };
-  }, [text, math, inline]);
-  // An option has no code blocks to colour.
-  const codePlugins = useCodeHighlighter(!inline && hasCodeFence(text));
+  }, [text, math, baseComponents]);
+  const codePlugins = useCodeHighlighter(hasCodeFence(text));
   // One element per source: the card re-renders on every keystroke in the
   // free-text box, and React skips an element it has already rendered, so the
   // Markdown is not parsed and highlighted again each time.
@@ -227,47 +200,34 @@ function MarkdownBody({
     ),
     [rendering, codePlugins],
   );
-  const Wrapper = inline ? 'span' : 'div';
   return (
-    <Wrapper
-      // An option keeps its button's type; only a block takes the prose style.
-      className={inline ? 'question-markdown markdown' : 'question-markdown markdown rater-prose'}
-      style={style}
-    >
+    <div className="question-markdown markdown rater-prose" style={style}>
       {rendered}
-    </Wrapper>
+    </div>
   );
 }
 
-// An MC option as shown in its button, following both rendering flags.
-function OptionText({
-  text,
-  markdown,
-  math,
-}: {
-  text: string;
-  markdown: boolean;
-  math: MathRenderer | null;
-}) {
-  if (markdown) return <MarkdownBody text={text} math={math} inline />;
-  return math ? <MathText text={text} math={math} /> : <>{text}</>;
-}
-
+// The question text, or an MC option, following both rendering flags.
 function QuestionBody({
   text,
   markdown,
   math,
+  components,
   style,
 }: {
   text: string;
   markdown: boolean;
   // Null when the experiment does not render math, or KaTeX failed to load.
   math: MathRenderer | null;
+  components?: Components;
   style?: CSSProperties;
 }) {
-  if (markdown) return <MarkdownBody text={text} math={math} style={style} />;
+  if (markdown) {
+    return <MarkdownBody text={text} math={math} components={components} style={style} />;
+  }
+  // Line breaks kept, and a long unbroken token wraps instead of widening the card.
   return (
-    <p style={{ ...style, whiteSpace: 'pre-wrap' }}>
+    <p style={{ ...style, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
       {math ? <MathText text={text} math={math} /> : text}
     </p>
   );
@@ -731,6 +691,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
               <button
                 key={index}
                 type="button"
+                className="question-option"
                 aria-pressed={selected}
                 onClick={() => setSelectedAnswer(option)}
                 onMouseEnter={(e) => {
@@ -781,9 +742,13 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                   )}
                 </span>
                 {/* Display only: the answer submitted is the option as written. */}
-                <span style={{ flex: 1 }}>
-                  <OptionText text={option} markdown={question.is_markdown} math={math} />
-                </span>
+                <QuestionBody
+                  text={option}
+                  markdown={question.is_markdown}
+                  math={math}
+                  components={OPTION_MARKDOWN_COMPONENTS}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
               </button>
             );
           })}
