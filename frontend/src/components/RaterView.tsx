@@ -8,6 +8,8 @@ import RaterStatusPanel from './RaterStatusPanel';
 import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
+import StudyInstructionsDialog from './StudyInstructionsDialog';
+import { secondaryButton } from './experiment-detail/ui';
 import RaterConsent from './RaterConsent';
 import RaterDebrief from './RaterDebrief';
 import type { Session } from '../types';
@@ -153,6 +155,9 @@ function RaterView() {
   // never made to.
   const [questionOverLimit, setQuestionOverLimit] = useState(false);
   const [showIntro, setShowIntro] = useState(false);
+  // The intro's instructions, reopened on demand from the rating screen.
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const closeInstructions = useCallback(() => setInstructionsOpen(false), []);
   // Consent comes before everything else, the intro included. Driven by
   // `session.consented_at`; the backend refuses questions until it is set.
   const [showConsent, setShowConsent] = useState(false);
@@ -495,9 +500,15 @@ function RaterView() {
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '18px 24px',
+      // Sized for the 44px Instructions button so the card is the same
+      // height whether or not the study has instructions to reopen.
+      padding: '12px 12px 12px 24px',
+      minHeight: 70,
+      boxSizing: 'border-box' as const,
       marginBottom: 20,
       display: 'flex',
+      flexWrap: 'wrap' as const,
+      gap: 12,
       justifyContent: 'space-between',
       alignItems: 'center',
     },
@@ -745,7 +756,34 @@ function RaterView() {
 
       <div style={styles.header}>
         <h2 style={styles.experimentName}>{session.experiment_name}</h2>
+        {/* Only studies that had an intro screen have instructions to reopen. */}
+        {hasIntroContent(session) && (
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            onClick={() => setInstructionsOpen(true)}
+            data-testid="instructions-button"
+            style={{ ...secondaryButton, gap: 8, minHeight: 44, flexShrink: 0 }}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5M12 8h.01" />
+            </svg>
+            Instructions
+          </button>
+        )}
       </div>
+
+      {instructionsOpen && (
+        <StudyInstructionsDialog
+          experimentName={session.experiment_name}
+          descriptionHtml={session.experiment_description_html}
+          assistanceInstructions={session.assistance_instructions}
+          sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
+          graceMinutes={Math.round(session.session_grace_seconds / 60)}
+          onClose={closeInstructions}
+        />
+      )}
 
       {queue.submissionError && (
         <div role="alert" style={graceBannerStyle}>
