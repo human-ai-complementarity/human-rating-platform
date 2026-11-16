@@ -298,9 +298,11 @@ function ContentBlocks({
 }
 
 // Researcher-supplied framing is instructional, not decorative: raters are
-// expected to read it before answering, so it gets a labelled callout rather
-// than muted italics. It follows the experiment's Markdown flag like the
-// question does; math stays off, the framing is shown as written.
+// expected to read it before answering, so it gets a callout rather than muted
+// italics. The callout carries no heading: a prefix or suffix may be
+// instructions, context or the question itself, so no one label fits. It
+// follows the experiment's Markdown flag like the question does; math stays
+// off, the framing is shown as written.
 function PromptFraming({
   text,
   markdown,
@@ -320,18 +322,6 @@ function PromptFraming({
         ...style,
       }}
     >
-      <div
-        style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 'var(--text-label)',
-          letterSpacing: '0.1em',
-          textTransform: 'uppercase',
-          color: 'var(--accent-soft-ink)',
-          marginBottom: 7,
-        }}
-      >
-        Instructions
-      </div>
       <QuestionBody
         text={text}
         markdown={markdown}
