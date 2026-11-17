@@ -9,7 +9,6 @@ import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
 import StudyInstructionsDialog from './StudyInstructionsDialog';
-import { secondaryButton } from './experiment-detail/ui';
 import RaterConsent from './RaterConsent';
 import RaterDebrief from './RaterDebrief';
 import type { Session } from '../types';
@@ -157,6 +156,7 @@ function RaterView() {
   const [showIntro, setShowIntro] = useState(false);
   // The intro's instructions, reopened on demand from the rating screen.
   const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const openInstructions = useCallback(() => setInstructionsOpen(true), []);
   const closeInstructions = useCallback(() => setInstructionsOpen(false), []);
   // Consent comes before everything else, the intro included. Driven by
   // `session.consented_at`; the backend refuses questions until it is set.
@@ -500,15 +500,9 @@ function RaterView() {
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      // Sized for the 44px Instructions button so the card is the same
-      // height whether or not the study has instructions to reopen.
-      padding: '12px 12px 12px 24px',
-      minHeight: 70,
-      boxSizing: 'border-box' as const,
+      padding: '18px 24px',
       marginBottom: 20,
       display: 'flex',
-      flexWrap: 'wrap' as const,
-      gap: 12,
       justifyContent: 'space-between',
       alignItems: 'center',
     },
@@ -730,7 +724,11 @@ function RaterView() {
       )}
       {/* One floating readout for everything the rater tracks. The count lives
           here rather than in the header so the panel never sits on top of it. */}
-      <RaterStatusPanel graceMinutes={Math.round(session.session_grace_seconds / 60)}>
+      <RaterStatusPanel
+        graceMinutes={Math.round(session.session_grace_seconds / 60)}
+        // Only studies that had an intro screen have instructions to reopen.
+        onOpenInstructions={hasIntroContent(session) ? openInstructions : undefined}
+      >
         <Timer
           sessionEndTime={session.session_end_time}
           graceSeconds={session.session_grace_seconds}
@@ -756,22 +754,6 @@ function RaterView() {
 
       <div style={styles.header}>
         <h2 style={styles.experimentName}>{session.experiment_name}</h2>
-        {/* Only studies that had an intro screen have instructions to reopen. */}
-        {hasIntroContent(session) && (
-          <button
-            type="button"
-            aria-haspopup="dialog"
-            onClick={() => setInstructionsOpen(true)}
-            data-testid="instructions-button"
-            style={{ ...secondaryButton, gap: 8, minHeight: 44, flexShrink: 0 }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M12 11v5M12 8h.01" />
-            </svg>
-            Instructions
-          </button>
-        )}
       </div>
 
       {instructionsOpen && (

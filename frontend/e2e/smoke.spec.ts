@@ -1364,7 +1364,11 @@ test('the rating screen reopens the intro instructions in a scrollable dialog', 
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByText('Can the instructions be reopened?')).toBeVisible();
 
-  const opener = page.getByTestId('instructions-button');
+  // The button rides in the floating status panel; pointing at it leaves the
+  // clock help closed.
+  const opener = page.getByTestId('rater-status-panel').getByTestId('instructions-button');
+  await opener.hover();
+  await expect(page.getByTestId('rater-status-help')).toHaveCount(0);
   await opener.click();
   const dialog = page.getByRole('dialog', { name: state.sessionsByExperimentId[1].experiment_name });
   await expect(dialog).toBeVisible();

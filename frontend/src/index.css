@@ -162,7 +162,7 @@ button:disabled {
     box-shadow 0.15s ease;
 }
 
-.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) {
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, :focus-visible, [data-alert='true'])) {
   min-width: 190px;
   background: var(--ink);
   box-shadow: 0 6px 18px rgba(40, 36, 32, 0.18);
@@ -175,16 +175,32 @@ button:disabled {
   display: none;
 }
 
-.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) .rsp-rest {
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, :focus-visible, [data-alert='true'])) .rsp-rest {
   display: none;
 }
 
-.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) .rsp-full {
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, :focus-visible, [data-alert='true'])) .rsp-full {
   display: inline;
 }
 
-.rater-status-panel:is(:hover, :focus, :has([data-alert='true'])) [data-hide-at-rest='true'] {
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, :focus-visible, [data-alert='true'])) [data-hide-at-rest='true'] {
   display: block;
+}
+
+.rater-status-panel .rsp-readout:focus-visible,
+.rater-status-panel .rsp-action:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+}
+
+/* The Instructions row under the clocks: always shown, even at rest. */
+.rater-status-panel .rsp-action {
+  background: transparent;
+  transition: background-color 0.15s ease;
+}
+
+.rater-status-panel .rsp-action:hover {
+  background: color-mix(in srgb, #fff 14%, transparent);
 }
 
 @keyframes pulse {

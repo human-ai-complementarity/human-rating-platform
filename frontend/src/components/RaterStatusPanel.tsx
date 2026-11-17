@@ -7,11 +7,14 @@ interface RaterStatusPanelProps {
   graceMinutes: number;
   /** The readout rows (TimerChip). */
   children: ReactNode;
+  /** Adds an Instructions row above the clocks. Lives here rather than in the
+   *  page header because this panel floats over the header's right end. */
+  onOpenInstructions?: () => void;
 }
 
 /** The floating readout in the corner of the rater view. Hovering or focusing
- *  it explains what each clock means, so the rows themselves can stay terse. */
-function RaterStatusPanel({ graceMinutes, children }: RaterStatusPanelProps) {
+ *  the clocks explains what each one means, so the rows themselves can stay terse. */
+function RaterStatusPanel({ graceMinutes, children, onOpenInstructions }: RaterStatusPanelProps) {
   const [helpOpen, setHelpOpen] = useState(false);
 
   const styles = {
@@ -29,7 +32,35 @@ function RaterStatusPanel({ graceMinutes, children }: RaterStatusPanelProps) {
       display: 'flex',
       flexDirection: 'column' as const,
       gap: 2,
+    },
+    // Not positioned, so the help still anchors to the whole panel.
+    readout: {
+      display: 'flex',
+      flexDirection: 'column' as const,
+      gap: 2,
       cursor: 'help',
+      borderRadius: 'calc(var(--radius-sm) - 2px)',
+    },
+    instructions: {
+      display: 'flex',
+      alignItems: 'center',
+      // The expanded panel widens leftward; pinning the label right keeps it
+      // under the pointer.
+      justifyContent: 'flex-end',
+      gap: 8,
+      width: '100%',
+      minHeight: 32,
+      padding: '5px 10px',
+      border: 'none',
+      borderBottom: '1px solid rgba(255, 255, 255, 0.2)',
+      borderRadius: 'calc(var(--radius-sm) - 2px) calc(var(--radius-sm) - 2px) 0 0',
+      color: 'inherit',
+      font: 'inherit',
+      fontSize: 'var(--text-label)',
+      fontWeight: 600,
+      textTransform: 'uppercase' as const,
+      letterSpacing: '0.08em',
+      cursor: 'pointer',
     },
     help: {
       position: 'absolute' as const,
@@ -63,18 +94,38 @@ function RaterStatusPanel({ graceMinutes, children }: RaterStatusPanelProps) {
   };
 
   return (
-    <div
-      className="rater-status-panel"
-      style={styles.panel}
-      tabIndex={0}
-      aria-describedby={helpOpen ? 'rater-status-help' : undefined}
-      onMouseEnter={() => setHelpOpen(true)}
-      onMouseLeave={() => setHelpOpen(false)}
-      onFocus={() => setHelpOpen(true)}
-      onBlur={() => setHelpOpen(false)}
-      data-testid="rater-status-panel"
-    >
-      {children}
+    <div className="rater-status-panel" style={styles.panel} data-testid="rater-status-panel">
+      {/* First, so rows the expanded panel reveals open below it and the
+          button stays where the pointer is. */}
+      {onOpenInstructions && (
+        <button
+          type="button"
+          className="rsp-action"
+          style={styles.instructions}
+          aria-haspopup="dialog"
+          onClick={onOpenInstructions}
+          data-testid="instructions-button"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 11v5M12 8h.01" />
+          </svg>
+          Instructions
+        </button>
+      )}
+      <div
+        className="rsp-readout"
+        style={styles.readout}
+        tabIndex={0}
+        aria-describedby={helpOpen ? 'rater-status-help' : undefined}
+        onMouseEnter={() => setHelpOpen(true)}
+        onMouseLeave={() => setHelpOpen(false)}
+        onFocus={() => setHelpOpen(true)}
+        onBlur={() => setHelpOpen(false)}
+        data-testid="rater-status-readout"
+      >
+        {children}
+      </div>
       {helpOpen && (
         <div id="rater-status-help" role="tooltip" style={styles.help} data-testid="rater-status-help">
           <div style={styles.term}>Session</div>
