@@ -44,30 +44,39 @@ function StudyInstructions({
           is better off knowing now than discovering it twenty minutes in. */}
       <div
         data-testid="session-expectations"
+        className="rater-prose"
         style={{
           border: '1px solid var(--faint)',
           borderRadius: 'var(--radius-sm)',
           padding: '14px 16px',
           marginBottom: 24,
-          fontSize: 'var(--text-body)',
-          lineHeight: 'var(--leading-body)',
           color: 'var(--ink)',
         }}
       >
-        <strong>You have {formatDuration(sessionMinutes)}.</strong> Rate as many questions as
-        you can in that time, and finish early if you want to.{' '}
-        {graceMinutes > 0 ? (
-          <>
-            When the time is up you get {graceMinutes} more{' '}
-            {graceMinutes === 1 ? 'minute' : 'minutes'} to send the question you are on, and
-            everything you have already submitted is kept.
-          </>
-        ) : (
-          <>Everything you submit is kept.</>
-        )}{' '}
-        We strongly recommend spending no more than {QUESTION_TIME_LIMIT_MINUTES} minutes on any
-        one question: a second timer counts down for the current one, and when it runs out
-        please give your best answer and move on.
+        <h2>Before you start</h2>
+        <ul style={{ marginBottom: 0 }}>
+          <li>
+            <strong>Time:</strong> you have {formatDuration(sessionMinutes)} in total.
+            {graceMinutes > 0 && (
+              <>
+                {' '}
+                If the {sessionMinutes === 60 ? 'hour' : 'time'} runs out while you&apos;re
+                answering a question, you&apos;ll get an extra {plural(graceMinutes, 'minute')} to
+                finish and submit it.
+              </>
+            )}
+          </li>
+          <li>
+            <strong>Pace:</strong> aim for accuracy rather than speed. Spend as long as a
+            question needs, and move on once you&apos;re reasonably confident. If a question is
+            taking more than about {QUESTION_TIME_LIMIT_MINUTES} minutes, give your best answer
+            and continue.
+          </li>
+          <li>
+            <strong>Internet and AI tools:</strong> use them however you like, except to look for
+            a published answer to these questions. The final judgement must be yours.
+          </li>
+        </ul>
       </div>
 
       {descriptionHtml && (

@@ -1342,8 +1342,10 @@ test('the rater intro states the session length before they commit', async ({ pa
 
   const expectations = page.getByTestId('session-expectations');
   await expect(expectations).toBeVisible();
-  await expect(expectations).toContainText('You have 1 hour 50 minutes.');
-  await expect(expectations).toContainText('5 more minutes');
+  await expect(expectations).toContainText('Before you start');
+  await expect(expectations).toContainText('you have 1 hour 50 minutes in total.');
+  await expect(expectations).toContainText('If the time runs out');
+  await expect(expectations).toContainText('an extra 5 minutes to finish and submit it.');
 });
 
 test('the rating screen reopens the intro instructions in a scrollable dialog', async ({ page }) => {
