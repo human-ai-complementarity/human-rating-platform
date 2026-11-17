@@ -105,6 +105,7 @@ test('one next-question request precedes display without browser scheduling', as
   await expect(page.getByText('Question 2', { exact: true })).toHaveCount(0);
   expect(state.starts).toEqual([1]);
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 2', { exact: true })).toBeVisible();
   await expect.poll(() => state.starts).toEqual([1, 2]);
@@ -116,6 +117,7 @@ test('lost submission response retries the exact answer before advancing', async
   await page.goto(url);
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByRole('button', { name: 'Retry saving answer' })).toBeVisible();
   await expect(page.getByText('Question 1', { exact: true })).toBeVisible();
@@ -200,6 +202,7 @@ test('submission conflict offers explicit recovery to the authoritative question
   await page.goto(url);
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 1', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Continue from saved progress' }).click();
@@ -217,6 +220,7 @@ test('early arrival waits for assistance without scheduling successors', async (
   let release!: () => void;
   state.assistanceGate = new Promise<void>(resolve => { release = resolve; });
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 2', { exact: true })).toBeVisible();
   await expect(page.getByText('Preparing guidance, please wait…')).toBeVisible();
@@ -237,6 +241,7 @@ test('serving-time replacement displays and demands only the returned question',
   expect(state.prepares).toEqual([]);
   state.replaceOnActivate = true;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 3', { exact: true })).toBeVisible();
   await expect(page.getByText('Question 2', { exact: true })).toHaveCount(0);

@@ -461,7 +461,9 @@ async function buildLongContextDocumentHtml(
 function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false, humanPromptPrefix = null, humanPromptSuffix = null }: QuestionCardProps) {
   const [selectedAnswer, setSelectedAnswer] = useState('');
   const [freeTextAnswer, setFreeTextAnswer] = useState('');
-  const [confidence, setConfidence] = useState(3);
+  // Starts unset and is required: a preset value would be recorded as the
+  // rater's confidence even when they never looked at the scale.
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const timeStartedRef = useRef(new Date().toISOString());
@@ -480,7 +482,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   useEffect(() => {
     setSelectedAnswer('');
     setFreeTextAnswer('');
-    setConfidence(3);
+    setConfidence(null);
     setSubmitting(false);
     timeStartedRef.current = new Date().toISOString();
   }, [question.id]);
@@ -531,6 +533,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       alert('Please provide an answer');
       return;
     }
+    if (confidence === null) return;
 
     setSubmitting(true);
     try {
@@ -540,7 +543,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
   };
 
-  const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
+  const canSubmit =
+    !disabled && confidence !== null && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
 
   const cardStyle: CSSProperties = {
     background: 'var(--surface)',
@@ -772,69 +776,49 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             }}
           >
             <span
+              id={`confidence-label-${question.id}`}
               style={{
-                font: '600 var(--text-label)/1 var(--font-mono)',
-                letterSpacing: '0.16em',
-                textTransform: 'uppercase',
-                color: 'var(--muted)',
+                font: '600 var(--text-body)/1.4 var(--font-body)',
+                color: 'var(--ink)',
               }}
             >
-              Confidence
+              How confident are you that your answer is correct?
             </span>
-            <span
-              style={{
-                fontSize: 'var(--text-secondary)',
-                fontWeight: 600,
-                color: 'var(--accent-soft-ink)',
-              }}
-            >
-              {CONFIDENCE_LABELS[confidence - 1]}
-            </span>
+            {confidence === null && (
+              <span style={{ fontSize: 'var(--text-secondary)', color: 'var(--muted)' }}>
+                Required
+              </span>
+            )}
           </div>
-          <input
-            type="range"
-            min="1"
-            max="5"
-            value={confidence}
-            onChange={(e) => setConfidence(parseInt(e.target.value))}
-            style={{
-              width: '100%',
-              height: 6,
-              borderRadius: 4,
-              appearance: 'none',
-              background: 'var(--faint)',
-              outline: 'none',
-              cursor: 'pointer',
-            }}
-          />
           <div
-            style={{
-              position: 'relative',
-              height: 16,
-              marginTop: 10,
-            }}
+            role="radiogroup"
+            aria-labelledby={`confidence-label-${question.id}`}
+            aria-required
+            className="confidence-scale"
           >
             {CONFIDENCE_LABELS.map((label, i) => {
-              const pct = (i / (CONFIDENCE_LABELS.length - 1)) * 100;
-              const isFirst = i === 0;
-              const isLast = i === CONFIDENCE_LABELS.length - 1;
-              const isActive = confidence === i + 1;
+              const value = i + 1;
+              const selected = confidence === value;
               return (
-                <span
+                <button
                   key={label}
-                  className={isFirst || isLast ? undefined : 'confidence-mid-label'}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setConfidence(value)}
                   style={{
-                    position: 'absolute',
-                    whiteSpace: 'nowrap',
-                    left: `${pct}%`,
-                    transform: isFirst ? 'none' : isLast ? 'translateX(-100%)' : 'translateX(-50%)',
-                    fontWeight: isActive ? 700 : 500,
-                    color: isActive ? 'var(--accent-soft-ink)' : 'var(--muted)',
-                    fontSize: 'var(--text-label)',
+                    padding: '10px 8px',
+                    background: selected ? 'var(--accent)' : 'var(--surface)',
+                    border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
+                    borderRadius: 'var(--radius-sm)',
+                    cursor: 'pointer',
+                    color: selected ? 'var(--accent-ink)' : 'var(--ink)',
+                    font: `${selected ? 600 : 500} var(--text-secondary)/1.3 var(--font-body)`,
+                    transition: 'background 0.12s, border-color 0.12s',
                   }}
                 >
                   {label}
-                </span>
+                </button>
               );
             })}
           </div>

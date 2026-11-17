@@ -1608,6 +1608,7 @@ test('the question in hand survives the deadline and can still be submitted', as
   await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
 
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
 
   await expect(page.getByRole('heading', { name: 'Session Complete' })).toBeVisible();
@@ -1685,6 +1686,7 @@ test('twenty minutes on one question warns the rater but still takes the answer'
 
   // Advisory only: the answer is still accepted.
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByTestId('question-time-banner')).toHaveCount(0);
 });
@@ -1985,6 +1987,7 @@ test('the math flag typesets MC options and submits the option as written', asyn
   await expect(options.nth(2)).toHaveText('It costs $5 and $10');
 
   await options.nth(1).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: 'Submit answer' }).click();
   await expect.poll(() => state.submittedRatings.length).toBe(1);
   expect(state.submittedRatings[0]).toMatchObject({ answer: '$E = \\dfrac{q}{l^2}$' });
@@ -2290,6 +2293,7 @@ test('MC options render Markdown like the question, without links', async ({ pag
   await expect(options.locator('a')).toHaveCount(0);
 
   await options.nth(0).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: 'Submit answer' }).click();
   await expect.poll(() => state.submittedRatings.length).toBe(1);
   expect(state.submittedRatings[0]).toMatchObject({ answer: '**Bold** and $x^2$' });
@@ -2399,10 +2403,18 @@ test('an MC question with no options submits the typed free-text answer', async 
   const answer = page.getByPlaceholder('Type your answer here...');
   await expect(answer).toBeVisible();
   await answer.fill('It recommends staged rollout.');
-  await page.getByRole('button', { name: 'Submit answer' }).click();
+  // Confidence starts unset and is required before the answer can be sent.
+  const submit = page.getByRole('button', { name: 'Submit answer' });
+  await expect(page.getByRole('radio', { checked: true })).toHaveCount(0);
+  await expect(submit).toBeDisabled();
+  await page.getByRole('radio', { name: 'Very' }).click();
+  await submit.click();
 
   await expect.poll(() => state.submittedRatings.length).toBe(1);
-  expect(state.submittedRatings[0]).toMatchObject({ answer: 'It recommends staged rollout.' });
+  expect(state.submittedRatings[0]).toMatchObject({
+    answer: 'It recommends staged rollout.',
+    confidence: 4,
+  });
   expect(dialogs).toEqual([]);
 });
 
@@ -4429,6 +4441,7 @@ test('a deception study ends on the debrief and never auto-redirects', async ({ 
   // No more questions after this one, so the session completes on submit.
   state.questionsBySessionToken['token-deception'] = {} as RaterQuestionRecord;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
 
   const debrief = page.getByTestId('debrief-screen');
@@ -4485,6 +4498,7 @@ test('a sensitive study shows the warning in its consent and ends normally', asy
   await expect(page.getByText('Is this passage disturbing?')).toBeVisible();
   state.questionsBySessionToken['token-sensitive'] = {} as RaterQuestionRecord;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('radio', { name: 'Moderately' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   // No debrief for a content warning alone: the ordinary completion card.
   await expect(page.getByTestId('debrief-screen')).toHaveCount(0);

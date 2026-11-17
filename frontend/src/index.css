@@ -725,11 +725,15 @@ button:disabled {
 .rater-prose table {
   font: 400 var(--text-body) / 1.5 var(--font-body);
 }
-/* Five scale labels do not fit across a phone-width card. The end labels
-   stay; the selected value is always shown above the slider. */
+/* Five confidence choices sit in one row, and stack on a phone-width card. */
+.confidence-scale {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
 @media (max-width: 480px) {
-  .confidence-mid-label {
-    display: none;
+  .confidence-scale {
+    grid-template-columns: 1fr;
   }
 }
 
