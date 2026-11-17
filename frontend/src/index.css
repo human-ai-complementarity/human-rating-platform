@@ -704,10 +704,17 @@ button:disabled {
   margin-bottom: 4px;
 }
 /* In an MC option the list number sits in the text, not out in the indent,
-   so a wide one ("2018.") does not run over the radio circle. */
-.question-option :is(ul, ol) {
+   so a wide one ("2018.") does not run over the radio circle. Nested lists
+   keep their indent. */
+.question-option .question-markdown > :is(ul, ol) {
   list-style-position: inside;
   padding-left: 0;
+}
+/* A nested list's own indent holds its marker, so a wrapped line lines up
+   with the text, not under the bullet. */
+.question-option li :is(ul, ol) {
+  list-style-position: outside;
+  padding-left: 2.5em;
 }
 .rater-prose code {
   font-size: 0.875em;
