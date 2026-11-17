@@ -103,7 +103,12 @@ function RaterStatusPanel({ graceMinutes, children, onOpenInstructions }: RaterS
           className="rsp-action"
           style={styles.instructions}
           aria-haspopup="dialog"
-          onClick={onOpenInstructions}
+          onClick={(e) => {
+            // Safari and Firefox on macOS don't focus a clicked button; focus
+            // it so the dialog can hand focus back here on close.
+            e.currentTarget.focus();
+            onOpenInstructions();
+          }}
           data-testid="instructions-button"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

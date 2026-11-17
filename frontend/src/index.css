@@ -193,7 +193,7 @@ button:disabled {
   outline-offset: -2px;
 }
 
-/* The Instructions row under the clocks: always shown, even at rest. */
+/* The Instructions row above the clocks: always shown, even at rest. */
 .rater-status-panel .rsp-action {
   background: transparent;
   transition: background-color 0.15s ease;
@@ -201,6 +201,17 @@ button:disabled {
 
 .rater-status-panel .rsp-action:hover {
   background: color-mix(in srgb, #fff 14%, transparent);
+}
+
+/* The Instructions dialog's scrolling body takes focus so the keyboard can
+   scroll it; mark it only when the keyboard put it there. */
+.study-instructions-body:focus {
+  outline: none;
+}
+
+.study-instructions-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 @keyframes pulse {

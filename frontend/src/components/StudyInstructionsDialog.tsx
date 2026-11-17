@@ -17,16 +17,21 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
  */
 function StudyInstructionsDialog({ experimentName, onClose, ...instructions }: StudyInstructionsDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Hand focus to the dialog so a screen reader announces it and Tab starts
-    // inside it, and give it back to the Instructions button on close.
+    // Hand focus to the scrolling instructions so Tab starts inside the dialog
+    // and the arrow keys scroll it straight away (Safari won't otherwise),
+    // and give it back to the Instructions button on close.
     const opener = document.activeElement as HTMLElement | null;
-    dialogRef.current?.focus();
+    bodyRef.current?.focus();
 
-    // Only the instructions scroll, never the question underneath.
-    const { overflow } = document.body.style;
+    // Only the instructions scroll, never the question underneath. Hiding the
+    // page scrollbar widens the page, so pad by its width to keep it still.
+    const { overflow, paddingRight } = document.body.style;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
     document.body.style.overflow = 'hidden';
+    if (scrollbarWidth > 0) document.body.style.paddingRight = `${scrollbarWidth}px`;
 
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -54,6 +59,7 @@ function StudyInstructionsDialog({ experimentName, onClose, ...instructions }: S
     return () => {
       window.removeEventListener('keydown', onKey);
       document.body.style.overflow = overflow;
+      document.body.style.paddingRight = paddingRight;
       opener?.focus();
     };
   }, [onClose]);
@@ -62,9 +68,9 @@ function StudyInstructionsDialog({ experimentName, onClose, ...instructions }: S
     <div
       role="presentation"
       // mousedown, not click: a text selection dragged out of the dialog must
-      // not close it.
+      // not close it. Primary button only, so a right-click leaves it open.
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.button === 0 && e.target === e.currentTarget) onClose();
       }}
       style={{
         position: 'fixed',
@@ -87,7 +93,9 @@ function StudyInstructionsDialog({ experimentName, onClose, ...instructions }: S
         style={{
           width: '100%',
           maxWidth: 640,
-          maxHeight: 'min(760px, calc(100dvh - 2 * var(--rater-gutter)))',
+          // 100% of the backdrop, which fills the screen inside its padding:
+          // no viewport unit, so no dvh fallback to worry about.
+          maxHeight: 'min(760px, 100%)',
           display: 'flex',
           flexDirection: 'column',
           background: 'var(--surface)',
@@ -157,6 +165,11 @@ function StudyInstructionsDialog({ experimentName, onClose, ...instructions }: S
         </div>
 
         <div
+          ref={bodyRef}
+          className="study-instructions-body"
+          role="region"
+          aria-labelledby="study-instructions-title"
+          tabIndex={0}
           data-testid="study-instructions-body"
           style={{
             flex: '1 1 auto',
