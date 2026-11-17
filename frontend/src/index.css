@@ -725,16 +725,19 @@ button:disabled {
 .rater-prose table {
   font: 400 var(--text-body) / 1.5 var(--font-body);
 }
-/* Five confidence choices sit in one row, and stack on a phone-width card. */
-.confidence-scale {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-}
+/* Five scale labels do not fit across a phone-width card. The end labels
+   stay; the selected value is always shown above the slider. */
 @media (max-width: 480px) {
-  .confidence-scale {
-    grid-template-columns: 1fr;
+  .confidence-mid-label {
+    display: none;
   }
+}
+/* The confidence slider shows no thumb until the rater has chosen a value. */
+input[type="range"].confidence-unset::-webkit-slider-thumb {
+  opacity: 0;
+}
+input[type="range"].confidence-unset::-moz-range-thumb {
+  opacity: 0;
 }
 
 /* The intro sets the gap below the description on its container. */

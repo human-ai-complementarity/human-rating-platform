@@ -33,7 +33,13 @@ const QUESTION_HEADING_STYLE: CSSProperties = {
 const QUESTION_PROSE_STYLE: CSSProperties = { color: 'var(--ink)' };
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
-const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
+const CONFIDENCE_LABELS = [
+  'Not at all confident',
+  'Slightly confident',
+  'Moderately confident',
+  'Very confident',
+  'Extremely confident',
+];
 
 interface QuestionCardProps {
   question: Question;
@@ -784,40 +790,84 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             >
               How confident are you that your answer is correct?
             </span>
-            {confidence === null && (
-              <span style={{ fontSize: 'var(--text-secondary)', color: 'var(--muted)' }}>
-                Required
-              </span>
-            )}
+            <span
+              style={{
+                fontSize: 'var(--text-secondary)',
+                fontWeight: confidence === null ? 400 : 600,
+                color: confidence === null ? 'var(--muted)' : 'var(--accent-soft-ink)',
+                whiteSpace: 'nowrap',
+                marginLeft: 12,
+              }}
+            >
+              {confidence === null ? 'Required' : CONFIDENCE_LABELS[confidence - 1]}
+            </span>
           </div>
-          <div
-            role="radiogroup"
+          {/* A range input always holds a value, so "unset" is our own state:
+              the thumb stays hidden until the rater clicks or drags. onChange
+              misses a click on the middle of the track (the value it already
+              holds), so onClick records the choice as well. */}
+          <input
+            type="range"
+            min="1"
+            max="5"
             aria-labelledby={`confidence-label-${question.id}`}
             aria-required
-            className="confidence-scale"
+            aria-valuetext={confidence === null ? 'Not chosen' : CONFIDENCE_LABELS[confidence - 1]}
+            className={confidence === null ? 'confidence-unset' : undefined}
+            value={confidence ?? 3}
+            onChange={(e) => setConfidence(parseInt(e.target.value))}
+            onClick={(e) => setConfidence(parseInt(e.currentTarget.value))}
+            style={{
+              width: '100%',
+              height: 6,
+              borderRadius: 4,
+              appearance: 'none',
+              background: 'var(--faint)',
+              outline: 'none',
+              cursor: 'pointer',
+            }}
+          />
+          <div
+            style={{
+              position: 'relative',
+              height: 32,
+              marginTop: 10,
+            }}
           >
             {CONFIDENCE_LABELS.map((label, i) => {
-              const value = i + 1;
-              const selected = confidence === value;
+              const pct = (i / (CONFIDENCE_LABELS.length - 1)) * 100;
+              const isFirst = i === 0;
+              const isLast = i === CONFIDENCE_LABELS.length - 1;
+              const isActive = confidence === i + 1;
               return (
                 <button
                   key={label}
                   type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  onClick={() => setConfidence(value)}
+                  tabIndex={-1}
+                  onClick={() => setConfidence(i + 1)}
+                  className={isFirst || isLast ? undefined : 'confidence-mid-label'}
                   style={{
-                    padding: '10px 8px',
-                    background: selected ? 'var(--accent)' : 'var(--surface)',
-                    border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
-                    borderRadius: 'var(--radius-sm)',
+                    position: 'absolute',
+                    whiteSpace: 'nowrap',
+                    left: `${pct}%`,
+                    transform: isFirst ? 'none' : isLast ? 'translateX(-100%)' : 'translateX(-50%)',
+                    padding: 0,
+                    background: 'none',
+                    border: 'none',
                     cursor: 'pointer',
-                    color: selected ? 'var(--accent-ink)' : 'var(--ink)',
-                    font: `${selected ? 600 : 500} var(--text-secondary)/1.3 var(--font-body)`,
-                    transition: 'background 0.12s, border-color 0.12s',
+                    fontFamily: 'var(--font-body)',
+                    fontWeight: isActive ? 700 : 500,
+                    color: isActive ? 'var(--accent-soft-ink)' : 'var(--muted)',
+                    fontSize: 'var(--text-label)',
+                    lineHeight: 1.3,
+                    textAlign: isFirst ? 'left' : isLast ? 'right' : 'center',
                   }}
+                  aria-label={label}
                 >
-                  {label}
+                  {/* Two lines, so five full labels fit under the track. */}
+                  {label.replace(' confident', '')}
+                  <br />
+                  confident
                 </button>
               );
             })}
