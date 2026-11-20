@@ -11,6 +11,10 @@ export interface StudyInstructionsProps {
   sessionMinutes: number;
   /** Minutes past the deadline in which the open question can still be sent. */
   graceMinutes: number;
+  /** The experiment forbids internet and AI tools: the line says so instead of allowing them. */
+  forbidOutsideTools?: boolean;
+  /** The study gives the rater AI assistance itself, which a ban must exempt. */
+  studyProvidesAi?: boolean;
 }
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
@@ -26,6 +30,36 @@ function formatDuration(minutes: number): string {
 }
 
 /**
+ * The "Internet and AI tools" line of the Before you start box. Shared with
+ * the admin settings page, which quotes it beside the switch that changes it.
+ * The ban is an instruction only: nothing checks what a rater does elsewhere.
+ */
+export function OutsideToolsPolicy({
+  forbid,
+  studyProvidesAi,
+}: {
+  forbid: boolean;
+  studyProvidesAi: boolean;
+}) {
+  if (!forbid) {
+    return (
+      <>
+        <strong>Internet and AI tools:</strong> use them however you like, except to look for a
+        published answer to these questions. The final judgement must be yours.
+      </>
+    );
+  }
+  return (
+    <>
+      <strong>Internet and AI tools:</strong> strictly forbidden. Do not use web search, ChatGPT,
+      Claude, Gemini or any other website or AI tool to help with these questions
+      {studyProvidesAi && <>, apart from the AI assistance built into this study</>}. Answer from
+      this study and your own knowledge only.
+    </>
+  );
+}
+
+/**
  * What the rater is told about the study: the session's time budget, the
  * researcher's description, and (for AI-assisted methods) how the assistance
  * works. Shown once on the intro screen, and again on demand from the rating
@@ -36,6 +70,8 @@ function StudyInstructions({
   assistanceInstructions,
   sessionMinutes,
   graceMinutes,
+  forbidOutsideTools = false,
+  studyProvidesAi = false,
 }: StudyInstructionsProps) {
   return (
     <>
@@ -72,9 +108,8 @@ function StudyInstructions({
             taking more than about {QUESTION_TIME_LIMIT_MINUTES} minutes, give your best answer
             and continue.
           </li>
-          <li>
-            <strong>Internet and AI tools:</strong> use them however you like, except to look for
-            a published answer to these questions. The final judgement must be yours.
+          <li data-testid="outside-tools-policy">
+            <OutsideToolsPolicy forbid={forbidOutsideTools} studyProvidesAi={studyProvidesAi} />
           </li>
         </ul>
       </div>

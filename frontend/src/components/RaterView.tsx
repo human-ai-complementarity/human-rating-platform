@@ -130,8 +130,22 @@ function getProlificSessionParams(params: {
   };
 }
 
+// Spread on the rating screen when the experiment blocks copy and paste. A
+// deterrent, not a lock: a screenshot or the browser's dev tools still get the
+// text out. Blocking cut along with paste means a rater never loses typed text.
+const blockClipboard = (event: { preventDefault: () => void }) => event.preventDefault();
+const NO_COPY_PROPS = {
+  className: 'rater-no-copy',
+  'data-no-copy': true,
+  onCopy: blockClipboard,
+  onCut: blockClipboard,
+  onPaste: blockClipboard,
+  onDragStart: blockClipboard,
+};
+
 function hasIntroContent(session: Session): boolean {
-  return Boolean(session.experiment_description_html || session.assistance_instructions);
+  // A forbidden-AI study always has something to say, description or not.
+  return Boolean(session.experiment_description_html || session.assistance_instructions || session.forbid_outside_tools);
 }
 
 function RaterView() {
@@ -760,6 +774,8 @@ function RaterView() {
           experimentName={session.experiment_name}
           descriptionHtml={session.experiment_description_html}
           assistanceInstructions={session.assistance_instructions}
+          forbidOutsideTools={session.forbid_outside_tools === true}
+          studyProvidesAi={Boolean(session.assistance_method) && session.assistance_method !== 'none'}
           sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
           graceMinutes={Math.round(session.session_grace_seconds / 60)}
           onContinue={handleIntroContinue}
@@ -769,7 +785,7 @@ function RaterView() {
   }
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} {...(session.block_copy_paste ? NO_COPY_PROPS : {})}>
       {isPreview && (
         <div style={previewBannerStyle}>
           Preview mode — ratings submitted here are real and will appear in your data.
@@ -814,6 +830,8 @@ function RaterView() {
           experimentName={session.experiment_name}
           descriptionHtml={session.experiment_description_html}
           assistanceInstructions={session.assistance_instructions}
+          forbidOutsideTools={session.forbid_outside_tools === true}
+          studyProvidesAi={Boolean(session.assistance_method) && session.assistance_method !== 'none'}
           sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
           graceMinutes={Math.round(session.session_grace_seconds / 60)}
           onClose={closeInstructions}

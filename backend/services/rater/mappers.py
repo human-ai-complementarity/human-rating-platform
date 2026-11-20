@@ -57,6 +57,8 @@ def build_rater_start_response(
     consented_at: datetime | None,
     assistance_method: str = "none",
     assistance_instructions: str | None = None,
+    block_copy_paste: bool = False,
+    forbid_outside_tools: bool = False,
 ) -> RaterStartResponse:
     # Render the description through the same converter used for the Prolific
     # study description, so what raters see matches what participants see on
@@ -78,6 +80,8 @@ def build_rater_start_response(
         rater_session_token=rater_session_token,
         assistance_method=assistance_method,
         assistance_instructions=assistance_instructions,
+        block_copy_paste=block_copy_paste,
+        forbid_outside_tools=forbid_outside_tools,
         consent_statement_html=terms.consent_html,
         consented_at=consented_at,
         debrief_html=terms.debrief_html,

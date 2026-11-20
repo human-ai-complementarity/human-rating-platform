@@ -237,6 +237,10 @@ class ExperimentCreate(BaseModel):
     # Rater terms; see ExperimentUpdate. Empty flags for an ordinary study.
     study_flags: list[StudyFlag] = Field(default_factory=list)
     content_warning_details: Optional[str] = None
+    # Rater restrictions; see Experiment. Settable at create so a CLI can
+    # declare them per arm in one call.
+    block_copy_paste: bool = False
+    forbid_outside_tools: bool = False
 
 
 class ResolvedModel(BaseModel):
@@ -351,6 +355,8 @@ class ExperimentResponse(BaseModel):
     debrief_statement_ref: Optional[str] = None
     is_markdown: bool = False
     render_math: bool = False
+    block_copy_paste: bool = False
+    forbid_outside_tools: bool = False
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
     # Non-null when the experiment has been archived (soft-hidden from the
@@ -433,6 +439,8 @@ class ExperimentUpdate(BaseModel):
     content_warning_details: Optional[str] = None
     is_markdown: Optional[bool] = None
     render_math: Optional[bool] = None
+    block_copy_paste: Optional[bool] = None
+    forbid_outside_tools: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # None means "leave unchanged". Locked once the experiment leaves DRAFT:
     # raters already in a session hold a session_end_time computed from the old
@@ -507,6 +515,11 @@ class RaterStartResponse(BaseModel):
     rater_session_token: str
     assistance_method: str = "none"
     assistance_instructions: Optional[str] = None
+    # Rater restrictions, constant for the session. `block_copy_paste` stops
+    # selecting and copying on the rating screen; `forbid_outside_tools` switches
+    # the instruction screen's AI line to "strictly forbidden".
+    block_copy_paste: bool = False
+    forbid_outside_tools: bool = False
     # The consent statement this rater must agree to, rendered with the
     # study's placeholders filled, pre-rendered like the description.
     consent_statement_html: str

@@ -71,6 +71,8 @@ def build_experiment_response(
         debrief_statement_ref=debrief_statement_ref,
         is_markdown=experiment.is_markdown,
         render_math=experiment.render_math,
+        block_copy_paste=experiment.block_copy_paste,
+        forbid_outside_tools=experiment.forbid_outside_tools,
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,
         archived_at=experiment.archived_at,
