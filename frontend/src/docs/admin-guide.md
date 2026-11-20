@@ -88,14 +88,16 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 #### Multiple uploads + conflicts
 
-The **first** upload that declares a value populates the experiment. Later uploads that declare the same key with a *different* value are flagged in the Dataset Metadata section but never overwrite saved values. To change a saved value, edit it directly in the admin form.
+The **first** upload that declares a value populates the experiment. Later uploads that declare the same key with a *different* value are flagged beside the field on the Instructions & settings step but never overwrite saved values. To change a saved value, edit it directly in the admin form.
 
-### Rater rules
+### The Instructions & settings step
 
-Two switches on **Instructions & prompts**, both off by default and both locked once the experiment launches:
+The step is a list of sections (intro text, question framing, question display, rater rules, AI prompt, consent and content, notes). Each heading shows a one-line summary of what the section holds and collapses it; the list on the left jumps to a section. One **Save settings** button at the foot saves every section together, and leaving the step with unsaved changes asks first.
+
+**Rater rules** holds two switches, both off by default and both locked once the experiment launches:
 
 - **Block copy and paste on the rating screen.** Raters can't select, copy or cut anything on the rating screen, or paste into an answer. It makes lifting a question into another tool slower; it doesn't stop a screenshot.
-- **Strictly forbid internet and AI tools.** The "Before you start" box normally tells raters to use the internet and AI tools however they like, except to look for a published answer. With this on it says both are strictly forbidden: no web search, no AI tool, answer from the study and your own knowledge only. In a study with an assistance method, the ban exempts the assistance built into the study. It changes the instruction text only; nothing checks what a rater does in another tab.
+- **Strictly forbid internet and AI tools.** The "Before you start" box normally tells raters to use the internet and AI tools however they like, except to look for a published answer. With this on it says both are strictly forbidden: no web search, no AI tool, answer from the study and your own knowledge only. In a study with an assistance method, the ban exempts the assistance built into the study. The section quotes the exact sentence raters will read. It changes the instruction text only; nothing checks what a rater does in another tab.
 
 Uploads can't set these; an API client sets `block_copy_paste` and `forbid_outside_tools` when it creates the experiment or with a PATCH.
 

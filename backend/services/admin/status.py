@@ -165,7 +165,7 @@ _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
     ),
     "rater instructions": (
         "Rater instructions: part of the pipeline export's metadata, applied at upload. "
-        "If the upload lacked them, set them under Instructions & prompts; uploading "
+        "If the upload lacked them, set them under Instructions & settings; uploading "
         "the file again would add its questions twice."
     ),
     "internal study name": (
