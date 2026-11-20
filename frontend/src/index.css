@@ -1657,3 +1657,162 @@ input[type="range"].confidence-unset::-moz-range-thumb {
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* Instructions & settings step: a side nav beside a list of collapsible
+   sections. Below 900px the nav becomes a scrolling row of chips above the
+   list, and the save bar stacks. */
+.xd-settings {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.xd-settings-nav {
+  position: sticky;
+  top: 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.xd-settings-nav button {
+  text-align: left;
+  border: 0;
+  background: none;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font: 600 13.5px/1.3 var(--font-body);
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.xd-settings-nav button:hover,
+.xd-settings-nav button:focus-visible {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.xd-settings-section {
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  /* Clears the sticky step tabs when the nav scrolls a section into view. */
+  scroll-margin-top: 72px;
+}
+
+.xd-settings-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 15px 22px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.xd-settings-title {
+  font: 600 15px/1.3 var(--font-body);
+}
+
+.xd-settings-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  font: 400 13px/1.4 var(--font-body);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.xd-settings-chevron {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+
+.xd-settings-head[aria-expanded='true'] .xd-settings-chevron {
+  transform: rotate(-135deg);
+}
+
+.xd-settings-body {
+  padding: 18px 22px 6px;
+  border-top: 1px solid var(--line);
+}
+
+.xd-settings-body > :last-child {
+  margin-bottom: 12px;
+}
+
+.xd-settings-row {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.xd-settings-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.xd-settings-savebar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px -12px rgba(40, 36, 32, 0.35);
+}
+
+@media (max-width: 900px) {
+  .xd-settings {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  .xd-settings-nav {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .xd-settings-nav button {
+    border: 1px solid var(--faint);
+    background: var(--surface);
+    min-height: 36px;
+  }
+}
+
+@media (max-width: 640px) {
+  .xd-settings-head,
+  .xd-settings-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .xd-settings-title {
+    flex: 1 1 0;
+  }
+  .xd-settings-summary {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .xd-settings-savebar button {
+    width: 100%;
+    min-height: 44px;
+  }
+}

@@ -49,7 +49,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     f"Markdown rendering is off, but the {' and '.join(framed)} "
                     f"contain{'s' if len(framed) == 1 else ''} Markdown structure that "
                     "raters will see as literal symbols.",
-                    detail="Turn on 'Render as Markdown' under Instructions & prompts, "
+                    detail="Turn on 'Render as Markdown' under Instructions & settings, "
                     "or rewrite the text as plain prose.",
                 )
             )
@@ -66,7 +66,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                     "Markdown rendering is off, but these questions contain Markdown "
                     "structure that raters will see as literal symbols.",
                     question_ids=marked,
-                    detail="Turn on 'Render as Markdown' under Instructions & prompts, "
+                    detail="Turn on 'Render as Markdown' under Instructions & settings, "
                     "or rewrite the text as plain prose.",
                 )
             )
