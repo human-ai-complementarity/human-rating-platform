@@ -54,6 +54,10 @@ export interface Experiment {
   debrief_statement_ref: string | null;
   is_markdown: boolean;
   render_math: boolean;
+  // Rater restrictions: no selecting or copying on the rating screen, and the
+  // instruction screen says AI tools are strictly forbidden.
+  block_copy_paste: boolean;
+  forbid_outside_tools: boolean;
   prolific_pool: string | null;
   status: ExperimentStatus;
   // Non-null ISO timestamp when the experiment has been archived (soft-hidden
@@ -424,6 +428,10 @@ export interface Session {
   rater_session_token: string;
   assistance_method: string;
   assistance_instructions: string | null;
+  // Rater restrictions, constant for the session. Absent on a session stored
+  // before they existed, which reads as off.
+  block_copy_paste?: boolean;
+  forbid_outside_tools?: boolean;
   // Pre-rendered consent statement with the study's placeholders filled.
   // Shown until `consented_at` is set.
   consent_statement_html: string;

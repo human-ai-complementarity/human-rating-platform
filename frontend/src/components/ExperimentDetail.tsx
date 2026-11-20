@@ -118,7 +118,7 @@ const DATASET_META_PLACEHOLDERS: Partial<Record<DatasetMetaField, string>> = {
 const META_FIELD_GROUPS: {
   header: string;
   fields: { field: DatasetMetaField; kind: 'input' | 'textarea'; minHeight?: number }[];
-  card?: 'rendering';
+  card?: 'rendering' | 'restrictions';
 }[] = [
   {
     header: 'Instructions',
@@ -138,6 +138,11 @@ const META_FIELD_GROUPS: {
     header: 'Question rendering',
     fields: [],
     card: 'rendering',
+  },
+  {
+    header: 'Rater rules',
+    fields: [],
+    card: 'restrictions',
   },
   {
     header: 'Deployment',
@@ -518,6 +523,8 @@ function ExperimentDetail({
   });
   const [isMarkdown, setIsMarkdown] = useState(experiment.is_markdown);
   const [renderMath, setRenderMath] = useState(experiment.render_math);
+  const [blockCopyPaste, setBlockCopyPaste] = useState(experiment.block_copy_paste);
+  const [forbidOutsideTools, setForbidOutsideTools] = useState(experiment.forbid_outside_tools);
   const [savingMeta, setSavingMeta] = useState(false);
   const metaFormDirtyRef = useRef(false);
 
@@ -532,6 +539,8 @@ function ExperimentDetail({
     });
     setIsMarkdown(experiment.is_markdown);
     setRenderMath(experiment.render_math);
+    setBlockCopyPaste(experiment.block_copy_paste);
+    setForbidOutsideTools(experiment.forbid_outside_tools);
   }, [
     experiment.description,
     experiment.system_prompt,
@@ -540,6 +549,8 @@ function ExperimentDetail({
     experiment.prolific_pool,
     experiment.is_markdown,
     experiment.render_math,
+    experiment.block_copy_paste,
+    experiment.forbid_outside_tools,
   ]);
 
   // ── Data-loading effects ───────────────────────────────────────────────
@@ -644,6 +655,8 @@ function ExperimentDetail({
         human_prompt_suffix: metaForm.human_prompt_suffix,
         is_markdown: isMarkdown,
         render_math: renderMath,
+        block_copy_paste: blockCopyPaste,
+        forbid_outside_tools: forbidOutsideTools,
         prolific_pool: metaForm.prolific_pool,
       });
       showSuccess('Instructions & prompts saved.', 2000);
@@ -1412,6 +1425,16 @@ function ExperimentDetail({
             onRenderMathChange={(value) => {
               metaFormDirtyRef.current = true;
               setRenderMath(value);
+            }}
+            blockCopyPaste={blockCopyPaste}
+            onBlockCopyPasteChange={(value) => {
+              metaFormDirtyRef.current = true;
+              setBlockCopyPaste(value);
+            }}
+            forbidOutsideTools={forbidOutsideTools}
+            onForbidOutsideToolsChange={(value) => {
+              metaFormDirtyRef.current = true;
+              setForbidOutsideTools(value);
             }}
             onSave={handleSaveMeta}
             savingMeta={savingMeta}
@@ -2191,6 +2214,10 @@ function MetadataPanel({
   onIsMarkdownChange,
   renderMath,
   onRenderMathChange,
+  blockCopyPaste,
+  onBlockCopyPasteChange,
+  forbidOutsideTools,
+  onForbidOutsideToolsChange,
   onSave,
   savingMeta,
   isLocked,
@@ -2207,6 +2234,10 @@ function MetadataPanel({
   onIsMarkdownChange: (value: boolean) => void;
   renderMath: boolean;
   onRenderMathChange: (value: boolean) => void;
+  blockCopyPaste: boolean;
+  onBlockCopyPasteChange: (value: boolean) => void;
+  forbidOutsideTools: boolean;
+  onForbidOutsideToolsChange: (value: boolean) => void;
   onSave: () => void;
   savingMeta: boolean;
   isLocked: boolean;
@@ -2382,6 +2413,40 @@ function MetadataPanel({
     </section>
   );
 
+  // No upload declares these, so there are never conflicts to list.
+  const restrictionsCard = (
+    <section
+      style={{
+        background: 'var(--surface)',
+        border: '1px solid var(--faint)',
+        borderRadius: 'var(--radius)',
+        boxShadow: 'var(--shadow)',
+        padding: '18px 24px',
+        opacity: isLocked ? 0.7 : 1,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 14,
+      }}
+    >
+      {renderToggle(
+        'meta-forbid_outside_tools',
+        forbidOutsideTools,
+        onForbidOutsideToolsChange,
+        'Strictly forbid internet and AI tools',
+        "The rater's instruction screen says internet and AI tools are strictly forbidden, instead of allowed. An instruction only: nothing checks what a rater does in another tab.",
+        [],
+      )}
+      {renderToggle(
+        'meta-block_copy_paste',
+        blockCopyPaste,
+        onBlockCopyPasteChange,
+        'Block copy and paste on the rating screen',
+        'Raters cannot select, copy or cut anything on the rating screen, or paste into an answer. A deterrent rather than a lock: a screenshot still works.',
+        [],
+      )}
+    </section>
+  );
+
   const saveButton = (
     <button
       type="button"
@@ -2439,6 +2504,7 @@ function MetadataPanel({
                 }),
               )}
               {group.card === 'rendering' && renderingCard}
+              {group.card === 'restrictions' && restrictionsCard}
             </div>
           </div>
         );

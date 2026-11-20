@@ -5729,7 +5729,9 @@ def test_rendering_flag_round_trips_to_rater_question_payload(client: TestClient
     assert question[field] is True
 
 
-@pytest.mark.parametrize("field", ["is_markdown", "render_math"])
+@pytest.mark.parametrize(
+    "field", ["is_markdown", "render_math", "block_copy_paste", "forbid_outside_tools"]
+)
 def test_update_experiment_locks_rendering_flag_after_launch(
     client: TestClient, sync_engine, field
 ):

@@ -222,6 +222,8 @@ async def create_experiment(
         group_id=group_id,
         study_flags=_flag_values(payload.study_flags),
         content_warning_details=(payload.content_warning_details or "").strip() or None,
+        block_copy_paste=payload.block_copy_paste,
+        forbid_outside_tools=payload.forbid_outside_tools,
     )
     validate_terms_config(db_experiment)
     db.add(db_experiment)
@@ -504,7 +506,13 @@ _LOCKED_META_FIELDS = (
 # the meta loop strips strings. Session length is locked once the experiment
 # leaves DRAFT because raters already mid-session hold a session_end_time
 # computed from the old value, and their browsers never hear about a change.
-_LOCKED_SCALAR_FIELDS = ("session_duration_minutes", "is_markdown", "render_math")
+_LOCKED_SCALAR_FIELDS = (
+    "session_duration_minutes",
+    "is_markdown",
+    "render_math",
+    "block_copy_paste",
+    "forbid_outside_tools",
+)
 
 # Matches the String(255) columns on Experiment.name / internal_name.
 _NAME_MAX_LENGTH = 255
@@ -594,6 +602,8 @@ async def duplicate_experiment(
         content_warning_details=source.content_warning_details,
         is_markdown=source.is_markdown,
         render_math=source.render_math,
+        block_copy_paste=source.block_copy_paste,
+        forbid_outside_tools=source.forbid_outside_tools,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
     )

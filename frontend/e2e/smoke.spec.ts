@@ -15,6 +15,8 @@ type ExperimentRecord = {
   archived_at: string | null;
   is_markdown: boolean;
   render_math: boolean;
+  block_copy_paste: boolean;
+  forbid_outside_tools: boolean;
   assistance_method: string;
   resolved_models?: Record<
     string,
@@ -205,6 +207,8 @@ type RaterSessionRecord = {
   debrief_html?: string | null;
   human_prompt_prefix?: string | null;
   human_prompt_suffix?: string | null;
+  block_copy_paste?: boolean;
+  forbid_outside_tools?: boolean;
 };
 
 // The create form lives in a side panel opened from the page header.
@@ -337,6 +341,8 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     archived_at: null,
     is_markdown: false,
     render_math: false,
+    block_copy_paste: false,
+    forbid_outside_tools: false,
     assistance_method: 'none',
     needs_attention: false,
     attention_reason: null,
@@ -1354,6 +1360,69 @@ test('the rater intro states the session length before they commit', async ({ pa
   await expect(expectations).toContainText('you have 1 hour 50 minutes in total.');
   await expect(expectations).toContainText('If the time runs out');
   await expect(expectations).toContainText('an extra 5 minutes to finish and submit it.');
+});
+
+// Whether a copy / cut / paste on the question goes through (true) or is
+// cancelled by the page (false).
+const clipboardAllowed = (page: Page, text: string) =>
+  page.getByText(text).evaluate((el) =>
+    ['copy', 'cut', 'paste'].map((type) =>
+      el.dispatchEvent(new ClipboardEvent(type, { bubbles: true, cancelable: true })),
+    ),
+  );
+
+test('a rater may use AI tools and copy the question unless the experiment restricts them', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 703,
+    question_text: 'Is this question open to copying?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+  state.sessionsByExperimentId[1].experiment_description_html = '<p>Rate each item.</p>';
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+  await expect(page.getByTestId('outside-tools-policy')).toContainText('use them however you like');
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  await expect(page.getByText('Is this question open to copying?')).toBeVisible();
+  await expect(page.locator('[data-no-copy]')).toHaveCount(0);
+  expect(await clipboardAllowed(page, 'Is this question open to copying?')).toEqual([true, true, true]);
+});
+
+test('a restricted experiment forbids AI tools on the intro and blocks copy and paste while rating', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 704,
+    question_text: 'Is this question closed to copying?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+  // No description: the ban alone is enough to show the intro screen.
+  state.sessionsByExperimentId[1].block_copy_paste = true;
+  state.sessionsByExperimentId[1].forbid_outside_tools = true;
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+  const policy = page.getByTestId('outside-tools-policy');
+  await expect(policy).toContainText('Internet and AI tools: strictly forbidden. Do not use web search');
+  await expect(policy).not.toContainText('built into this study');
+  await expect(page.getByTestId('session-expectations')).not.toContainText('however you like');
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  const question = page.getByText('Is this question closed to copying?');
+  await expect(question).toBeVisible();
+  expect(await question.evaluate((el) => getComputedStyle(el).userSelect)).toBe('none');
+  expect(await clipboardAllowed(page, 'Is this question closed to copying?')).toEqual([false, false, false]);
+
+  // The ban stays readable from the rating screen.
+  await page.getByTestId('instructions-button').click();
+  await expect(page.getByRole('dialog').getByTestId('outside-tools-policy')).toContainText('strictly forbidden');
 });
 
 test('the rating screen reopens the intro instructions in a scrollable dialog', async ({ page }) => {

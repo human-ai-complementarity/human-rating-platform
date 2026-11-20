@@ -675,6 +675,8 @@ export const api = {
       content_warning_details?: string;
       is_markdown?: boolean;
       render_math?: boolean;
+      block_copy_paste?: boolean;
+      forbid_outside_tools?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
       // experiment leaves DRAFT.
