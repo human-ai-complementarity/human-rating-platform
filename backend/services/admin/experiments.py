@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from itertools import islice
 from typing import Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import get_settings
@@ -27,9 +27,14 @@ from models import (
     Upload,
 )
 from schemas import (
+    EXPERIMENT_PAGE_DEFAULT_LIMIT,
+    ArchivedScope,
     ExperimentCreate,
     ExperimentDuplicateResponse,
+    ExperimentListCounts,
+    ExperimentPage,
     ExperimentResponse,
+    ExperimentSort,
     ExperimentUpdate,
     WaveWarning,
 )
@@ -51,7 +56,12 @@ from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
 from services.pilot_check.summary import summaries_for, summary_for
 
-from .status import assert_can_finish, compute_attention_reason, is_locked
+from .status import (
+    assert_can_finish,
+    compute_attention_reason,
+    is_locked,
+    needs_attention_clause,
+)
 from services.assistance.methods.human_as_a_tool.method import MAX_NUM_SAMPLES
 from services.assistance.model_resolution import (
     ASSISTANCE_MODELS_KEY,
@@ -249,20 +259,14 @@ async def create_experiment(
     )
 
 
-async def list_experiments(
-    skip: int,
-    limit: int,
-    db: AsyncSession,
-    archived: bool = False,
-    include_archived: bool = False,
-    status: ExperimentStatus | None = None,
-    search: str | None = None,
-    ids: list[int] | None = None,
-    group_id: int | None = None,
-    dataset_id: int | None = None,
-    wave: str | None = None,
-    tag: str | None = None,
-) -> list[ExperimentResponse]:
+def _experiment_rows_select() -> tuple[Select, ColumnElement[int]]:
+    """`(Experiment, question_count, rating_count)` rows, unfiltered, plus the
+    rating-count column for ordering by it.
+
+    `question_count` skips parent rows (header-only, never served);
+    `rating_count` counts every rating, preview ones included, as the list
+    has always shown it.
+    """
     question_counts = (
         select(
             Question.experiment_id,
@@ -283,15 +287,43 @@ async def list_experiments(
         .subquery()
     )
 
+    rating_count = func.coalesce(rating_counts.c.rating_count, 0)
     stmt = (
         select(
             Experiment,
             func.coalesce(question_counts.c.question_count, 0).label("question_count"),
-            func.coalesce(rating_counts.c.rating_count, 0).label("rating_count"),
+            rating_count.label("rating_count"),
         )
         .outerjoin(question_counts, Experiment.id == question_counts.c.experiment_id)
         .outerjoin(rating_counts, Experiment.id == rating_counts.c.experiment_id)
     )
+    return stmt, rating_count
+
+
+def _like_pattern(search: str) -> str:
+    """Case-insensitive substring pattern for `ilike(..., escape="\\")`.
+
+    `%`/`_` are escaped so a literal search term can't act as a wildcard.
+    """
+    term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{term}%"
+
+
+async def list_experiments(
+    skip: int,
+    limit: int,
+    db: AsyncSession,
+    archived: bool = False,
+    include_archived: bool = False,
+    status: ExperimentStatus | None = None,
+    search: str | None = None,
+    ids: list[int] | None = None,
+    group_id: int | None = None,
+    dataset_id: int | None = None,
+    wave: str | None = None,
+    tag: str | None = None,
+) -> list[ExperimentResponse]:
+    stmt, _ = _experiment_rows_select()
 
     # An explicit id set is a targeted batch fetch: return exactly those rows
     # regardless of archived state (the caller already knows what it wants).
@@ -327,11 +359,9 @@ async def list_experiments(
             )
         )
 
-    # Case-insensitive substring match against either the public or internal
-    # name. `%`/`_` are escaped so a literal search term can't act as a wildcard.
+    # Case-insensitive substring match against either the public or internal name.
     if search and search.strip():
-        term = search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        pattern = f"%{term}%"
+        pattern = _like_pattern(search)
         stmt = stmt.where(
             or_(
                 Experiment.name.ilike(pattern, escape="\\"),
@@ -339,7 +369,8 @@ async def list_experiments(
             )
         )
 
-    stmt = stmt.order_by(Experiment.created_at.desc())
+    # `id` breaks created_at ties so skip/limit pages never overlap or skip rows.
+    stmt = stmt.order_by(Experiment.created_at.desc(), Experiment.id.desc())
     # An explicit id batch is already bounded by the caller's id list, so return
     # exactly those rows (per the endpoint contract) instead of paginating and
     # silently truncating a batch larger than `limit`.
@@ -348,6 +379,205 @@ async def list_experiments(
     rows = (await db.execute(stmt)).all()
 
     return await _build_experiment_responses(list(rows), db)
+
+
+# --- Paged list (GET /admin/experiments/page) ---------------------------
+# Filters split in two. The scope filters (group, wave, dataset, tag, method,
+# search) narrow every number the endpoint returns. The selection filters
+# (status, archived, needs_attention) are what a list's tabs pick between, so
+# they narrow `items` and `total` but not `counts`: each tab can show what
+# picking it would return. Everything, needs_attention included, is SQL, so
+# `total` and `counts` are exact without loading any row beyond the page.
+
+
+def _page_scope_filters(
+    *,
+    group_id: int | None,
+    ungrouped: bool,
+    wave: str | None,
+    dataset_id: int | None,
+    tag: str | None,
+    assistance_method: str | None,
+    search: str | None,
+) -> list[ColumnElement[bool]]:
+    filters: list[ColumnElement[bool]] = []
+    if group_id is not None:
+        filters.append(Experiment.group_id == group_id)
+    if ungrouped:
+        filters.append(Experiment.group_id.is_(None))
+
+    group_filters = []
+    if dataset_id is not None:
+        group_filters.append(ExperimentGroup.dataset_id == dataset_id)
+    if wave and wave.strip():
+        group_filters.append(ExperimentGroup.wave == normalize_wave_token(wave))
+    if group_filters:
+        filters.append(Experiment.group_id.in_(select(ExperimentGroup.id).where(*group_filters)))
+
+    if tag and tag.strip():
+        filters.append(
+            Experiment.id.in_(
+                select(ExperimentTag.experiment_id)
+                .join(Tag, Tag.id == ExperimentTag.tag_id)
+                .where(func.lower(Tag.name) == tag.strip().lower())
+            )
+        )
+    if assistance_method and assistance_method.strip():
+        filters.append(Experiment.assistance_method == assistance_method.strip())
+
+    # Everything the dashboard's own search box matches: both names, the
+    # group's name, its dataset's name and any tag, each a case-insensitive
+    # substring.
+    if search and search.strip():
+        pattern = _like_pattern(search)
+        matching_groups = (
+            select(ExperimentGroup.id)
+            .join(Dataset, Dataset.id == ExperimentGroup.dataset_id)
+            .where(
+                or_(
+                    ExperimentGroup.name.ilike(pattern, escape="\\"),
+                    Dataset.name.ilike(pattern, escape="\\"),
+                )
+            )
+        )
+        matching_tags = (
+            select(ExperimentTag.experiment_id)
+            .join(Tag, Tag.id == ExperimentTag.tag_id)
+            .where(Tag.name.ilike(pattern, escape="\\"))
+        )
+        filters.append(
+            or_(
+                Experiment.name.ilike(pattern, escape="\\"),
+                Experiment.internal_name.ilike(pattern, escape="\\"),
+                Experiment.group_id.in_(matching_groups),
+                Experiment.id.in_(matching_tags),
+            )
+        )
+    return filters
+
+
+def _page_selection_filters(
+    *,
+    status: ExperimentStatus | None,
+    archived: ArchivedScope,
+    needs_attention: bool | None,
+) -> list[ColumnElement[bool]]:
+    filters: list[ColumnElement[bool]] = []
+    if archived == ArchivedScope.EXCLUDE:
+        filters.append(Experiment.archived_at.is_(None))
+    elif archived == ArchivedScope.ONLY:
+        filters.append(Experiment.archived_at.is_not(None))
+    if status is not None:
+        filters.append(Experiment.status == status.value)
+    if needs_attention is not None:
+        attention = needs_attention_clause()
+        filters.append(attention if needs_attention else ~attention)
+    return filters
+
+
+def _page_order(sort: ExperimentSort, rating_count: ColumnElement[int]) -> list:
+    """ORDER BY for `sort`, always ending on `id` so pages never overlap or skip."""
+    if sort == ExperimentSort.OLDEST:
+        return [Experiment.created_at.asc(), Experiment.id.asc()]
+    if sort == ExperimentSort.NAME:
+        # The dashboard labels a row by its internal name when it has one.
+        label = func.coalesce(func.nullif(Experiment.internal_name, ""), Experiment.name)
+        return [func.lower(label).asc(), Experiment.id.asc()]
+    if sort == ExperimentSort.SPEND:
+        # The same sum `spend_minor_units` reports: NULL (unsynced) costs add nothing.
+        spend = (
+            select(func.coalesce(func.sum(ExperimentRound.total_cost), 0))
+            .where(ExperimentRound.experiment_id == Experiment.id)
+            .correlate(Experiment)
+            .scalar_subquery()
+        )
+        return [spend.desc(), Experiment.id.desc()]
+    if sort == ExperimentSort.RATINGS:
+        return [rating_count.desc(), Experiment.id.desc()]
+    return [Experiment.created_at.desc(), Experiment.id.desc()]
+
+
+async def list_experiments_page(
+    *,
+    db: AsyncSession,
+    skip: int = 0,
+    limit: int = EXPERIMENT_PAGE_DEFAULT_LIMIT,
+    status: ExperimentStatus | None = None,
+    archived: ArchivedScope = ArchivedScope.EXCLUDE,
+    needs_attention: bool | None = None,
+    group_id: int | None = None,
+    ungrouped: bool = False,
+    wave: str | None = None,
+    dataset_id: int | None = None,
+    tag: str | None = None,
+    assistance_method: str | None = None,
+    search: str | None = None,
+    sort: ExperimentSort = ExperimentSort.NEWEST,
+) -> ExperimentPage:
+    """One page of experiments, the count matching every filter, and per-tab
+    counts over the scope filters alone: one aggregate query, one page query,
+    then the page's enrichment (`_build_experiment_responses`), whatever the
+    table's size."""
+    if group_id is not None and ungrouped:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "group_id and ungrouped=true cannot both be set: "
+                "an ungrouped experiment has no group."
+            ),
+        )
+    scope = _page_scope_filters(
+        group_id=group_id,
+        ungrouped=ungrouped,
+        wave=wave,
+        dataset_id=dataset_id,
+        tag=tag,
+        assistance_method=assistance_method,
+        search=search,
+    )
+    selection = _page_selection_filters(
+        status=status, archived=archived, needs_attention=needs_attention
+    )
+
+    active = Experiment.archived_at.is_(None)
+    attention = needs_attention_clause()
+    counts_row = (
+        await db.execute(
+            select(
+                func.count().filter(and_(*selection)) if selection else func.count(),
+                *(
+                    func.count().filter(and_(active, Experiment.status == state.value))
+                    for state in ExperimentStatus
+                ),
+                func.count().filter(Experiment.archived_at.is_not(None)),
+                func.count().filter(and_(active, attention)),
+            )
+            .select_from(Experiment)
+            .where(*scope)
+        )
+    ).one()
+    total, *by_status, archived_count, attention_count = counts_row
+
+    stmt, rating_count = _experiment_rows_select()
+    stmt = (
+        stmt.where(*scope, *selection)
+        .order_by(*_page_order(sort, rating_count))
+        .offset(skip)
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).all()
+
+    return ExperimentPage(
+        items=await _build_experiment_responses(list(rows), db),
+        total=int(total),
+        skip=skip,
+        limit=limit,
+        counts=ExperimentListCounts(
+            **{state.value: int(n) for state, n in zip(ExperimentStatus, by_status)},
+            archived=int(archived_count),
+            needs_attention=int(attention_count),
+        ),
+    )
 
 
 async def _build_experiment_responses(

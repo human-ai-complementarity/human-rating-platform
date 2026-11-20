@@ -716,6 +716,7 @@ contributors.
 - `GET /api/admin/platform-status` — check platform capabilities and Prolific mode
 - `POST /api/admin/experiments` — create experiment
 - `GET /api/admin/experiments` — list experiments
+- `GET /api/admin/experiments/page` — one page of experiments as `{items, total, skip, limit, counts}`. `limit` defaults to 50, at most 200; page until `skip + len(items) >= total`. Filters: `status`, `archived` (`exclude`, the default, for active rows only; `only`; `include`), `needs_attention` (`true`/`false`), `group_id` or `ungrouped=true`, `wave`, `dataset_id`, `tag` (exact, any casing), `assistance_method`, and `search` (substring of the public or internal name, group name, dataset name or a tag). `sort`: `newest` (default), `oldest`, `name`, `spend`, `ratings`, each ending on `id` so pages are stable. `total` counts every row matching all filters; `counts` (`DRAFT`, `LAUNCH`, `FINISHED` and `needs_attention` over active rows, `archived` over archived rows) ignores the `status`/`archived`/`needs_attention` selection, so tabs can show what picking them would return
 - `POST /api/admin/experiments/{id}/upload` — upload question CSV
 - `GET /api/admin/experiments/{id}/uploads` — list uploads for experiment
 - `GET /api/admin/experiments/{id}/stats` — experiment statistics
