@@ -344,9 +344,9 @@ export interface TermsStatus {
 export interface TermsPreview {
   pinned: boolean;
   consent_ref: string;
-  consent_html: string;
+  consent_markdown: string;
   debrief_ref: string | null;
-  debrief_html: string | null;
+  debrief_markdown: string | null;
 }
 
 // One piece of a question's stimulus. Text blocks are rendered like
@@ -413,9 +413,8 @@ export interface Session {
   // screen may still be submitted. New questions stop at session_end_time.
   session_grace_seconds: number;
   experiment_name: string;
-  // Pre-rendered HTML (via the same Prolific-markdown converter the external
-  // study description uses). Render with dangerouslySetInnerHTML on the splash.
-  experiment_description_html: string | null;
+  // The researcher's study description, as Markdown.
+  experiment_description_markdown: string | null;
   // Per-question framing rendered above (prefix) and below (suffix) the
   // question text. Constant for the session.
   human_prompt_prefix: string | null;
@@ -424,13 +423,13 @@ export interface Session {
   rater_session_token: string;
   assistance_method: string;
   assistance_instructions: string | null;
-  // Pre-rendered consent statement with the study's placeholders filled.
+  // The consent statement with the study's placeholders filled, as Markdown.
   // Shown until `consented_at` is set.
-  consent_statement_html: string;
+  consent_statement_markdown: string;
   consented_at: string | null;
   // Only deception studies have a debrief; when present the completion
   // screen shows it and the redirect to Prolific is manual.
-  debrief_html: string | null;
+  debrief_markdown: string | null;
 }
 
 export interface ConsentResponse {

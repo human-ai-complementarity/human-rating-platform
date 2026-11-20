@@ -1,12 +1,11 @@
 import { useState } from 'react';
+import ProseMarkdown from './ProseMarkdown';
 import { primaryButton } from './experiment-detail/ui';
 
 interface RaterConsentProps {
   experimentName: string;
-  // Pre-rendered HTML from the server (markdown converted via to_prolific_html).
-  // Rendered with dangerouslySetInnerHTML — safe because the converter only
-  // emits a whitelisted set of Prolific-allowed tags with all input escaped.
-  statementHtml: string;
+  // The consent statement with placeholders filled, as Markdown.
+  statementMarkdown: string;
   submitting: boolean;
   error: string | null;
   onAgree: () => void;
@@ -20,7 +19,7 @@ interface RaterConsentProps {
  */
 function RaterConsent({
   experimentName,
-  statementHtml,
+  statementMarkdown,
   submitting,
   error,
   onAgree,
@@ -66,9 +65,9 @@ function RaterConsent({
         Please read the following before you begin.
       </p>
 
-      <div
+      <ProseMarkdown
         className="rater-consent-statement rater-prose"
-        dangerouslySetInnerHTML={{ __html: statementHtml }}
+        source={statementMarkdown}
         style={{ color: 'var(--ink)' }}
       />
 

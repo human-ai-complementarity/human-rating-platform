@@ -702,8 +702,8 @@ button:disabled {
 }
 
 /* Long-form text on every rater screen: the consent and debrief statements,
-   the study description (server-rendered HTML from the Prolific-markdown
-   converter) and Markdown questions, context and instructions. One rule set,
+   the study description and Markdown questions, context and instructions,
+   all rendered by react-markdown. One rule set,
    so a heading, list or table looks the same wherever a rater meets it. The
    global reset would otherwise strip every margin and the list indent.
    Headings are in em: they scale with the text they sit in, which is body
@@ -712,7 +712,7 @@ button:disabled {
   font-size: var(--text-body);
   line-height: var(--leading-body);
 }
-.rater-prose :is(h1, h2, h3, h4) {
+.rater-prose :is(h1, h2, h3, h4, h5, h6) {
   font-family: var(--font-head);
   font-weight: 600;
   line-height: var(--leading-heading);
@@ -724,10 +724,10 @@ button:disabled {
 .rater-prose h2 {
   font-size: 1.125em;
 }
-.rater-prose :is(h3, h4) {
+.rater-prose :is(h3, h4, h5, h6) {
   font-size: 1em;
 }
-.rater-prose :is(h1, h2, h3, h4):first-child {
+.rater-prose :is(h1, h2, h3, h4, h5, h6):first-child {
   margin-top: 0;
 }
 /* :where keeps this below the per-surface first/last-child margin resets. */
@@ -758,6 +758,8 @@ button:disabled {
 }
 .rater-prose pre {
   font-size: var(--text-secondary);
+  /* A long line scrolls inside the block instead of widening the page. */
+  overflow-x: auto;
 }
 .rater-prose table {
   font: 400 var(--text-body) / 1.5 var(--font-body);

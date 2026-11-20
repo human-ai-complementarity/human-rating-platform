@@ -20,9 +20,9 @@ async function mockQueue(page: Page, method = 'top_n', intro = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/raters/start')) return json(route, {
-      consent_statement_html: '<p>Agree to participate.</p>', consented_at: state.needsConsent ? null : '2026-09-29T00:00:00Z',
+      consent_statement_markdown: 'Agree to participate.\n\n', consented_at: state.needsConsent ? null : '2026-09-29T00:00:00Z',
       rater_id: 1, session_start: '2026-09-29T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds,
-      experiment_name: 'Prefetch study', experiment_description_html: intro ? '<p>Read these study instructions.</p>' : null,
+      experiment_name: 'Prefetch study', experiment_description_markdown: intro ? 'Read these study instructions.\n\n' : null,
       assistance_method: method, assistance_instructions: null, queue_enabled: false, rater_session_token: 'token', completion_url: null,
     });
     if (path.endsWith('/raters/consent')) return json(route, { consented_at: '2026-10-28T00:00:00Z', session_start: '2026-10-28T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds, rater_session_token: 'consented-token' });

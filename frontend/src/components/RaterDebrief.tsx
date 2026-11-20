@@ -1,10 +1,9 @@
+import ProseMarkdown from './ProseMarkdown';
 import { primaryButton } from './experiment-detail/ui';
 
 interface RaterDebriefProps {
-  // Pre-rendered HTML from the server (the debrief statement with
-  // placeholders filled). Same trust argument as the consent statement: the
-  // converter only emits a whitelisted set of tags with all input escaped.
-  statementHtml: string;
+  // The debrief statement with placeholders filled, as Markdown.
+  statementMarkdown: string;
   completionUrl: string | null;
   questionsCompleted: number;
 }
@@ -16,7 +15,7 @@ interface RaterDebriefProps {
  * rater reads, then presses through to Prolific themselves. Which flags
  * get a debrief is tabled in backend/services/terms/flags.py.
  */
-function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: RaterDebriefProps) {
+function RaterDebrief({ statementMarkdown, completionUrl, questionsCompleted }: RaterDebriefProps) {
   return (
     <div
       data-testid="debrief-screen"
@@ -43,9 +42,9 @@ function RaterDebrief({ statementHtml, completionUrl, questionsCompleted }: Rate
         Everything you submitted is saved.
       </p>
 
-      <div
+      <ProseMarkdown
         className="rater-consent-statement rater-prose"
-        dangerouslySetInnerHTML={{ __html: statementHtml }}
+        source={statementMarkdown}
         style={{ color: 'var(--ink)' }}
       />
 

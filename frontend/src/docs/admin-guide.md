@@ -80,7 +80,7 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 #### Formatting rules
 
-- **`description`** supports markdown — same renderer as the Prolific study description: `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists, blank-line paragraphs.
+- **`description`** supports markdown. Prolific only renders `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists and blank-line paragraphs; anything else (links, tables, deeper headings) renders on the rater intro screen but shows as literal text on the Prolific listing.
 - The four other fields are plain text, with line breaks preserved. The prefix and suffix are the exception when `render_markdown` is on: they then render as Markdown with the questions.
 - **`render_math`** (`true` or `false`, optional) typesets TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` in the question text, its MC options, its context and the document; the prefix/suffix and assistance text stay as written. Leave it off for datasets that use `$` for money. It combines with Markdown: formulas are typeset inside the rendered Markdown, and anything in a code block or code span stays as written. It is also a checkbox under **Question rendering**.
 - **`render_markdown`** (`true` or `false`, optional) renders the questions, and the prefix and suffix around them, as Markdown: code blocks, tables, etc. become styled elements. MC options render the same way, except that links show as plain text, so an option like `# of items` becomes a heading. It can be on together with `render_math`. It is the **Render questions as Markdown** checkbox under **Question rendering**.

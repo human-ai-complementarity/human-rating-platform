@@ -622,10 +622,9 @@ def test_rater_session_prefix_suffix_null_when_unset(client: TestClient):
     assert session_payload["human_prompt_suffix"] is None
 
 
-def test_rater_session_renders_description_markdown_to_html(client: TestClient):
-    # Markdown in `description` is converted to the same HTML subset Prolific
-    # accepts before it reaches the splash, so what raters see matches the
-    # Prolific external listing.
+def test_rater_session_serves_description_as_markdown(client: TestClient):
+    # The description reaches the splash as the Markdown the researcher wrote;
+    # the frontend renders it. Only Prolific gets the converted HTML subset.
     experiment = _create_experiment(client)
     client.post(
         f"/api/admin/experiments/{experiment['id']}/upload",
@@ -638,10 +637,7 @@ def test_rater_session_renders_description_markdown_to_html(client: TestClient):
         },
     )
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_MD")
-    html = session_payload["experiment_description_html"]
-    assert html is not None
-    assert "<h1>Heading</h1>" in html
-    assert "<b>Bold</b>" in html
+    assert session_payload["experiment_description_markdown"] == "# Heading\n\n**Bold** paragraph."
 
 
 def test_update_experiment_edits_dataset_metadata(client: TestClient):

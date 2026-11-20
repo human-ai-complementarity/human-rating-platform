@@ -163,8 +163,7 @@ def _terms(document: str, version: int, markdown: str, *, debrief: bool = False)
     return RaterTerms(
         consent=StatementText(document=document, version=version, body=markdown, source_url="x"),
         consent_markdown=markdown,
-        consent_html="",
-        debrief_html="<p>debrief</p>" if debrief else None,
+        debrief_markdown="debrief" if debrief else None,
     )
 
 

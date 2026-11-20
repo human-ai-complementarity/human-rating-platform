@@ -47,9 +47,9 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     typeof value.session_start === 'string' &&
     typeof value.session_end_time === 'string' &&
     typeof value.experiment_name === 'string' &&
-    (value.experiment_description_html === null ||
-      value.experiment_description_html === undefined ||
-      typeof value.experiment_description_html === 'string') &&
+    (value.experiment_description_markdown === null ||
+      value.experiment_description_markdown === undefined ||
+      typeof value.experiment_description_markdown === 'string') &&
     (value.completion_url === null || typeof value.completion_url === 'string') &&
     (value.rater_session_token === undefined || typeof value.rater_session_token === 'string') &&
     (value.assistance_instructions === null ||
@@ -58,11 +58,11 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     // Required, not optional: a session stored before the consent step has
     // no statement to show, so it is re-fetched via /start (which resumes the
     // same rater) rather than restored.
-    typeof value.consent_statement_html === 'string' &&
+    typeof value.consent_statement_markdown === 'string' &&
     (value.consented_at === null || typeof value.consented_at === 'string') &&
-    (value.debrief_html === null ||
-      value.debrief_html === undefined ||
-      typeof value.debrief_html === 'string')
+    (value.debrief_markdown === null ||
+      value.debrief_markdown === undefined ||
+      typeof value.debrief_markdown === 'string')
   );
 }
 
@@ -84,9 +84,9 @@ function parseStoredSession(raw: string): StoredSession | null {
     const session: Session = {
       ...sessionPayload,
       rater_session_token: token,
-      experiment_description_html: sessionPayload.experiment_description_html ?? null,
+      experiment_description_markdown: sessionPayload.experiment_description_markdown ?? null,
       assistance_instructions: sessionPayload.assistance_instructions ?? null,
-      debrief_html: sessionPayload.debrief_html ?? null,
+      debrief_markdown: sessionPayload.debrief_markdown ?? null,
     };
 
     return {
@@ -131,7 +131,7 @@ function getProlificSessionParams(params: {
 }
 
 function hasIntroContent(session: Session): boolean {
-  return Boolean(session.experiment_description_html || session.assistance_instructions);
+  return Boolean(session.experiment_description_markdown || session.assistance_instructions);
 }
 
 function RaterView() {
@@ -442,13 +442,13 @@ function RaterView() {
     // A study with a debrief (deception) must not bounce the rater past
     // it: Prolific requires the debrief before the completion code. The
     // debrief screen carries the link instead.
-    if (session?.debrief_html) return;
+    if (session?.debrief_markdown) return;
 
     const timer = setTimeout(() => {
       window.location.href = completionUrl;
     }, 3000);
     return () => clearTimeout(timer);
-  }, [sessionOver, awaitingFeedback, session?.completion_url, session?.debrief_html, clearStoredSession]);
+  }, [sessionOver, awaitingFeedback, session?.completion_url, session?.debrief_markdown, clearStoredSession]);
 
   const handleFeedbackSubmit = useCallback(async (feedback: string) => {
     if (sessionToken && feedback.trim()) {
@@ -674,11 +674,11 @@ function RaterView() {
   if (sessionOver) {
     const completionUrl = session?.completion_url;
 
-    if (session?.debrief_html) {
+    if (session?.debrief_markdown) {
       return (
         <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
           <RaterDebrief
-            statementHtml={session.debrief_html}
+            statementMarkdown={session.debrief_markdown}
             completionUrl={completionUrl ?? null}
             questionsCompleted={questionsCompleted}
           />
@@ -739,7 +739,7 @@ function RaterView() {
         )}
         <RaterConsent
           experimentName={session.experiment_name}
-          statementHtml={session.consent_statement_html}
+          statementMarkdown={session.consent_statement_markdown}
           submitting={consentSubmitting}
           error={consentError}
           onAgree={() => void handleConsentAgree()}
@@ -758,7 +758,7 @@ function RaterView() {
         )}
         <RaterIntro
           experimentName={session.experiment_name}
-          descriptionHtml={session.experiment_description_html}
+          descriptionMarkdown={session.experiment_description_markdown}
           assistanceInstructions={session.assistance_instructions}
           sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
           graceMinutes={Math.round(session.session_grace_seconds / 60)}
@@ -812,7 +812,7 @@ function RaterView() {
       {instructionsOpen && (
         <StudyInstructionsDialog
           experimentName={session.experiment_name}
-          descriptionHtml={session.experiment_description_html}
+          descriptionMarkdown={session.experiment_description_markdown}
           assistanceInstructions={session.assistance_instructions}
           sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
           graceMinutes={Math.round(session.session_grace_seconds / 60)}

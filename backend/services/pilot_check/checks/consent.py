@@ -81,7 +81,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
                 "The pinned statement predates the flag change.",
             )
         )
-    if needs is not None and needs.debrief_document and terms.debrief_html is None:
+    if needs is not None and needs.debrief_document and terms.debrief_markdown is None:
         findings.append(
             Finding(
                 NAME,
@@ -133,7 +133,7 @@ async def run(ctx: CheckContext, severity: Severity) -> list[Finding]:
         )
     if not findings:
         shown = f"Raters will be shown the {consent.ref} consent statement"
-        if terms.debrief_html is not None:
+        if terms.debrief_markdown is not None:
             shown += " and a debrief at the end"
         findings.append(Finding(NAME, "info", shown + "."))
     return findings

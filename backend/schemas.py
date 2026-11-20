@@ -495,10 +495,9 @@ class RaterStartResponse(BaseModel):
     # screen may still be submitted. New questions stop at session_end_time.
     session_grace_seconds: int = 0
     experiment_name: str
-    # Pre-rendered HTML for the rater intro screen (markdown converted via
-    # `to_prolific_html` so the splash matches what Prolific shows externally).
-    # None when no description is set; "" never appears.
-    experiment_description_html: Optional[str] = None
+    # The study description for the rater intro screen, as Markdown the
+    # frontend renders. None when no description is set; "" never appears.
+    experiment_description_markdown: Optional[str] = None
     # Per-question framing. `human_prompt_prefix` is rendered above each question,
     # `human_prompt_suffix` below it. Constant for the session, sent once at start.
     human_prompt_prefix: Optional[str] = None
@@ -508,14 +507,14 @@ class RaterStartResponse(BaseModel):
     assistance_method: str = "none"
     assistance_instructions: Optional[str] = None
     # The consent statement this rater must agree to, rendered with the
-    # study's placeholders filled, pre-rendered like the description.
-    consent_statement_html: str
+    # study's placeholders filled, as Markdown like the description.
+    consent_statement_markdown: str
     # None until the rater agrees. The frontend shows the consent screen while
     # this is None; the backend refuses questions until it is set.
     consented_at: Optional[datetime] = None
     # Debrief shown on the completion screen. Only deception studies have
     # one; when present the completion redirect is manual.
-    debrief_html: Optional[str] = None
+    debrief_markdown: Optional[str] = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -561,9 +560,9 @@ class TermsPreviewResponse(BaseModel):
 
     pinned: bool
     consent_ref: str
-    consent_html: str
+    consent_markdown: str
     debrief_ref: Optional[str] = None
-    debrief_html: Optional[str] = None
+    debrief_markdown: Optional[str] = None
 
 
 # Rating schemas

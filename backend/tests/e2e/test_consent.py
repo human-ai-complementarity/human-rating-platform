@@ -109,12 +109,12 @@ def test_start_serves_the_statement_with_placeholders_filled(client: TestClient,
     payload = _start(client, experiment_id, "PID_DEFAULT")
 
     assert payload["consented_at"] is None
-    html = payload["consent_statement_html"]
-    assert "<h2>Purpose of the study</h2>" in html
-    assert "<b>I agree</b>" in html
+    markdown = payload["consent_statement_markdown"]
+    assert "## Purpose of the study" in markdown
+    assert "**I agree**" in markdown
     # {{session_length}} rendered from the experiment's 60-minute default.
-    assert "You have 1 hour." in html
-    assert "{{" not in html
+    assert "You have 1 hour." in markdown
+    assert "{{" not in markdown
 
 
 def test_unset_source_serves_a_placeholder_and_records_it_as_such(client: TestClient, sync_engine):
@@ -124,10 +124,10 @@ def test_unset_source_serves_a_placeholder_and_records_it_as_such(client: TestCl
     _upload(client, experiment_id)
 
     payload = _start(client, experiment_id, "PID_PLACEHOLDER")
-    html = payload["consent_statement_html"]
-    assert "<h2>Consent statement not configured</h2>" in html
-    assert "TERMS__SOURCE_URL" in html
-    assert "{{" not in html
+    markdown = payload["consent_statement_markdown"]
+    assert "## Consent statement not configured" in markdown
+    assert "TERMS__SOURCE_URL" in markdown
+    assert "{{" not in markdown
 
     _consent(client, payload)
     stored = _stored_consent(sync_engine, payload["rater_id"])
@@ -227,7 +227,7 @@ def test_a_new_statement_version_is_served_on_the_next_read(
     )
 
     payload = _start(client, experiment_id, "PID_V2")
-    assert "<h2>Version two</h2>" in payload["consent_statement_html"]
+    assert "## Version two" in payload["consent_statement_markdown"]
     _consent(client, payload)
     stored = _stored_consent(sync_engine, payload["rater_id"])
     assert stored["version"] == 2

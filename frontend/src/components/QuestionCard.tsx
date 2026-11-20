@@ -10,6 +10,7 @@ import { hasCodeFence, loadCodeHighlighter, useCodeHighlighter } from '../codeHi
 import { FORMULA_PROPERTY, maskMath, remarkMaskedMath, splitMath, useMathRenderer } from '../math';
 import type { MathRenderer } from '../math';
 import { CodeBlock } from './CodeBlock';
+import { MarkdownLink } from './ProseMarkdown';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
 import appCss from '../index.css?raw';
@@ -73,20 +74,7 @@ function escapeHtml(value: string): string {
 }
 
 const MARKDOWN_COMPONENTS: Components = {
-  a: ({ href, title, children }) => {
-    // Open external links in a new tab to avoid losing in-progress work.
-    const inPage = href?.startsWith('#') === true;
-    return (
-      <a
-        href={href}
-        title={title}
-        target={inPage ? undefined : '_blank'}
-        rel={inPage ? undefined : 'noopener noreferrer'}
-      >
-        {children}
-      </a>
-    );
-  },
+  a: MarkdownLink,
   table: ({ children }) => (
     <div className="question-markdown-table-scroll">
       <table>{children}</table>

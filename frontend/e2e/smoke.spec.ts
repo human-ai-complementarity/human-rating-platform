@@ -195,14 +195,14 @@ type RaterSessionRecord = {
   session_end_time: string;
   session_grace_seconds?: number;
   experiment_name: string;
-  experiment_description_html?: string | null;
+  experiment_description_markdown?: string | null;
   completion_url: string | null;
   rater_session_token: string;
   // Omitted: the mock serves a stub statement with consent not yet given, so
   // every rater flow goes through the consent screen the way real ones do.
-  consent_statement_html?: string;
+  consent_statement_markdown?: string;
   consented_at?: string | null;
-  debrief_html?: string | null;
+  debrief_markdown?: string | null;
   human_prompt_prefix?: string | null;
   human_prompt_suffix?: string | null;
 };
@@ -213,7 +213,7 @@ async function openCreatePanel(page: Page) {
   await expect(page.getByTestId('create-drawer')).toBeVisible();
 }
 
-const MOCK_CONSENT_HTML = '<h2>Purpose of the study</h2><p>Mock consent statement.</p>';
+const MOCK_CONSENT_MARKDOWN = '## Purpose of the study\n\nMock consent statement.\n\n';
 
 // Ticks the box and agrees on the consent screen, the first thing every rater
 // sees. Waits for the screen to be gone so the caller can go straight to
@@ -871,9 +871,9 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         pinned,
         consent_ref: warned ? 'warned v1' : 'standard v1',
-        consent_html: `<h2>Preview consent</h2><p>${(warned && selected.content_warning_details) || 'No warning.'}</p>`,
+        consent_markdown: `## Preview consent\n\n${(warned && selected.content_warning_details) || 'No warning.'}\n\n`,
         debrief_ref: debrief ? 'debrief v1' : null,
-        debrief_html: debrief ? '<h2>Preview debrief</h2><p>Continue to Prolific.</p>' : null,
+        debrief_markdown: debrief ? '## Preview debrief\n\nContinue to Prolific.\n\n' : null,
       });
       return;
     }
@@ -1141,9 +1141,9 @@ async function installApiMocks(
           rater_session_token: `token-exp-${experimentId || 'default'}`,
         };
       await fulfillJson(route, 200, {
-        consent_statement_html: MOCK_CONSENT_HTML,
+        consent_statement_markdown: MOCK_CONSENT_MARKDOWN,
         consented_at: null,
-        debrief_html: null,
+        debrief_markdown: null,
         ...session,
       });
       return;
@@ -1331,7 +1331,7 @@ test('the rater intro states the session length before they commit', async ({ pa
     session_end_time: new Date(start.getTime() + 110 * 60000).toISOString(),
     session_grace_seconds: 300,
     experiment_name: 'Expectations Experiment',
-    experiment_description_html: '<p>Read each passage carefully.</p>',
+    experiment_description_markdown: 'Read each passage carefully.\n\n',
     completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
     rater_session_token: 'token-expectations',
   };
@@ -1365,8 +1365,8 @@ test('the rating screen reopens the intro instructions in a scrollable dialog', 
     question_type: 'MC',
     is_markdown: false,
   });
-  state.sessionsByExperimentId[1].experiment_description_html =
-    `<h2>Guidelines</h2>${'<p>A long paragraph of study guidance for the rater.</p>'.repeat(40)}<p>Final guideline.</p>`;
+  state.sessionsByExperimentId[1].experiment_description_markdown =
+    `## Guidelines\n\n${'A long paragraph of study guidance for the rater.\n\n'.repeat(40)}Final guideline.\n\n`;
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
@@ -2015,8 +2015,8 @@ test('the intro description keeps heading, paragraph and list spacing', async ({
     question_type: 'MC',
     is_markdown: false,
   });
-  state.sessionsByExperimentId[1].experiment_description_html =
-    '<p>First paragraph.</p><h2>Puzzle types</h2><ul><li>One</li><li>Two</li></ul><p>Last.</p>';
+  state.sessionsByExperimentId[1].experiment_description_markdown =
+    'First paragraph.\n\n## Puzzle types\n\n- One\n- Two\n\nLast.\n\n';
 
   await installApiMocks(page, state);
   await page.goto(RATER_URL);
@@ -4523,8 +4523,8 @@ test('a deception study ends on the debrief and never auto-redirects', async ({ 
     experiment_name: 'Deception Experiment',
     completion_url: 'https://app.prolific.com/submissions/complete?cc=DEC1234',
     rater_session_token: 'token-deception',
-    consent_statement_html: '<h2>Purpose of the study</h2><p>Mock consent.</p>',
-    debrief_html: '<h2>Thank you</h2><p>Some of what you were told was not accurate.</p>',
+    consent_statement_markdown: '## Purpose of the study\n\nMock consent.\n\n',
+    debrief_markdown: '## Thank you\n\nSome of what you were told was not accurate.\n\n',
   };
   state.questionsBySessionToken['token-deception'] = {
     id: 801,
@@ -4582,9 +4582,9 @@ test('a sensitive study shows the warning in its consent and ends normally', asy
     experiment_name: 'Sensitive Experiment',
     completion_url: null,
     rater_session_token: 'token-sensitive',
-    consent_statement_html:
-      '<h2>Content warning</h2><p>Some passages describe violence.</p><p>Mock consent.</p>',
-    debrief_html: null,
+    consent_statement_markdown:
+      '## Content warning\n\nSome passages describe violence.\n\nMock consent. Read the [privacy notice](https://example.org/privacy).\n\n',
+    debrief_markdown: null,
   };
   state.questionsBySessionToken['token-sensitive'] = {
     id: 802,
@@ -4600,6 +4600,12 @@ test('a sensitive study shows the warning in its consent and ends normally', asy
 
   // The warning is part of the consent text itself.
   await expect(page.getByTestId('consent-screen')).toContainText('Some passages describe violence.');
+  // The statement is rendered Markdown: a heading, and a link that opens in
+  // a new tab so the rater does not leave the study.
+  await expect(page.getByRole('heading', { name: 'Content warning' })).toBeVisible();
+  const notice = page.getByRole('link', { name: 'privacy notice' });
+  await expect(notice).toHaveAttribute('href', 'https://example.org/privacy');
+  await expect(notice).toHaveAttribute('target', '_blank');
   await agreeToConsent(page);
   await expect(page.getByText('Is this passage disturbing?')).toBeVisible();
   state.questionsBySessionToken['token-sensitive'] = {} as RaterQuestionRecord;

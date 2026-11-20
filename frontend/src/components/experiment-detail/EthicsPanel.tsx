@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../../api';
 import type { Experiment, StudyFlag, TermsPreview, TermsStatus } from '../../types';
 import { STUDY_FLAGS, STUDY_FLAG_EFFECTS, flagsDebrief, flagsWarn } from '../../types';
+import ProseMarkdown from '../ProseMarkdown';
 import { Banner, Field, SectionCard, primaryButton, secondaryButton, textareaStyle } from './ui';
 
 const DOCUMENT_LABELS: Record<string, string> = {
@@ -327,16 +328,15 @@ export function EthicsPanel({
                 Close
               </button>
             </div>
-            {previewKind === 'debrief' && !preview.debrief_html ? (
+            {previewKind === 'debrief' && !preview.debrief_markdown ? (
               <p style={{ color: 'var(--muted)' }}>This experiment has no debrief screen.</p>
             ) : (
-              <div
+              <ProseMarkdown
                 className="rater-consent-statement"
                 style={{ fontSize: 15, lineHeight: 1.65 }}
-                dangerouslySetInnerHTML={{
-                  __html:
-                    previewKind === 'consent' ? preview.consent_html : preview.debrief_html ?? '',
-                }}
+                source={
+                  previewKind === 'consent' ? preview.consent_markdown : preview.debrief_markdown ?? ''
+                }
               />
             )}
           </div>

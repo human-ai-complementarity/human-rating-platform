@@ -1,11 +1,10 @@
+import ProseMarkdown from './ProseMarkdown';
 import { Banner } from './experiment-detail/ui';
 import { QUESTION_TIME_LIMIT_MINUTES } from './QuestionTimer';
 
 export interface StudyInstructionsProps {
-  // Pre-rendered HTML from the server (markdown converted via to_prolific_html).
-  // Rendered with dangerouslySetInnerHTML — safe because the converter only
-  // emits a whitelisted set of Prolific-allowed tags with all input escaped.
-  descriptionHtml: string | null;
+  // The researcher's study description, as Markdown.
+  descriptionMarkdown: string | null;
   assistanceInstructions: string | null;
   /** Minutes the rater gets, derived from the session the server issued. */
   sessionMinutes: number;
@@ -32,7 +31,7 @@ function formatDuration(minutes: number): string {
  * screen's Instructions dialog, so both always say the same thing.
  */
 function StudyInstructions({
-  descriptionHtml,
+  descriptionMarkdown,
   assistanceInstructions,
   sessionMinutes,
   graceMinutes,
@@ -79,10 +78,10 @@ function StudyInstructions({
         </ul>
       </div>
 
-      {descriptionHtml && (
-        <div
+      {descriptionMarkdown && (
+        <ProseMarkdown
           className="rater-intro-description rater-prose"
-          dangerouslySetInnerHTML={{ __html: descriptionHtml }}
+          source={descriptionMarkdown}
           style={{
             color: 'var(--ink)',
             marginBottom: 28,
