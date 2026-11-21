@@ -55,6 +55,8 @@ def summarise(
     counts = _counts(json.loads(run.findings or "[]"))
     if status == "running":
         state, reason = "running", "The pilot check is still running."
+    elif status == "queued":
+        state, reason = "running", "The pilot check is queued and starts shortly."
     elif status == "aborted":
         state, reason = "aborted", "The last pilot check did not finish."
     elif run.fingerprint != current_fingerprint:

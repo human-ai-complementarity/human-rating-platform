@@ -17,6 +17,8 @@ set -euo pipefail
 #   RENDER_WEB_SERVICE_ID       Web service ID (srv-...) when target includes web
 #
 # Optional env:
+#   RENDER_WORKER_SERVICE_ID        Pilot check worker service ID (srv-...); when set,
+#                                   it deploys with every api deploy (same backend code)
 #   RENDER_DEPLOY_TARGET            both | api | web | none (default: both)
 #   RENDER_LOG_MODE                 tail | quiet (default: tail)
 #   RENDER_COMMIT_ID                Git SHA to deploy (default: service branch head)
@@ -113,6 +115,9 @@ service_id_for() {
       ;;
     web)
       printf '%s\n' "${RENDER_WEB_SERVICE_ID:-}"
+      ;;
+    worker)
+      printf '%s\n' "${RENDER_WORKER_SERVICE_ID:-}"
       ;;
     *)
       return 1
@@ -440,6 +445,16 @@ case "$RENDER_DEPLOY_TARGET" in
     exit 1
     ;;
 esac
+
+# The pilot check worker runs the backend code, so it follows the api.
+if [ -n "${RENDER_WORKER_SERVICE_ID:-}" ]; then
+  for service in "${target_services[@]}"; do
+    if [ "$service" = "api" ]; then
+      target_services+=("worker")
+      break
+    fi
+  done
+fi
 
 case "$RENDER_LOG_MODE" in
   tail|quiet)

@@ -45,5 +45,10 @@ gate_mode = "warn"
 # Start a run when an upload or an edit leaves the experiment ready to launch
 # (skipped while one is in progress or the latest run is still fresh).
 auto_start = true
+# "inline" runs checks in the API process; "worker" queues them for
+# `python -m pilot_check_worker` (production). Set on both services.
+runner = "inline"
+# Runs the worker takes on at once; the rest queue.
+worker_concurrency = 1
 # Per-check severity overrides, e.g. markdown_mode = "info".
 [pilot_check.severities]
