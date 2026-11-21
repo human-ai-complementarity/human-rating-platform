@@ -53,7 +53,7 @@ This project uses Clerk for frontend identity and a backend HTTP‑only cookie f
 ### Cookie model
 
 - Name: `HRP_SESSION_COOKIE` (default `hrp_session`)
-- Scope: `Path=/`, `HttpOnly`; SameSite depends on env — `Lax` in local dev, `None; Secure` in production (`COOKIE_SECURE=true`).
+- Scope: `Path=/`, `HttpOnly`, `SameSite=Lax`; `Secure` in production (`COOKIE_SECURE=true`). The web app and API must share a site (e.g. `platform.` and `api.platform.complementarities.org`), or the browser won't send the cookie.
 - Contents: a compact HMAC‑signed token with `{ email, iat, exp }`. No server‑side store is required.
 - Validation: The server validates the signature and enforces `exp` on every request (session expires server‑side regardless of browser cookie TTL) and re‑checks the email against `ADMIN_ALLOWLIST`.
 - Usage: The frontend sends requests with `credentials: 'include'`, so the browser includes the cookie on `/api` calls.
