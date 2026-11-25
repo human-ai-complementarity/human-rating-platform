@@ -117,6 +117,8 @@ Backend (Render Web Service):
 - `ADMIN_ALLOWLIST=alice@example.com,bob@example.com`
 - `APP_SECRET_KEY=<long-random-string>`
 - `COOKIE_SECURE=true`
+- `LLM__OPENROUTER_API_KEY=sk-or-...` (needed for AI assistance on `openrouter/` models and for the pilot check's judge; see [Configuration](#configuration))
+- `LLM__OAI_API_KEY=sk-...` (only if an experiment pins an `oai/` model)
 
 Clerk Dashboard: add your Render web domain under Settings → Domains so Clerk is allowed to operate on that origin. 
 
@@ -284,6 +286,9 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
 - `MEDIA__SOURCE_URL` — where question images live, `gs://bucket/prefix` or `file://folder`; unset refuses uploads that reference images. `MEDIA__GCS_WIF_AUDIENCE`, `MEDIA__GCS_WIF_TOKEN_FILE`, `MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT` as for `TERMS__GCS_*`. See [Questions with images](#questions-with-images).
 - `PILOT_CHECK__*` — the pilot check's sample size, judge model, launch gate mode and per-check severities (`[pilot_check]` in `backend/config.toml`). See [docs/pilot-check.md](docs/pilot-check.md).
+- `LLM__OPENROUTER_API_KEY` — key for `openrouter/<model>` ids, which include the default models and the pilot check's judge. `backend/config.toml` has no `[llm]` section, so on Render this comes from the service environment only. Unset, an experiment whose assistance model is on OpenRouter cannot launch (the "Assistance model key" blocker), and a session that runs anyway records `provider_error` ("LLM__OPENROUTER_API_KEY is not set.") and shows no assistance.
+- `LLM__OAI_API_KEY` — key for `oai/<model>` ids (OpenAI's own API); needed only for experiments that pin one.
+- `LLM__DEFAULT_MODEL`, `LLM__DECOMPOSITION_MODEL`, `LLM__CONFIDENCE_MODEL`, `LLM__CLUSTERING_MODEL` — optional; unset, they fall back to the `LLMSettings` defaults in `backend/config.py`. `backend/.env.example` lists the other `LLM__*` settings.
 
 Top‑level convenience envs (not nested):
 
@@ -402,6 +407,8 @@ Set in repo → **Settings** → **Secrets and variables** → **Actions**:
 - `PROLIFIC__API_TOKEN` — Prolific API token (set to enable automated study management)
 - `PROLIFIC__PROJECT_ID` — Prolific project ID to create studies under (recommended on multi-workspace accounts to avoid wrong-currency studies; workspace and currency are auto-derived)
 - `PROLIFIC__ENV_LABEL` — leave unset in prod (dev sets it to `dev` to distinguish participant groups created locally from prod ones)
+- `LLM__OPENROUTER_API_KEY` — OpenRouter key for AI assistance on `openrouter/` models and for the pilot check's judge
+- `LLM__OAI_API_KEY` — OpenAI key, only if an experiment pins an `oai/` model
 
 **Web service** (set in Render Dashboard → Web service → Environment):
 - `VITE_API_HOST` — public API origin, e.g. `https://api.platform.complementarities.org`
