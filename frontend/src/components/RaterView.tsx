@@ -130,6 +130,15 @@ function getProlificSessionParams(params: {
   };
 }
 
+// What happens to preview ratings (issue #112): the ratings export, analytics
+// and /api/v1 leave them out unless asked to include preview data, and
+// /raters/start resets a preview rater, so reopening the same link deletes
+// what it submitted. Each "Preview as Participant" click opens a fresh link.
+const PREVIEW_BANNER_TEXT =
+  'Preview mode — your ratings here are left out of exports and analytics unless ' +
+  '"Include preview data" is on. Opening this same link again starts the preview ' +
+  'over and deletes them.';
+
 const blockClipboard = (event: { preventDefault: () => void }) => event.preventDefault();
 const NO_COPY_PROPS = {
   className: 'rater-no-copy',
@@ -748,7 +757,7 @@ function RaterView() {
       <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
-            Preview mode — ratings submitted here are real and will appear in your data.
+            {PREVIEW_BANNER_TEXT}
           </div>
         )}
         <RaterConsent
@@ -767,7 +776,7 @@ function RaterView() {
       <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
-            Preview mode — ratings submitted here are real and will appear in your data.
+            {PREVIEW_BANNER_TEXT}
           </div>
         )}
         <RaterIntro
@@ -788,7 +797,7 @@ function RaterView() {
     <div style={styles.container} {...(session.block_copy_paste ? NO_COPY_PROPS : {})}>
       {isPreview && (
         <div style={previewBannerStyle}>
-          Preview mode — ratings submitted here are real and will appear in your data.
+          {PREVIEW_BANNER_TEXT}
         </div>
       )}
       {/* One floating readout for everything the rater tracks. The count lives

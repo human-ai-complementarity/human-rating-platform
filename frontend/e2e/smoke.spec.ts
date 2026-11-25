@@ -1691,6 +1691,11 @@ test('preview participant link opens /rate with preview mode and starts one prev
 
   await expect(popup).toHaveURL(/preview=true/);
   await expect(popup.getByText('Preview mode')).toBeVisible();
+  // Preview ratings are left out of the data by default, and reopening the
+  // same link resets them (#112); the banner must not promise otherwise.
+  await expect(popup.getByText(/left out of exports and analytics/)).toBeVisible();
+  await expect(popup.getByText(/starts the preview over and deletes them/)).toBeVisible();
+  await expect(popup.getByText(/will appear in your data/)).toHaveCount(0);
   await expect(popup.getByText('Preview Experiment')).toBeVisible();
   await agreeToConsent(popup);
   await expect(popup.getByText('Is this workflow ready for release?')).toBeVisible();
