@@ -1033,25 +1033,40 @@ _PROLIFIC_CLEANUP_TIMEOUT_SECONDS = 3.0
 async def delete_experiment(
     experiment_id: int,
     db: AsyncSession,
+    *,
+    via_api_key: bool = False,
 ) -> dict[str, str]:
     settings = get_settings()
     experiment = await fetch_experiment_or_404(experiment_id, db)
     experiment_name = experiment.name
 
     # Snapshot linked Prolific study IDs before deleting the local rows.
-    round_study_ids: list[str] = []
-    if settings.prolific.enabled:
-        round_study_ids = list(
-            (
-                await db.execute(
-                    select(ExperimentRound.prolific_study_id).where(
-                        ExperimentRound.experiment_id == experiment_id
-                    )
+    round_study_ids: list[str] = list(
+        (
+            await db.execute(
+                select(ExperimentRound.prolific_study_id).where(
+                    ExperimentRound.experiment_id == experiment_id
                 )
             )
-            .scalars()
-            .all()
         )
+        .scalars()
+        .all()
+    )
+
+    # Deleting the rows also deletes their Prolific studies, and Prolific
+    # writes need a signed-in admin (issue #172). Refused before anything is
+    # deleted, so a key can still remove a draft that never had a round.
+    if via_api_key and round_study_ids:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This experiment has Prolific studies, and deleting it deletes them too. "
+                "That needs a signed-in dashboard session; an API key cannot do it"
+            ),
+        )
+
+    if not settings.prolific.enabled:
+        round_study_ids = []
 
     await db.delete(experiment)
     await db.commit()

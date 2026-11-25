@@ -350,9 +350,12 @@ async def update_experiment(
 @secure_router.delete("/experiments/{experiment_id}")
 async def delete_experiment(
     experiment_id: int,
+    admin: AdminSession = Depends(require_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    return await admin_service.delete_experiment(experiment_id=experiment_id, db=db)
+    return await admin_service.delete_experiment(
+        experiment_id=experiment_id, db=db, via_api_key=admin.via_api_key
+    )
 
 
 @secure_router.post(

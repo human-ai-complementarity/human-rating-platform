@@ -10,10 +10,14 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+import respx
 from fastapi.testclient import TestClient
+from httpx import Response
+from sqlalchemy.orm import Session
 
 from config import get_settings
 from main import create_app
+from models import ExperimentRound, ProlificStudyStatus
 from routers import admin as admin_router
 
 ADMIN_EMAIL = "admin@example.com"
@@ -146,6 +150,96 @@ def test_admin_key_cannot_touch_prolific(admin_client: TestClient, method: str, 
     resp = admin_client.request(method, path, headers=_bearer(key), json={})
     assert resp.status_code == 403, path
     assert "signed-in dashboard session" in resp.json()["detail"]
+
+
+PROLIFIC_BASE = "https://api.prolific.com/api/v1"
+STUDY_ID = "study-delete-1"
+
+
+@pytest.fixture
+def enable_prolific(admin_client: TestClient) -> Iterator[None]:
+    # Depends on admin_client, which clears the settings cache: enabling
+    # Prolific first would set it on a settings object the app never reads.
+    settings = get_settings()
+    original = (settings.prolific.api_token, settings.prolific.project_id)
+    settings.prolific.api_token = "test-token"
+    settings.prolific.project_id = "test-project"
+    try:
+        yield
+    finally:
+        settings.prolific.api_token, settings.prolific.project_id = original
+
+
+def _experiment_with_round(client: TestClient, sync_engine, headers: dict[str, str]) -> int:
+    created = client.post("/api/admin/experiments", json={"name": "launched"}, headers=headers)
+    assert created.status_code == 200, created.text
+    experiment_id = created.json()["id"]
+    with Session(sync_engine) as session:
+        session.add(
+            ExperimentRound(
+                experiment_id=experiment_id,
+                round_number=0,
+                prolific_study_id=STUDY_ID,
+                prolific_study_status=ProlificStudyStatus.UNPUBLISHED,
+                description="d",
+                estimated_completion_time=10,
+                reward=100,
+                device_compatibility='["desktop"]',
+                places_requested=5,
+            )
+        )
+        session.commit()
+    return experiment_id
+
+
+@respx.mock
+def test_admin_key_cannot_delete_an_experiment_with_prolific_studies(
+    admin_client: TestClient, sync_engine, enable_prolific: None
+) -> None:
+    """Deleting the experiment deletes its Prolific studies too (#172)."""
+    delete_route = respx.delete(f"{PROLIFIC_BASE}/studies/{STUDY_ID}/").mock(
+        return_value=Response(204)
+    )
+    headers = _bearer(_mint(admin_client, "study-cli", "admin")["plaintext_key"])
+    experiment_id = _experiment_with_round(admin_client, sync_engine, headers)
+
+    resp = admin_client.delete(f"/api/admin/experiments/{experiment_id}", headers=headers)
+
+    assert resp.status_code == 403, resp.text
+    assert "signed-in dashboard session" in resp.json()["detail"]
+    assert not delete_route.called
+    still_there = admin_client.get(f"/api/admin/experiments/{experiment_id}", headers=headers)
+    assert still_there.status_code == 200
+
+
+def test_admin_key_can_delete_a_draft_without_rounds(admin_client: TestClient) -> None:
+    headers = _bearer(_mint(admin_client, "study-cli", "admin")["plaintext_key"])
+    created = admin_client.post("/api/admin/experiments", json={"name": "draft"}, headers=headers)
+    assert created.status_code == 200, created.text
+    experiment_id = created.json()["id"]
+
+    resp = admin_client.delete(f"/api/admin/experiments/{experiment_id}", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    gone = admin_client.get(f"/api/admin/experiments/{experiment_id}", headers=headers)
+    assert gone.status_code == 404
+
+
+@respx.mock
+def test_signed_in_admin_still_deletes_an_experiment_with_prolific_studies(
+    admin_client: TestClient, sync_engine, enable_prolific: None
+) -> None:
+    delete_route = respx.delete(f"{PROLIFIC_BASE}/studies/{STUDY_ID}/").mock(
+        return_value=Response(204)
+    )
+    _sign_in(admin_client)
+    experiment_id = _experiment_with_round(admin_client, sync_engine, {})
+
+    resp = admin_client.delete(f"/api/admin/experiments/{experiment_id}")
+
+    assert resp.status_code == 200, resp.text
+    assert delete_route.called
+    assert admin_client.get(f"/api/admin/experiments/{experiment_id}").status_code == 404
 
 
 def test_admin_key_still_reads_prolific_state(admin_client: TestClient) -> None:
