@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import respx
-from httpx import Response
+from httpx import Request, Response
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -51,7 +51,7 @@ def _message(message_id: str, **overrides) -> dict:
         "id": message_id,
         "sender_id": "participant-1",
         "body": f"hello from {message_id}",
-        "sent_at": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+        "datetime_created": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
         "channel_id": f"channel-{message_id}",
         "type": "message",
         "data": {"study_id": STUDY_ID, "category": "payment-issues"},
@@ -67,9 +67,17 @@ def _mock_prolific(router: respx.MockRouter, messages: list[dict]) -> respx.Rout
     router.get(f"{PROLIFIC_BASE}/users/me/").mock(
         return_value=Response(200, json={"id": OWN_USER_ID})
     )
-    return router.get(f"{PROLIFIC_BASE}/messages/").mock(
-        return_value=Response(200, json={"results": messages})
-    )
+
+    def respond(request: Request) -> Response:
+        # As on the real API: channel_id is null unless the query names a user_id.
+        user_id = request.url.params.get("user_id")
+        if user_id is None:
+            results = [{**m, "channel_id": None} for m in messages]
+        else:
+            results = [m for m in messages if m["sender_id"] == user_id]
+        return Response(200, json={"results": results})
+
+    return router.get(f"{PROLIFIC_BASE}/messages/").mock(side_effect=respond)
 
 
 async def _forwarded_ids(Session: async_sessionmaker[AsyncSession]) -> set[str]:
@@ -122,13 +130,15 @@ async def test_new_messages_forwarded_once(settings: Settings) -> None:
         )
         assert (
             "*<https://app.prolific.com/researcher/workspaces/workspace-1/messages/channel-m1"
-            "|Prolific message>*" in m1_text
+            "?view=workspace&amp;inbox=primary|Prolific message>*" in m1_text
         )
         assert "payment-issues" in m1_text
         assert "hello from m1" in m1_text
         assert "no study" in bare_text
+        assert bare_text.startswith("*Prolific message* ·")
 
         params = messages_route.calls[0].request.url.params
+        assert "user_id" not in params
         assert params["workspace_id"] == "workspace-1"
         assert params["created_after"].endswith("Z")
         assert await _forwarded_ids(Session) == {"m1", "bare"}
@@ -213,7 +223,7 @@ async def test_prolific_error_is_logged(
 ) -> None:
     async with _session_factory() as Session:
         with respx.mock(assert_all_called=False) as router:
-            _mock_prolific(router, []).return_value = Response(503)
+            _mock_prolific(router, []).mock(return_value=Response(503))
 
             with caplog.at_level("ERROR"):
                 await run_forwarding_tick(Session, settings)

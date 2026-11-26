@@ -56,17 +56,27 @@ async def _experiment_label_for_study(
 
 
 async def _format_slack_message(
-    session: AsyncSession, settings: Settings, message: dict, workspace_id: str | None
+    session: AsyncSession,
+    settings: Settings,
+    message: dict,
+    workspace_id: str | None,
+    channel_id: str | None,
 ) -> str:
     data = message.get("data") or {}
     body = (message.get("body") or "")[:SLACK_BODY_MAX_CHARS]
     experiment = await _experiment_label_for_study(session, settings, data.get("study_id"))
     category = data.get("category") or "no category"
-    if workspace_id:
-        url = f"{PROLIFIC_APP_URL}/researcher/workspaces/{workspace_id}/messages/{message['channel_id']}"
+    if not channel_id:
+        title = "*Prolific message*"
+    elif workspace_id:
+        url = (
+            f"{PROLIFIC_APP_URL}/researcher/workspaces/{workspace_id}/messages/{channel_id}"
+            "?view=workspace&amp;inbox=primary"
+        )
+        title = f"*<{url}|Prolific message>*"
     else:
-        url = f"{PROLIFIC_APP_URL}/messages/{message['channel_id']}"
-    return f"*<{url}|Prolific message>* · {experiment} · {category}\n>>> {escape_mrkdwn(body)}"
+        title = f"*<{PROLIFIC_APP_URL}/messages/{channel_id}|Prolific message>*"
+    return f"{title} · {experiment} · {category}\n>>> {escape_mrkdwn(body)}"
 
 
 async def _forward_new_messages(session: AsyncSession, settings: Settings) -> None:
@@ -76,21 +86,34 @@ async def _forward_new_messages(session: AsyncSession, settings: Settings) -> No
     if prolific.project_id:
         project = await get_project(settings=prolific, project_id=prolific.project_id)
         workspace_id = project["workspace"]
+    created_after = datetime.now(UTC) - timedelta(hours=MESSAGE_LOOKBACK_HOURS)
     messages = await get_user_messages(
-        settings=prolific,
-        created_after=datetime.now(UTC) - timedelta(hours=MESSAGE_LOOKBACK_HOURS),
-        workspace_id=workspace_id,
+        settings=prolific, created_after=created_after, workspace_id=workspace_id
     )
     # Our own replies come back in the same thread; only participants' go to Slack.
-    messages = sorted((m for m in messages if m["sender_id"] != own_id), key=lambda m: m["sent_at"])
+    messages = sorted(
+        (m for m in messages if m["sender_id"] != own_id), key=lambda m: m["datetime_created"]
+    )
 
     for message in messages:
         if not await _claim(session, message["id"]):
             continue
         try:
+            # Prolific returns channel_id only when the query names a user_id.
+            from_sender = await get_user_messages(
+                settings=prolific,
+                created_after=created_after,
+                workspace_id=workspace_id,
+                user_id=message["sender_id"],
+            )
+            channel_id = next(
+                (m["channel_id"] for m in from_sender if m["id"] == message["id"]), None
+            )
             await post_webhook_message(
                 settings=settings.slack,
-                text=await _format_slack_message(session, settings, message, workspace_id),
+                text=await _format_slack_message(
+                    session, settings, message, workspace_id, channel_id
+                ),
             )
         except Exception:
             await session.execute(

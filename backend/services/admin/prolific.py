@@ -443,6 +443,7 @@ async def get_user_messages(
     settings: ProlificSettings,
     created_after: datetime,
     workspace_id: str | None = None,
+    user_id: str | None = None,
 ) -> list[dict]:
     if not settings.enabled:
         raise RuntimeError("get_messages called while Prolific is disabled")
@@ -450,6 +451,8 @@ async def get_user_messages(
     params = {"created_after": created_after.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
     if workspace_id:
         params["workspace_id"] = workspace_id
+    if user_id:
+        params["user_id"] = user_id
 
     async with _build_client(settings) as client:
         response = await client.get("/messages/", params=params)
