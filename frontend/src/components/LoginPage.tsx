@@ -1,8 +1,22 @@
 import React from 'react';
-import { useSignIn, useSignUp } from '@clerk/clerk-react';
 import { useLocation } from 'react-router-dom';
+import { useSignIn, useSignUp } from '../auth';
 
 type Stage = 'choose' | 'sign-in' | 'sign-up' | 'verify-email';
+
+function GoogleButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="login-btn login-btn-google">
+      <svg width="18" height="18" viewBox="0 0 18 18" style={{ marginRight: 8, verticalAlign: 'middle' }}>
+        <path d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z" fill="#4285F4" />
+        <path d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17z" fill="#34A853" />
+        <path d="M4.5 10.52a4.8 4.8 0 0 1 0-3.04V5.41H1.83a8 8 0 0 0 0 7.18l2.67-2.07z" fill="#FBBC05" />
+        <path d="M8.98 3.58c1.32 0 2.5.46 3.44 1.35l2.58-2.59A8 8 0 0 0 1.83 5.41l2.67 2.07A4.77 4.77 0 0 1 8.98 3.58z" fill="#EA4335" />
+      </svg>
+      Continue with Google
+    </button>
+  );
+}
 
 export default function LoginPage() {
   const location = useLocation();
@@ -57,8 +71,15 @@ export default function LoginPage() {
       } else {
         setError('Sign-in incomplete. Please try again.');
       }
-    } catch {
-      setError('Invalid email or password.');
+    } catch (err: any) {
+      const code = err?.errors?.[0]?.code;
+      if (code === 'form_identifier_not_found') {
+        setError('No account with this email yet. Create an account, or continue with Google.');
+      } else if (code === 'strategy_for_user_invalid') {
+        setError('This account signs in with Google. Use "Continue with Google".');
+      } else {
+        setError('Invalid email or password.');
+      }
     } finally {
       setLoading(false);
     }
@@ -85,6 +106,15 @@ export default function LoginPage() {
         setError('Something went wrong. Please try again.');
       }
     } catch (err: any) {
+      if (err?.errors?.[0]?.code === 'form_identifier_exists') {
+        // A Google sign-in or an earlier sign-up already made this account.
+        setPassword('');
+        setStage('sign-in');
+        setError(
+          'An account with this email already exists. Sign in with your password if you set one, or continue with Google.'
+        );
+        return;
+      }
       setError(err?.errors?.[0]?.longMessage || err?.message || 'Failed to create account');
     } finally {
       setLoading(false);
@@ -218,6 +248,10 @@ export default function LoginPage() {
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
+          {/* The errors above may send people to Google, so the button is on this screen too. */}
+          <div className="login-buttons" style={{ marginTop: 12 }}>
+            <GoogleButton onClick={handleGoogleSignIn} />
+          </div>
           <button className="login-btn login-btn-link" onClick={goBack}>
             Back
           </button>
@@ -234,15 +268,7 @@ export default function LoginPage() {
         <p className="login-subtitle">Sign in to access the admin dashboard</p>
         {error && <p className="login-error">{error}</p>}
         <div className="login-buttons">
-          <button onClick={handleGoogleSignIn} className="login-btn login-btn-google">
-            <svg width="18" height="18" viewBox="0 0 18 18" style={{ marginRight: 8, verticalAlign: 'middle' }}>
-              <path d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 0 0 2.38-5.88c0-.57-.05-.66-.15-1.18z" fill="#4285F4" />
-              <path d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 0 1-7.18-2.54H1.83v2.07A8 8 0 0 0 8.98 17z" fill="#34A853" />
-              <path d="M4.5 10.52a4.8 4.8 0 0 1 0-3.04V5.41H1.83a8 8 0 0 0 0 7.18l2.67-2.07z" fill="#FBBC05" />
-              <path d="M8.98 3.58c1.32 0 2.5.46 3.44 1.35l2.58-2.59A8 8 0 0 0 1.83 5.41l2.67 2.07A4.77 4.77 0 0 1 8.98 3.58z" fill="#EA4335" />
-            </svg>
-            Continue with Google
-          </button>
+          <GoogleButton onClick={handleGoogleSignIn} />
           <button onClick={() => setStage('sign-in')} className="login-btn login-btn-email">
             Sign in with Email
           </button>

@@ -313,7 +313,7 @@ def test_a_ready_experiment_launches(client: TestClient, enable_prolific):
     assert resp.status_code == 200, resp.text
 
 
-# --- One-click launch -----------------------------------------------------
+# --- Same-dataset exclusions ------------------------------------------------
 
 _ECONOMICS = {
     "estimated_completion_time": 20,
@@ -334,27 +334,6 @@ def _carded_experiment_with_economics(client: TestClient) -> dict:
     _fill_row_fields(client, exp["id"])
     _upload_one_question(client, exp["id"])
     return exp
-
-
-@respx.mock
-def test_one_click_creates_the_pilot_from_the_card(client: TestClient, enable_prolific):
-    exp = _carded_experiment_with_economics(client)
-    route = _mock_create_study()
-
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["estimated_completion_time"] == 20
-    assert body["reward"] == 450
-    assert body["places_requested"] == 5
-
-    sent = json.loads(route.calls[-1].request.content.decode())
-    # The Prolific listing gets the blurb, not the rater guide.
-    assert "Rate short passages" in sent["description"]
-    # Still only a draft — publishing spends money and stays a separate action.
-    assert body["prolific_study_status"] == "UNPUBLISHED"
-    # The dataset has no other experiments to exclude.
-    assert body["excluded_experiment_ids"] == []
 
 
 def _mock_groups_by_experiment() -> None:
@@ -381,14 +360,14 @@ def _ready_in_group(client: TestClient, group: dict, name: str) -> dict:
 
 
 @respx.mock
-def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, enable_prolific):
-    """Every other experiment on the dataset, in any wave and any status, even
-    one that never ran a study: not itself, and nothing on another dataset."""
+def test_a_pilot_can_exclude_the_datasets_other_experiments_in_any_status(
+    client: TestClient, enable_prolific
+):
     route = _mock_create_study()
     _mock_groups_by_experiment()
     dataset = client.post(
         "/api/admin/datasets",
-        json={"name": "gated", "waves": ["fall25", "sp26"], **_CARD, **_ECONOMICS},
+        json={"name": "gated", "waves": ["fall25", "sp26"], **_CARD},
     ).json()
     other = client.post(
         "/api/admin/datasets", json={"name": "other", "waves": ["fall25"], **_CARD}
@@ -404,22 +383,26 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
         assert pilot.status_code == 200, pilot.text
 
     target = _ready_in_group(client, fall25, "Target")
-    # Each carries its internal name, which the admin UI shows over the public one.
-    expected = [
-        {"id": exp["id"], "name": exp["name"], "internal_name": exp["internal_name"]}
-        for exp in (same_wave, other_wave, never_ran)
-    ]
-    assert [ref["name"] for ref in expected] == ["Same wave", "Other wave", "Never ran"]
-    assert all(ref["internal_name"] for ref in expected)
-    preview = client.get(f"/api/admin/experiments/{target['id']}/launch/preview")
-    assert preview.status_code == 200, preview.text
-    assert preview.json() == {"excluded_experiments": expected}
+    siblings = [same_wave["id"], other_wave["id"], never_ran["id"]]
+    studies_before = route.call_count
 
-    # The siblings are still DRAFT, which the pilot form would refuse as
-    # exclusion targets; one-click chose them itself.
-    resp = client.post(f"/api/admin/experiments/{target['id']}/launch", json={})
+    refused = client.post(
+        f"/api/admin/experiments/{target['id']}/prolific/pilot",
+        json={**_PILOT, "excluded_experiment_ids": [*siblings, other_dataset["id"]]},
+    )
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["detail"] == (
+        "Exclusion targets must be finished experiments or on the same dataset. "
+        f"Rejected: {other_dataset['id']} (DRAFT)."
+    )
+    assert route.call_count == studies_before
+
+    resp = client.post(
+        f"/api/admin/experiments/{target['id']}/prolific/pilot",
+        json={**_PILOT, "excluded_experiment_ids": siblings},
+    )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["excluded_experiment_ids"] == [ref["id"] for ref in expected]
+    assert resp.json()["excluded_experiment_ids"] == siblings
 
     # The sibling with no study yet still gets its group, which fills as its
     # raters arrive.
@@ -429,17 +412,33 @@ def test_one_click_excludes_the_datasets_other_experiments(client: TestClient, e
         for entry in sent["filters"]
         if entry["filter_id"] == "participant_group_blocklist"
     )
-    assert blocklist == [f"pg-{target['id']}"] + [f"pg-{ref['id']}" for ref in expected]
+    assert blocklist == [f"pg-{target['id']}"] + [f"pg-{exp_id}" for exp_id in siblings]
 
-    # The target never lists itself, and its siblings list it.
-    after = client.get(f"/api/admin/experiments/{target['id']}/launch/preview").json()
-    assert after == {"excluded_experiments": expected}
-    from_sibling = client.get(f"/api/admin/experiments/{never_ran['id']}/launch/preview").json()
-    assert [ref["id"] for ref in from_sibling["excluded_experiments"]] == [
-        same_wave["id"],
-        other_wave["id"],
-        target["id"],
-    ]
+
+@respx.mock
+def test_a_draft_round_can_re_add_a_same_dataset_exclusion(client: TestClient, enable_prolific):
+    _mock_create_study()
+    _mock_groups_by_experiment()
+    respx.patch(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/").mock(
+        return_value=httpx.Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "UNPUBLISHED"})
+    )
+    dataset = client.post(
+        "/api/admin/datasets", json={"name": "gated", "waves": ["fall25"], **_CARD}
+    ).json()
+    fall25 = _group(client, dataset, "fall25")
+    sibling = _ready_in_group(client, fall25, "Sibling")
+    target = _ready_in_group(client, fall25, "Target")
+
+    pilot = client.post(f"/api/admin/experiments/{target['id']}/prolific/pilot", json=_PILOT)
+    assert pilot.status_code == 200, pilot.text
+    assert pilot.json()["excluded_experiment_ids"] == []
+
+    resp = client.patch(
+        f"/api/admin/experiments/{target['id']}/prolific/rounds/{pilot.json()['id']}",
+        json={"excluded_experiment_ids": [sibling["id"]]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["excluded_experiment_ids"] == [sibling["id"]]
 
 
 @respx.mock
@@ -449,7 +448,7 @@ def test_a_failed_exclusion_group_is_a_prolific_error(client: TestClient, enable
     Prolific's message as a failed study create, not a 500."""
     dataset = client.post(
         "/api/admin/datasets",
-        json={"name": "gated", "waves": ["fall25"], **_CARD, **_ECONOMICS},
+        json={"name": "gated", "waves": ["fall25"], **_CARD},
     ).json()
     fall25 = _group(client, dataset, "fall25")
     sibling = _ready_in_group(client, fall25, "Sibling")
@@ -466,7 +465,10 @@ def test_a_failed_exclusion_group_is_a_prolific_error(client: TestClient, enable
         return_value=httpx.Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "UNPUBLISHED"})
     )
 
-    resp = client.post(f"/api/admin/experiments/{target['id']}/launch", json={})
+    resp = client.post(
+        f"/api/admin/experiments/{target['id']}/prolific/pilot",
+        json={**_PILOT, "excluded_experiment_ids": [sibling["id"]]},
+    )
     assert resp.status_code == 502, resp.text
     assert resp.json()["detail"] == (
         "Failed to create study on Prolific. Prolific said: Group limit reached"
@@ -475,29 +477,10 @@ def test_a_failed_exclusion_group_is_a_prolific_error(client: TestClient, enable
     assert client.get(f"/api/admin/experiments/{target['id']}/prolific/rounds").json() == []
 
 
-def test_an_ungrouped_experiment_previews_no_exclusions(client: TestClient):
-    exp = client.post("/api/admin/experiments", json={"name": "Scratch"}).json()
-    resp = client.get(f"/api/admin/experiments/{exp['id']}/launch/preview")
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {"excluded_experiments": []}
-
-
 @respx.mock
-def test_one_click_honours_a_places_override(client: TestClient, enable_prolific):
-    exp = _carded_experiment_with_economics(client)
-    _mock_create_study()
-
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={"places": 12})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["places_requested"] == 12
-
-
-@respx.mock
-def test_without_questions_the_pilot_form_and_one_click_refuse_alike(
-    client: TestClient, enable_prolific
-):
+def test_without_questions_the_pilot_is_refused(client: TestClient, enable_prolific):
     """A pilot with nothing to rate would publish the experiment into LAUNCH,
-    which blocks uploads. Both paths refuse with the blocker the API serves."""
+    which blocks uploads. It is refused with the blocker the API serves."""
     dataset = client.post(
         "/api/admin/datasets",
         json={"name": "gated", "waves": ["fall25"], **_CARD, **_ECONOMICS},
@@ -512,15 +495,10 @@ def test_without_questions_the_pilot_form_and_one_click_refuse_alike(
     route = _mock_create_study()
 
     pilot = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
-    one_click = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
 
-    assert pilot.status_code == one_click.status_code == 400
-    assert (
-        pilot.json()["detail"]
-        == one_click.json()["detail"]
-        == (
-            "Cannot launch: this experiment is missing questions. " + exp["launch_blocker_fixes"][0]
-        )
+    assert pilot.status_code == 400
+    assert pilot.json()["detail"] == (
+        "Cannot launch: this experiment is missing questions. " + exp["launch_blocker_fixes"][0]
     )
     assert "upload questions" in exp["launch_blocker_fixes"][0]
     assert route.call_count == 0
@@ -531,7 +509,7 @@ def test_without_questions_the_pilot_form_and_one_click_refuse_alike(
 
 
 @respx.mock
-def test_one_click_names_the_missing_upload_before_the_missing_text(
+def test_the_pilot_names_the_missing_upload_before_the_missing_text(
     client: TestClient, enable_prolific
 ):
     """The bare case: no upload AND no rater text, which is how a fresh
@@ -554,7 +532,7 @@ def test_one_click_names_the_missing_upload_before_the_missing_text(
     assert exp["launch_blockers"], "precondition: the row has no rater text yet"
     route = _mock_create_study()
 
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert detail.startswith(
@@ -565,107 +543,142 @@ def test_one_click_names_the_missing_upload_before_the_missing_text(
     assert route.call_count == 0
 
 
-@respx.mock
-def test_one_click_names_missing_questions_before_an_incomplete_card(
-    client: TestClient, enable_prolific
-):
-    """The gate runs before the card checks, so an experiment with no questions
-    on a card without economics is told to upload, not to finish the card."""
-    dataset = client.post(
-        "/api/admin/datasets", json={"name": "gated", "waves": ["fall25"], **_CARD}
-    ).json()
-    assert dataset["complete"] is False
-    group = _group(client, dataset, "fall25")
-    exp = client.post("/api/admin/experiments", json={"group_id": group["id"]}).json()
-    exp = _fill_row_fields(client, exp["id"])
-    assert exp["launch_blockers"] == ["questions"]
-    route = _mock_create_study()
+# --- Testing previews (#174) ---------------------------------------------
+# The pipeline's `create_human_rating_study.py --mode testing` makes preview-only
+# drafts tagged `preview-testing`, holding a subsample of the real questions.
+# They sit in the dataset's real group, so they look launchable; the tag is
+# what keeps every Prolific write away from them.
 
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
-    assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert detail == (
-        "Cannot launch: this experiment is missing questions. " + exp["launch_blocker_fixes"][0]
+_TESTING_FIX_START = "Testing preview only: this experiment is tagged preview-testing"
+
+
+def _tag(client: TestClient, experiment_id: int, tags: list[str]) -> dict:
+    # An update restates the method (ExperimentUpdate requires it).
+    method = client.get(f"/api/admin/experiments/{experiment_id}").json()["assistance_method"]
+    resp = client.patch(
+        f"/api/admin/experiments/{experiment_id}",
+        json={"assistance_method": method, "tags": tags},
     )
-    assert "complete dataset card" not in detail
-    assert route.call_count == 0
-
-
-@respx.mock
-def test_one_click_refuses_a_card_without_economics_until_they_are_added(
-    client: TestClient, enable_prolific
-):
-    """Economics are optional at onboarding, but only a complete card launches
-    in one click. A dataset's first study usually goes through the pilot form,
-    which asks for them; once they are on the card, the next study can skip
-    the form."""
-    exp = _carded_experiment(client)
-    route = _mock_create_study()
-
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
-    assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert "complete dataset card" in detail
-    assert "estimated completion time, reward" in detail
-    assert "pilot form" in detail
-    assert route.call_count == 0
-
-    dataset_id = client.get(f"/api/admin/experiments/{exp['id']}").json()["group_dataset_id"]
-    card = client.patch(f"/api/admin/datasets/{dataset_id}", json=_ECONOMICS).json()
-    assert card["complete"] is True
-
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
     assert resp.status_code == 200, resp.text
-    assert resp.json()["reward"] == _ECONOMICS["reward"]
+    return resp.json()
+
+
+def _testing_preview(client: TestClient) -> dict:
+    """An otherwise launch-ready experiment on a complete card, tagged as the
+    pipeline's testing mode tags it."""
+    exp = _carded_experiment_with_economics(client)
+    return _tag(client, exp["id"], ["preview-testing", "wave-check"])
+
+
+def test_a_testing_preview_reports_the_blocker_first(client: TestClient):
+    exp = _testing_preview(client)
+    assert exp["launch_ready"] is False
+    assert exp["launch_blockers"] == ["testing preview"]
+    assert exp["launch_blocker_fixes"][0].startswith(_TESTING_FIX_START)
+    assert "--mode prod" in exp["launch_blocker_fixes"][0]
+    assert "remove the preview-testing tag" in exp["launch_blocker_fixes"][0]
+
+    # Ahead of anything missing: filling those in would not make it launchable.
+    bare = client.post(
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
+    ).json()
+    assert bare["launch_blockers"][:2] == ["testing preview", "questions"]
+
+    # Taking the tag off is the way out.
+    assert _tag(client, exp["id"], ["wave-check"])["launch_ready"] is True
+
+
+def test_the_reserved_tag_matches_in_any_case(client: TestClient):
+    """Tag names are case-insensitive everywhere else, so the reserved one is too."""
+    exp = _carded_experiment_with_economics(client)
+    assert _tag(client, exp["id"], ["Preview-Testing"])["launch_blockers"] == ["testing preview"]
+
+
+def test_the_summary_is_served_as_the_400_words_it(client: TestClient):
+    """The UI shows the summary as served rather than wording its own."""
+    exp = _testing_preview(client)
+    assert exp["launch_blocker_summary"] == "this experiment is a testing preview"
+    bare = client.post(
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
+    ).json()
+    assert bare["launch_blocker_summary"] == (
+        "this experiment is a testing preview and is missing questions, rater instructions, "
+        "internal study name"
+    )
+    # Ready once the tag is off: no summary at all.
+    assert _tag(client, exp["id"], [])["launch_blocker_summary"] is None
 
 
 @respx.mock
-def test_one_click_needs_the_whole_card_not_just_economics(client: TestClient, enable_prolific):
-    """Names given explicitly at create clear the experiment's launch gate,
-    but the card itself still lacks its name templates, so it is not complete
-    and one-click refuses."""
-    dataset = client.post(
-        "/api/admin/datasets",
-        json={"name": "gated", "waves": ["fall25"], "study_blurb": "Rate.", **_ECONOMICS},
-    ).json()
-    assert dataset["complete"] is False
-    group = client.post(
-        "/api/admin/experiment-groups",
-        json={"name": "gated fall25", "dataset_id": dataset["id"], "wave": "fall25"},
-    ).json()
+def test_a_testing_preview_cannot_pilot(client: TestClient, enable_prolific):
+    exp = _testing_preview(client)
+    route = _mock_create_study()
+
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "Cannot launch: this experiment is a testing preview. " + exp["launch_blocker_fixes"][0]
+    )
+    assert route.call_count == 0
+
+
+@respx.mock
+def test_a_testing_preview_names_what_it_is_missing_too(client: TestClient, enable_prolific):
     exp = client.post(
-        "/api/admin/experiments",
-        json={"group_id": group["id"], "name": "Named", "internal_name": "named fall25"},
+        "/api/admin/experiments", json={"name": "Bare", "tags": ["preview-testing"]}
     ).json()
-    _fill_row_fields(client, exp["id"])
-    _upload_one_question(client, exp["id"])
-    route = _mock_create_study()
+    _mock_create_study()
 
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
+    resp = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+
     assert resp.status_code == 400
-    detail = resp.json()["detail"]
-    assert "missing external study name, internal study name." in detail
-    assert "Fill them in on the dataset card" in detail
-    assert route.call_count == 0
+    assert resp.json()["detail"].startswith(
+        "Cannot launch: this experiment is a testing preview and is missing questions, "
+        "rater instructions, internal study name. Testing preview only:"
+    )
+
+
+def _pilot_then_tag(client: TestClient) -> tuple[int, dict, respx.Route]:
+    """A pilot draft made before the tag went on, then the tag added: the
+    gate at pilot time no longer covers it. Returns the experiment id, the
+    pilot round and the mocked study-create route."""
+    exp = _carded_experiment_with_economics(client)
+    route = _mock_create_study()
+    pilot = client.post(f"/api/admin/experiments/{exp['id']}/prolific/pilot", json=_PILOT)
+    assert pilot.status_code == 200, pilot.text
+    _tag(client, exp["id"], ["preview-testing"])
+    return exp["id"], pilot.json(), route
 
 
 @respx.mock
-def test_one_click_applies_the_launch_gate(client: TestClient, enable_prolific):
-    """One-click is a shortcut through the pilot form, not around readiness:
-    the pilot's own gate refuses it, even with a complete card.
+def test_a_testing_preview_cannot_publish_a_round(client: TestClient, enable_prolific):
+    exp_id, pilot, _ = _pilot_then_tag(client)
+    transition = respx.post(f"{PROLIFIC_BASE}/studies/{PROLIFIC_STUDY_ID}/transition/").mock(
+        return_value=httpx.Response(200, json={"id": PROLIFIC_STUDY_ID, "status": "ACTIVE"})
+    )
 
-    Questions are uploaded so the refusal is about the rater text alone.
-    """
-    dataset = client.post(
-        "/api/admin/datasets",
-        json={"name": "gated", "waves": ["fall25"], **_CARD, **_ECONOMICS},
-    ).json()
-    group = _group(client, dataset, "fall25")
-    exp = client.post("/api/admin/experiments", json={"group_id": group["id"]}).json()
-    _upload_one_question(client, exp["id"])
-    route = _mock_create_study()
+    resp = client.post(f"/api/admin/experiments/{exp_id}/prolific/rounds/{pilot['id']}/publish")
 
-    resp = client.post(f"/api/admin/experiments/{exp['id']}/launch", json={})
     assert resp.status_code == 400
-    assert "rater instructions" in resp.json()["detail"]
-    assert route.call_count == 0
+    assert resp.json()["detail"].startswith(
+        "Cannot publish: this experiment is a testing preview. " + _TESTING_FIX_START
+    )
+    assert transition.call_count == 0
+    rounds = client.get(f"/api/admin/experiments/{exp_id}/prolific/rounds")
+    assert [r["prolific_study_status"] for r in rounds.json()] == ["UNPUBLISHED"]
+
+
+@respx.mock
+def test_a_testing_preview_cannot_launch_a_round(client: TestClient, enable_prolific):
+    exp_id, _, route = _pilot_then_tag(client)
+    calls_before = route.call_count
+
+    resp = client.post(f"/api/admin/experiments/{exp_id}/prolific/rounds", json={"places": 10})
+
+    assert resp.status_code == 400
+    # Refused for the tag, before the round checks would have their say.
+    assert resp.json()["detail"].startswith(
+        "Cannot launch a new round: this experiment is a testing preview. " + _TESTING_FIX_START
+    )
+    assert route.call_count == calls_before

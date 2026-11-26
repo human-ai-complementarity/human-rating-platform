@@ -21,6 +21,8 @@ class QuestionSnapshot:
     question_text: str
     question_type: str
     options: str | None
+    # The stimulus as stored block JSON when it carries images (services/media).
+    content: str | None = None
 
     @classmethod
     def capture(cls, question: Question) -> QuestionSnapshot:
@@ -30,6 +32,7 @@ class QuestionSnapshot:
             question_text=question.question_text,
             question_type=question.question_type,
             options=question.options,
+            content=question.content,
         )
 
 
@@ -79,7 +82,8 @@ class InitialStepPreparation(AssistanceMethod):
     Multi-turn advance() is intentionally outside this contract.
     """
 
-    preparation_version = 1
+    # 2: the question's content blocks (images) joined the inputs.
+    preparation_version = 2
 
     def plan_preparation(self, context: PreparationContext) -> PreparationSpec:
         return PreparationSpec(

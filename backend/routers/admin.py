@@ -28,8 +28,7 @@ from schemas import (
     ExperimentDuplicateResponse,
     ExperimentResponse,
     ExperimentUpdate,
-    OneClickLaunchPreview,
-    OneClickLaunchRequest,
+    PilotCheckRunResponse,
     PilotStudyCreate,
     TagResponse,
     PlatformStatus,
@@ -42,10 +41,17 @@ from models import ApiKey
 from services import admin as admin_service
 from services import api_keys as api_key_service
 from services import terms as terms_service
+from services.pilot_check import runs as pilot_check_runs
 from services.admin.prolific import get_cached_workspace_currency
-from services.admin.queries import fetch_experiment_or_404
+from services.admin.queries import fetch_experiment_or_404, fetch_total_questions_for_experiment
 from services.admin.waves import CURRENT_WAVE
-from auth import AdminSession, require_admin, get_admin_manager
+from auth import (
+    AdminSession,
+    allowed_emails,
+    get_admin_manager,
+    require_admin,
+    require_signed_in_admin,
+)
 from services.authn import verify_clerk_token_and_get_email
 
 # Public admin router (for auth endpoints)
@@ -83,9 +89,7 @@ async def admin_login(
     email: str = Depends(get_clerk_email_from_request),
     manager=Depends(get_admin_manager),
 ):
-    settings = get_settings()
-    allow = {e.strip().lower() for e in settings.admin_allowlist}
-    if email.strip().lower() not in allow:
+    if email.strip().lower() not in allowed_emails(get_settings()):
         return JSONResponse(status_code=403, content={"message": "Email is not allowlisted"})
 
     resp = JSONResponse({"ok": True})
@@ -215,14 +219,25 @@ async def list_tags(db: AsyncSession = Depends(get_session)):
 @secure_router.post("/experiments/{experiment_id}/upload")
 async def upload_questions(
     experiment_id: int,
+    request: Request,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
-    return await admin_service.upload_questions(
+    result = await admin_service.upload_questions(
         experiment_id=experiment_id,
         file=file,
         db=db,
     )
+    # The questions are in; a pilot check can start now rather than when the
+    # admin reaches the launch step (docs/pilot-check.md). Never fails the upload.
+    await pilot_check_runs.start_after_change(
+        experiment_id,
+        requested_by=admin.email,
+        db=db,
+        database=request.app.state.database,
+    )
+    return result
 
 
 @secure_router.get("/experiments/{experiment_id}/uploads")
@@ -314,11 +329,22 @@ async def export_documents(
 async def update_experiment(
     experiment_id: int,
     payload: ExperimentUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
-    return await admin_service.update_experiment(
+    response = await admin_service.update_experiment(
         experiment_id=experiment_id, payload=payload, db=db
     )
+    # The edit may be the one that made the experiment ready, or one a
+    # finished run did not see. Skipped when the latest run still covers it.
+    await pilot_check_runs.start_after_change(
+        experiment_id,
+        requested_by=admin.email,
+        db=db,
+        database=request.app.state.database,
+    )
+    return response
 
 
 @secure_router.delete("/experiments/{experiment_id}")
@@ -385,44 +411,23 @@ async def get_experiment_analytics(
     )
 
 
+# Prolific writes need a signed-in admin, not an API key: publishing spends
+# money, and the drafts, edits and closes around it are the same workflow. An
+# admin-scoped key stops at drafts and uploads; the reads below stay open to it.
 @secure_router.post(
     "/experiments/{experiment_id}/prolific/pilot",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def run_pilot_study(
     experiment_id: int,
     payload: PilotStudyCreate,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
-    return await admin_service.run_pilot_study(experiment_id=experiment_id, payload=payload, db=db)
-
-
-@secure_router.post(
-    "/experiments/{experiment_id}/launch",
-    response_model=ExperimentRoundResponse,
-)
-async def launch_from_card(
-    experiment_id: int,
-    payload: OneClickLaunchRequest,
-    db: AsyncSession = Depends(get_session),
-):
-    """Create the pilot draft from a complete dataset card, without the pilot form.
-
-    Publishing stays a separate action — it spends money.
-    """
-    return await admin_service.launch_from_card(experiment_id=experiment_id, payload=payload, db=db)
-
-
-@secure_router.get(
-    "/experiments/{experiment_id}/launch/preview",
-    response_model=OneClickLaunchPreview,
-)
-async def preview_launch_from_card(
-    experiment_id: int,
-    db: AsyncSession = Depends(get_session),
-):
-    """The experiments a one-click launch would exclude, before launching."""
-    return await admin_service.preview_launch_from_card(experiment_id=experiment_id, db=db)
+    return await admin_service.run_pilot_study(
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
+    )
 
 
 @secure_router.get(
@@ -443,14 +448,68 @@ async def get_prolific_recommendation(
 @secure_router.post(
     "/experiments/{experiment_id}/prolific/rounds",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def run_experiment_round(
     experiment_id: int,
     payload: ExperimentRoundCreate,
     db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
 ):
     return await admin_service.run_experiment_round(
-        experiment_id=experiment_id, payload=payload, db=db
+        experiment_id=experiment_id, payload=payload, db=db, requested_by=admin.email
+    )
+
+
+# --- Pilot check (docs/pilot-check.md) ------------------------------------
+
+
+@secure_router.post(
+    "/experiments/{experiment_id}/pilot-check",
+    response_model=PilotCheckRunResponse,
+    status_code=202,
+)
+async def run_pilot_check(
+    experiment_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    admin: AdminSession = Depends(require_admin),
+):
+    """Start a pilot check run; it finishes in the background. Poll the GET."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    run = await pilot_check_runs.start_run(
+        experiment,
+        requested_by=admin.email,
+        question_count=question_count,
+        db=db,
+        database=request.app.state.database,
+    )
+    return pilot_check_runs.build_run_response(
+        run, experiment=experiment, current_fingerprint=run.fingerprint
+    )
+
+
+@secure_router.get(
+    "/experiments/{experiment_id}/pilot-check", response_model=Optional[PilotCheckRunResponse]
+)
+async def get_latest_pilot_check(
+    experiment_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """The experiment's latest run, findings and probed assistance steps
+    included; null when none has been started, which every new experiment is."""
+    experiment = await fetch_experiment_or_404(experiment_id, db)
+    run = await pilot_check_runs.latest_run(experiment_id, db)
+    if run is None:
+        return None
+    question_count = await fetch_total_questions_for_experiment(experiment_id, db)
+    return pilot_check_runs.build_run_response(
+        run,
+        experiment=experiment,
+        current_fingerprint=await pilot_check_runs.current_fingerprint(
+            experiment, question_count=question_count, db=db
+        ),
     )
 
 
@@ -479,6 +538,7 @@ async def sync_experiment_spend(
 @secure_router.patch(
     "/experiments/{experiment_id}/prolific/rounds/{round_id}",
     response_model=ExperimentRoundResponse,
+    dependencies=[Depends(require_signed_in_admin)],
 )
 async def update_experiment_round(
     experiment_id: int,
@@ -494,7 +554,10 @@ async def update_experiment_round(
     )
 
 
-@secure_router.post("/experiments/{experiment_id}/prolific/rounds/{round_id}/publish")
+@secure_router.post(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}/publish",
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def publish_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -507,7 +570,10 @@ async def publish_experiment_round(
     )
 
 
-@secure_router.post("/experiments/{experiment_id}/prolific/rounds/{round_id}/close")
+@secure_router.post(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}/close",
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def close_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -520,7 +586,10 @@ async def close_experiment_round(
     )
 
 
-@secure_router.delete("/experiments/{experiment_id}/prolific/rounds/{round_id}")
+@secure_router.delete(
+    "/experiments/{experiment_id}/prolific/rounds/{round_id}",
+    dependencies=[Depends(require_signed_in_admin)],
+)
 async def discard_experiment_round(
     experiment_id: int,
     round_id: int,
@@ -642,7 +711,9 @@ async def delete_experiment_group(
     return {"ok": True}
 
 
-# ── API keys (bearer credentials for the /api/v1 programmatic API) ──────────
+# ── API keys (bearer credentials for /api/v1, and /api/admin when admin-scoped)
+# Managed only from a signed-in session: a key cannot manage keys. Each admin
+# sees and manages only the keys they minted (see services.api_keys).
 
 
 def _api_key_response(record: ApiKey) -> ApiKeyResponse:
@@ -654,6 +725,7 @@ def _api_key_response(record: ApiKey) -> ApiKeyResponse:
         last_used_at=record.last_used_at,
         revoked_at=record.revoked_at,
         created_by=record.created_by,
+        scope=record.scope,
         is_active=record.revoked_at is None,
     )
 
@@ -663,35 +735,41 @@ def _api_key_created(issued: api_key_service.IssuedApiKey) -> ApiKeyCreated:
     return ApiKeyCreated(**base.model_dump(), plaintext_key=issued.plaintext)
 
 
-async def _get_api_key_or_404(key_id: int, db: AsyncSession) -> ApiKey:
-    record = await api_key_service.get_api_key_or_none(key_id, db)
+async def _get_own_api_key_or_404(key_id: int, admin: AdminSession, db: AsyncSession) -> ApiKey:
+    record = await api_key_service.get_owned_api_key_or_none(key_id, admin.email, db)
     if record is None:
         raise HTTPException(status_code=404, detail="API key not found")
     return record
 
 
 @secure_router.get("/api-keys", response_model=list[ApiKeyResponse])
-async def list_api_keys(db: AsyncSession = Depends(get_session)):
-    records = await api_key_service.list_api_keys(db)
+async def list_api_keys(
+    admin: AdminSession = Depends(require_signed_in_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    records = await api_key_service.list_api_keys(admin.email, db)
     return [_api_key_response(record) for record in records]
 
 
 @secure_router.post("/api-keys", response_model=ApiKeyCreated)
 async def create_api_key(
     payload: ApiKeyCreate,
-    admin: AdminSession = Depends(require_admin),
+    admin: AdminSession = Depends(require_signed_in_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    issued = await api_key_service.create_api_key(payload.name, db, created_by=admin.email)
+    issued = await api_key_service.create_api_key(
+        payload.name, db, created_by=admin.email, scope=payload.scope
+    )
     return _api_key_created(issued)
 
 
 @secure_router.post("/api-keys/{key_id}/regenerate", response_model=ApiKeyCreated)
 async def regenerate_api_key(
     key_id: int,
+    admin: AdminSession = Depends(require_signed_in_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    record = await _get_api_key_or_404(key_id, db)
+    record = await _get_own_api_key_or_404(key_id, admin, db)
     issued = await api_key_service.regenerate_api_key(record, db)
     return _api_key_created(issued)
 
@@ -699,8 +777,9 @@ async def regenerate_api_key(
 @secure_router.post("/api-keys/{key_id}/revoke", response_model=ApiKeyResponse)
 async def revoke_api_key(
     key_id: int,
+    admin: AdminSession = Depends(require_signed_in_admin),
     db: AsyncSession = Depends(get_session),
 ):
-    record = await _get_api_key_or_404(key_id, db)
+    record = await _get_own_api_key_or_404(key_id, admin, db)
     record = await api_key_service.revoke_api_key(record, db)
     return _api_key_response(record)

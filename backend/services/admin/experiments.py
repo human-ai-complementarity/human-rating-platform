@@ -49,6 +49,8 @@ from .tags import (
 )
 from .prolific import delete_study
 from .question_inserts import insert_questions_in_batches
+from services.pilot_check.summary import summaries_for, summary_for
+
 from .status import assert_can_finish, compute_attention_reason, is_locked
 from services.assistance.methods.human_as_a_tool.method import MAX_NUM_SAMPLES
 from services.assistance.model_resolution import (
@@ -220,6 +222,8 @@ async def create_experiment(
         group_id=group_id,
         study_flags=_flag_values(payload.study_flags),
         content_warning_details=(payload.content_warning_details or "").strip() or None,
+        block_copy_paste=payload.block_copy_paste,
+        forbid_outside_tools=payload.forbid_outside_tools,
     )
     validate_terms_config(db_experiment)
     db.add(db_experiment)
@@ -243,6 +247,7 @@ async def create_experiment(
         rating_count=0,
         group=await fetch_group_snapshot(db_experiment.group_id, db),
         tags=tag_names,
+        pilot_check=await summary_for(db_experiment, question_count=0, db=db),
     )
 
 
@@ -442,6 +447,9 @@ async def _build_experiment_responses(
         },
         db,
     )
+    pilot_checks = await summaries_for(
+        [(experiment, int(question_count or 0)) for experiment, question_count, _ in rows], db
+    )
 
     return [
         build_experiment_response(
@@ -455,10 +463,15 @@ async def _build_experiment_responses(
                 status=experiment.status,
                 remaining_actions=remaining_by_experiment.get(experiment.id, 0),
                 round_statuses=round_statuses_by_experiment.get(experiment.id, []),
+                pilot_check_pending=(
+                    int(question_count or 0) > 0
+                    and pilot_checks[experiment.id].needs_acknowledgement
+                ),
             ),
             spend_minor_units=spend_by_experiment.get(experiment.id, 0),
             group=snapshots.get(experiment.group_id) if experiment.group_id else None,
             tags=tags_by_experiment.get(experiment.id, []),
+            pilot_check=pilot_checks[experiment.id],
         )
         for experiment, question_count, rating_count in rows
     ]
@@ -493,7 +506,13 @@ _LOCKED_META_FIELDS = (
 # the meta loop strips strings. Session length is locked once the experiment
 # leaves DRAFT because raters already mid-session hold a session_end_time
 # computed from the old value, and their browsers never hear about a change.
-_LOCKED_SCALAR_FIELDS = ("session_duration_minutes", "is_markdown")
+_LOCKED_SCALAR_FIELDS = (
+    "session_duration_minutes",
+    "is_markdown",
+    "render_math",
+    "block_copy_paste",
+    "forbid_outside_tools",
+)
 
 # Matches the String(255) columns on Experiment.name / internal_name.
 _NAME_MAX_LENGTH = 255
@@ -582,6 +601,9 @@ async def duplicate_experiment(
         study_flags=list(source.study_flags or []),
         content_warning_details=source.content_warning_details,
         is_markdown=source.is_markdown,
+        render_math=source.render_math,
+        block_copy_paste=source.block_copy_paste,
+        forbid_outside_tools=source.forbid_outside_tools,
         prolific_pool=source.prolific_pool,
         group_id=source.group_id,
     )
@@ -608,6 +630,7 @@ async def duplicate_experiment(
             options=question.options,
             question_type=question.question_type,
             extra_data=question.extra_data,
+            content=question.content,
             exclusion_key=question.exclusion_key,
         )
         for question in source_questions
@@ -676,6 +699,7 @@ async def duplicate_experiment(
         dataset_filenames=[upload.filename for upload in source_uploads],
         group=group,
         tags=tag_names,
+        pilot_check=await summary_for(duplicate, question_count=question_count, db=db),
     )
     return ExperimentDuplicateResponse(
         **response.model_dump(), wave_warning=_stale_wave_warning(group)
@@ -925,6 +949,7 @@ async def update_experiment(
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=tag_names,
         **(await _terms_ref_kwargs(experiment, db)),
+        pilot_check=await summary_for(experiment, question_count=question_count, db=db),
     )
 
 
@@ -953,6 +978,7 @@ async def finish_experiment(
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=await fetch_tag_names_for_experiment(experiment_id, db),
         **(await _terms_ref_kwargs(experiment, db)),
+        pilot_check=await summary_for(experiment, question_count=question_count, db=db),
     )
 
 
@@ -982,6 +1008,7 @@ async def _set_archived(
         rating_count=rating_count,
         group=await fetch_group_snapshot(experiment.group_id, db),
         tags=await fetch_tag_names_for_experiment(experiment_id, db),
+        pilot_check=await summary_for(experiment, question_count=question_count, db=db),
         **(await _terms_ref_kwargs(experiment, db)),
     )
 

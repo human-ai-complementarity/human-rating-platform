@@ -1,0 +1,146 @@
+import ProseMarkdown from './ProseMarkdown';
+import { Banner } from './experiment-detail/ui';
+import { QUESTION_TIME_LIMIT_MINUTES } from './QuestionTimer';
+
+export interface StudyInstructionsProps {
+  // The researcher's study description, as Markdown.
+  descriptionMarkdown: string | null;
+  assistanceInstructions: string | null;
+  /** Minutes the rater gets, derived from the session the server issued. */
+  sessionMinutes: number;
+  /** Minutes past the deadline in which the open question can still be sent. */
+  graceMinutes: number;
+  /** The experiment forbids internet and AI tools: the line says so instead of allowing them. */
+  forbidOutsideTools?: boolean;
+  /** The study gives the rater AI assistance itself, which a ban must exempt. */
+  studyProvidesAi?: boolean;
+}
+
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+
+/** "45 minutes" / "1 hour" / "2 hours 30 minutes" / "1 hour 1 minute".
+ *  Reads predicatively — "You have ..." — so both halves are pluralised. */
+function formatDuration(minutes: number): string {
+  if (minutes < 60) return plural(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  const hourPart = plural(hours, 'hour');
+  return rest === 0 ? hourPart : `${hourPart} ${plural(rest, 'minute')}`;
+}
+
+export function OutsideToolsPolicy({
+  forbid,
+  studyProvidesAi,
+}: {
+  forbid: boolean;
+  studyProvidesAi: boolean;
+}) {
+  if (!forbid) {
+    return (
+      <>
+        <strong>Internet and AI tools:</strong> use them however you like, except to look for a
+        published answer to these questions. The final judgement must be yours.
+      </>
+    );
+  }
+  return (
+    <>
+      <strong>Internet and AI tools:</strong> strictly forbidden. Do not use web search, ChatGPT,
+      Claude, Gemini or any other website or AI tool to help with these questions
+      {studyProvidesAi && <>, apart from the AI assistance built into this study</>}. Answer from
+      this study and your own knowledge only.
+    </>
+  );
+}
+
+/**
+ * What the rater is told about the study: the session's time budget, the
+ * researcher's description, and (for AI-assisted methods) how the assistance
+ * works. Shown once on the intro screen, and again on demand from the rating
+ * screen's Instructions dialog, so both always say the same thing.
+ */
+function StudyInstructions({
+  descriptionMarkdown,
+  assistanceInstructions,
+  sessionMinutes,
+  graceMinutes,
+  forbidOutsideTools = false,
+  studyProvidesAi = false,
+}: StudyInstructionsProps) {
+  return (
+    <>
+      {/* Set expectations before the rater commits. A return costs us a place
+          and delays the round, so someone who would rather not spend this long
+          is better off knowing now than discovering it twenty minutes in. */}
+      <div
+        data-testid="session-expectations"
+        className="rater-prose"
+        style={{
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius-sm)',
+          padding: '14px 16px',
+          marginBottom: 24,
+          color: 'var(--ink)',
+        }}
+      >
+        <h2>Before you start</h2>
+        <ul style={{ marginBottom: 0 }}>
+          <li>
+            <strong>Time:</strong> you have {formatDuration(sessionMinutes)} in total.
+            {graceMinutes > 0 && (
+              <>
+                {' '}
+                If the {sessionMinutes === 60 ? 'hour' : 'time'} runs out while you&apos;re
+                answering a question, you&apos;ll get an extra {plural(graceMinutes, 'minute')} to
+                finish and submit it.
+              </>
+            )}
+          </li>
+          <li>
+            <strong>Pace:</strong> aim for accuracy rather than speed. Spend as long as a
+            question needs, and move on once you&apos;re reasonably confident. If a question is
+            taking more than about {QUESTION_TIME_LIMIT_MINUTES} minutes, give your best answer
+            and continue.
+          </li>
+          <li data-testid="outside-tools-policy">
+            <OutsideToolsPolicy forbid={forbidOutsideTools} studyProvidesAi={studyProvidesAi} />
+          </li>
+        </ul>
+      </div>
+
+      {descriptionMarkdown && (
+        <ProseMarkdown
+          className="rater-intro-description rater-prose"
+          source={descriptionMarkdown}
+          style={{
+            color: 'var(--ink)',
+            marginBottom: 28,
+          }}
+        />
+      )}
+
+      {assistanceInstructions && (
+        <div style={{ marginBottom: 28 }}>
+          <div
+            style={{
+              font: '600 var(--text-label)/1 var(--font-mono)',
+              letterSpacing: '0.16em',
+              textTransform: 'uppercase',
+              color: 'var(--muted)',
+              marginBottom: 8,
+            }}
+          >
+            How this study works
+          </div>
+          <Banner tone="info" icon={false}>
+            <div style={{ whiteSpace: 'pre-wrap', color: 'var(--ink)', fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)' }}>
+              {assistanceInstructions}
+            </div>
+          </Banner>
+        </div>
+      )}
+    </>
+  );
+}
+
+export default StudyInstructions;

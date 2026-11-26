@@ -82,6 +82,7 @@ This project uses Clerk for frontend identity and a backend HTTP‑only cookie f
 
 - Controlled by env var `ADMIN_ALLOWLIST` (comma‑separated or JSON array of emails).
 - If your email isn’t in the allowlist, admin login returns 403 and the UI shows a friendly explanation.
+- `ADMIN_GROUPS` (same format) names Google Groups whose people are admitted too, nested groups included. The backend reads them on boot and every 5 minutes through the Cloud Identity Groups API as the platform's service account (`GOOGLE_APPLICATION_CREDENTIALS`), which needs the Workspace Groups Reader role (membership alone is not enough). A group it cannot read, top-level or nested, such as a consumer googlegroups.com list, is skipped with a warning and the rest are admitted. A refresh that fails outright after retries (no credentials, say) clears the group set, so until the next good read only `ADMIN_ALLOWLIST` admits anyone; keep a break-glass entry there. Keep one top-level group and nest each cohort group in it as a Member; `scripts/admin_groups_check.py` prints what the platform would admit.
 
 ```bash
 # Admin allowlist + session cookie
@@ -281,10 +282,13 @@ Env keys use Pydantic's nested `__` delimiter for nested settings models:
 - `PROLIFIC__ENV_LABEL` — optional prefix applied to Prolific-visible names we create (e.g. participant groups used for cross-experiment exclusion). Set to e.g. `dev` locally; leave empty in prod. Prevents dev-created groups from being confused with prod ones when they share a project.
 - `APP__SITE_URL` — public frontend URL used to build Prolific study links (default: `http://localhost:5173`)
 - `SLACK__WEBHOOK_URL` — Slack webhook for sending alerts to admins (e.g. forwarded Prolific participant messages)
+- `MEDIA__SOURCE_URL` — where question images live, `gs://bucket/prefix` or `file://folder`; unset refuses uploads that reference images. `MEDIA__GCS_WIF_AUDIENCE`, `MEDIA__GCS_WIF_TOKEN_FILE`, `MEDIA__GCS_IMPERSONATE_SERVICE_ACCOUNT` as for `TERMS__GCS_*`. See [Questions with images](#questions-with-images).
+- `PILOT_CHECK__*` — the pilot check's sample size, judge model, launch gate mode and per-check severities (`[pilot_check]` in `backend/config.toml`). See [docs/pilot-check.md](docs/pilot-check.md).
 
 Top‑level convenience envs (not nested):
 
 - `ADMIN_ALLOWLIST` — comma‑separated or JSON array of admin emails
+- `ADMIN_GROUPS` — comma‑separated or JSON array of Google Group emails whose people are admins too (see [Allowlist](#allowlist))
 - `APP_SECRET_KEY` — HMAC signer for the HTTP‑only admin session cookie
 - `API_KEYS` — static bearer keys for the programmatic `/api/v1` read API (comma‑separated or JSON array). Optional: primary keys are minted from the dashboard **API Keys** tab and stored hashed; this env list is accepted in addition, as a fallback for local dev or a pre‑DB deployment. See [Programmatic API](#programmatic-api-apiv1) below.
 - `RATER_SESSION_SECRET_KEY` — dedicated HMAC signer for rater session tokens (falls back to `APP_SECRET_KEY` if unset)
@@ -438,14 +442,14 @@ cd frontend && npx playwright install chromium
 
 On Linux, headless Chromium also needs OS libraries that CI installs via `--with-deps`; run `npx playwright install --with-deps chromium` instead (requires sudo). Not needed on macOS.
 
-### Claude Code
+### Coding agents
 
-If you use Claude Code, this is automatic — the repo checks in its Claude config, so a fresh clone needs no setup:
+The repo checks in its agent config, so a fresh clone needs no setup. The instructions and skills are shared; the rest is Claude Code only, and only Claude Code has been tested:
 
-- [CLAUDE.md](CLAUDE.md) tells Claude to run `make ci` before pushing or updating a PR, in every session.
-- The `/lint` and `/ci` skills ([.claude/skills/](.claude/skills/)) run the gates on demand and know how to fix each gate's failures.
-- The `/dev` skill starts, stops, restarts, or checks all local servers (backend + frontend) — ask it to "bring up the app" or "restart the servers".
-- [.claude/settings.json](.claude/settings.json) pre-approves the make targets so Claude runs them without permission prompts.
+- [AGENTS.md](AGENTS.md) tells any agent that reads it to run `make ci` before pushing or updating a PR, in every session. [CLAUDE.md](CLAUDE.md) only imports it.
+- The `lint` and `ci` skills live in [.agents/skills/](.agents/skills/), symlinked from `.claude/skills`. They run the gates on demand and know how to fix each gate's failures. In Claude Code they are `/lint` and `/ci`.
+- The `dev` skill (`/dev`) starts, stops, restarts, or checks all local servers (backend + frontend) — ask it to "bring up the app" or "restart the servers".
+- [.claude/settings.json](.claude/settings.json) pre-approves the make targets so Claude Code runs them without permission prompts. Other agents will ask.
 
 ---
 
@@ -462,12 +466,37 @@ Upload questions as CSV or Parquet. Both formats accept the same columns; Parque
 | `question_type` | No | `MC` or `FT` (default `MC`) |
 | `metadata` | No | JSON string |
 | `exclusion_key` | No | Questions sharing a key (e.g. two versions of one item) are never served to the same rater in an experiment. Blank means no key. Included in the ratings export. |
+| `content` | No | The stimulus as a JSON list of `text` and `image` blocks, for questions with images. See [Questions with images](#questions-with-images). |
 
 ```csv
 question_id,question_text,gt_answer,options,question_type
 q1,"Is the sky blue?","Yes","Yes,No,Maybe",MC
 q2,"Explain photosynthesis","Plants convert sunlight...",,FT
 ```
+
+### Questions with images
+
+A row may carry its stimulus as `content`, an ordered JSON list of blocks in the inference pipeline's stored form (its `pipeline/domain/content.py`), so `export_study.py` writes it through unchanged:
+
+```json
+[{"type": "text", "text": "Screen after step 1:"},
+ {"type": "image", "ref": "sha256:<64 hex>", "mime_type": "image/png"},
+ {"type": "text", "text": "Should the next action be allowed?"}]
+```
+
+`question_text` stays required as the text-only form (the text blocks joined, as the pipeline's `message_text` does) for exports, analytics and the v1 API. Blocks carry exactly their type's keys; `mime_type` is one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits).
+
+**Storage.** Image bytes are not uploaded with the file. They live in the media source, `MEDIA__SOURCE_URL`, under the object name `<prefix>/<sha256 hex digest>`, which is the pipeline's media store layout (`checkpoints/ingest_questions/media/`), so that directory syncs to the bucket as is:
+
+```bash
+gsutil -m rsync outputs/checkpoints/ingest_questions/media gs://<bucket>/<prefix>
+```
+
+An upload checks every referenced digest against the source and refuses the file, listing the missing ones, rather than store a question whose image a rater could not see. It also refuses an image over `MEDIA__MAX_IMAGE_BYTES` (default 7 MB): the assistance models receive each image inline, and the strictest provider in use rejects larger ones at request time. The source is `gs://bucket/prefix` in production (read with the platform's own Google credentials, `MEDIA__GCS_WIF_*` as for `TERMS__GCS_*`) or `file://folder` locally.
+
+**Delivery.** Only raters with a live session are handed image URLs. The backend serves the bytes from `/api/raters/media/<digest>` behind an HMAC token with at least four hours of life left when handed out (long enough to cover a session); the bytes are re-hashed on every read, so an object that changed after upload is refused rather than shown.
+
+**Assistance.** Top-N and Human-as-a-Tool send the blocks to their model as chat-completion parts, images inline as base64 in the same order the rater sees them, so the `assistance_models` entry for such a dataset has to name a vision-capable model. Human-as-a-Tool's confidence estimators still read only the text form.
 
 ### Optional dataset-level metadata
 
@@ -496,9 +525,13 @@ question_id,question_text,gt_answer,options,question_type
 q1,...,...,...,MC
 ```
 
-Allowed keys: `description` (rater intro splash + Prolific study description; supports markdown — same renderer as the Prolific description: headings, bold/italic/strike, lists, paragraphs), `system_prompt` (appended to AI prompts for Top-N / Human-as-a-Tool; plain text), `human_prompt_prefix` (rendered above every question; plain text), `human_prompt_suffix` (rendered below every question; plain text), `prolific_pool` (reference label for the target Prolific audience). All optional here, though a pilot needs `description` set, here or in the admin form. Newlines inside any value must be encoded as `\n` escapes since the JSON object has to fit on one line — `json.dumps(...)` handles this automatically. Full field-by-field guide is in the admin help page in-app.
+Allowed keys: `description` (the rater instructions on the intro splash, in every round; a round's Prolific listing is separate text and only starts as a copy of this when the dataset card has no blurb; supports markdown; Prolific renders only headings, bold/italic/strike, lists and paragraphs, the intro splash renders the rest too), `system_prompt` (appended to AI prompts for Top-N / Human-as-a-Tool; plain text), `human_prompt_prefix` (rendered above every question; plain text, or Markdown when the experiment renders questions as Markdown), `human_prompt_suffix` (rendered below every question; same rendering as the prefix), `prolific_pool` (reference label for the target Prolific audience). All optional here, though a pilot needs `description` set, here or in the admin form. Newlines inside any value must be encoded as `\n` escapes since the JSON object has to fit on one line — `json.dumps(...)` handles this automatically. Full field-by-field guide is in the admin help page in-app.
 
 The `assistance_models` key may be omitted (the method then runs on the platform default, shown on the Assistance tab), but a declared entry must be complete. It pins each assisted method's model and request options into `assistance_params` instead of a column: an object mapping method to an entry (`{"top_n": {"model": "oai/gpt-5.6-luna", "reasoning_effort": "low", "text_verbosity": "low", "temperature": null}, "human_as_a_tool": {"model": "openrouter/google/gemini-3-flash-preview", "reasoning_effort": null, "text_verbosity": null, "temperature": null}}`). Every entry key but `tools` is required and `null` means the option is not sent, so the model each method ranks or decomposes with is declared rather than left to a provider default. (The confidence and clustering instruments run the entry's model with their own options; `confidence_model` / `clustering_model` overrides are still bare ids.) Model ids are `<provider>/<model-id>` with provider `openrouter` (key `LLM__OPENROUTER_API_KEY`) or `oai`, OpenAI's own API (key `LLM__OAI_API_KEY`); note `openai/...` is an OpenRouter id, as in the pipeline's wave files, so `openrouter/openai/gpt-5.6-luna` and `oai/gpt-5.6-luna` are the same model on different transports. `reasoning_effort` is one of `minimal|low|medium|high`, `text_verbosity` one of `low|medium|high`, `temperature` a number from 0 to 2. `tools` is the one optional key: a list of the tools the model under test is given, from `web_search` and `code_interpreter` (left out or `[]`: none; the confidence and clustering instruments never get tools). An `oai/` model with tools is called through OpenAI's Responses API, which runs both; an `openrouter/` model can only do `web_search` (OpenRouter's `openrouter:web_search` server tool), so `code_interpreter` needs an `oai/` model. The upload alone still accepts a bare model id and expands it to the entry it stood for (the model with the method's default options: Top-N at temperature 0, Human-as-a-Tool with none sent), for exports written before entries existed; create/PATCH do not. Launch is blocked until the pinned model's provider has its API key configured. The old single `model` key is rejected.
+
+`render_math` (a JSON boolean, not a string) switches on math rendering: TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` is typeset with KaTeX in the question text, its MC options, its context and the document tab. The submitted answer is the option as written. The prompt prefix/suffix and assistance text stay as written. It is opt-in because other datasets use `$` for money: an inline `$…$` must not start or end with a space, and its closing `$` must not be followed by a digit, so most prices stay as typed. It can be on together with Markdown (`is_markdown`): the formulas are found by the same rules before the Markdown is parsed, so TeX is not read as Markdown syntax, and anything in a code block or code span stays as written. One known gap: a display formula written across several lines of a blockquote keeps the `>` markers. An upload may switch it on but never off: declaring `false` on an experiment an admin switched on is reported as a conflict.
+
+`render_markdown` (a JSON boolean, not a string) switches on Markdown rendering of the questions, the experiment's `is_markdown` flag: code blocks, tables, etc. are rendered as styled elements. MC options render the same way, except that links show as plain text, so an option like `# of items` becomes a heading; the submitted answer is the option as written. Same rules as `render_math`: on but never off. A file may declare both.
 
 A copy-pasteable example:
 
@@ -520,11 +553,11 @@ A dataset's card declares once how studies on it run. Edit it from the **card** 
 | --- | --- |
 | `external_study_name` | Public name for new experiments: fixed text, no placeholders. Raters see it, so it mustn't give away the dataset, wave or arm. |
 | `internal_study_name` | Researcher-facing name template: `{dataset}`, `{wave}`, `{method}`. This is what tells arms apart. |
-| `study_blurb` | Prolific study description for one-click pilots. |
+| `study_blurb` | Prolific study description the pilot form starts from. |
 | `estimated_completion_time` | Minutes. |
 | `reward` | Per participant, in the workspace currency's minor units (pence, cents; yen for JPY). |
 | `num_ratings_per_question` | Ratings target for new experiments. |
-| `study_label`, `screeners` | Prolific label and pre-screeners for one-click pilots; unset uses the pilot defaults. |
+| `study_label`, `screeners` | Prolific label and pre-screeners the pilot form starts from; unset uses the pilot defaults. |
 
 Saving the card refuses a placeholder in the public name, an unknown one in the internal name, and a name ending in " - Pilot" or " - Round N" (each study appends that).
 
@@ -532,8 +565,8 @@ Saving the card refuses a placeholder in the public name, an unknown one in the 
 - **Inheritance at create.** A new grouped experiment takes the public name, the rendered internal name and the ratings target from its card for whatever the create request leaves out. A rendered internal name another experiment already has gets " (2)", " (3)" and so on. It's a copy: later card edits don't reach existing experiments. The dashboard's create form shows the card's values as placeholders and sends only what you type over them.
 - **What comes from the export instead.** Rater instructions, prompt prefix/suffix, system prompt, Prolific pool and the assistance models arrive with the upload's `dataset_meta`. Each assisted method runs on its `assistance_models` entry, else the platform default; the launch gate requires an entry for the experiment's method.
 - **Launch gate.** A pilot is refused until the experiment has at least one uploaded question, rater instructions, an internal study name, and, when assisted, an assistance model. The prompt prefix and suffix are optional. The pilot form lists what's missing and how to fix each (`launch_blocker_fixes` on the experiment).
-- **One-click pilot.** For a grouped experiment with a complete card, the Launch tab offers **Create pilot draft from the card** (`POST /api/admin/experiments/{id}/launch`, optional `places`, default 5). It uses the card's time, reward, blurb, label and screeners, and automatically excludes the participants of every other experiment in the dataset's groups: any wave, any status, even one with no study yet, since its Prolific group fills as raters arrive. The panel lists them by internal name (`GET /api/admin/experiments/{id}/launch/preview`), and the confirm re-reads the card and the list, so it quotes what the launch will use. An arm created after a pilot isn't on that pilot's list, so create all of a wave's arms before piloting any. The draft can still be edited before publishing, which stays a separate step. A dataset's first study usually goes through the pilot form, since the economics are optional at onboarding.
-- **Saving pilot numbers back.** Once a grouped experiment's pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, which completes it for the next study.
+- **Pilot form prefill.** For a grouped experiment, the Launch tab's pilot form starts from whatever the card declares (time, reward, blurb, label, screeners), complete or not, and says which of the first three the card lacks. Its exclusion picker starts on every other experiment in the dataset's groups: any wave, any status, even one with no study yet, since its Prolific group fills as raters arrive. An arm created after a pilot isn't on that pilot's list, so create all of a wave's arms before piloting any. Everything can be edited before **Create pilot draft**, and publishing stays a separate step.
+- **Saving pilot numbers back.** Once a grouped experiment's pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, so the dataset's next pilot form starts from them.
 - **Current wave.** `CURRENT_WAVE` in `backend/services/admin/waves.py` is the wave collections are being run for; bump it in a PR when the next wave starts. Duplicating into a group from another wave, or a DRAFT experiment sitting in one, gets a warning with a one-click move to the dataset's current-wave group (created on confirm if missing).
 
 ---
@@ -582,7 +615,7 @@ Typical workflow:
 
 ### Excluding prior participants
 
-Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. A one-click pilot fills this in itself (see [Dataset Cards](#dataset-cards)). Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
+Each experiment gets one Prolific participant group, populated as raters join. When you launch a new study, the round form has an **Exclude prior participants from** picker: any experiments you select there are translated into a `participant_group_blocklist` filter on the Prolific study, so those participants never see it. New picks must be finished experiments or experiments on the same dataset; for a grouped experiment the pilot form starts with the dataset's other experiments selected (see [Dataset Cards](#dataset-cards)). Groups are lazy — created on first rater entry (or on first round launch if the round references the experiment as an exclusion source) — and dynamic, so exclusions stay correct even as new raters trickle in.
 
 ### Study URL format
 
@@ -600,6 +633,11 @@ A versioned, read-only API for programmatic clients (CLIs, inference pipelines
 that fetch experiment data directly). It's separate from the cookie-authed
 dashboard routes so a script can use it without a browser.
 
+A key minted with **Admin** access also passes the `/api/admin` gate, so a CLI
+can drive the dashboard's own workflows (create a dataset, group and
+experiments, upload questions) without a browser session. See
+[Key scopes](#key-scopes).
+
 ### Auth
 
 Send a bearer key: `Authorization: Bearer <key>`. Keys are matched against
@@ -614,7 +652,9 @@ plaintext on the wire.
 2. Go to the **API Keys** tab in the top nav (next to Experiments and Documentation). It also links to the interactive API docs.
 3. Click **Create key**, give it a name, and **copy the full `hrp_…` secret from the reveal card**. It is shown only once; afterwards only a masked prefix remains.
 
-Manage existing keys from the same tab:
+Manage existing keys from the same tab. Each admin sees only the keys they
+created, and only they can regenerate or revoke them, so no admin can take over
+another's key (and with it, act as them after losing their own access):
 
 - **Regenerate** rotates the secret in place (same name), and the old one stops working immediately.
 - **Revoke** disables a key (kept for audit). Regenerating a revoked key reactivates it under a fresh secret.
@@ -622,6 +662,24 @@ Manage existing keys from the same tab:
 Only the SHA-256 hash is stored server-side, so keep the raw key somewhere safe and out of committed code (pass it via an env var). If it leaks, hit Regenerate.
 
 For local dev or automation you can skip the dashboard and set a static fallback key: `API_KEYS=local-dev-key` in `backend/.env` (recreate the api container to pick up `.env` changes).
+
+### Key scopes
+
+Each dashboard key has a scope, chosen under **Access** when it is created and
+fixed for its life (regenerating rotates the secret, not the scope):
+
+- `read` (the default) — `/api/v1` only.
+- `admin` — `/api/v1`, plus every `/api/admin` route except two groups that
+  always need a signed-in session (`require_signed_in_admin`): API key
+  management, so a leaked key cannot mint or revive keys, and Prolific writes
+  (pilot, creating, editing, publishing, closing or
+  discarding a round), so a key cannot spend money. Send it the same way:
+  `Authorization: Bearer hrp_…`.
+
+`require_admin` tries the session cookie first, then an `hrp_` bearer. An
+unknown or revoked key is a 401, a `read` key on `/api/admin` a 403. Static
+`API_KEYS` entries are always `read`. Keys minted before scopes existed are
+`read`.
 
 ### Using the key
 
@@ -673,10 +731,10 @@ contributors.
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/publish` — publish an unpublished round
 - `POST /api/admin/experiments/{id}/prolific/rounds/{round_id}/close` — close an active round
 - `DELETE /api/admin/experiments/{id}` — delete experiment (+ Prolific study if linked)
-- `GET /api/admin/api-keys` — list programmatic API keys (masked)
-- `POST /api/admin/api-keys` — mint a key; returns the full secret once
-- `POST /api/admin/api-keys/{id}/regenerate` — rotate a key's secret in place
-- `POST /api/admin/api-keys/{id}/revoke` — revoke a key (soft; kept for audit)
+- `GET /api/admin/api-keys` — list your programmatic API keys (masked)
+- `POST /api/admin/api-keys` — mint a key (`scope`: `read` or `admin`); returns the full secret once
+- `POST /api/admin/api-keys/{id}/regenerate` — rotate one of your keys' secret in place (someone else's key is a 404)
+- `POST /api/admin/api-keys/{id}/revoke` — revoke one of your keys (soft; kept for audit)
 
 ### Programmatic API (`/api/v1`)
 
@@ -695,6 +753,7 @@ model and key management.
 - `GET /api/raters/next-question` — get next question
 - `POST /api/raters/submit` — submit a rating
 - `GET /api/raters/session-status` — check session status
+- `GET /api/raters/media/{digest}` — one question image, by the expiring URL `next-question` handed out (no session header; the URL is the credential)
 - `POST /api/raters/end-session` — end session
 - `POST /api/raters/assistance/start` — start an assistance session for a question; returns an `AssistanceStepResponse` with `session_id`, `type`, and `content`
 - `POST /api/raters/assistance/advance` — advance a multi-turn assistance session; body: `{ session_id, human_input }`

@@ -52,7 +52,6 @@ from .queries import (
     fetch_rated_question_ids,
     fetch_rater_completed_count,
     fetch_rater_or_404,
-    fetch_round_description,
 )
 from .selectors import build_question_selection_groups, build_selected_question
 from .validators import (
@@ -85,15 +84,8 @@ async def start_session(
     db: AsyncSession,
 ) -> RaterStartResponse:
     experiment = await fetch_experiment_or_404(experiment_id, db)
-    round_description = await fetch_round_description(
-        experiment_id=experiment_id,
-        prolific_study_id=study_id,
-        is_preview=is_preview,
-        db=db,
-    )
-    # Round-level description (set per Prolific study) takes precedence so admins
-    # can tailor each round; otherwise fall back to the dataset-level description.
-    description_for_intro = round_description or experiment.description
+    # A round's description is the Prolific listing; raters read the experiment's.
+    description_for_intro = experiment.description
 
     assistance_instructions = get_rater_instructions(experiment.assistance_method) or None
     # Read before anything is written: the terms source is read live, and if
@@ -136,6 +128,7 @@ async def start_session(
             # preview idle past the deadline once would otherwise keep counting
             # towards "ran out of time" through every clean run afterwards.
             existing_rater.timed_out = False
+            existing_rater.feedback = None
             # A preview is for seeing what raters see, and the consent screen
             # is the first thing they see.
             previous_consent = await fetch_consent_record(existing_rater.id, db)
@@ -173,6 +166,8 @@ async def start_session(
                 consented_at=None,
                 assistance_method=experiment.assistance_method,
                 assistance_instructions=assistance_instructions,
+                block_copy_paste=experiment.block_copy_paste,
+                forbid_outside_tools=experiment.forbid_outside_tools,
             )
         validate_existing_rater_can_resume(existing_rater, policy)
         existing_consent = await fetch_consent_record(existing_rater.id, db)
@@ -197,6 +192,8 @@ async def start_session(
             consented_at=existing_consent.accepted_at if existing_consent else None,
             assistance_method=experiment.assistance_method,
             assistance_instructions=assistance_instructions,
+            block_copy_paste=experiment.block_copy_paste,
+            forbid_outside_tools=experiment.forbid_outside_tools,
         )
 
     rater = Rater(
@@ -282,6 +279,8 @@ async def start_session(
         consented_at=None,
         assistance_method=experiment.assistance_method,
         assistance_instructions=assistance_instructions,
+        block_copy_paste=experiment.block_copy_paste,
+        forbid_outside_tools=experiment.forbid_outside_tools,
     )
 
 
@@ -459,8 +458,8 @@ async def get_next_question(
                 if question.parent_question_id is not None
                 else None
             )
-            return build_question_response(
-                question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
+            return await build_question_response(
+                question, experiment, parent_question_text=parent_text
             )
 
     # Past the deadline the rater keeps what they hold, but is served nothing new.
@@ -508,9 +507,7 @@ async def get_next_question(
         if selected.parent_question_id is not None
         else None
     )
-    return build_question_response(
-        selected, is_markdown=experiment.is_markdown, parent_question_text=parent_text
-    )
+    return await build_question_response(selected, experiment, parent_question_text=parent_text)
 
 
 async def get_question_by_id(
@@ -555,9 +552,7 @@ async def get_question_by_id(
         if question.parent_question_id is not None
         else None
     )
-    return build_question_response(
-        question, is_markdown=experiment.is_markdown, parent_question_text=parent_text
-    )
+    return await build_question_response(question, experiment, parent_question_text=parent_text)
 
 
 async def submit_rating(
@@ -806,3 +801,15 @@ async def end_session(
     await db.commit()
 
     return {"message": "Session ended successfully"}
+
+
+async def submit_feedback(*, rater_id: int, feedback: str, db: AsyncSession) -> dict[str, str]:
+    """Store what the rater wrote on the optional end-of-session screen.
+
+    Deliberately not gated on the session being active: the screen comes
+    after the last question, when the session has already ended.
+    """
+    rater = await fetch_rater_or_404(rater_id, db)
+    rater.feedback = feedback.strip() or None
+    await db.commit()
+    return {"message": "Feedback saved"}

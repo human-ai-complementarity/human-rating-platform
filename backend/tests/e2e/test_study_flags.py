@@ -172,10 +172,10 @@ def test_sensitive_study_serves_the_warned_consent_and_no_debrief(
     _flag(client, experiment_id, "sensitive")
 
     payload = _start(client, experiment_id, "PID_SENSITIVE")
-    consent_html = payload["consent_statement_html"]
-    assert "<h2>Content warning</h2>" in consent_html
-    assert DETAILS in consent_html
-    assert payload["debrief_html"] is None
+    consent_markdown = payload["consent_statement_markdown"]
+    assert "## Content warning" in consent_markdown
+    assert DETAILS in consent_markdown
+    assert payload["debrief_markdown"] is None
 
     _consent(client, payload)
     stored = _stored_consent(sync_engine, payload["rater_id"])
@@ -192,11 +192,11 @@ def test_deception_study_serves_the_standard_consent_and_a_debrief(
     _flag(client, experiment_id, "deception", details=None)
 
     payload = _start(client, experiment_id, "PID_DECEPTION")
-    assert "<h2>Content warning</h2>" not in payload["consent_statement_html"]
-    assert payload["debrief_html"] is not None
-    assert "Continue to Prolific" in payload["debrief_html"]
+    assert "## Content warning" not in payload["consent_statement_markdown"]
+    assert payload["debrief_markdown"] is not None
+    assert "Continue to Prolific" in payload["debrief_markdown"]
     detail = client.get(f"/api/admin/experiments/{experiment_id}").json()
-    assert detail["name"] in payload["debrief_html"]
+    assert detail["name"] in payload["debrief_markdown"]
 
     _consent(client, payload)
     assert _stored_consent(sync_engine, payload["rater_id"])["statement"] == "standard"
@@ -208,7 +208,7 @@ def test_ordinary_study_has_no_debrief(client: TestClient, terms_source):
     payload = _start(client, experiment_id, "PID_PLAIN")
     # Flags are an admin concern; the rater payload carries only their effects.
     assert "study_flags" not in payload
-    assert payload["debrief_html"] is None
+    assert payload["debrief_markdown"] is None
 
 
 # ── admin endpoints ───────────────────────────────────────────────────────
@@ -229,8 +229,8 @@ def test_terms_status_and_preview_endpoints(client: TestClient, terms_source):
     assert body["pinned"] is False
     assert body["consent_ref"] == "warned v1"
     assert body["debrief_ref"] == "debrief v1"
-    assert DETAILS in body["consent_html"]
-    assert "Continue to Prolific" in body["debrief_html"]
+    assert DETAILS in body["consent_markdown"]
+    assert "Continue to Prolific" in body["debrief_markdown"]
 
 
 def test_preview_renders_an_unsaved_selection_until_pinned(client: TestClient, terms_source):
@@ -248,7 +248,7 @@ def test_preview_renders_an_unsaved_selection_until_pinned(client: TestClient, t
     assert preview.status_code == 200, preview.text
     body = preview.json()
     assert body["consent_ref"] == "warned v1"
-    assert "Graphic descriptions." in body["consent_html"]
+    assert "Graphic descriptions." in body["consent_markdown"]
     assert body["debrief_ref"] == "debrief v1"
     # Nothing was saved.
     assert client.get(f"/api/admin/experiments/{experiment_id}").json()["study_flags"] == []
@@ -268,7 +268,7 @@ def test_preview_selection_can_be_empty(client: TestClient, terms_source):
 
     saved = client.get(f"/api/admin/experiments/{experiment_id}/terms/preview").json()
     assert saved["consent_ref"] == "warned v1"
-    assert DETAILS in saved["consent_html"]
+    assert DETAILS in saved["consent_markdown"]
 
     cleared = client.get(
         f"/api/admin/experiments/{experiment_id}/terms/preview",
@@ -276,7 +276,7 @@ def test_preview_selection_can_be_empty(client: TestClient, terms_source):
     )
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["consent_ref"] == "standard v1"
-    assert DETAILS not in cleared.json()["consent_html"]
+    assert DETAILS not in cleared.json()["consent_markdown"]
     # Without the sentinel, omitted flags still mean "as saved".
     assert (
         client.get(f"/api/admin/experiments/{experiment_id}/terms/preview").json()["consent_ref"]
@@ -295,7 +295,7 @@ def test_unset_source_reports_not_ok_and_previews_the_placeholder(client: TestCl
     preview = client.get(f"/api/admin/experiments/{experiment_id}/terms/preview").json()
     assert preview["pinned"] is False
     assert preview["consent_ref"] == "placeholder v0"
-    assert "Consent statement not configured" in preview["consent_html"]
+    assert "Consent statement not configured" in preview["consent_markdown"]
 
 
 def test_unreadable_source_reports_but_lets_admins_save(client: TestClient, terms_source: Path):
@@ -410,7 +410,7 @@ def test_clearing_the_flags_before_publish_clears_prolific_too(
     assert detail["consent_statement_ref"] == "standard v1"
     assert detail["debrief_statement_ref"] is None
     rater = _start(client, experiment_id, "PID_CLEARED")
-    assert rater["debrief_html"] is None
+    assert rater["debrief_markdown"] is None
 
 
 # ── pinning at first publish ──────────────────────────────────────────────
@@ -454,15 +454,15 @@ def test_publish_pins_versions_and_running_studies_keep_them(
     fresh_id = _create_experiment(client)
     fresh_preview = client.get(f"/api/admin/experiments/{fresh_id}/terms/preview").json()
     assert fresh_preview["consent_ref"] == "standard v2"
-    assert "<h2>Version two</h2>" in fresh_preview["consent_html"]
+    assert "## Version two" in fresh_preview["consent_markdown"]
 
     pinned_preview = client.get(f"/api/admin/experiments/{experiment_id}/terms/preview").json()
     assert pinned_preview["pinned"] is True
     assert pinned_preview["consent_ref"] == "standard v1"
     rater = _start(client, experiment_id, "PID_PINNED")
-    assert "<h2>Purpose of the study</h2>" in rater["consent_statement_html"]
-    assert "Version two" not in rater["consent_statement_html"]
-    assert rater["debrief_html"] is not None
+    assert "## Purpose of the study" in rater["consent_statement_markdown"]
+    assert "Version two" not in rater["consent_statement_markdown"]
+    assert rater["debrief_markdown"] is not None
 
     _consent(client, rater)
     stored = _stored_consent(sync_engine, rater["rater_id"])
@@ -556,7 +556,7 @@ def test_publish_without_a_source_keeps_the_placeholder_for_unflagged_studies(
     assert detail["consent_statement_ref"] is None
 
     rater = _start(client, experiment_id, "PID_NOSOURCE")
-    assert "Consent statement not configured" in rater["consent_statement_html"]
+    assert "Consent statement not configured" in rater["consent_statement_markdown"]
 
 
 @respx.mock

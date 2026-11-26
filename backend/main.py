@@ -17,8 +17,10 @@ from config import get_settings
 from database import build_database
 from logging_config import configure_logging
 from routers import admin, posthog, raters, v1
-from services import prolific_to_slack
+from services import admin_groups, prolific_to_slack
 from services.assistance.runner import PreparationRunner
+from services.pilot_check import runs as pilot_check_runs
+from services.pilot_check.checks import validate_severities
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +124,7 @@ def _configure_openapi(app: FastAPI, expose_internal_docs: bool) -> None:
 def create_app() -> FastAPI:
     settings = get_settings()
     configure_logging(settings.app.log_level)
+    validate_severities(settings.pilot_check)
 
     logger.info(
         "Starting Human Rating Platform",
@@ -142,6 +145,11 @@ def create_app() -> FastAPI:
         app.state.database = database
         runner = PreparationRunner(database)
         app.state.preparation_runner = runner
+        admin_groups_task: asyncio.Task | None = None
+        if settings.admin_groups:
+            admin_groups_task = asyncio.create_task(
+                admin_groups.run_refresh_loop(settings.admin_groups), name="admin-groups"
+            )
         prolific_to_slack_task: asyncio.Task | None = None
         if prolific_to_slack.forwarding_enabled(settings):
             prolific_to_slack_task = asyncio.create_task(
@@ -153,11 +161,17 @@ def create_app() -> FastAPI:
             await runner.wait_ready()
             yield
         finally:
+            if admin_groups_task is not None:
+                admin_groups_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await admin_groups_task
             if prolific_to_slack_task is not None:
                 prolific_to_slack_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await prolific_to_slack_task
             try:
+                # Before the database goes: a cancelled run marks its row aborted.
+                await pilot_check_runs.cancel_runs()
                 await runner.close()
             finally:
                 await database.disconnect()

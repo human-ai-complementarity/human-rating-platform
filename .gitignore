@@ -28,10 +28,12 @@ frontend/vite.log
 data/
 artifacts/
 
-# Local assistant/worktree artifacts, except shared Claude Code config
+# Local assistant/worktree artifacts, except shared Claude Code config.
+# No trailing slash on skills: it is a symlink to .agents/skills, and a slash
+# would match only a directory, leaving the symlink ignored.
 .claude/*
 !.claude/settings.json
-!.claude/skills/
+!.claude/skills
 
 # Local credentials (service-account keys etc.); never committed
 backend/secrets/

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
@@ -10,9 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from config import get_settings
-from models import ConsentRecord, Question, Rating, Rater, AssistanceSession
+from models import (
+    AssistanceSession,
+    ConsentRecord,
+    ExperimentRound,
+    Question,
+    Rater,
+    Rating,
+)
 from services.queries import canonical_rating_rank_subquery, counts_toward_target
 from services.terms import statement_ref
+from .prolific import get_study_participant_countries
 from .queries import fetch_experiment_or_404
 
 logger = logging.getLogger(__name__)
@@ -38,6 +47,7 @@ EXPORT_COLUMNS = [
     "rater_prolific_id",
     "rater_study_id",
     "rater_session_id",
+    "rater_country_of_residence",
     # Which consent statement the rater agreed to ("standard v1") and when.
     # Blank for raters from before consent was recorded.
     "rater_consent_version",
@@ -52,6 +62,9 @@ EXPORT_COLUMNS = [
     "exclusion_key",
     "assistance_method",
     "assistance_outcome",
+    # What the rater wrote on the optional end-of-session screen. Per rater,
+    # so it repeats on each of their rows; blank if they skipped it.
+    "rater_feedback",
 ]
 
 DOCUMENT_EXPORT_COLUMNS = ["row_id", "question_id", "question_text"]
@@ -105,6 +118,7 @@ def _build_export_row(
     consented_at: object | None = None,
     assistance_method: str | None = None,
     assistance_outcome: str | None = None,
+    country_of_residence: str | None = None,
 ) -> list[object]:
     response_time = (rating.time_submitted - rating.time_started).total_seconds()
     return [
@@ -117,6 +131,7 @@ def _build_export_row(
         rater.prolific_id,
         rater.study_id or "",
         rater.session_id or "",
+        country_of_residence or "",
         consent_version or "",
         consented_at.isoformat() if consented_at is not None else "",
         rating.answer,
@@ -137,7 +152,46 @@ def _build_export_row(
         question.exclusion_key or "",
         assistance_method or "",
         assistance_outcome or "unknown",
+        rater.feedback or "",
     ]
+
+
+async def _fetch_rater_countries(experiment_id: int, db: AsyncSession) -> dict[str, str]:
+    """Prolific participant id -> country of residence, across the experiment's rounds."""
+    settings = get_settings().prolific
+    if not settings.enabled:
+        return {}
+
+    study_ids = (
+        (
+            await db.execute(
+                select(ExperimentRound.prolific_study_id)
+                .where(ExperimentRound.experiment_id == experiment_id)
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    results = await asyncio.gather(
+        *(
+            get_study_participant_countries(settings=settings, study_id=study_id)
+            for study_id in study_ids
+        ),
+        return_exceptions=True,
+    )
+
+    countries: dict[str, str] = {}
+    for study_id, result in zip(study_ids, results):
+        if isinstance(result, BaseException):
+            logger.warning(
+                "Failed to fetch Prolific demographics for round; exporting blank countries",
+                exc_info=result,
+                extra={"attributes": {"experiment_id": experiment_id, "study_id": study_id}},
+            )
+            continue
+        countries.update(result)
+    return countries
 
 
 async def stream_export_csv_chunks(
@@ -149,6 +203,7 @@ async def stream_export_csv_chunks(
 ) -> AsyncIterator[str]:
     resolved_batch_size = _resolve_batch_size(batch_size)
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    countries = await _fetch_rater_countries(experiment_id, db)
 
     logger.info(
         "CSV export started",
@@ -232,6 +287,7 @@ async def stream_export_csv_chunks(
                     consented_at,
                     method,
                     outcome,
+                    countries.get(rater.prolific_id),
                 )
             )
             rows_in_chunk += 1

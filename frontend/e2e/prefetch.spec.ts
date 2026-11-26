@@ -20,9 +20,9 @@ async function mockQueue(page: Page, method = 'top_n', intro = false) {
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith('/raters/start')) return json(route, {
-      consent_statement_html: '<p>Agree to participate.</p>', consented_at: state.needsConsent ? null : '2026-09-29T00:00:00Z',
+      consent_statement_markdown: 'Agree to participate.\n\n', consented_at: state.needsConsent ? null : '2026-09-29T00:00:00Z',
       rater_id: 1, session_start: '2026-09-29T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds,
-      experiment_name: 'Prefetch study', experiment_description_html: intro ? '<p>Read these study instructions.</p>' : null,
+      experiment_name: 'Prefetch study', experiment_description_markdown: intro ? 'Read these study instructions.\n\n' : null,
       assistance_method: method, assistance_instructions: null, queue_enabled: false, rater_session_token: 'token', completion_url: null,
     });
     if (path.endsWith('/raters/consent')) return json(route, { consented_at: '2026-10-28T00:00:00Z', session_start: '2026-10-28T00:00:00Z', session_end_time: state.sessionEndTime, session_grace_seconds: state.graceSeconds, rater_session_token: 'consented-token' });
@@ -105,6 +105,7 @@ test('one next-question request precedes display without browser scheduling', as
   await expect(page.getByText('Question 2', { exact: true })).toHaveCount(0);
   expect(state.starts).toEqual([1]);
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 2', { exact: true })).toBeVisible();
   await expect.poll(() => state.starts).toEqual([1, 2]);
@@ -116,6 +117,7 @@ test('lost submission response retries the exact answer before advancing', async
   await page.goto(url);
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByRole('button', { name: 'Retry saving answer' })).toBeVisible();
   await expect(page.getByText('Question 1', { exact: true })).toBeVisible();
@@ -200,6 +202,7 @@ test('submission conflict offers explicit recovery to the authoritative question
   await page.goto(url);
   await expect(page.getByText('Prepared guidance')).toBeVisible();
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 1', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Continue from saved progress' }).click();
@@ -217,6 +220,7 @@ test('early arrival waits for assistance without scheduling successors', async (
   let release!: () => void;
   state.assistanceGate = new Promise<void>(resolve => { release = resolve; });
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 2', { exact: true })).toBeVisible();
   await expect(page.getByText('Preparing guidance, please wait…')).toBeVisible();
@@ -237,6 +241,7 @@ test('serving-time replacement displays and demands only the returned question',
   expect(state.prepares).toEqual([]);
   state.replaceOnActivate = true;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   await expect(page.getByText('Question 3', { exact: true })).toBeVisible();
   await expect(page.getByText('Question 2', { exact: true })).toHaveCount(0);
@@ -297,7 +302,8 @@ test('session expiry cancels scheduled assistance retries', async ({ page }) => 
   await page.goto(url);
   await expect.poll(() => state.starts.length).toBe(1);
   await page.clock.runFor(1500);
-  await expect(page.getByText('Your session has ended.')).toBeVisible();
+  // An ended session lands on the optional feedback screen first.
+  await expect(page.getByTestId('feedback-screen')).toBeVisible();
   const requestsAtExpiry = state.starts.length;
   await page.clock.runFor(30000);
   expect(state.starts).toHaveLength(requestsAtExpiry);

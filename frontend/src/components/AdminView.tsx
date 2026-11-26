@@ -1,4 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type {
@@ -184,6 +185,9 @@ function AdminView() {
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [tagSuggestions, setTagSuggestions] = useState<Tag[]>([]);
   const [editingCard, setEditingCard] = useState<{ id: number; name: string } | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  const closeCreate = useCallback(() => setCreateOpen(false), []);
+  const newButtonRef = useRef<HTMLButtonElement>(null);
 
   // Delete is the one destructive/irreversible action, so it still confirms;
   // archive/restore apply immediately with a toast (per the mock).
@@ -389,26 +393,34 @@ function AdminView() {
 
   return (
     <div className="admin-page">
-      <div style={{ marginBottom: 28 }}>
-        <h1
-          style={{
-            fontFamily: 'var(--font-head)',
-            fontWeight: 600,
-            fontSize: 30,
-            letterSpacing: '-0.01em',
-            margin: 0,
-          }}
+      <div className="xl-pagehead">
+        <div style={{ minWidth: 0 }}>
+          <h1 className="xl-h1">Experiments</h1>
+          <p style={{ margin: '6px 0 0', fontSize: 15, color: 'var(--muted)' }}>
+            Create and manage your rating experiments.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="xl-new-btn"
+          data-testid="new-experiment-button"
+          ref={newButtonRef}
+          aria-haspopup="dialog"
+          aria-expanded={createOpen}
+          onClick={() => setCreateOpen(true)}
         >
-          Experiments
-        </h1>
-        <p style={{ margin: '6px 0 0', fontSize: 15, color: 'var(--muted)' }}>
-          Create and manage your rating experiments.
-        </p>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          New experiment
+        </button>
       </div>
 
       {error && <ErrorBanner text={error} />}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '410px 1fr', gap: 28, alignItems: 'start' }}>
+      {/* Mounted while closed so the form keeps its builder state and an
+          in-flight submit across a close and reopen. */}
+      <CreateDrawer open={createOpen} onClose={closeCreate} returnFocusRef={newButtonRef}>
         <CreatePanel
           value={newExperiment}
           onChange={setNewExperiment}
@@ -419,6 +431,9 @@ function AdminView() {
           experiments={experiments}
           tagSuggestions={tagSuggestions}
         />
+      </CreateDrawer>
+
+      <div>
         <ListPanel
           experiments={filtered}
           loading={loading}
@@ -561,13 +576,14 @@ function ListPanel({
       <div
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 16,
+          gap: '10px 16px',
           marginBottom: 13,
         }}
       >
-      <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+      <div style={{ position: 'relative', flex: '1 1 260px', minWidth: 0 }}>
         <span
           aria-hidden
           style={{
@@ -610,7 +626,12 @@ function ListPanel({
       {/* Filter controls row: status segmented control, needs toggle, clear. */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
 
-        <div style={{ display: 'flex', gap: 4, background: 'var(--surface-2)', padding: 4, borderRadius: 9, flexShrink: 0 }}>
+        <div
+          className="xl-seg"
+          role="group"
+          aria-label="Status"
+          style={{ display: 'flex', gap: 4, background: 'var(--surface-2)', padding: 4, borderRadius: 9 }}
+        >
           {STATUS_TABS.map((tab) => {
             const active = statusFilter === tab.value;
             const labelText =
@@ -619,6 +640,7 @@ function ListPanel({
               <button
                 key={tab.value}
                 type="button"
+                aria-pressed={active}
                 onClick={() => onStatusFilterChange(tab.value)}
                 style={{
                   border: 'none',
@@ -628,6 +650,7 @@ function ListPanel({
                   font: `${active ? 600 : 500} 13px var(--font-body)`,
                   color: active ? 'var(--ink)' : 'var(--muted)',
                   cursor: 'pointer',
+                  whiteSpace: 'nowrap',
                   boxShadow: active ? '0 1px 2px rgba(30,30,20,0.08)' : 'none',
                 }}
               >
@@ -881,6 +904,7 @@ function GroupCard({
         // now belongs to row hover alone.
         onMouseEnter={(e) => (e.currentTarget.style.background = '#fcfbf7')}
         onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+        className="xl-grouphead"
         style={{
           width: '100%',
           display: 'flex',
@@ -978,6 +1002,7 @@ function GroupCard({
       {isGroup && (
         <div
           data-testid={`group-assistance-${bucket.groupId}`}
+          className="xl-group-arms"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -1028,6 +1053,9 @@ function GroupCard({
               title="Edit the dataset card"
               onClick={() => onEditCard(datasetId, bucket.datasetName ?? 'dataset')}
               style={{
+                display: 'inline-flex',
+                maxWidth: '100%',
+                minWidth: 0,
                 marginLeft: 'auto',
                 border: '1px solid var(--faint)',
                 borderRadius: 999,
@@ -1039,8 +1067,11 @@ function GroupCard({
                 whiteSpace: 'nowrap',
               }}
             >
-              {bucket.datasetName} card ·{' '}
-              {!card ? 'edit' : card.complete ? 'complete' : 'incomplete'}
+              {/* A long dataset name truncates; the card status stays visible. */}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {bucket.datasetName} card
+              </span>
+              <span>&nbsp;· {!card ? 'edit' : card.complete ? 'complete' : 'incomplete'}</span>
             </button>
           )}
         </div>
@@ -1106,6 +1137,7 @@ function ExperimentRow({
       onClick={onSelect}
       onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface-2)')}
       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+      className={nested ? 'xl-row xl-row--nested' : 'xl-row'}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -1121,7 +1153,7 @@ function ExperimentRow({
         transition: 'background 0.15s',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: nested ? 11 : 12, minWidth: 0 }}>
+      <div className="xl-row-main" style={{ display: 'flex', alignItems: 'flex-start', gap: nested ? 11 : 12, minWidth: 0 }}>
         {/* Fixed gutter reserves space so titles align whether or not a dot shows. */}
         <div style={{ width: 8, flexShrink: 0, display: 'flex', justifyContent: 'center', paddingTop: 7 }}>
           {exp.needs_attention && <AttentionDot reason={exp.attention_reason} />}
@@ -1134,6 +1166,7 @@ function ExperimentRow({
                 fontSize: nested ? 15.5 : 17,
                 fontWeight: 600,
                 letterSpacing: nested ? '-0.005em' : '-0.01em',
+                overflowWrap: 'anywhere',
               }}
             >
               {exp.internal_name || exp.name}
@@ -1184,7 +1217,14 @@ function ExperimentRow({
               {groupLine}
             </div>
           )}
-          <div style={{ marginTop: nested ? 4 : 3, fontSize: 12.5, color: 'var(--muted)' }}>
+          <div
+            style={{
+              marginTop: nested ? 4 : 3,
+              fontSize: 12.5,
+              color: 'var(--muted)',
+              overflowWrap: 'anywhere',
+            }}
+          >
             {exp.internal_name ? `Public: ${exp.name} · ` : ''}
             {exp.question_count} questions · {exp.rating_count} ratings
           </div>
@@ -1236,8 +1276,8 @@ function ExperimentRow({
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
-        <div style={{ width: nested ? 88 : 92, textAlign: 'right' }}>
+      <div className="xl-row-side" style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+        <div className="xl-row-spend" style={{ width: nested ? 88 : 92, textAlign: 'right' }}>
           <div
             style={{
               fontSize: nested ? 14.5 : 15,
@@ -1624,7 +1664,9 @@ function GroupCombobox({
                 role="option"
                 aria-selected={isSelected}
                 data-testid={group ? `group-option-${group.id}` : 'group-option-none'}
-                onMouseEnter={() => setActiveIndex(index)}
+                // Move, not enter: a list that opens or scrolls under a resting
+                // pointer would otherwise steal the highlight from typed input.
+                onMouseMove={() => setActiveIndex(index)}
                 onClick={() => commit(index)}
                 style={{
                   display: 'flex',
@@ -1840,16 +1882,8 @@ function CreatePanel({
   };
 
   return (
-    <section
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        boxShadow: 'var(--shadow)',
-      }}
-    >
-      <SectionHeader label="Create new" />
-      <form onSubmit={handleSubmit} style={{ padding: 24 }}>
+    <div data-testid="create-panel">
+      <form onSubmit={handleSubmit} className="xl-create-form">
         <Field
           id="experiment-name"
           testId="experiment-name-input"
@@ -2321,25 +2355,113 @@ function CreatePanel({
           After creating the experiment and uploading questions, use the Prolific section
           to run a pilot study and launch rating rounds.
         </div>
-        <button
-          type="submit"
-          disabled={submitting}
-          style={{
-            width: '100%',
-            padding: 13,
-            background: 'var(--accent)',
-            color: 'var(--accent-ink)',
-            border: 'none',
-            borderRadius: 'var(--radius-sm)',
-            fontWeight: 600,
-            fontSize: 15,
-            cursor: submitting ? 'wait' : 'pointer',
-          }}
-        >
-          Create experiment
-        </button>
+        {/* Pinned to the bottom of the scrolling panel so it's always reachable. */}
+        <div className="xl-create-footer">
+          <button
+            type="submit"
+            disabled={submitting}
+            style={{
+              width: '100%',
+              padding: 13,
+              background: 'var(--accent)',
+              color: 'var(--accent-ink)',
+              border: 'none',
+              borderRadius: 'var(--radius-sm)',
+              fontWeight: 600,
+              fontSize: 15,
+              cursor: submitting ? 'wait' : 'pointer',
+            }}
+          >
+            Create experiment
+          </button>
+        </div>
       </form>
-    </section>
+    </div>
+  );
+}
+
+/**
+ * Side panel that holds the create form, so the experiment list keeps the full
+ * page width. Full screen on tablets and phones (see .xl-drawer in index.css).
+ * Escape and the scrim close it; focus moves into the panel on open and back to the
+ * New experiment button on close. It renders into <body> so that, while it is
+ * open, the app root can be made inert: Tab and screen readers stay in the
+ * panel. It stays mounted (hidden) while closed.
+ */
+function CreateDrawer({
+  open,
+  onClose,
+  returnFocusRef,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  returnFocusRef: React.RefObject<HTMLElement>;
+  children: React.ReactNode;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    // The opener by ref: Safari doesn't focus a clicked button, so
+    // document.activeElement at open time is often <body>.
+    const opener = returnFocusRef.current;
+    const appRoot = document.getElementById('root');
+    if (appRoot) appRoot.inert = true;
+    // First field of the form, not the header's Close button.
+    panelRef.current
+      ?.querySelector<HTMLElement>('.xl-drawer-body :is(input, select, textarea, button)')
+      ?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      // A control inside (the group picker) may have used Escape already.
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.body.style.overflow = prevOverflow;
+      if (appRoot) appRoot.inert = false;
+      opener?.focus();
+    };
+  }, [open, onClose, returnFocusRef]);
+
+  return createPortal(
+    <>
+      {open && <div className="xl-scrim" onClick={onClose} aria-hidden="true" />}
+      <div
+        ref={panelRef}
+        className="xl-drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-drawer-title"
+        data-testid="create-drawer"
+        hidden={!open}
+      >
+        <div className="xl-drawer-head">
+          <h2
+            id="create-drawer-title"
+            style={{ margin: 0, fontFamily: 'var(--font-head)', fontSize: 21, fontWeight: 600 }}
+          >
+            New experiment
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            data-testid="create-drawer-close"
+            className="xl-icon-btn"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+        <div className="xl-drawer-body">{children}</div>
+      </div>
+    </>,
+    document.body,
   );
 }
 
@@ -2516,23 +2638,6 @@ function TagInput({
         Free-form labels (project, client, one-offs). Method, wave, and status are derived — don&apos;t
         store those as tags. Up to {MAX_TAGS_PER_EXPERIMENT} tags, {MAX_TAG_LENGTH} characters each.
       </div>
-    </div>
-  );
-}
-
-function SectionHeader({ label }: { label: string }) {
-  return (
-    <div
-      style={{
-        padding: '18px 24px',
-        borderBottom: '1px solid var(--line)',
-        font: '600 11px/1 var(--font-mono)',
-        letterSpacing: '0.16em',
-        textTransform: 'uppercase',
-        color: 'var(--muted)',
-      }}
-    >
-      {label}
     </div>
   );
 }

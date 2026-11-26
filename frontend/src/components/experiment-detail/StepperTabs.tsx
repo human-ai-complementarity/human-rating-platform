@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 
 /**
  * The numbered stepper tab bar on the experiment detail page.
@@ -9,8 +9,9 @@ import React from 'react';
  * - Steps 1–4 are the guided setup sequence: Questions → Instructions &
  *   prompts → Rater assistance → Launch on Prolific. Each has a completion
  *   state derived from the model (see `deriveStepStates` in the parent).
- * - A "Delete" action button sits at the far right — not a tab, just a direct
- *   trigger for the delete-confirmation flow.
+ * - Responsive: one tab row at every width. Below 1024px it scrolls sideways
+ *   with an edge fade and sticks to the top of the screen while the section
+ *   scrolls (CSS in index.css); the active tab is kept scrolled into view.
  *
  * A step's marker shows:
  *   - a checkmark on a filled accent circle if `done`
@@ -38,97 +39,96 @@ interface StepperTabsProps {
   active: TabKey;
   onChange: (key: TabKey) => void;
   steps: StepDef[];
-  onDeleteClick: () => void;
-  deleting?: boolean;
 }
 
-export function StepperTabs({ active, onChange, steps, onDeleteClick, deleting }: StepperTabsProps) {
+export function StepperTabs({ active, onChange, steps }: StepperTabsProps) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const firstRender = useRef(true);
+
+  // On narrow screens later tabs start off-screen; bring the active one into
+  // view. Only the row scrolls (scrollIntoView could also move the page).
+  useEffect(() => {
+    const row = rowRef.current;
+    const tab = row?.querySelector<HTMLElement>(`[data-testid="tab-${active}"]`);
+    if (!row || !tab || row.scrollWidth <= row.clientWidth) return;
+    const fade = 40;
+    const left = tab.getBoundingClientRect().left - row.getBoundingClientRect().left + row.scrollLeft;
+    const right = left + tab.offsetWidth;
+    if (left < row.scrollLeft) row.scrollTo({ left: Math.max(0, left - 16) });
+    else if (right > row.scrollLeft + row.clientWidth - fade)
+      row.scrollTo({ left: right - row.clientWidth + fade });
+  }, [active]);
+
+  // Below 1024px the row sticks while the section scrolls under it. Switching
+  // tabs from down the page should start the new section at its top, not
+  // midway through it, so jump back to where the row sits unstuck.
+  useEffect(() => {
+    if (firstRender.current) {
+      firstRender.current = false;
+      return;
+    }
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const top = anchor.getBoundingClientRect().top + window.scrollY;
+    if (window.scrollY > top) window.scrollTo({ top });
+  }, [active]);
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'stretch',
-        gap: 18,
-        borderBottom: '1px solid var(--faint)',
-      }}
-    >
-      <TabButton
-        active={active === 'overview'}
-        onClick={() => onChange('overview')}
-        testId="tab-overview"
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 22,
-            height: 22,
-            borderRadius: '50%',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            flex: '0 0 auto',
-            background: 'var(--surface-2)',
-            border: '1px solid var(--faint)',
-          }}
-        >
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: '50%',
-              background: 'var(--muted)',
-            }}
-          />
-        </span>
-        <span>Overview</span>
-      </TabButton>
-
-      <Divider />
-      <SetupLabel />
-
-      {steps.map((step, i) => (
-        <React.Fragment key={step.key}>
+    <>
+      <div ref={anchorRef} aria-hidden="true" />
+      <nav aria-label="Experiment sections" className="xd-tabs-wrap">
+        <div className="xd-tabs" ref={rowRef}>
           <TabButton
-            active={active === step.key}
-            onClick={() => onChange(step.key)}
-            testId={`tab-${step.key}`}
+            active={active === 'overview'}
+            onClick={() => onChange('overview')}
+            testId="tab-overview"
           >
-            <StepMarker index={step.index} status={step.status} />
-            <span>{step.label}</span>
-          </TabButton>
-          {i < steps.length - 1 && (
             <span
               aria-hidden
-              style={{ alignSelf: 'center', color: 'var(--faint)', fontSize: 12 }}
+              style={{
+                width: 22,
+                height: 22,
+                borderRadius: '50%',
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flex: '0 0 auto',
+                background: 'var(--surface-2)',
+                border: '1px solid var(--faint)',
+              }}
             >
-              →
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: 'var(--muted)',
+                }}
+              />
             </span>
-          )}
-        </React.Fragment>
-      ))}
-
-      <button
-        type="button"
-        onClick={onDeleteClick}
-        disabled={deleting}
-        data-testid="delete-experiment-button"
-        style={{
-          marginLeft: 'auto',
-          background: 'none',
-          border: 'none',
-          padding: '14px 2px',
-          cursor: deleting ? 'wait' : 'pointer',
-          font: '600 14px var(--font-body)',
-          color: 'var(--danger)',
-          opacity: deleting ? 0.6 : 1,
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {deleting ? 'Deleting…' : 'Delete'}
-      </button>
-    </div>
+            <span>Overview</span>
+          </TabButton>
+  
+          <Divider />
+  
+          {steps.map((step) => (
+            <TabButton
+              key={step.key}
+              active={active === step.key}
+              onClick={() => onChange(step.key)}
+              testId={`tab-${step.key}`}
+            >
+              <StepMarker index={step.index} status={step.status} />
+              <span>{step.label}</span>
+            </TabButton>
+          ))}
+        </div>
+      </nav>
+    </>
   );
 }
+
 
 function TabButton({
   active,
@@ -176,7 +176,9 @@ function TabButton({
             position: 'absolute',
             left: 0,
             right: 0,
-            bottom: -1,
+            // 0, not -1: the tab row scrolls (overflow-x), which clips
+            // anything hanging below its padding box.
+            bottom: 0,
             height: 2,
             background: underline,
           }}
@@ -263,22 +265,5 @@ function Divider() {
         alignSelf: 'stretch',
       }}
     />
-  );
-}
-
-function SetupLabel() {
-  return (
-    <span
-      aria-hidden
-      style={{
-        alignSelf: 'center',
-        font: '600 10px/1 var(--font-mono)',
-        letterSpacing: '0.14em',
-        textTransform: 'uppercase',
-        color: 'var(--muted)',
-      }}
-    >
-      Setup
-    </span>
   );
 }

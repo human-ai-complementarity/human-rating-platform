@@ -5,7 +5,7 @@ import { buildRaterPreviewUrl } from '../raterPreview';
 import StatusLabel from './StatusLabel';
 import type {
   StudyFlag,
-  DatasetMetaField,
+  Dataset,
   DuplicateNavState,
   Experiment,
   ExperimentRound,
@@ -18,11 +18,22 @@ import type {
   Upload,
   UploadMetaKey,
 } from '../types';
+import { forcedScreeners } from '../types';
 import { ExperimentExclusionPicker } from './experiment-detail/ExclusionPicker';
 import { SaveToDatasetCard } from './experiment-detail/SaveToDatasetCard';
-import { OneClickLaunch } from './experiment-detail/OneClickLaunch';
+import { testingPreviewFix } from './experiment-detail/launchBlockers';
+import { PilotCheckCard, StatePill, describeSummary } from './experiment-detail/PilotCheckCard';
+import { usePilotCheckGate } from './experiment-detail/usePilotCheckGate';
 import { GroupControl, MoveToWaveButton } from './experiment-detail/GroupControl';
-import { EthicsPanel } from './experiment-detail/EthicsPanel';
+import { HeaderMenu } from './experiment-detail/HeaderMenu';
+import {
+  SettingsPanel,
+  settingsDirty,
+  settingsFormFrom,
+  settingsPayload,
+  type SettingsForm,
+} from './experiment-detail/SettingsPanel';
+import ConfirmDialog from './ConfirmDialog';
 import {
   StepperTabs,
   type StepDef,
@@ -31,17 +42,22 @@ import {
 } from './experiment-detail/StepperTabs';
 import {
   Banner,
+  BackLink,
   DEFAULT_SCREENERS,
   Field,
   ProgressBar,
+  SCREENER_ITEMS,
   STUDY_LABELS,
   ScreenerCheckboxes,
   SectionCard,
+  StatCell,
   Toast,
   ToggleSwitch,
+  fieldLabel,
   inputStyle,
   primaryButton,
   secondaryButton,
+  selectStyle,
   textareaStyle,
 } from './experiment-detail/ui';
 import {
@@ -63,7 +79,7 @@ function formatSessionLength(minutes: number): string {
 }
 
 // Labels for every key an upload can declare. The first five are the editable
-// fields in the Instructions & prompts panel, in the order the CSV `#META:`
+// fields in the Instructions & settings panel, in the order the CSV `#META:`
 // JSON uses; the per-method `assistance_models.<method>` keys have no editable
 // field — they are reported in upload results only, because the upload pins
 // them into assistance_params.
@@ -75,66 +91,14 @@ const DATASET_META_LABELS: Record<UploadMetaKey, string> = {
   prolific_pool: 'Prolific participant pool',
   'assistance_models.top_n': 'Top-N model entry',
   'assistance_models.human_as_a_tool': 'Human-as-a-Tool model entry',
+  render_math: 'Math rendering',
+  render_markdown: 'Markdown rendering',
 };
 
 // A key with no label (a method added since) shows as itself.
 function metaLabel(key: string): string {
   return DATASET_META_LABELS[key as UploadMetaKey] ?? key;
 }
-
-const DATASET_META_HINTS: Record<DatasetMetaField, string> = {
-  description:
-    'Shown to raters on the intro screen and inherited as the default by each round on Launch on Prolific. Edit a round in Launch to override for that round only. Supports markdown.',
-  system_prompt:
-    'Used to generate AI answers and assistance. Plain text; line breaks preserved.',
-  human_prompt_prefix: 'Rendered above every question. Plain text; line breaks preserved.',
-  human_prompt_suffix: 'Rendered below every question. Plain text; line breaks preserved.',
-  prolific_pool:
-    'For your reference when configuring Prolific filters; not sent to the Prolific API.',
-};
-
-// Placeholder text shown inside empty fields — matches the mock's design of
-// letting the field's example serve as its own hint before the user types.
-const DATASET_META_PLACEHOLDERS: Partial<Record<DatasetMetaField, string>> = {
-  human_prompt_prefix: 'e.g. When you see the text below, do you think x or y?',
-  human_prompt_suffix: 'e.g. Is the statement above true or false?',
-  prolific_pool: 'e.g. uk_representative_sample',
-};
-
-// Fields grouped by *where they surface* — a researcher editing the tab is
-// usually thinking "how do I change what raters see on the splash?" or "the
-// prompt around each question", not "the ordering the CSV uses". Group names
-// answer that question; single-field groups (system prompt, pool) still get a
-// header so someone with assistance off knows they can skip the AI row.
-const META_FIELD_GROUPS: {
-  header: string;
-  fields: { field: DatasetMetaField; kind: 'input' | 'textarea'; minHeight?: number }[];
-  card?: 'is_markdown';
-}[] = [
-  {
-    header: 'Instructions',
-    fields: [
-      { field: 'description', kind: 'textarea', minHeight: 140 },
-      { field: 'system_prompt', kind: 'textarea', minHeight: 140 },
-    ],
-  },
-  {
-    header: 'Per-question framing',
-    fields: [
-      { field: 'human_prompt_prefix', kind: 'textarea', minHeight: 90 },
-      { field: 'human_prompt_suffix', kind: 'textarea', minHeight: 90 },
-    ],
-  },
-  {
-    header: 'Question rendering',
-    fields: [],
-    card: 'is_markdown',
-  },
-  {
-    header: 'Deployment',
-    fields: [{ field: 'prolific_pool', kind: 'input' }],
-  },
-];
 
 interface ExperimentDetailProps {
   experiment: Experiment;
@@ -293,7 +257,7 @@ function NameEditor({
 // and Danger sit outside this sequence.
 const SETUP_STEPS: { key: TabKey; label: string }[] = [
   { key: 'questions', label: 'Questions' },
-  { key: 'instructions', label: 'Instructions & prompts' },
+  { key: 'instructions', label: 'Instructions & settings' },
   { key: 'assistance', label: 'Rater assistance' },
   { key: 'launch', label: 'Launch on Prolific' },
 ];
@@ -414,6 +378,7 @@ function ExperimentDetail({
     excluded_experiment_ids: [],
   });
   const otherExperiments = allExperiments.filter((e) => e.id !== experiment.id);
+  const datasetId = experiment.group_dataset_id;
   // Reward is kept as a raw input string (not a number) so the user can type
   // "9.99" without each keystroke round-tripping through parse-then-format
   // and snapping the value back to "9.00". Converted to minor units only at
@@ -430,6 +395,16 @@ function ExperimentDetail({
   const [pricing, setPricing] = useState<ProlificPricing | null>(null);
   // Null until platform status loads; no wave notice is shown before then.
   const [currentWave, setCurrentWave] = useState<string | null>(null);
+  // The dataset's other experiments, in any wave and any status, so arms
+  // piloted one after another keep each other's raters out.
+  const siblingKey =
+    datasetId === null
+      ? ''
+      : otherExperiments
+          .filter((e) => e.group_dataset_id === datasetId)
+          .map((e) => e.id)
+          .sort((a, b) => a - b)
+          .join(',');
   const [pilotForm, setPilotForm] = useState<Omit<PilotStudyCreate, 'reward'>>({
     description: experiment.description ?? '',
     estimated_completion_time: 60,
@@ -439,6 +414,12 @@ function ExperimentDetail({
     screeners: DEFAULT_SCREENERS,
     excluded_experiment_ids: [],
   });
+  useEffect(() => {
+    setPilotForm((prev) => ({
+      ...prev,
+      excluded_experiment_ids: siblingKey ? siblingKey.split(',').map(Number) : [],
+    }));
+  }, [siblingKey]);
   // Keep the pilot description in sync with the experiment's dataset-level
   // description while the admin hasn't typed their own version. Set true on
   // any admin edit to the pilot description field; unset on a successful pilot
@@ -449,17 +430,49 @@ function ExperimentDetail({
     if (pilotDescriptionDirtyRef.current) return;
     setPilotForm((prev) => ({ ...prev, description: experiment.description ?? '' }));
   }, [experiment.description]);
-  const [pilotRewardInput, setPilotRewardInput] = useState<string>('9.00');
-  // Re-format the pilot default once when the workspace currency arrives,
-  // so a JPY workspace sees "900" (≈¥900) instead of "9.00" (≈¥9). Guarded
-  // by a ref so we never clobber what the researcher has typed.
-  const pilotRewardInitedRef = useRef(false);
+  // The dataset card: the pilot form starts from whatever it declares. A
+  // failed read leaves the form on its defaults.
+  const [pilotCard, setPilotCard] = useState<Dataset | null>(null);
   useEffect(() => {
-    if (currencyCode !== null && !pilotRewardInitedRef.current) {
-      pilotRewardInitedRef.current = true;
-      setPilotRewardInput(rewardMinorToInput(900, currencyCode));
+    if (datasetId === null) return;
+    let cancelled = false;
+    api.getDataset(datasetId).then(
+      (card) => {
+        if (cancelled) return;
+        setPilotCard(card);
+        if (card.study_blurb) pilotDescriptionDirtyRef.current = true;
+        setPilotForm((prev) => ({
+          ...prev,
+          ...(card.study_blurb ? { description: card.study_blurb } : {}),
+          ...(card.estimated_completion_time
+            ? { estimated_completion_time: card.estimated_completion_time }
+            : {}),
+          ...(card.study_label ? { study_label: card.study_label } : {}),
+          // An empty list is a choice (no screeners); only unset keeps the defaults.
+          ...(Array.isArray(card.screeners) ? { screeners: card.screeners } : {}),
+        }));
+      },
+      () => {},
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId]);
+  const [pilotRewardInput, setPilotRewardInput] = useState<string>('9.00');
+  // The pilot reward is the card's, else the default. It is formatted again
+  // when the workspace currency arrives, so a JPY workspace sees "900" (≈¥900)
+  // instead of "9.00" (≈¥9). Guarded by a ref so we never clobber what the
+  // researcher has typed.
+  const pilotRewardDirtyRef = useRef(false);
+  useEffect(() => {
+    if (!pilotRewardDirtyRef.current) {
+      setPilotRewardInput(rewardMinorToInput(pilotCard?.reward ?? 900, currencyCode));
     }
-  }, [currencyCode]);
+  }, [currencyCode, pilotCard]);
+  const handlePilotRewardChange = (value: string) => {
+    pilotRewardDirtyRef.current = true;
+    setPilotRewardInput(value);
+  };
 
   const [humanAsATool, setHumanAsATool] = useState(
     experiment.assistance_method === 'human_as_a_tool'
@@ -499,36 +512,16 @@ function ExperimentDetail({
     setAssistanceTouched(true);
   };
 
-  // Dataset metadata edits live in local form state and are committed via Save.
-  const [metaForm, setMetaForm] = useState<Record<DatasetMetaField, string>>({
-    description: experiment.description ?? '',
-    system_prompt: experiment.system_prompt ?? '',
-    human_prompt_prefix: experiment.human_prompt_prefix ?? '',
-    human_prompt_suffix: experiment.human_prompt_suffix ?? '',
-    prolific_pool: experiment.prolific_pool ?? '',
-  });
-  const [isMarkdown, setIsMarkdown] = useState(experiment.is_markdown);
+  // The Instructions & settings step edits one form, committed by its Save.
+  // It lives here so leaving the step can ask about unsaved changes, and so
+  // the Rater assistance step can edit the system prompt too.
+  const [settingsEdits, setSettingsEdits] = useState<Partial<SettingsForm>>({});
+  const settings: SettingsForm = { ...settingsFormFrom(experiment), ...settingsEdits };
   const [savingMeta, setSavingMeta] = useState(false);
-  const metaFormDirtyRef = useRef(false);
-
-  useEffect(() => {
-    if (metaFormDirtyRef.current) return;
-    setMetaForm({
-      description: experiment.description ?? '',
-      system_prompt: experiment.system_prompt ?? '',
-      human_prompt_prefix: experiment.human_prompt_prefix ?? '',
-      human_prompt_suffix: experiment.human_prompt_suffix ?? '',
-      prolific_pool: experiment.prolific_pool ?? '',
-    });
-    setIsMarkdown(experiment.is_markdown);
-  }, [
-    experiment.description,
-    experiment.system_prompt,
-    experiment.human_prompt_prefix,
-    experiment.human_prompt_suffix,
-    experiment.prolific_pool,
-    experiment.is_markdown,
-  ]);
+  const [pendingTab, setPendingTab] = useState<TabKey | null>(null);
+  const changeSettings = (patch: Partial<SettingsForm>) =>
+    setSettingsEdits((current) => ({ ...current, ...patch }));
+  const settingsUnsaved = settingsDirty(settings, experiment);
 
   // ── Data-loading effects ───────────────────────────────────────────────
   const loadStats = useCallback(async () => {
@@ -626,18 +619,13 @@ function ExperimentDetail({
       await api.updateExperiment(experiment.id, {
         assistance_method: experiment.assistance_method,
         assistance_params: experiment.assistance_params ?? null,
-        description: metaForm.description,
-        system_prompt: metaForm.system_prompt,
-        human_prompt_prefix: metaForm.human_prompt_prefix,
-        human_prompt_suffix: metaForm.human_prompt_suffix,
-        is_markdown: isMarkdown,
-        prolific_pool: metaForm.prolific_pool,
+        ...settingsPayload(settings),
       });
-      showSuccess('Instructions & prompts saved.', 2000);
-      metaFormDirtyRef.current = false;
-      onRefresh();
+      await onRefresh();
+      setSettingsEdits({});
+      showSuccess('Settings saved.', 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save instructions & prompts');
+      setError(err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
       setSavingMeta(false);
     }
@@ -929,31 +917,29 @@ function ExperimentDetail({
     }
   };
 
+  // Study creation goes through the pilot check gate (docs/pilot-check.md):
+  // its 409 becomes a dialog, and "Create draft anyway" repeats the call acknowledged.
+  const pilotCheckGate = usePilotCheckGate();
+
   const handleRunPilot = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     try {
-      await api.runPilotStudy(experiment.id, {
-        ...pilotForm,
-        reward: rewardInputToMinor(pilotRewardInput, currencyCode),
+      await pilotCheckGate.attempt(async (acknowledgePilotCheck) => {
+        await api.runPilotStudy(experiment.id, {
+          ...pilotForm,
+          reward: rewardInputToMinor(pilotRewardInput, currencyCode),
+          ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}),
+        });
+        showSuccess('Pilot draft created on Prolific. It is not live until you publish it.', 4000);
+        pilotDescriptionDirtyRef.current = false;
+        onRefresh();
+        await loadRounds();
+        await loadRecommendation();
       });
-      showSuccess('Pilot draft created on Prolific. Publish it when ready.', 4000);
-      pilotDescriptionDirtyRef.current = false;
-      onRefresh();
-      await loadRounds();
-      await loadRecommendation();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create pilot study');
     }
-  };
-
-  // A failed rounds reload throws, so the one-click panel can say the draft
-  // exists rather than offer a second launch.
-  const handleLaunchedFromCard = async () => {
-    showSuccess('Pilot draft created from the dataset card. Publish it when ready.', 4000);
-    onRefresh();
-    await reloadRounds();
-    await loadRecommendation();
   };
 
   const handleRunRound = async () => {
@@ -961,10 +947,15 @@ function ExperimentDetail({
     const places = recommendation.recommended_places;
     setError(null);
     try {
-      await api.runExperimentRound(experiment.id, places);
-      showSuccess(`Round ${nextRoundNumber} draft created on Prolific. Publish it when ready.`, 4000);
-      await loadRounds();
-      await loadRecommendation();
+      await pilotCheckGate.attempt(async (acknowledgePilotCheck) => {
+        await api.runExperimentRound(experiment.id, places, { acknowledgePilotCheck });
+        showSuccess(
+          `Round ${nextRoundNumber} draft created on Prolific. It is not live until you publish it.`,
+          4000,
+        );
+        await loadRounds();
+        await loadRecommendation();
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create study round');
     }
@@ -976,9 +967,6 @@ function ExperimentDetail({
     ? ['AWAITING_REVIEW', 'COMPLETED'].includes(latestRound.prolific_study_status)
     : false;
   const nextRoundNumber = latestRound ? latestRound.round_number + 1 : 1;
-  const roundLaunchBlockedMessage = !latestRoundClosed && latestRound
-    ? `Waiting for ${latestRound.round_number === 0 ? 'the pilot round' : `Round ${latestRound.round_number}`} to close. Current status: ${latestRound.prolific_study_status}.`
-    : null;
   const isLocked = experiment.status !== 'DRAFT';
   const isFinished = experiment.status === 'FINISHED';
   const canFinish = useMemo(
@@ -991,6 +979,21 @@ function ExperimentDetail({
   const lockedHint = isFinished
     ? 'Locked — experiment is finished.'
     : 'Locked — config freezes once the first round is published on Prolific.';
+
+  // Every way off the settings step (the step tabs, Back, Continue) comes
+  // through here, so unsaved edits are never dropped without a question.
+  const leaveSettings = (next: TabKey) => {
+    if (tab === 'instructions' && next !== tab && settingsUnsaved && !isLocked) {
+      setPendingTab(next);
+    } else {
+      setTab(next);
+    }
+  };
+  const discardSettingsAndLeave = () => {
+    setSettingsEdits({});
+    if (pendingTab) setTab(pendingTab);
+    setPendingTab(null);
+  };
 
   // Setup checklist state. Each step's "done"-ness is derived; the "current"
   // step is the first non-done step in sequence. Everything after `current`
@@ -1044,31 +1047,15 @@ function ExperimentDetail({
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="admin-page">
-      {/* Header row: back button, title, status pill, launch action shortcut. */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 20, marginBottom: 26 }}>
-        <button
-          type="button"
-          onClick={onBack}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '8px 14px',
-            border: '1px solid var(--faint)',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--surface)',
-            fontSize: 13.5,
-            fontWeight: 600,
-            color: 'var(--muted)',
-            whiteSpace: 'nowrap',
-            marginTop: 4,
-            cursor: 'pointer',
-          }}
-        >
-          ← Back
-        </button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      {/* Header: back link, status, title + actions (actions wrap under the
+          title on narrow screens), then the name/group details. */}
+      <BackLink label="Experiments" onClick={onBack} />
+      <div className="xd-head">
+        <div className="xd-title">
+          <div style={{ display: 'flex', alignItems: 'center', minHeight: 22 }}>
+            <StatusLabel status={experiment.status} />
+          </div>
+          <div style={{ marginTop: 8 }}>
             {editingName === 'internal_name' ? (
               <NameEditor
                 value={nameDraft}
@@ -1083,61 +1070,82 @@ function ExperimentDetail({
             ) : (
               <>
                 <h1
+                  className="xd-h1"
                   style={{
+                    display: 'inline',
                     fontFamily: 'var(--font-head)',
                     fontWeight: 600,
-                    fontSize: 28,
+                    lineHeight: 1.25,
                     letterSpacing: '-0.01em',
+                    overflowWrap: 'anywhere',
                     margin: 0,
                   }}
                 >
                   {experiment.internal_name || experiment.name}
                 </h1>
-                <PencilButton
-                  onClick={() => handleStartEditName('internal_name')}
-                  label="Edit internal name"
-                />
-                <StatusLabel status={experiment.status} />
+                {/* Inline after the text so it sits at the end of the last
+                    line however the title wraps. */}
+                <span
+                  style={{
+                    display: 'inline-block',
+                    verticalAlign: 'middle',
+                    marginLeft: 8,
+                    marginTop: -4,
+                  }}
+                >
+                  <PencilButton
+                    onClick={() => handleStartEditName('internal_name')}
+                    label="Edit internal name"
+                  />
+                </span>
               </>
             )}
           </div>
-          {/* Public name always shown so it stays editable even before an
-              internal name is set (when the title above already is the public
-              name). */}
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              margin: '6px 0 0',
-              fontSize: 14,
-              color: 'var(--muted)',
-            }}
-          >
-            {editingName === 'name' ? (
-              <>
-                <span style={{ whiteSpace: 'nowrap' }}>Public name (shown to raters):</span>
-                <NameEditor
-                  value={nameDraft}
-                  onChange={setNameDraft}
-                  onSave={handleSaveName}
-                  onCancel={() => setEditingName(null)}
-                  saving={savingName}
-                  placeholder="Public name"
-                  ariaLabel="Public name"
-                />
-              </>
-            ) : (
-              <>
-                <span>Public name (shown to raters): {experiment.name}</span>
-                <PencilButton
-                  onClick={() => handleStartEditName('name')}
-                  label="Edit public name"
-                />
-              </>
-            )}
-          </div>
-          <GroupControl experiment={experiment} currentWave={currentWave} {...moveCallbacks} />
+          <dl className="xd-meta">
+            {/* Public name always shown so it stays editable even before an
+                internal name is set (when the title above already is the
+                public name). */}
+            <div style={{ display: 'contents' }}>
+              <dt title="The name raters see">Public name</dt>
+              <dd style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                {editingName === 'name' ? (
+                  <NameEditor
+                    value={nameDraft}
+                    onChange={setNameDraft}
+                    onSave={handleSaveName}
+                    onCancel={() => setEditingName(null)}
+                    saving={savingName}
+                    placeholder="Public name"
+                    ariaLabel="Public name"
+                  />
+                ) : (
+                  <>
+                    <span
+                      data-testid="public-name"
+                      title={experiment.name}
+                      style={{
+                        font: '400 12.5px var(--font-mono)',
+                        background: 'var(--surface-2)',
+                        padding: '3px 8px',
+                        borderRadius: 6,
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        minWidth: 0,
+                      }}
+                    >
+                      {experiment.name}
+                    </span>
+                    <PencilButton
+                      onClick={() => handleStartEditName('name')}
+                      label="Edit public name"
+                    />
+                  </>
+                )}
+              </dd>
+            </div>
+            <GroupControl experiment={experiment} currentWave={currentWave} {...moveCallbacks} />
+          </dl>
           {showDraftWaveNotice && (
             <div
               data-testid="draft-wave-notice"
@@ -1165,33 +1173,66 @@ function ExperimentDetail({
             </div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 10, marginTop: 2 }}>
-          <a
-            data-testid="export-link"
-            href={api.getExportUrl(experiment.id, { includePreview })}
-            download
-            style={{ ...secondaryButton, textDecoration: 'none' }}
+        <div className="xd-actions">
+          <HeaderMenu
+            testId="export-menu"
+            summaryClassName="xd-btn"
+            summaryStyle={{ ...secondaryButton, padding: '0 14px', gap: 6 }}
+            summary={
+              <>
+                <svg
+                  width="15"
+                  height="15"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />
+                </svg>
+                Export
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="M6 9l6 6 6-6" />
+                </svg>
+              </>
+            }
           >
-            Export ratings CSV
-          </a>
-          <a
-            data-testid="export-documents-link"
-            href={api.getDocumentsExportUrl(experiment.id)}
-            download
-            style={{ ...secondaryButton, textDecoration: 'none' }}
-          >
-            Export documents CSV
-          </a>
-          <button
-            type="button"
-            onClick={() => navigate(`/admin/experiments/${experiment.id}/analytics`)}
-            style={primaryButton}
-          >
-            View analytics
-          </button>
+            <a
+              data-testid="export-link"
+              className="xd-menu-item"
+              href={api.getExportUrl(experiment.id, { includePreview })}
+              download
+            >
+              Ratings CSV
+              <small>{includePreview ? 'Includes preview data' : 'Live data only'}</small>
+            </a>
+            <a
+              data-testid="export-documents-link"
+              className="xd-menu-item"
+              href={api.getDocumentsExportUrl(experiment.id)}
+              download
+            >
+              Documents CSV
+              <small>Source documents for every question</small>
+            </a>
+          </HeaderMenu>
           {experiment.status === 'LAUNCH' && (
             <button
               data-testid="finish-experiment-button"
+              className="xd-btn"
               onClick={handleFinish}
               disabled={!canFinish || finishing}
               title={
@@ -1201,6 +1242,7 @@ function ExperimentDetail({
               }
               style={{
                 ...secondaryButton,
+                padding: '0 14px',
                 color: 'var(--accent-soft-ink)',
                 background: 'var(--accent-soft)',
                 borderColor: 'var(--accent-soft)',
@@ -1211,6 +1253,39 @@ function ExperimentDetail({
               {finishing ? 'Finishing…' : 'Mark as finished'}
             </button>
           )}
+          <button
+            type="button"
+            className="xd-btn xd-primary"
+            onClick={() => navigate(`/admin/experiments/${experiment.id}/analytics`)}
+            style={{ ...primaryButton, padding: '0 16px' }}
+          >
+            View analytics
+          </button>
+          <HeaderMenu
+            testId="more-menu"
+            align="right"
+            ariaLabel="More actions"
+            className="xd-icon"
+            summaryClassName="xd-btn"
+            summaryStyle={{ ...secondaryButton, width: 40, padding: 0 }}
+            summary={
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                <circle cx="5" cy="12" r="1.7" />
+                <circle cx="12" cy="12" r="1.7" />
+                <circle cx="19" cy="12" r="1.7" />
+              </svg>
+            }
+          >
+            <button
+              type="button"
+              data-testid="delete-experiment-button"
+              className="xd-menu-item xd-menu-item--danger"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting ? 'Deleting…' : 'Delete experiment'}
+            </button>
+          </HeaderMenu>
         </div>
       </div>
 
@@ -1231,11 +1306,20 @@ function ExperimentDetail({
 
       <StepperTabs
         active={tab}
-        onChange={setTab}
+        onChange={leaveSettings}
         steps={stepDefs}
-        onDeleteClick={handleDelete}
-        deleting={deleting}
       />
+
+      {pendingTab && (
+        <ConfirmDialog
+          title="Leave without saving?"
+          message="This step has unsaved changes. If you continue, they are discarded."
+          confirmLabel="Continue without saving"
+          cancelLabel="Keep editing"
+          onConfirm={discardSettingsAndLeave}
+          onCancel={() => setPendingTab(null)}
+        />
+      )}
 
       {/* Toasts float over the layout so they don't shove panel content down
           when they appear/disappear. Anchored top-center so they land in the
@@ -1303,26 +1387,26 @@ function ExperimentDetail({
           />
         )}
         {tab === 'instructions' && (
-          <MetadataPanel
+          <SettingsPanel
             experiment={experiment}
             uploads={uploads}
-            metaForm={metaForm}
-            onMetaChange={(field, value) => {
-              metaFormDirtyRef.current = true;
-              setMetaForm({ ...metaForm, [field]: value });
-            }}
-            isMarkdown={isMarkdown}
-            onIsMarkdownChange={(value) => {
-              metaFormDirtyRef.current = true;
-              setIsMarkdown(value);
-            }}
+            form={settings}
+            onChange={changeSettings}
+            dirty={settingsUnsaved}
+            saving={savingMeta}
             onSave={handleSaveMeta}
-            savingMeta={savingMeta}
             isLocked={isLocked}
             lockedHint={lockedHint}
-            onRefresh={onRefresh}
-            onBack={() => setTab('questions')}
-            onNext={() => setTab('assistance')}
+            footer={
+              <StepNav
+                stepIndex={2}
+                totalSteps={4}
+                onBack={() => leaveSettings('questions')}
+                backLabel="← Questions"
+                onNext={() => leaveSettings('assistance')}
+                nextLabel="Continue: Rater assistance →"
+              />
+            }
           />
         )}
         {tab === 'assistance' && (
@@ -1333,11 +1417,8 @@ function ExperimentDetail({
             topNValue={topNValue}
             confidenceMethod={confidenceMethod}
             resolvedModels={experiment.resolved_models}
-            systemPrompt={metaForm.system_prompt}
-            onSystemPromptChange={(v) => {
-              metaFormDirtyRef.current = true;
-              setMetaForm({ ...metaForm, system_prompt: v });
-            }}
+            systemPrompt={settings.system_prompt}
+            onSystemPromptChange={(v) => changeSettings({ system_prompt: v })}
             onSaveSystemPrompt={handleSaveMeta}
             onPickNone={handleNoAssistance}
             onToggleTopN={handleTopNToggle}
@@ -1362,7 +1443,6 @@ function ExperimentDetail({
             recommendation={recommendation}
             latestRoundClosed={latestRoundClosed}
             nextRoundNumber={nextRoundNumber}
-            roundLaunchBlockedMessage={roundLaunchBlockedMessage}
             editingRoundId={editingRoundId}
             editForm={editForm}
             editRewardInput={editRewardInput}
@@ -1381,15 +1461,17 @@ function ExperimentDetail({
             pilotForm={pilotForm}
             onPilotChange={setPilotForm}
             pilotRewardInput={pilotRewardInput}
-            onPilotRewardChange={setPilotRewardInput}
+            onPilotRewardChange={handlePilotRewardChange}
+            pilotCard={pilotCard}
             onRunPilot={handleRunPilot}
-            onLaunchedFromCard={handleLaunchedFromCard}
             onRunRound={handleRunRound}
             otherExperiments={otherExperiments}
             onBack={() => setTab('assistance')}
+            onPilotCheckChanged={onRefresh}
           />
         )}
       </div>
+      {pilotCheckGate.dialog}
     </div>
   );
 }
@@ -1456,12 +1538,13 @@ function OverviewPanel({
           <div
             style={{
               display: 'flex',
+              flexWrap: 'wrap',
               alignItems: 'flex-start',
               justifyContent: 'space-between',
-              gap: 24,
+              gap: 16,
             }}
           >
-            <div>
+            <div style={{ flex: '1 1 320px' }}>
               <div
                 style={{
                   font: '600 12px/1 var(--font-mono)',
@@ -1503,20 +1586,72 @@ function OverviewPanel({
             )}
           </div>
           <div style={{ height: 1, background: 'var(--line)', margin: '20px 0' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+          <div className="xd-setup-steps">
             {steps.map((s) => (
               <StepChip key={s.key} step={s} onClick={() => onGoto(s.key)} />
             ))}
           </div>
+          {/* The pilot check (docs/pilot-check.md) verifies the steps rather
+              than being one, so it sits under them. Shown once there is
+              something to check. */}
+          {experiment.question_count > 0 && (
+            <div
+              data-testid="overview-pilot-check"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                marginTop: 14,
+                padding: '12px 14px',
+                border: '1px solid var(--faint)',
+                borderRadius: 'var(--radius-sm)',
+                background: 'var(--surface-2)',
+                fontSize: 13.5,
+              }}
+            >
+              <StatePill state={experiment.pilot_check?.state ?? 'not_run'} />
+              <span style={{ flex: 1, color: 'var(--ink)' }}>
+                {describeSummary(experiment.pilot_check)}
+              </span>
+              <button
+                type="button"
+                onClick={() => onGoto('launch')}
+                style={{ ...secondaryButton, padding: '6px 12px', fontSize: 13 }}
+              >
+                {(() => {
+                  const state = experiment.pilot_check?.state ?? 'not_run';
+                  if (state === 'passed' || state === 'running') return 'View check';
+                  return state === 'not_run' ? 'Run the pilot check' : 'Re-run check';
+                })()}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Stats grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
-        <StatTile label="Questions" value={stats?.total_questions ?? 0} />
-        <StatTile label="Complete" value={stats?.questions_complete ?? 0} />
-        <StatTile label="Ratings" value={stats?.total_ratings ?? 0} />
-        <StatTile label="Raters" value={stats?.total_raters ?? 0} />
+      {/* Preview toggle: scopes every number below, so it sits above them. */}
+      <div
+        className="xd-preview"
+        title="Show data from preview sessions in stats, analytics, exports, and round recommendations."
+        style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10 }}
+      >
+        <span id="include-preview-label" style={{ fontSize: 13.5, fontWeight: 500 }}>
+          Include preview data
+        </span>
+        <ToggleSwitch
+          testId="include-preview-toggle"
+          ariaLabelledBy="include-preview-label"
+          checked={includePreview}
+          onChange={() => onTogglePreview(!includePreview)}
+        />
+      </div>
+
+      {/* Stats: one divided strip (5 columns → 2 on phones, Spend full width). */}
+      <div className="stat-strip xd-stats" style={{ marginTop: -4 }}>
+        <StatCell label="Questions" value={stats?.total_questions ?? 0} />
+        <StatCell label="Complete" value={stats?.questions_complete ?? 0} />
+        <StatCell label="Ratings" value={stats?.total_ratings ?? 0} />
+        <StatCell label="Raters" value={stats?.total_raters ?? 0} />
         <SpendTile
           minorUnits={spendMinor}
           symbol={currencySymbol}
@@ -1525,76 +1660,69 @@ function OverviewPanel({
         />
       </div>
 
-      {/* Progress + preview toggle */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 20, alignItems: 'start' }}>
+      {/* Completion progress */}
+      <div
+        style={{
+          background: 'var(--surface)',
+          border: '1px solid var(--faint)',
+          borderRadius: 'var(--radius)',
+          padding: '20px 22px',
+          boxShadow: 'var(--shadow)',
+        }}
+      >
         <div
           style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--faint)',
-            borderRadius: 'var(--radius)',
-            padding: 24,
-            boxShadow: 'var(--shadow)',
+            display: 'flex',
+            alignItems: 'baseline',
+            justifyContent: 'space-between',
+            gap: 12,
+            marginBottom: 12,
           }}
         >
-          <div
+          <h2
             style={{
-              font: '600 12px/1 var(--font-mono)',
+              font: '600 11px/1 var(--font-mono)',
               letterSpacing: '0.14em',
               textTransform: 'uppercase',
               color: 'var(--muted)',
-              marginBottom: 16,
+              margin: 0,
             }}
           >
             Completion progress
-          </div>
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: 13.5,
-              marginBottom: 8,
-            }}
-          >
-            <span style={{ color: 'var(--muted)' }}>
-              {(stats?.effective_ratings ?? 0).toLocaleString()} of {targetRatings.toLocaleString()} ratings
-              toward target · {stats?.questions_complete ?? 0} of {stats?.total_questions ?? 0} questions
-              at target ({experiment.num_ratings_per_question} each)
-            </span>
-            <span style={{ font: '600 13px var(--font-mono)' }}>{completePct}%</span>
-          </div>
-          <ProgressBar pct={completePct} />
-          <div style={{ height: 1, background: 'var(--line)', margin: '22px 0' }} />
-          <div style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
-            {stats && stats.total_ratings > 0
-              ? `Live data from ${stats.total_raters} raters. Toggle preview data below to include preview sessions in stats and exports.`
-              : 'No ratings collected yet. Finish setup and publish the pilot on the Launch step to begin recruiting.'}
-          </div>
+          </h2>
+          <span style={{ font: '600 22px/1 var(--font-head)' }}>{completePct}%</span>
         </div>
+        <ProgressBar pct={completePct} />
         <div
           style={{
-            background: 'var(--surface)',
-            border: '1px solid var(--faint)',
-            borderRadius: 'var(--radius)',
-            padding: '22px 24px',
-            boxShadow: 'var(--shadow)',
+            display: 'flex',
+            flexWrap: 'wrap',
+            gap: '6px 28px',
+            marginTop: 12,
+            fontSize: 13.5,
+            color: 'var(--muted)',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 6 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>Include preview data</div>
-            </div>
-            <ToggleSwitch
-              testId="include-preview-toggle"
-              checked={includePreview}
-              onChange={() => onTogglePreview(!includePreview)}
-            />
-          </div>
-          <div style={{ fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.5 }}>
-            Show data from preview sessions in stats, analytics, exports, and round
-            recommendations.
-          </div>
+          <span>
+            <strong style={{ color: 'var(--ink)', fontWeight: 600 }}>
+              {(stats?.effective_ratings ?? 0).toLocaleString()}
+            </strong>{' '}
+            of {targetRatings.toLocaleString()} ratings toward target
+          </span>
+          <span>
+            <strong style={{ color: 'var(--ink)', fontWeight: 600 }}>
+              {stats?.questions_complete ?? 0}
+            </strong>{' '}
+            of {stats?.total_questions ?? 0} questions at target (
+            {experiment.num_ratings_per_question} each)
+          </span>
         </div>
+        {!(stats && stats.total_ratings > 0) && (
+          <div style={{ marginTop: 12, fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.6 }}>
+            No ratings collected yet. Finish setup and publish the pilot on the Launch step to
+            begin recruiting.
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1683,25 +1811,8 @@ function StepDot({ status, index }: { status: StepStatus; index: number }) {
   );
 }
 
-function StatTile({ label, value }: { label: string; value: number }) {
-  return (
-    <div
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        padding: '22px 24px',
-        boxShadow: 'var(--shadow)',
-      }}
-    >
-      <div style={{ font: '600 34px/1 var(--font-head)' }}>{value}</div>
-      <div style={{ fontSize: 13, color: 'var(--muted)', marginTop: 5 }}>{label}</div>
-    </div>
-  );
-}
-
 /**
- * Spend counterpart to StatTile: a currency figure that hydrates in the
+ * Spend cell for the stat strip: a currency figure that hydrates in the
  * background from Prolific. Shows the last-known value with a subtle "syncing"
  * hint until the live cost lands. The figure is each study's Prolific cost
  * (rewards + fee + VAT) summed over rounds; it excludes bonuses paid separately.
@@ -1725,33 +1836,16 @@ function SpendTile({
       ? '—'
       : `${symbol || '$'}${(minorUnits / 10 ** decimals).toFixed(decimals)}`;
   return (
-    <div
+    <StatCell
       title="Prolific study cost (rewards + platform fee + VAT) across all rounds. Excludes bonuses paid separately."
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        padding: '22px 24px',
-        boxShadow: 'var(--shadow)',
-      }}
-    >
-      <div style={{ font: '600 34px/1 var(--font-head)', fontVariantNumeric: 'tabular-nums' }}>
-        {value}
-      </div>
-      <div
-        style={{
-          fontSize: 13,
-          color: 'var(--muted)',
-          marginTop: 5,
-          display: 'flex',
-          alignItems: 'center',
-          gap: 6,
-        }}
-      >
-        Spend
-        {syncing && <span style={{ fontSize: 11, color: 'var(--muted)' }}>· syncing…</span>}
-      </div>
-    </div>
+      value={value}
+      label={
+        <>
+          Spend
+          {syncing && <span style={{ fontSize: 11, marginLeft: 6 }}>· syncing…</span>}
+        </>
+      }
+    />
   );
 }
 
@@ -2062,238 +2156,7 @@ function QuestionsPanel({
         onBack={onBack}
         backLabel="← Overview"
         onNext={onNext}
-        nextLabel="Continue: Instructions & prompts →"
-      />
-    </div>
-  );
-}
-
-// ── Instructions & prompts panel ─────────────────────────────────────────
-
-function MetadataPanel({
-  experiment,
-  uploads,
-  metaForm,
-  onMetaChange,
-  isMarkdown,
-  onIsMarkdownChange,
-  onSave,
-  savingMeta,
-  isLocked,
-  lockedHint,
-  onRefresh,
-  onBack,
-  onNext,
-}: {
-  experiment: Experiment;
-  uploads: Upload[];
-  metaForm: Record<DatasetMetaField, string>;
-  onMetaChange: (field: DatasetMetaField, value: string) => void;
-  isMarkdown: boolean;
-  onIsMarkdownChange: (value: boolean) => void;
-  onSave: () => void;
-  savingMeta: boolean;
-  isLocked: boolean;
-  lockedHint: string;
-  onRefresh: () => void;
-  onBack: () => void;
-  onNext: () => void;
-}) {
-  const renderFieldCard = (
-    field: DatasetMetaField,
-    kind: 'input' | 'textarea',
-    options: { minHeight?: number; trailing?: React.ReactNode } = {},
-  ) => {
-    const current = (experiment[field] ?? '') as string;
-    const conflicts = uploads.filter((u) => {
-      const declared = u.dataset_meta?.[field];
-      return declared !== undefined && declared !== current;
-    });
-    return (
-      <section
-        key={field}
-        style={{
-          background: 'var(--surface)',
-          border: '1px solid var(--faint)',
-          borderRadius: 'var(--radius)',
-          boxShadow: 'var(--shadow)',
-          padding: '22px 24px',
-        }}
-      >
-        <Field
-          id={`meta-${field}`}
-          label={DATASET_META_LABELS[field]}
-          disabled={isLocked}
-          hint={
-            <>
-              {DATASET_META_HINTS[field]}
-              {conflicts.length > 0 && (
-                <div style={{ color: 'var(--warn)', marginTop: 6 }}>
-                  Declared differently by: {conflicts.map((c) => c.filename).join(', ')}.
-                </div>
-              )}
-            </>
-          }
-        >
-          {kind === 'textarea' ? (
-            <textarea
-              id={`meta-${field}`}
-              value={metaForm[field]}
-              placeholder={DATASET_META_PLACEHOLDERS[field]}
-              disabled={isLocked}
-              onChange={(e) => onMetaChange(field, e.target.value)}
-              style={{
-                ...textareaStyle,
-                minHeight: options.minHeight,
-                cursor: isLocked ? 'not-allowed' : 'text',
-                opacity: isLocked ? 0.7 : 1,
-              }}
-            />
-          ) : (
-            <input
-              id={`meta-${field}`}
-              type="text"
-              value={metaForm[field]}
-              placeholder={DATASET_META_PLACEHOLDERS[field]}
-              disabled={isLocked}
-              onChange={(e) => onMetaChange(field, e.target.value)}
-              style={{
-                ...inputStyle,
-                fontFamily: 'var(--font-mono)',
-                cursor: isLocked ? 'not-allowed' : 'text',
-                opacity: isLocked ? 0.7 : 1,
-              }}
-            />
-          )}
-        </Field>
-        {options.trailing}
-      </section>
-    );
-  };
-
-  const markdownCard = (
-    <section
-      style={{
-        background: 'var(--surface)',
-        border: '1px solid var(--faint)',
-        borderRadius: 'var(--radius)',
-        boxShadow: 'var(--shadow)',
-        padding: '18px 24px',
-        opacity: isLocked ? 0.7 : 1,
-      }}
-    >
-      <label
-        htmlFor="meta-is_markdown"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'flex-start',
-          gap: 10,
-          fontSize: 13.5,
-          lineHeight: 1.4,
-          fontWeight: 600,
-          cursor: isLocked ? 'not-allowed' : 'pointer',
-        }}
-      >
-        <input
-          id="meta-is_markdown"
-          type="checkbox"
-          checked={isMarkdown}
-          disabled={isLocked}
-          aria-describedby="meta-is_markdown-hint"
-          onChange={(e) => onIsMarkdownChange(e.target.checked)}
-          style={{ flex: '0 0 auto', marginTop: '0.5px', cursor: 'inherit' }}
-        />
-        Render questions as Markdown
-      </label>
-      <p
-        id="meta-is_markdown-hint"
-        style={{
-          fontSize: 12.5,
-          color: 'var(--muted)',
-          lineHeight: 1.55,
-          margin: '2px 0 0 26px',
-        }}
-      >
-        Code blocks, tables, etc. will be rendered as styled elements
-      </p>
-    </section>
-  );
-
-  const saveButton = (
-    <button
-      type="button"
-      onClick={onSave}
-      disabled={savingMeta || isLocked}
-      style={{
-        ...primaryButton,
-        marginLeft: 'auto',
-        opacity: savingMeta || isLocked ? 0.6 : 1,
-        cursor: savingMeta || isLocked ? 'not-allowed' : 'pointer',
-      }}
-    >
-      {savingMeta ? 'Saving…' : 'Save instructions & prompts'}
-    </button>
-  );
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      <Banner tone="info">
-        Auto-populated from the first upload that declares dataset metadata. Edits here
-        always win — later uploads that disagree are noted but never overwrite.
-      </Banner>
-      {isLocked && <Banner tone="warn">{lockedHint}</Banner>}
-
-      {META_FIELD_GROUPS.map((group, groupIdx) => {
-        const isLastGroup = groupIdx === META_FIELD_GROUPS.length - 1;
-        return (
-          <div key={group.header} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <div
-              style={{
-                font: '600 11px/1 var(--font-mono)',
-                letterSpacing: '0.16em',
-                textTransform: 'uppercase',
-                color: 'var(--muted)',
-                marginTop: groupIdx === 0 ? 0 : 6,
-              }}
-            >
-              {group.header}
-            </div>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: group.fields.length > 1 ? '1fr 1fr' : '1fr',
-                gap: 18,
-              }}
-            >
-              {group.fields.map(({ field, kind, minHeight }) =>
-                renderFieldCard(field, kind, {
-                  minHeight,
-                  trailing:
-                    isLastGroup && field === group.fields[group.fields.length - 1].field
-                      ? <div style={{ display: 'flex', marginTop: -8 }}>{saveButton}</div>
-                      : undefined,
-                }),
-              )}
-              {group.card === 'is_markdown' && markdownCard}
-            </div>
-          </div>
-        );
-      })}
-
-      <EthicsPanel
-        experiment={experiment}
-        isLocked={isLocked}
-        lockedHint={lockedHint}
-        onSaved={onRefresh}
-      />
-
-      <StepNav
-        stepIndex={2}
-        totalSteps={4}
-        onBack={onBack}
-        backLabel="← Questions"
-        onNext={onNext}
-        nextLabel="Continue: Rater assistance →"
+        nextLabel="Continue: Instructions & settings →"
       />
     </div>
   );
@@ -2388,7 +2251,7 @@ function AssistanceModePanel({
       </p>
       {isLocked && <Banner tone="warn">{lockedHint}</Banner>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+      <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
         <ModeCard
           selected={method === 'none'}
           disabled={isLocked}
@@ -2451,7 +2314,7 @@ function AssistanceModePanel({
               value={confidenceMethod}
               disabled={isLocked}
               onChange={(e) => onConfidenceMethodChange(e.target.value)}
-              style={{ ...inputStyle, maxWidth: 380, cursor: 'pointer' }}
+              style={{ ...selectStyle, maxWidth: 380 }}
             >
               <option value="self_report">Self-report — single call, fastest</option>
               <option value="sampling">Sampling — K samples + clustering, most accurate</option>
@@ -2513,7 +2376,7 @@ function AssistanceModePanel({
         stepIndex={3}
         totalSteps={4}
         onBack={onBack}
-        backLabel="← Instructions & prompts"
+        backLabel="← Instructions & settings"
         onNext={onNext}
         nextLabel="Continue to launch →"
         highlightNext
@@ -2598,7 +2461,6 @@ function LaunchPanel(props: {
   recommendation: RecommendationResponse | null;
   latestRoundClosed: boolean;
   nextRoundNumber: number;
-  roundLaunchBlockedMessage: string | null;
   editingRoundId: number | null;
   editForm: {
     description: string;
@@ -2625,11 +2487,13 @@ function LaunchPanel(props: {
   onPilotChange: (form: Omit<PilotStudyCreate, 'reward'>) => void;
   pilotRewardInput: string;
   onPilotRewardChange: (v: string) => void;
+  pilotCard: Dataset | null;
   onRunPilot: (e: React.FormEvent) => void;
-  onLaunchedFromCard: () => Promise<void>;
   onRunRound: () => void;
   otherExperiments: Experiment[];
   onBack: () => void;
+  // Refreshes the experiment (and so `experiment.pilot_check`) when a run lands.
+  onPilotCheckChanged: () => void;
 }) {
   const {
     experiment,
@@ -2642,7 +2506,6 @@ function LaunchPanel(props: {
     recommendation,
     latestRoundClosed,
     nextRoundNumber,
-    roundLaunchBlockedMessage,
     editingRoundId,
     editForm,
     editRewardInput,
@@ -2662,12 +2525,20 @@ function LaunchPanel(props: {
     onPilotChange,
     pilotRewardInput,
     onPilotRewardChange,
+    pilotCard,
     onRunPilot,
-    onLaunchedFromCard,
     onRunRound,
     otherExperiments,
     onBack,
+    onPilotCheckChanged,
   } = props;
+
+  // Past the pilot the launch gate no longer shows, but a testing preview
+  // still can't publish or start a round (#174): say so on the rounds view.
+  const testingPreview =
+    rounds.length > 0
+      ? testingPreviewFix(experiment.launch_blockers ?? [], experiment.launch_blocker_fixes ?? [])
+      : null;
 
   // Only surface the Prolific-mode banner when it tells the researcher
   // something they need to act on. In prod Prolific is always enabled and
@@ -2689,53 +2560,27 @@ function LaunchPanel(props: {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-      {/* Hero banner marking this as the final step */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 20,
-          background: 'var(--accent)',
-          color: 'var(--accent-ink)',
-          borderRadius: 'var(--radius)',
-          padding: '22px 26px',
-          boxShadow: 'var(--shadow)',
-        }}
-      >
-        <span
-          aria-hidden
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.16)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            font: '600 16px var(--font-mono)',
-            flex: '0 0 auto',
-          }}
-        >
-          4
-        </span>
-        <div style={{ flex: 1 }}>
-          <div
-            style={{
-              font: '600 11px/1 var(--font-mono)',
-              letterSpacing: '0.16em',
-              textTransform: 'uppercase',
-              opacity: 0.85,
-            }}
+      {/* Plain section heading; the step tabs above already say where we are. */}
+      <div className="xd-sechead">
+        <div style={{ minWidth: 0 }}>
+          <h2
+            style={{ margin: 0, fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 22 }}
           >
-            Final step
-          </div>
-          <div style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 20, marginTop: 5 }}>
             Launch on Prolific
-          </div>
-          <div style={{ fontSize: 13.5, opacity: 0.9, marginTop: 3 }}>
-            Start with the pilot, review results, then launch full rounds.
-          </div>
+          </h2>
+          <p style={{ margin: '4px 0 0', fontSize: 14, color: 'var(--muted)' }}>
+            Each round starts as a draft on Prolific and goes live when you publish it. Run the
+            pilot, check the results, then run full rounds.
+          </p>
         </div>
+        {/* Preview link is always available regardless of Prolific mode. */}
+        <button
+          data-testid="preview-participant-button"
+          onClick={() => window.open(buildRaterPreviewUrl(experiment.id), '_blank')}
+          style={secondaryButton}
+        >
+          Preview as participant
+        </button>
       </div>
 
       {bannerContent && (
@@ -2768,19 +2613,32 @@ function LaunchPanel(props: {
         <Banner tone="warn">{platformStatusMessage}</Banner>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 20, alignItems: 'start' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {/* Preview link is always available regardless of Prolific mode. */}
-          <button
-            data-testid="preview-participant-button"
-            onClick={() => window.open(buildRaterPreviewUrl(experiment.id), '_blank')}
-            style={{ ...secondaryButton, alignSelf: 'flex-start' }}
-          >
-            Preview as participant
-          </button>
+      <div className="xd-split">
+        <div className="xd-split-main">
+
+          {/* The pilot check (docs/pilot-check.md) sits above every launch
+              control: it is what the gate on those controls reads. Hidden once
+              the experiment is finished, when nothing can launch. */}
+          {experiment.status !== 'FINISHED' && (
+            <PilotCheckCard
+              experiment={experiment}
+              summary={experiment.pilot_check}
+              onRunStateChange={onPilotCheckChanged}
+            />
+          )}
 
           {prolificEnabled === true && (
             <>
+              {testingPreview && (
+                <div data-testid="testing-preview-rounds">
+                  <Banner tone="warn">
+                    This experiment is a testing preview, so it can't publish a draft or start a
+                    new round.
+                    <div style={{ marginTop: 6 }}>{testingPreview}</div>
+                  </Banner>
+                </div>
+              )}
+
               {rounds.length > 0 && (
                 <div data-testid="study-rounds-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                   {rounds.map((round) => (
@@ -2797,6 +2655,7 @@ function LaunchPanel(props: {
                       editRewardInput={editRewardInput}
                       savingEdit={savingEdit}
                       publishing={publishingRoundId === round.id}
+                      publishBlocked={testingPreview !== null}
                       closing={closingRoundId === round.id}
                       discarding={discardingRoundId === round.id}
                       onStartEdit={() => onStartEditRound(round)}
@@ -2808,6 +2667,7 @@ function LaunchPanel(props: {
                       onClose={() => onCloseRound(round.id, round.round_number)}
                       onDiscard={() => onDiscardRound(round.id, round.round_number)}
                       otherExperiments={otherExperiments}
+                      datasetId={experiment.group_dataset_id}
                     />
                   ))}
                 </div>
@@ -2818,7 +2678,7 @@ function LaunchPanel(props: {
                   recommendation={recommendation}
                   nextRoundNumber={nextRoundNumber}
                   latestRoundClosed={latestRoundClosed}
-                  roundLaunchBlockedMessage={roundLaunchBlockedMessage}
+                  launchBlocked={testingPreview !== null}
                   onRunRound={onRunRound}
                   roundReward={rounds.length > 0 ? rounds[0].reward : null}
                   currencyCode={currencyCode}
@@ -2828,7 +2688,7 @@ function LaunchPanel(props: {
               )}
 
               {/* After a pilot, offer its time and reward to the dataset card so
-                  the dataset's next study can skip the pilot form. */}
+                  the dataset's next pilot form starts from them. */}
               {recommendation &&
                 recommendation.avg_time_per_question_seconds > 0 &&
                 experiment.group_dataset_id !== null &&
@@ -2843,20 +2703,11 @@ function LaunchPanel(props: {
                   />
                 )}
 
-              {rounds.length === 0 && experiment.group_dataset_id !== null && (
-                <OneClickLaunch
-                  experimentId={experiment.id}
-                  datasetId={experiment.group_dataset_id}
-                  datasetName={experiment.group_dataset_name ?? 'dataset'}
-                  launchBlockers={experiment.launch_blockers ?? []}
-                  currencyCode={currencyCode}
-                  currencySymbol={currencySymbol}
-                  onLaunched={onLaunchedFromCard}
-                />
-              )}
-
               {rounds.length === 0 && (
                 <PilotForm
+                  datasetId={experiment.group_dataset_id}
+                  datasetName={experiment.group_dataset_name ?? 'dataset'}
+                  card={pilotCard}
                   studyFlags={experiment.study_flags}
                   sessionDurationMinutes={experiment.session_duration_minutes}
                   pilotForm={pilotForm}
@@ -2871,13 +2722,14 @@ function LaunchPanel(props: {
                   datasetDescription={experiment.description}
                   launchBlockers={experiment.launch_blockers ?? []}
                   launchBlockerFixes={experiment.launch_blocker_fixes ?? []}
+                  launchBlockerSummary={experiment.launch_blocker_summary}
                 />
               )}
             </>
           )}
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div className="xd-split-side">
           {experiment.prolific_completion_url && (
             <SectionCard header="Completion URL">
               <div
@@ -3016,6 +2868,8 @@ function RoundCard(props: {
   editRewardInput: string;
   savingEdit: boolean;
   publishing: boolean;
+  // A testing preview: the API refuses to publish, so the button is off.
+  publishBlocked: boolean;
   closing: boolean;
   discarding: boolean;
   onStartEdit: () => void;
@@ -3027,6 +2881,7 @@ function RoundCard(props: {
   onClose: () => void;
   onDiscard: () => void;
   otherExperiments: Experiment[];
+  datasetId: number | null;
   studyFlags: StudyFlag[];
 }) {
   const {
@@ -3040,6 +2895,7 @@ function RoundCard(props: {
     editRewardInput,
     savingEdit,
     publishing,
+    publishBlocked,
     closing,
     discarding,
     onStartEdit,
@@ -3056,16 +2912,18 @@ function RoundCard(props: {
   return (
     <SectionCard padded={false}>
       <div
+        className="xd-round-head"
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
-          gap: 12,
+          gap: '10px 12px',
           padding: '16px 20px',
           background: 'var(--surface-2)',
           borderBottom: '1px solid var(--faint)',
         }}
       >
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
           <span style={{ fontFamily: 'var(--font-head)', fontWeight: 600, fontSize: 16 }}>
             {round.round_number === 0 ? 'Pilot Round' : `Round ${round.round_number}`}
           </span>
@@ -3121,10 +2979,15 @@ function RoundCard(props: {
               type="button"
               data-testid={`publish-round-${round.round_number}`}
               onClick={onPublish}
-              disabled={publishing || isEditing || discarding}
-              style={{ ...primaryButton, padding: '7px 16px', fontSize: 13 }}
+              disabled={publishing || isEditing || discarding || publishBlocked}
+              style={{
+                ...primaryButton,
+                padding: '7px 16px',
+                fontSize: 13,
+                ...(publishBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+              }}
             >
-              {publishing ? 'Publishing…' : 'Publish'}
+              {publishing ? 'Publishing…' : 'Publish to participants'}
             </button>
           </>
         )}
@@ -3148,9 +3011,9 @@ function RoundCard(props: {
           style={{ padding: 20 }}
         >
           <Field
-            label="Study description"
+            label="Prolific listing description"
             id={`edit-round-description-${round.round_number}`}
-            hint="Sent to Prolific and shown on the rater intro for anyone entering via this round's link. Overrides the dataset description for this round only."
+            hint="What participants read on Prolific before they open this round's study. Raters see the instructions from Instructions & settings once inside, not this text."
           >
             <textarea
               data-testid={`edit-round-description-${round.round_number}`}
@@ -3159,7 +3022,7 @@ function RoundCard(props: {
               style={{ ...textareaStyle, height: 88 }}
             />
           </Field>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
+          <div className="xd-grid-collapse" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
             <Field id={`edit-round-time-${round.round_number}`} label="Time (min)">
               <input
                 data-testid={`edit-round-time-${round.round_number}`}
@@ -3263,7 +3126,7 @@ function RoundCard(props: {
                   study_label: e.target.value as PilotStudyCreate['study_label'],
                 })
               }
-              style={{ ...inputStyle, cursor: 'pointer' }}
+              style={selectStyle}
             >
               {STUDY_LABELS.map(([value, label]) => (
                 <option key={value} value={value}>
@@ -3289,6 +3152,7 @@ function RoundCard(props: {
               selectedIds={editForm.excluded_experiment_ids}
               onChange={(ids) => onEditFormChange({ ...editForm, excluded_experiment_ids: ids })}
               testIdPrefix={`edit-round-exclusion-${round.round_number}`}
+              datasetId={props.datasetId}
             />
           </Field>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
@@ -3321,7 +3185,7 @@ function RecommendationCard({
   recommendation,
   nextRoundNumber,
   latestRoundClosed,
-  roundLaunchBlockedMessage,
+  launchBlocked,
   onRunRound,
   roundReward,
   currencyCode,
@@ -3331,7 +3195,8 @@ function RecommendationCard({
   recommendation: RecommendationResponse;
   nextRoundNumber: number;
   latestRoundClosed: boolean;
-  roundLaunchBlockedMessage: string | null;
+  /** A testing preview: the API refuses a new round, so the button is off. */
+  launchBlocked: boolean;
   onRunRound: () => void;
   /** Reward the next round will use: rounds inherit the pilot's reward. */
   roundReward: number | null;
@@ -3346,6 +3211,7 @@ function RecommendationCard({
       </Banner>
     );
   }
+  if (!latestRoundClosed) return null;
   return (
     <div data-testid="recommendation-panel">
     <SectionCard header="Recommendation for next round">
@@ -3376,21 +3242,17 @@ function RecommendationCard({
           </>
         )}
       </div>
-      {latestRoundClosed ? (
-        <button
-          data-testid="launch-round-button"
-          onClick={onRunRound}
-          style={primaryButton}
-        >
-          Create Round {nextRoundNumber} Draft ({recommendation.recommended_places} places)
-        </button>
-      ) : (
-        roundLaunchBlockedMessage && (
-          <div style={{ color: 'var(--muted)', fontSize: 13, lineHeight: 1.55 }}>
-            {roundLaunchBlockedMessage}
-          </div>
-        )
-      )}
+      <button
+        data-testid="launch-round-button"
+        onClick={onRunRound}
+        disabled={launchBlocked}
+        style={{
+          ...primaryButton,
+          ...(launchBlocked ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+        }}
+      >
+        Create Round {nextRoundNumber} Draft ({recommendation.recommended_places} places)
+      </button>
     </SectionCard>
     </div>
   );
@@ -3406,12 +3268,17 @@ function PilotForm(props: {
   pricing: ProlificPricing | null;
   onSubmit: (e: React.FormEvent) => void;
   otherExperiments: Experiment[];
+  datasetId: number | null;
+  datasetName: string;
+  card: Dataset | null;
   studyFlags: StudyFlag[];
   datasetDescription: string | null;
   sessionDurationMinutes: number;
   launchBlockers: string[];
   // From the API, one per blocker: the same fixes its 400 would give.
   launchBlockerFixes: string[];
+  // From the API: the blockers as one clause, as its 400 words them.
+  launchBlockerSummary: string | null;
 }) {
   const {
     pilotForm,
@@ -3423,206 +3290,315 @@ function PilotForm(props: {
     pricing,
     onSubmit,
     otherExperiments,
+    datasetId,
+    datasetName,
+    card,
     datasetDescription,
     sessionDurationMinutes,
     launchBlockers,
     launchBlockerFixes,
+    launchBlockerSummary,
   } = props;
   const prefilledFromDataset =
     !!datasetDescription && pilotForm.description === datasetDescription;
+  const prefilledFromCard = !!card?.study_blurb && pilotForm.description === card.study_blurb;
+  const cardGaps = card
+    ? (['study_blurb', 'estimated_completion_time', 'reward'] as const).filter(
+        (field) => !card[field],
+      )
+    : [];
+  // A card with nothing missing shows as a summary; the pencil, or any edit
+  // already under way, opens the full form.
+  const [editing, setEditing] = useState(false);
+  const summarised =
+    !editing &&
+    !!card &&
+    cardGaps.length === 0 &&
+    pilotForm.description.trim() !== '' &&
+    pilotForm.estimated_completion_time <= sessionDurationMinutes;
+  const screenerKeys = new Set([...pilotForm.screeners, ...forcedScreeners(props.studyFlags)]);
+  const screenerNames = SCREENER_ITEMS.filter(([key]) => screenerKeys.has(key)).map(
+    ([, name]) => name,
+  );
+  const excludedNames = pilotForm.excluded_experiment_ids
+    .map((id) => otherExperiments.find((e) => e.id === id))
+    .map((e) => e?.internal_name || e?.name)
+    .filter(Boolean);
+  const summaryRow = (label: string, value: React.ReactNode) => (
+    <div style={{ display: 'flex', gap: 12, fontSize: 13.5, lineHeight: 1.55 }}>
+      <span style={{ width: 150, flexShrink: 0, color: 'var(--muted)' }}>{label}</span>
+      <span style={{ minWidth: 0, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>{value}</span>
+    </div>
+  );
   return (
-    <SectionCard header="Pilot round">
+    <SectionCard
+      header={
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          Pilot round
+          {summarised && (
+            <span style={{ margin: '-8px 0' }}>
+              <PencilButton onClick={() => setEditing(true)} label="Edit pilot settings" />
+            </span>
+          )}
+        </div>
+      }
+    >
       <p style={{ fontSize: 13.5, color: 'var(--muted)', margin: '0 0 16px' }}>
-        Create the first unpublished round with the study configuration you want to reuse. Pilot
-        timing data drives the recommended size for later rounds.
+        This creates a draft study on Prolific with the configuration later rounds reuse. No
+        participant sees it until you publish the draft. Pilot timing data drives the recommended
+        size for later rounds.
       </p>
+      {card && (
+        <p
+          data-testid="pilot-card-prefill"
+          style={{ fontSize: 13.5, color: 'var(--accent-soft-ink)', margin: '0 0 16px' }}
+        >
+          Filled in from the {datasetName} card, and set to exclude participants of the dataset's
+          other experiments. {summarised ? 'Use the pencil to change anything' : 'Edit anything'}{' '}
+          before creating the draft.
+          {cardGaps.length > 0 &&
+            ` The card has no ${cardGaps.map(fieldLabel).join(' or ')} yet, so check those.`}
+        </p>
+      )}
       <form onSubmit={onSubmit}>
-        <Field
-          id="pilot-description"
-          label="Study description"
-          hint={
-            <>
-              Sent to Prolific as this pilot's public description and shown on the rater intro.
-              Overrides the dataset description for this pilot only. Markdown is converted to
-              Prolific's HTML subset (headings, bold/italic/strike, lists, paragraphs). Links and
-              images are not supported by Prolific.
-              {prefilledFromDataset && (
-                <div style={{ color: 'var(--accent-soft-ink)', marginTop: 6 }}>
-                  Prefilled from the dataset description on Instructions &amp; prompts. Edit to
-                  override for this pilot.
+        {summarised ? (
+          <div data-testid="pilot-summary" style={{ display: 'grid', gap: 6, marginBottom: 16 }}>
+            {summaryRow('Prolific listing', pilotForm.description)}
+            {summaryRow('Completion time', `${pilotForm.estimated_completion_time} min`)}
+            {summaryRow(
+              'Reward',
+              <>
+                {currencySymbol}
+                {pilotRewardInput} per participant
+                <div style={{ color: 'var(--muted)', fontSize: 12.5 }}>
+                  {rewardHintText(
+                    pilotRewardInput,
+                    currencyCode,
+                    currencySymbol,
+                    pilotForm.estimated_completion_time,
+                    pilotForm.pilot_places,
+                    pricing,
+                  )}
+                </div>
+              </>,
+            )}
+            {summaryRow('Raters', pilotForm.pilot_places)}
+            {summaryRow(
+              'Study label',
+              STUDY_LABELS.find(([value]) => value === pilotForm.study_label)?.[1] ??
+                pilotForm.study_label,
+            )}
+            {summaryRow('Pre-screeners', screenerNames.join(', ') || 'None')}
+            {summaryRow(
+              'Excludes',
+              excludedNames.length > 0
+                ? `Participants of ${excludedNames.join(', ')}`
+                : 'Nobody: the dataset has no other experiments',
+            )}
+          </div>
+        ) : (
+          <div onChange={() => setEditing(true)}>
+            <Field
+              id="pilot-description"
+              label="Prolific listing description"
+              hint={
+                <>
+                  What participants read on Prolific before they open the study. Raters see the
+                  instructions from Instructions &amp; settings once inside, not this text. Markdown is
+                  converted to Prolific's HTML subset (headings, bold/italic/strike, lists,
+                  paragraphs). Links and images are not supported by Prolific.
+                  {prefilledFromCard ? (
+                    <div
+                      data-testid="pilot-description-source"
+                      style={{ color: 'var(--accent-soft-ink)', marginTop: 6 }}
+                    >
+                      Filled in from the {datasetName} card's Prolific listing description.
+                    </div>
+                  ) : (
+                    prefilledFromDataset && (
+                      <div
+                        data-testid="pilot-description-source"
+                        style={{ color: 'var(--accent-soft-ink)', marginTop: 6 }}
+                      >
+                        Starts as a copy of the rater instructions on Instructions &amp; settings.
+                        Rewrite it as a short listing for Prolific.
+                      </div>
+                    )
+                  )}
+                </>
+              }
+            >
+              <textarea
+                id="pilot-description"
+                data-testid="pilot-description-input"
+                value={pilotForm.description}
+                onChange={(e) => onPilotChange({ ...pilotForm, description: e.target.value })}
+                placeholder={
+                  "Describe the task for Prolific participants…\n\nMarkdown is supported: # heading, ## subheading, **bold**, *italic*, ~~strike~~, -/1. lists. Blank lines separate paragraphs."
+                }
+                required
+                style={{ ...textareaStyle, minHeight: 120 }}
+              />
+            </Field>
+            <Field
+              id="pilot-study-label"
+              label="Study label"
+              hint="Categorises the study on Prolific; participants see this tag when browsing."
+            >
+              <select
+                id="pilot-study-label"
+                data-testid="pilot-study-label-select"
+                value={pilotForm.study_label}
+                onChange={(e) =>
+                  onPilotChange({
+                    ...pilotForm,
+                    study_label: e.target.value as PilotStudyCreate['study_label'],
+                  })
+                }
+                style={selectStyle}
+              >
+                {STUDY_LABELS.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Pre-screeners" hint="Default on. Screeners narrow the participant pool to higher-quality raters.">
+              <ScreenerCheckboxes
+                value={pilotForm.screeners}
+                onChange={(next) => onPilotChange({ ...pilotForm, screeners: next })}
+                testIdPrefix="pilot-screener"
+                studyFlags={props.studyFlags}
+              />
+            </Field>
+            <Field
+              label="Exclude prior participants from"
+              hint="Participants who joined any selected experiment will not see this study on Prolific. Main rounds inherit this list from the pilot."
+            >
+              <ExperimentExclusionPicker
+                experiments={otherExperiments}
+                selectedIds={pilotForm.excluded_experiment_ids}
+                onChange={(ids) => onPilotChange({ ...pilotForm, excluded_experiment_ids: ids })}
+                testIdPrefix="pilot-exclusion"
+                datasetId={datasetId}
+              />
+            </Field>
+            <Field id="pilot-estimated-completion-time" label="Estimated completion time (minutes)">
+              <input
+                id="pilot-estimated-completion-time"
+                data-testid="pilot-estimated-completion-time-input"
+                type="number"
+                value={pilotForm.estimated_completion_time}
+                onChange={(e) =>
+                  onPilotChange({
+                    ...pilotForm,
+                    estimated_completion_time: parseInt(e.target.value, 10) || 0,
+                  })
+                }
+                min={1}
+                required
+                style={inputStyle}
+              />
+              {pilotForm.estimated_completion_time > sessionDurationMinutes && (
+                <div
+                  data-testid="estimate-exceeds-session-warning"
+                  style={{
+                    marginTop: 8,
+                    fontSize: 12.5,
+                    lineHeight: 1.5,
+                    color: 'var(--danger)',
+                  }}
+                >
+                  This is longer than the {formatSessionLength(sessionDurationMinutes)} session each
+                  rater gets, so Prolific advertises a task nobody can finish in the time allowed.
+                  Either lower the estimate or raise the session length before launching — session
+                  length is locked once a main round goes out.
                 </div>
               )}
-            </>
-          }
-        >
-          <textarea
-            id="pilot-description"
-            data-testid="pilot-description-input"
-            value={pilotForm.description}
-            onChange={(e) => onPilotChange({ ...pilotForm, description: e.target.value })}
-            placeholder={
-              "Describe the task for Prolific participants…\n\nMarkdown is supported: # heading, ## subheading, **bold**, *italic*, ~~strike~~, -/1. lists. Blank lines separate paragraphs."
-            }
-            required
-            style={{ ...textareaStyle, minHeight: 120 }}
-          />
-        </Field>
-        <Field
-          id="pilot-study-label"
-          label="Study label"
-          hint="Categorises the study on Prolific; participants see this tag when browsing."
-        >
-          <select
-            id="pilot-study-label"
-            data-testid="pilot-study-label-select"
-            value={pilotForm.study_label}
-            onChange={(e) =>
-              onPilotChange({
-                ...pilotForm,
-                study_label: e.target.value as PilotStudyCreate['study_label'],
-              })
-            }
-            style={{ ...inputStyle, cursor: 'pointer' }}
-          >
-            {STUDY_LABELS.map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </Field>
-        <Field label="Pre-screeners" hint="Default on. Screeners narrow the participant pool to higher-quality raters.">
-          <ScreenerCheckboxes
-            value={pilotForm.screeners}
-            onChange={(next) => onPilotChange({ ...pilotForm, screeners: next })}
-            testIdPrefix="pilot-screener"
-            studyFlags={props.studyFlags}
-          />
-        </Field>
-        <Field
-          label="Exclude prior participants from"
-          hint="Participants who joined any selected experiment will not see this study on Prolific. Main rounds inherit this list from the pilot."
-        >
-          <ExperimentExclusionPicker
-            experiments={otherExperiments}
-            selectedIds={pilotForm.excluded_experiment_ids}
-            onChange={(ids) => onPilotChange({ ...pilotForm, excluded_experiment_ids: ids })}
-            testIdPrefix="pilot-exclusion"
-          />
-        </Field>
-        <Field id="pilot-estimated-completion-time" label="Estimated completion time (minutes)">
-          <input
-            id="pilot-estimated-completion-time"
-            data-testid="pilot-estimated-completion-time-input"
-            type="number"
-            value={pilotForm.estimated_completion_time}
-            onChange={(e) =>
-              onPilotChange({
-                ...pilotForm,
-                estimated_completion_time: parseInt(e.target.value, 10) || 0,
-              })
-            }
-            min={1}
-            required
-            style={inputStyle}
-          />
-          {pilotForm.estimated_completion_time > sessionDurationMinutes && (
-            <div
-              data-testid="estimate-exceeds-session-warning"
-              style={{
-                marginTop: 8,
-                fontSize: 12.5,
-                lineHeight: 1.5,
-                color: 'var(--danger)',
-              }}
-            >
-              This is longer than the {formatSessionLength(sessionDurationMinutes)} session each
-              rater gets, so Prolific advertises a task nobody can finish in the time allowed.
-              Either lower the estimate or raise the session length before launching — session
-              length is locked once a main round goes out.
-            </div>
-          )}
-        </Field>
-        <Field
-          id="pilot-reward"
-          label={`Reward${currencyCode ? ` (${currencyCode})` : ''}`}
-          hint={
-            rewardHintText(
-              pilotRewardInput,
-              currencyCode,
-              currencySymbol,
-              pilotForm.estimated_completion_time,
-              pilotForm.pilot_places,
-              pricing,
-            ) ?? "Enter the amount as you'd see it on Prolific."
-          }
-        >
-          <div
-            className="reward-input"
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 4,
-              width: '100%',
-              padding: '11px 13px',
-              border: '1px solid var(--faint)',
-              borderRadius: 'var(--radius-sm)',
-              background: 'var(--surface)',
-              fontSize: 15,
-              fontFamily: 'var(--font-mono)',
-            }}
-          >
-            {currencySymbol && (
-              <span style={{ color: 'var(--muted)', flexShrink: 0 }}>{currencySymbol}</span>
-            )}
-            <input
+            </Field>
+            <Field
               id="pilot-reward"
-              data-testid="pilot-reward-input"
-              type="text"
-              inputMode="decimal"
-              value={pilotRewardInput}
-              onChange={(e) => {
-                if (e.target.value === '' || /^[0-9]*\.?[0-9]*$/.test(e.target.value)) {
-                  onPilotRewardChange(e.target.value);
+              label={`Reward${currencyCode ? ` (${currencyCode})` : ''}`}
+              hint={
+                rewardHintText(
+                  pilotRewardInput,
+                  currencyCode,
+                  currencySymbol,
+                  pilotForm.estimated_completion_time,
+                  pilotForm.pilot_places,
+                  pricing,
+                ) ?? "Enter the amount as you'd see it on Prolific."
+              }
+            >
+              <div
+                className="reward-input"
+                style={{
+                  display: 'flex',
+                  alignItems: 'baseline',
+                  gap: 4,
+                  width: '100%',
+                  padding: '11px 13px',
+                  border: '1px solid var(--faint)',
+                  borderRadius: 'var(--radius-sm)',
+                  background: 'var(--surface)',
+                  fontSize: 15,
+                  fontFamily: 'var(--font-mono)',
+                }}
+              >
+                {currencySymbol && (
+                  <span style={{ color: 'var(--muted)', flexShrink: 0 }}>{currencySymbol}</span>
+                )}
+                <input
+                  id="pilot-reward"
+                  data-testid="pilot-reward-input"
+                  type="text"
+                  inputMode="decimal"
+                  value={pilotRewardInput}
+                  onChange={(e) => {
+                    if (e.target.value === '' || /^[0-9]*\.?[0-9]*$/.test(e.target.value)) {
+                      onPilotRewardChange(e.target.value);
+                    }
+                  }}
+                  required
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    border: 'none',
+                    background: 'transparent',
+                    padding: 0,
+                    fontSize: 'inherit',
+                    fontFamily: 'inherit',
+                    color: 'var(--ink)',
+                    outline: 'none',
+                  }}
+                />
+              </div>
+            </Field>
+            <Field
+              id="pilot-places"
+              label="Number of raters"
+              hint={`Each rater does one ${formatSessionLength(sessionDurationMinutes)} session. 5 is a good default for timing calibration.`}
+            >
+              <input
+                id="pilot-places"
+                data-testid="pilot-places-input"
+                type="number"
+                value={pilotForm.pilot_places}
+                onChange={(e) =>
+                  onPilotChange({ ...pilotForm, pilot_places: parseInt(e.target.value, 10) || 0 })
                 }
-              }}
-              required
-              style={{
-                flex: 1,
-                minWidth: 0,
-                border: 'none',
-                background: 'transparent',
-                padding: 0,
-                fontSize: 'inherit',
-                fontFamily: 'inherit',
-                color: 'var(--ink)',
-                outline: 'none',
-              }}
-            />
+                min={1}
+                required
+                style={inputStyle}
+              />
+            </Field>
           </div>
-        </Field>
-        <Field
-          id="pilot-places"
-          label="Number of raters"
-          hint={`Each rater does one ${formatSessionLength(sessionDurationMinutes)} session. 5 is a good default for timing calibration.`}
-        >
-          <input
-            id="pilot-places"
-            data-testid="pilot-places-input"
-            type="number"
-            value={pilotForm.pilot_places}
-            onChange={(e) =>
-              onPilotChange({ ...pilotForm, pilot_places: parseInt(e.target.value, 10) || 0 })
-            }
-            min={1}
-            required
-            style={inputStyle}
-          />
-        </Field>
+        )}
         {launchBlockers.length > 0 && (
           <div data-testid="launch-blockers" style={{ marginBottom: 12 }}>
             <Banner tone="warn">
-              This study can't launch yet — it's missing {launchBlockers.join(', ')}.
+              The pilot draft can't be created yet: {launchBlockerSummary}.
               {launchBlockerFixes.map((fix) => (
                 <div key={fix} style={{ marginTop: 6 }}>
                   {fix}

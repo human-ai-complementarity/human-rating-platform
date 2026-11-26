@@ -32,6 +32,8 @@ from dataclasses import replace
 import openai
 
 from models import Question
+from services.media import Block, has_media, load_content, text_block
+from services.media.blocks import TEXT
 
 from ...base import InteractionStep, StepType, exception_text
 from ...preparation import InitialStepPreparation, QuestionSnapshot
@@ -124,13 +126,13 @@ class HumanAsAToolMethod(InitialStepPreparation):
         # When the row is a sub-question, prepend the parent's text as Context so the
         # LLM sees the same framing the rater does. We bake this into the effective
         # question_text once here so it flows into decomposer.start, _score_subtasks,
-        # and into state for advance() to reuse.
-        if parent_question_text:
-            question_text = (
-                f"Context:\n{parent_question_text}\n\nQuestion: {question.question_text}"
-            )
-        else:
-            question_text = question.question_text
+        # and into state for advance() to reuse. `stimulus` is that framing as
+        # blocks, images in place, when the question carries
+        # any; pinned in state so every round of the decomposer sees them.
+        # The confidence estimators read only the text form.
+        question_text, stimulus = _frame(
+            question.question_text, load_content(question.content), parent_question_text
+        )
         options = question.options or ""
 
         try:
@@ -140,6 +142,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 max_subtasks,
                 model,
                 experiment_system_prompt=experiment_system_prompt,
+                stimulus=stimulus,
             )
 
             if result.done:
@@ -177,6 +180,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
             state={
                 "question_text": question_text,
                 "options": options,
+                "stimulus": stimulus,
                 "iteration": 1,
                 "max_rounds": max_rounds,
                 "max_subtasks": max_subtasks,
@@ -223,6 +227,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
         confidence_threshold = state.get("confidence_threshold", _CONFIDENCE_THRESHOLD)
         question_text = state.get("question_text", "")
         options = state.get("options", "")
+        stimulus = state.get("stimulus")
 
         history = [
             *state.get("history", []),
@@ -238,6 +243,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
                 max_rounds=max_rounds,
                 model=model,
                 experiment_system_prompt=experiment_system_prompt,
+                stimulus=stimulus,
             )
 
             if result.done:
@@ -275,6 +281,7 @@ class HumanAsAToolMethod(InitialStepPreparation):
             state={
                 "question_text": question_text,
                 "options": options,
+                "stimulus": stimulus,
                 "iteration": iteration + 1,
                 "max_rounds": max_rounds,
                 "max_subtasks": max_subtasks,
@@ -324,6 +331,30 @@ class HumanAsAToolMethod(InitialStepPreparation):
             {**st, "confidence": _apply_evidence_penalty(st, int(score))}
             for st, score in zip(subtasks, scores)
         ]
+
+
+def _frame(
+    question_text: str, content: list[Block] | None, parent_text: str | None
+) -> tuple[str, list[Block] | None]:
+    """The question with its parent context, as text and as blocks.
+
+    One framing ("Context:\n...\n\nQuestion: ...") in both forms: the text
+    is what the confidence estimators and the session state read, the blocks
+    (None when nothing carries images) are what the decomposer is sent. The
+    framing is folded into the question's first text block, so the blocks
+    hold only the question's own paragraph breaks.
+    """
+    prefix = f"Context:\n{parent_text}\n\nQuestion: " if parent_text else ""
+    text = prefix + question_text
+    if not has_media(content):
+        return text, None
+    blocks = list(content or [])
+    if prefix:
+        if blocks[0]["type"] == TEXT:
+            blocks[0] = text_block(prefix + blocks[0]["text"])
+        else:
+            blocks.insert(0, text_block(prefix))
+    return text, blocks
 
 
 def _confidence_method(params: Mapping[str, object]) -> object:

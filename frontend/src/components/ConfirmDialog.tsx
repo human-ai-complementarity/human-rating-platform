@@ -92,6 +92,7 @@ function ConfirmDialog({
         >
           <button
             type="button"
+            autoFocus
             onClick={onCancel}
             disabled={busy}
             style={{ ...secondaryButton, opacity: busy ? 0.6 : 1 }}

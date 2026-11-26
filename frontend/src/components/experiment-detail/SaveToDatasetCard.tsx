@@ -12,8 +12,8 @@ import { SectionCard, fieldLabel, secondaryButton } from './ui';
  * The values are the pilot round's own, which every later round on this
  * experiment reuses; the recommendation itself sizes places only. Both units
  * already match the card's: minutes, and the per-participant reward in the
- * workspace currency's minor units (what PilotStudyCreate.reward and one-click
- * launch take), so nothing is converted.
+ * workspace currency's minor units (what PilotStudyCreate.reward takes), so
+ * nothing is converted.
  */
 export function SaveToDatasetCard({
   datasetId,
@@ -30,6 +30,7 @@ export function SaveToDatasetCard({
 }) {
   const [card, setCard] = useState<Dataset | null>(null);
   const [saving, setSaving] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -77,6 +78,7 @@ export function SaveToDatasetCard({
     try {
       // The PATCH answers with the card as stored, readiness included.
       setCard(await api.updateDatasetCard(datasetId, { estimated_completion_time: time, reward }));
+      setJustSaved(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save to the dataset card');
     } finally {
@@ -85,6 +87,7 @@ export function SaveToDatasetCard({
   };
 
   const saved = card !== null && card.estimated_completion_time === time && card.reward === reward;
+  if (!error && (card === null || (saved && !justSaved))) return null;
 
   return (
     <div data-testid="save-to-card-panel">
@@ -102,7 +105,7 @@ export function SaveToDatasetCard({
             style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.55, marginBottom: 10 }}
           >
             {card.complete
-              ? 'Card complete: one-click pilots can use it.'
+              ? 'Card complete: the pilot form fills in from it.'
               : `Card incomplete: missing ${card.missing_for_complete.map(fieldLabel).join(', ')}.`}
           </div>
         )}

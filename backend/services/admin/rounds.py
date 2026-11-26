@@ -50,13 +50,23 @@ from .prolific import (
     update_study,
 )
 from services.participant_groups import ensure_participant_group_and_commit
+from services.pilot_check.gate import gate_for
 from services.prolific_markdown import to_prolific_html
 from services.queries import parent_question_ids_subquery
 from services.terms import PendingPin, apply_terms_pin, prepare_terms_pin, study_requirements
 from session_policy import SessionPolicy, resolve_session_policy
 
-from .queries import fetch_experiment_or_404, fetch_ratings_for_experiment
-from .status import assert_launch_ready, is_locked, validate_new_exclusion_targets
+from .queries import (
+    fetch_experiment_or_404,
+    fetch_ratings_for_experiment,
+    fetch_total_questions_for_experiment,
+)
+from .status import (
+    assert_launch_ready,
+    assert_not_preview_testing,
+    is_locked,
+    validate_new_exclusion_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +225,8 @@ def _build_round_response(round_: ExperimentRound) -> ExperimentRoundResponse:
         total_cost=round_.total_cost,
         submissions_completed=round_.submissions_completed,
         submissions_in_progress=round_.submissions_in_progress,
+        pilot_check_run_id=round_.pilot_check_run_id,
+        pilot_check_acknowledged_by=round_.pilot_check_acknowledged_by,
     )
 
 
@@ -703,7 +715,7 @@ async def run_pilot_study(
     payload: PilotStudyCreate,
     db: AsyncSession,
     *,
-    preapproved_exclusion_ids: list[int] | None = None,
+    requested_by: str | None = None,
 ) -> ExperimentRoundResponse:
     settings = get_settings()
     if not settings.prolific.enabled:
@@ -716,24 +728,32 @@ async def run_pilot_study(
             status_code=400,
             detail="A pilot study has already been run for this experiment",
         )
-    await assert_launch_ready(experiment, db)
+    question_count = await assert_launch_ready(experiment, db)
+    # The soft gate after the hard one (docs/pilot-check.md).
+    gate = await gate_for(
+        experiment,
+        db,
+        acknowledged=payload.acknowledge_pilot_check,
+        admin_email=requested_by,
+        question_count=question_count,
+    )
 
     excluded_experiment_ids = list(payload.excluded_experiment_ids)
     # Pilot creation is the first write for this experiment's exclusion list —
-    # every listed target is "new", so all must be FINISHED, bar any the
-    # server chose itself (`preapproved_exclusion_ids`, from one-click launch).
-    # Grandfathering only kicks in on subsequent edits when IDs were already
-    # present.
+    # every listed target is "new", so all must be FINISHED or on this
+    # experiment's dataset. Grandfathering only kicks in on subsequent edits
+    # when IDs were already present.
     await validate_new_exclusion_targets(
+        experiment,
         excluded_experiment_ids,
-        previously_allowed_ids=preapproved_exclusion_ids or [],
+        previously_allowed_ids=[],
         db=db,
     )
 
     try:
         # Inside the try: building the blocklist lazily creates participant
         # groups on Prolific (this experiment's own, and any excluded sibling's
-        # that has none yet, which one-click launch makes common), so a failure
+        # that has none yet, which the card prefill makes common), so a failure
         # there is a Prolific failure too, reported the same way.
         blocklist_group_ids = await _build_round_blocklist_group_ids(
             experiment, excluded_experiment_ids, db
@@ -791,6 +811,8 @@ async def run_pilot_study(
         screeners=json.dumps(list(payload.screeners)),
         excluded_experiment_ids=json.dumps(excluded_experiment_ids),
         places_requested=payload.pilot_places,
+        pilot_check_run_id=gate.run_id,
+        pilot_check_acknowledged_by=gate.acknowledged_by,
     )
     await _commit_round_creation(
         db,
@@ -817,12 +839,15 @@ async def run_experiment_round(
     experiment_id: int,
     payload: ExperimentRoundCreate,
     db: AsyncSession,
+    *,
+    requested_by: str | None = None,
 ) -> ExperimentRoundResponse:
     settings = get_settings()
     if not settings.prolific.enabled:
         raise HTTPException(status_code=400, detail="Prolific integration is not enabled")
 
     experiment = await fetch_experiment_or_404(experiment_id, db)
+    await assert_not_preview_testing(experiment, db, "launch a new round")
     if experiment.status == ExperimentStatus.FINISHED:
         raise HTTPException(
             status_code=400,
@@ -844,6 +869,15 @@ async def run_experiment_round(
         )
 
     next_round_number = latest_round.round_number + 1
+    # Config is frozen after the first main round, so a run made before the
+    # pilot stays valid here; the gate still catches a never-run or stale one.
+    gate = await gate_for(
+        experiment,
+        db,
+        acknowledged=payload.acknowledge_pilot_check,
+        admin_email=requested_by,
+        question_count=await fetch_total_questions_for_experiment(experiment.id, db),
+    )
     device_compatibility = _parse_device_compatibility(pilot_round.device_compatibility)
     screeners = _parse_screeners(pilot_round.screeners)
     excluded_experiment_ids = _parse_excluded_experiment_ids(pilot_round.excluded_experiment_ids)
@@ -913,6 +947,8 @@ async def run_experiment_round(
         screeners=pilot_round.screeners,
         excluded_experiment_ids=pilot_round.excluded_experiment_ids,
         places_requested=payload.places,
+        pilot_check_run_id=gate.run_id,
+        pilot_check_acknowledged_by=gate.acknowledged_by,
     )
     await _commit_round_creation(
         db,
@@ -1019,6 +1055,8 @@ async def publish_experiment_round(
             status_code=400,
             detail="Only unpublished rounds can be published",
         )
+    # A draft made before the tag went on still never goes live.
+    await assert_not_preview_testing(experiment, db, "publish")
 
     # The time-limit note was generated when the round was created, and the
     # session length stays editable until the first publish flips the
@@ -1219,12 +1257,13 @@ async def update_experiment_round(
             if payload.excluded_experiment_ids is not None
             else previously_allowed_ids
         )
-        # New targets on this write must be FINISHED. IDs already present on
-        # this round are grandfathered: they were legal when set and the target
-        # experiment's later state change shouldn't retroactively invalidate
-        # them.
+        # New targets on this write must be FINISHED or on this experiment's
+        # dataset. IDs already present on this round are grandfathered: they
+        # were legal when set and the target experiment's later state change
+        # shouldn't retroactively invalidate them.
         if payload.excluded_experiment_ids is not None:
             await validate_new_exclusion_targets(
+                experiment,
                 excluded_ids,
                 previously_allowed_ids=previously_allowed_ids,
                 db=db,

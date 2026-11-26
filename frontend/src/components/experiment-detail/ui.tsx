@@ -64,13 +64,47 @@ export const textareaStyle: React.CSSProperties = {
   fontFamily: 'var(--font-body)',
 };
 
+/**
+ * Standard native <select> styling. Drops the browser's own arrow, which sits
+ * flush against the right edge, for a drawn caret with room around it.
+ * Override `padding` only with a right padding of at least 30px.
+ */
+export const selectStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '11px 38px 11px 13px',
+  border: '1px solid var(--faint)',
+  borderRadius: 'var(--radius-sm)',
+  backgroundColor: 'var(--surface)',
+  backgroundImage:
+    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5l5 5 5-5' fill='none' stroke='%23736c60' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")",
+  backgroundRepeat: 'no-repeat',
+  backgroundPosition: 'right 13px center',
+  backgroundSize: '12px 8px',
+  appearance: 'none',
+  font: '400 15px var(--font-body)',
+  color: 'var(--ink)',
+  cursor: 'pointer',
+};
+
 /** Colored banner used for info/success/warning/error messages inside panels. */
+export type Tone = 'info' | 'ok' | 'warn' | 'danger';
+
+/** The ink colour for a tone, for pills, labels and dots outside a Banner. */
+export function toneColor(tone: Tone): string {
+  return {
+    info: 'var(--muted)',
+    ok: 'var(--accent)',
+    warn: 'var(--warn)',
+    danger: 'var(--danger)',
+  }[tone];
+}
+
 export function Banner({
   tone,
   children,
   icon = true,
 }: {
-  tone: 'info' | 'ok' | 'warn' | 'danger';
+  tone: Tone;
   children: React.ReactNode;
   icon?: boolean;
 }) {
@@ -157,6 +191,49 @@ export function ProgressBar({
   );
 }
 
+/** Quiet "← Label" link above a page title (experiment page, analytics). */
+export function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="back-link">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M19 12H5M11 18l-6-6 6-6" />
+      </svg>
+      {label}
+    </button>
+  );
+}
+
+/**
+ * One cell of a `.stat-strip`; the strip draws the border and dividers and the
+ * page sets its column count.
+ */
+export function StatCell({
+  label,
+  value,
+  tone,
+  title,
+  testId,
+}: {
+  label: React.ReactNode;
+  value: React.ReactNode;
+  tone?: 'warn';
+  title?: string;
+  testId?: string;
+}) {
+  return (
+    <div title={title}>
+      <div
+        className="stat-value"
+        data-testid={testId}
+        style={tone === 'warn' ? { color: 'var(--warn)' } : undefined}
+      >
+        {value}
+      </div>
+      <div className="stat-label">{label}</div>
+    </div>
+  );
+}
+
 /**
  * Floating variant of Banner used for transient page-level toasts. Same
  * palette as Banner but adds a shadow (so it lifts off the page), a dismiss
@@ -236,10 +313,12 @@ export function SectionCard({
   header,
   children,
   padded = true,
+  collapsed = false,
 }: {
   header?: React.ReactNode;
   children: React.ReactNode;
   padded?: boolean;
+  collapsed?: boolean;
 }) {
   return (
     <section
@@ -255,7 +334,7 @@ export function SectionCard({
         <div
           style={{
             padding: '16px 22px',
-            borderBottom: '1px solid var(--line)',
+            borderBottom: collapsed ? 'none' : '1px solid var(--line)',
             font: '600 11px/1 var(--font-mono)',
             letterSpacing: '0.16em',
             textTransform: 'uppercase',
@@ -265,7 +344,7 @@ export function SectionCard({
           {header}
         </div>
       )}
-      <div style={{ padding: padded ? 22 : 0 }}>{children}</div>
+      {!collapsed && <div style={{ padding: padded ? 22 : 0 }}>{children}</div>}
     </section>
   );
 }
@@ -276,11 +355,14 @@ export function ToggleSwitch({
   onChange,
   disabled,
   testId,
+  ariaLabelledBy,
 }: {
   checked: boolean;
   onChange: () => void;
   disabled?: boolean;
   testId?: string;
+  /** Id of the visible label naming this switch. */
+  ariaLabelledBy?: string;
 }) {
   return (
     <div
@@ -295,7 +377,10 @@ export function ToggleSwitch({
         data-testid={testId}
         role="switch"
         aria-checked={checked}
-        tabIndex={0}
+        aria-labelledby={ariaLabelledBy}
+        aria-disabled={disabled}
+        className="toggle-switch"
+        tabIndex={disabled ? -1 : 0}
         onClick={() => {
           if (!disabled) onChange();
         }}
@@ -314,7 +399,6 @@ export function ToggleSwitch({
           background: checked ? 'var(--accent)' : 'var(--surface-2)',
           cursor: disabled ? 'not-allowed' : 'pointer',
           transition: 'background 0.2s',
-          outline: 'none',
         }}
       />
       <div
@@ -377,6 +461,7 @@ export const dangerButton: React.CSSProperties = {
 
 /** A dataset card field name as UI copy: `estimated_completion_time` → `estimated completion time`. */
 export function fieldLabel(field: string): string {
+  if (field === 'study_blurb') return 'Prolific listing description';
   return field.replace(/_/g, ' ');
 }
 
@@ -393,6 +478,14 @@ export const STUDY_LABELS: [StudyLabel, string][] = [
 /** The screeners a pilot uses unless told otherwise (PilotStudyCreate's default). */
 export const DEFAULT_SCREENERS: Screener[] = ['ai_taskers', 'fact_checkers', 'approval_rate'];
 
+export const SCREENER_ITEMS: [Screener, string, string][] = [
+  ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
+  ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
+  ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
+  ['harmful_content', 'Comfortable with harmful content', "Prolific's Harmful Content prescreener; required for sensitive or explicit studies."],
+  ['deception', 'Comfortable with deception', "Prolific's Deception prescreener; required for studies that mislead raters."],
+];
+
 export function ScreenerCheckboxes({
   value,
   onChange,
@@ -408,13 +501,6 @@ export function ScreenerCheckboxes({
   studyFlags?: StudyFlag[];
 }) {
   const forced = forcedScreeners(studyFlags);
-  const items: [Screener, string, string][] = [
-    ['ai_taskers', 'Qualified AI Taskers', 'Participants Prolific has vetted for AI tasks (labelling, evaluation, red-teaming).'],
-    ['fact_checkers', 'Fact Checkers', "Prolific's Fact Checkers expert network."],
-    ['approval_rate', 'High approval rate (≥80%)', '80%+ approval rate on past Prolific submissions.'],
-    ['harmful_content', 'Comfortable with harmful content', "Prolific's Harmful Content prescreener; required for sensitive or explicit studies."],
-    ['deception', 'Comfortable with deception', "Prolific's Deception prescreener; required for studies that mislead raters."],
-  ];
   return (
     <div
       style={{
@@ -427,7 +513,7 @@ export function ScreenerCheckboxes({
         background: 'var(--surface-2)',
       }}
     >
-      {items.map(([key, label, hint]) => {
+      {SCREENER_ITEMS.map(([key, label, hint]) => {
         const isForced = forced.includes(key);
         const checked = isForced || value.includes(key);
         return (

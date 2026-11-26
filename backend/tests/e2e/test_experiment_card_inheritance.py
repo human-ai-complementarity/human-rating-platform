@@ -316,7 +316,8 @@ def test_export_carries_the_assistance_session_id(client: TestClient):
         header = "".join(response.iter_text()).splitlines()[0]
 
     assert header.endswith(
-        "counts_toward_target,assistance_session_id,exclusion_key,assistance_method,assistance_outcome"
+        "counts_toward_target,assistance_session_id,exclusion_key,assistance_method,"
+        "assistance_outcome,rater_feedback"
     )
 
 

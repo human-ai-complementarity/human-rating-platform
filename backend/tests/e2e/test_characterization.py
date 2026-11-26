@@ -622,10 +622,9 @@ def test_rater_session_prefix_suffix_null_when_unset(client: TestClient):
     assert session_payload["human_prompt_suffix"] is None
 
 
-def test_rater_session_renders_description_markdown_to_html(client: TestClient):
-    # Markdown in `description` is converted to the same HTML subset Prolific
-    # accepts before it reaches the splash, so what raters see matches the
-    # Prolific external listing.
+def test_rater_session_serves_description_as_markdown(client: TestClient):
+    # The description reaches the splash as the Markdown the researcher wrote;
+    # the frontend renders it. Only Prolific gets the converted HTML subset.
     experiment = _create_experiment(client)
     client.post(
         f"/api/admin/experiments/{experiment['id']}/upload",
@@ -638,10 +637,7 @@ def test_rater_session_renders_description_markdown_to_html(client: TestClient):
         },
     )
     session_payload = _start_session(client, experiment["id"], prolific_pid="PID_MD")
-    html = session_payload["experiment_description_html"]
-    assert html is not None
-    assert "<h1>Heading</h1>" in html
-    assert "<b>Bold</b>" in html
+    assert session_payload["experiment_description_markdown"] == "# Heading\n\n**Bold** paragraph."
 
 
 def test_update_experiment_edits_dataset_metadata(client: TestClient):
@@ -2716,6 +2712,30 @@ def test_editing_a_round_description_keeps_the_time_limit_note(client: TestClien
     assert "<b>Time limit:</b>" in sent["description"]
     # The DB keeps the researcher's own words, unpolluted.
     assert resp.json()["description"] == "Rewritten description"
+
+
+@respx.mock
+def test_the_rater_intro_shows_the_instructions_not_the_round_listing(
+    client: TestClient, enable_prolific
+):
+    experiment, pilot = _create_prolific_experiment(client)
+    instructions = client.get(f"/api/admin/experiments/{experiment['id']}").json()["description"]
+    assert pilot["description"] == "Test study"
+    assert instructions and instructions != pilot["description"]
+
+    response = client.post(
+        "/api/raters/start",
+        params={
+            "experiment_id": experiment["id"],
+            "PROLIFIC_PID": "PID_INTRO",
+            "STUDY_ID": "preview",
+            "SESSION_ID": "preview",
+            "preview": "true",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["experiment_description_markdown"] == instructions
 
 
 @respx.mock
@@ -5421,6 +5441,37 @@ def test_end_session_releases_reserved_slot(client: TestClient):
     assert rejected.status_code == 403
 
 
+def test_feedback_is_saved_after_the_session_ends_and_shown_in_analytics(client: TestClient):
+    experiment = _create_experiment_with_target(client, target=1)
+    _upload_questions(client, experiment["id"])
+    session = _start_session(client, experiment["id"], prolific_pid="PID_FEEDBACK")
+    _submit(client, session, _get_next_question(client, session))
+    headers = _rater_headers(session)
+    assert client.post("/api/raters/end-session", headers=headers).status_code == 200
+
+    def stored_feedback() -> str | None:
+        analytics = client.get(f"/api/admin/experiments/{experiment['id']}/analytics").json()
+        return analytics["raters"][0]["feedback"]
+
+    assert stored_feedback() is None
+
+    # The screen comes after the last question, so an ended session must
+    # still be able to post.
+    saved = client.post(
+        "/api/raters/feedback", headers=headers, json={"feedback": "  Question 2 was unclear.\n"}
+    )
+    assert saved.status_code == 200, saved.text
+    assert stored_feedback() == "Question 2 was unclear."
+
+    export = client.get(f"/api/admin/experiments/{experiment['id']}/export")
+    rows = list(csv.DictReader(io.StringIO(export.text)))
+    assert [row["rater_feedback"] for row in rows] == ["Question 2 was unclear."]
+
+    too_long = client.post("/api/raters/feedback", headers=headers, json={"feedback": "x" * 5001})
+    assert too_long.status_code == 422
+    assert client.post("/api/raters/feedback", json={"feedback": "no session"}).status_code == 422
+
+
 def _start_preview_session(client: TestClient, experiment_id: int, prolific_pid: str) -> dict:
     response = client.post(
         "/api/raters/start",
@@ -5657,62 +5708,68 @@ def test_upload_batches_long_context_rows_across_multiple_inserts(
     assert question["parent_question_text"] == document
 
 
-def test_is_markdown_round_trips_to_rater_question_payload(client: TestClient):
+@pytest.mark.parametrize("field", ["is_markdown", "render_math"])
+def test_rendering_flag_round_trips_to_rater_question_payload(client: TestClient, field):
     experiment = _create_experiment(client)
-    assert experiment["is_markdown"] is False
+    assert experiment[field] is False
 
     response = client.patch(
         f"/api/admin/experiments/{experiment['id']}",
-        json={"assistance_method": "none", "is_markdown": True},
+        json={"assistance_method": "none", field: True},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["is_markdown"] is True
+    assert response.json()[field] is True
 
     response = client.patch(
         f"/api/admin/experiments/{experiment['id']}",
-        json={"assistance_method": "none", "is_markdown": False},
+        json={"assistance_method": "none", field: False},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["is_markdown"] is False
+    assert response.json()[field] is False
 
     # Omitting the field leaves it unchanged.
     client.patch(
         f"/api/admin/experiments/{experiment['id']}",
-        json={"assistance_method": "none", "is_markdown": True},
+        json={"assistance_method": "none", field: True},
     )
     response = client.patch(
         f"/api/admin/experiments/{experiment['id']}",
         json={"assistance_method": "none", "description": "unrelated edit"},
     )
     assert response.status_code == 200, response.text
-    assert response.json()["is_markdown"] is True
-    assert _fetch_experiment(client, experiment["id"])["is_markdown"] is True
+    assert response.json()[field] is True
+    assert _fetch_experiment(client, experiment["id"])[field] is True
 
     _upload_questions(client, experiment["id"])
     copy = client.post(f"/api/admin/experiments/{experiment['id']}/duplicate").json()
-    assert copy["is_markdown"] is True
+    assert copy[field] is True
 
-    session = _start_session(client, experiment["id"], prolific_pid="PID_MD")
+    session = _start_session(client, experiment["id"], prolific_pid=f"PID_{field}")
     question = client.get("/api/raters/next-question", headers=_rater_headers(session)).json()
-    assert question["is_markdown"] is True
+    assert question[field] is True
 
 
-def test_update_experiment_locks_is_markdown_after_launch(client: TestClient, sync_engine):
+@pytest.mark.parametrize(
+    "field", ["is_markdown", "render_math", "block_copy_paste", "forbid_outside_tools"]
+)
+def test_update_experiment_locks_rendering_flag_after_launch(
+    client: TestClient, sync_engine, field
+):
     experiment = _create_experiment(client)
     _mark_experiment_status(sync_engine, experiment["id"], "LAUNCH")
 
     resp = client.patch(
         f"/api/admin/experiments/{experiment['id']}",
-        json={"assistance_method": experiment["assistance_method"], "is_markdown": True},
+        json={"assistance_method": experiment["assistance_method"], field: True},
     )
     assert resp.status_code == 400
-    assert "is_markdown" in resp.json()["detail"]
+    assert field in resp.json()["detail"]
 
     resp = client.patch(
         f"/api/admin/experiments/{experiment['id']}",
         json={
             "assistance_method": experiment["assistance_method"],
-            "is_markdown": experiment["is_markdown"],
+            field: experiment[field],
             "internal_name": "renamed",
         },
     )

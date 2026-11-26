@@ -167,3 +167,59 @@ def terms_source(tmp_path: Path):
     settings.terms.source_url = f"file://{root}"
     yield root
     settings.terms.source_url = original
+
+
+@pytest.fixture(autouse=True)
+def pilot_check_autostart_off():
+    """Uploads and edits do not start pilot checks in the suite: most tests
+    set up experiments and never look at the check, and a run still going when
+    the client closes is a shutdown to wait for. `pilot_check_autostart` turns
+    it on."""
+    settings = get_settings().pilot_check
+    original = settings.auto_start
+    settings.auto_start = False
+    try:
+        yield settings
+    finally:
+        settings.auto_start = original
+
+
+@pytest.fixture
+def pilot_check_autostart(pilot_check_autostart_off):
+    """Uploads and edits start a run, as shipped."""
+    pilot_check_autostart_off.auto_start = True
+    return pilot_check_autostart_off
+
+
+@pytest.fixture
+def no_judge():
+    """No key for the judge model's provider, so a run skips the judged checks
+    with an info note and can pass. Without this, the stubbed provider client
+    makes every judge call fail, which the run reports as a warning."""
+    settings = get_settings()
+    original = settings.llm.openrouter_api_key
+    settings.llm.openrouter_api_key = ""
+    try:
+        yield
+    finally:
+        settings.llm.openrouter_api_key = original
+
+
+@pytest.fixture(autouse=True)
+def pilot_check_gate_off():
+    """The pilot check's launch gate is off for the suite: most tests create
+    studies without running a check first. `pilot_check_gate` turns it on."""
+    settings = get_settings().pilot_check
+    original = settings.gate_mode
+    settings.gate_mode = "off"
+    try:
+        yield settings
+    finally:
+        settings.gate_mode = original
+
+
+@pytest.fixture
+def pilot_check_gate(pilot_check_gate_off):
+    """The gate in its shipped "warn" mode."""
+    pilot_check_gate_off.gate_mode = "warn"
+    return pilot_check_gate_off

@@ -171,8 +171,23 @@ class Experiment(SQLModel, table=True):
             Integer, ForeignKey("terms_statements.id", ondelete="RESTRICT"), nullable=True
         ),
     )
-    # Render question text and context as Markdown on the rater card.
+    # Render question text, context and the prompt prefix/suffix as Markdown on
+    # the rater card.
     is_markdown: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    # Render TeX between math delimiters ($…$, $$…$$, \(…\), \[…\]) on the
+    # rater card. Opt-in: other datasets use "$" for money.
+    render_math: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    block_copy_paste: bool = Field(
+        default=False,
+        sa_column=Column(Boolean, nullable=False, server_default=text("false")),
+    )
+    forbid_outside_tools: bool = Field(
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
@@ -236,6 +251,9 @@ class Question(SQLModel, table=True):
         sa_column=Column(String(16), nullable=False, server_default=text("'MC'")),
     )
     extra_data: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    # The stimulus as a JSON list of text and image blocks (services/media),
+    # when it carries more than text. NULL means question_text is all there is.
+    content: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
     parent_question_id: Optional[int] = Field(
         default=None,
         sa_column=Column(
@@ -310,6 +328,9 @@ class Rater(SQLModel, table=True):
         default=False,
         sa_column=Column(Boolean, nullable=False, server_default=text("false")),
     )
+    # What the rater wrote on the optional feedback screen after their last
+    # question. NULL when they skipped it.
+    feedback: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
 
 
 class Rating(SQLModel, table=True):
@@ -457,6 +478,21 @@ class ExperimentRound(SQLModel, table=True):
         sa_column=Column(Text, nullable=True),
     )  # JSON-encoded list of experiment IDs whose participant groups block this round
     places_requested: int = Field(sa_column=Column(Integer, nullable=False))
+    # The pilot check run the admin launched against, and who acknowledged
+    # launching past a missing, stale or failing one (docs/pilot-check.md).
+    # Both NULL when the gate was off or the run was clean.
+    pilot_check_run_id: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("pilot_check_runs.id", ondelete="SET NULL"),
+            nullable=True,
+        ),
+    )
+    pilot_check_acknowledged_by: Optional[str] = Field(
+        default=None,
+        sa_column=Column(String(255), nullable=True),
+    )
     # Prolific's own `total_cost` for this round's study, in the workspace
     # currency's minor units. This is the full charge Prolific's study page
     # totals: rewards + platform fee + VAT on that fee. Captured on Prolific
@@ -812,7 +848,12 @@ class ExperimentTag(SQLModel, table=True):
 
 
 class ApiKey(SQLModel, table=True):
-    """A bearer credential for the programmatic /api/v1 read API.
+    """A bearer credential for programmatic clients.
+
+    Every key reads the /api/v1 API. An ``admin``-scoped key also passes the
+    /api/admin gate (`require_admin`), so a CLI such as the inference
+    pipeline's study creator can run the dashboard's workflows without a
+    browser session.
 
     The raw key is shown to the admin exactly once at creation/regeneration;
     only its SHA-256 hash is persisted. `prefix` is the leading, non-secret
@@ -851,6 +892,13 @@ class ApiKey(SQLModel, table=True):
     created_by: Optional[str] = Field(
         default=None,
         sa_column=Column(String(255), nullable=True),
+    )
+    # `read` (/api/v1 only) or `admin` (also /api/admin). Fixed at creation:
+    # regenerating rotates the secret, never the reach. Keys minted before
+    # scopes existed are `read`, so none gained write access by migrating.
+    scope: str = Field(
+        default="read",
+        sa_column=Column(String(16), nullable=False, server_default=text("'read'")),
     )
 
 
@@ -992,4 +1040,68 @@ class TermsStatement(SQLModel, table=True):
             nullable=False,
             server_default=text("CURRENT_TIMESTAMP"),
         ),
+    )
+
+
+class PilotCheckRun(SQLModel, table=True):
+    """One admin-triggered pilot check of an experiment (docs/pilot-check.md).
+
+    The run samples questions, walks each through the rater-facing view and
+    the assistance method, and stores what it found. `fingerprint` is a hash
+    of the experiment inputs the run saw; the experiment read recomputes it
+    and reports the run as stale when it differs. Nothing here touches the
+    assistance tables: the probed steps live on the run itself.
+    """
+
+    __tablename__ = "pilot_check_runs"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    experiment_id: int = Field(
+        sa_column=Column(
+            Integer,
+            ForeignKey("experiments.id", ondelete="CASCADE"),
+            nullable=False,
+            index=True,
+        )
+    )
+    # running | passed | warnings | failed | aborted
+    status: str = Field(sa_column=Column(String(16), nullable=False))
+    # Where a running run is (sampling, assistance, checks, a judged check's
+    # name, done) with a short human detail ("9 of 15 questions probed").
+    stage: Optional[str] = Field(default=None, sa_column=Column(String(32), nullable=True))
+    stage_detail: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    requested_by: Optional[str] = Field(default=None, sa_column=Column(String(255), nullable=True))
+    fingerprint: str = Field(sa_column=Column(String(64), nullable=False))
+    config_sha256: str = Field(sa_column=Column(String(64), nullable=False))
+    # The consent statement the run saw, as "label v<version>:<sha256>".
+    terms_ref: Optional[str] = Field(default=None, sa_column=Column(String(128), nullable=True))
+    sample_question_ids: str = Field(
+        default="[]", sa_column=Column(Text, nullable=False, server_default=text("'[]'"))
+    )
+    # JSON list of {check, severity, question_id?, message, detail?}.
+    findings: str = Field(
+        default="[]", sa_column=Column(Text, nullable=False, server_default=text("'[]'"))
+    )
+    # JSON list of {question_id, step_type, payload, failure_reason,
+    # failure_detail, latency_ms}; NULL for a control arm.
+    assistance_steps: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    judge_model: Optional[str] = Field(default=None, sa_column=Column(String(128), nullable=True))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        sa_column=Column(
+            DateTime(timezone=True),
+            nullable=False,
+            server_default=text("CURRENT_TIMESTAMP"),
+        ),
+    )
+    # Touched on every progress write; a running row left untouched for
+    # `runs.STALE_AFTER` reads as aborted.
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
+    )
+    finished_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), nullable=True),
     )

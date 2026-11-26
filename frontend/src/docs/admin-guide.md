@@ -4,7 +4,7 @@ End-to-end flow: create → upload → optionally configure AI assistance → pi
 
 ## 1. Create the experiment
 
-From the **Experiments** page, fill out the create form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
+From the **Experiments** page, click **New experiment**, fill out the form and submit. The main decision is **ratings per question** — more gives a stronger agreement signal but costs more raters. `3` is a reasonable default.
 
 **Session length** is how long each rater gets before their session ends, in minutes. The default of `60` suits most tasks; raise it when a single question takes a long time to read (long-context datasets in particular), up to a maximum of 120 — a task needing longer than two hours is better split into more, shorter sessions than given a longer clock. Every other clock follows from this one number, so you only set it here.
 
@@ -24,6 +24,30 @@ Upload a CSV or Parquet file in the **Questions** section. You can upload multip
 | `metadata` | No | Per-row JSON blob you can attach for your own use. Surfaced in exports. |
 | `parent_question_id` | No | The `question_id` of another row in the same experiment. Marks this row as a sub-question of that parent — the parent's text is shown as context (inline if short, behind an "Open document" link if long) but the parent itself isn't rated. Long documents belong in that parent row; concatenating them into `question_text` with a `--- QUESTION ---` delimiter is rejected. The delimiter check looks at the current file only, so a document that contains that marker as content must be referenced by a child in the same upload. |
 | `exclusion_key` | No | Marks related questions, such as two versions of one item where seeing one helps answer the other. A rater is served at most one question per key in the experiment, even within a parent group. Blank means no key. The key is included in the ratings export. |
+| `content` | No | The stimulus as a JSON list of `text` and `image` blocks, for questions that carry images (screenshots in a computer-use transcript, say). When set, raters see the blocks in order instead of `question_text`, which stays the text-only form for exports and analytics. See [Questions with images](#questions-with-images). |
+
+### Questions with images
+
+A row's `content` column holds the stimulus as an ordered list of blocks, the inference pipeline's own format, so an export carries it over as is:
+
+```json
+[
+  {"type": "text", "text": "Screen after step 1:"},
+  {"type": "image", "ref": "sha256:76cac499903b2fb6f064...", "mime_type": "image/png"},
+  {"type": "text", "text": "Should the next action be allowed?"}
+]
+```
+
+- A text block is exactly `{"type": "text", "text": ...}`; an image block exactly `{"type": "image", "ref": "sha256:<64 hex>", "mime_type": ...}` with `mime_type` one of `image/png`, `image/jpeg`, `image/webp` (what the pipeline's ingest admits). Anything else fails the upload, naming the row.
+- `ref` is the SHA-256 of the image's bytes. The bytes themselves are not part of the upload: they live in the platform's media source (`MEDIA__SOURCE_URL`, a `gs://bucket/prefix` or a local `file://folder`), each object named by that hex digest with no extension. Any folder of files named that way works; the inference pipeline's media store (`outputs/checkpoints/ingest_questions/media/`) is one producer, and its one-click study script copies the images for you. To sync a folder by hand:
+
+  ```bash
+  gsutil -m rsync <folder of files named by digest> gs://<bucket>/<prefix>
+  ```
+
+  The upload checks that every referenced image is there and refuses the file otherwise, listing the missing digests, so a rater never meets a broken image. It also refuses an image over 7 MB (`MEDIA__MAX_IMAGE_BYTES`), since the assistance models get each image inline and their providers reject larger ones.
+- In a CSV the cell is the JSON string; in Parquet it can be the JSON string or a typed `list<struct>` column.
+- Raters see the blocks in order, each image full width and openable at full size. Images reach the browser by an expiring URL minted for the session; nothing is public. The AI assistance methods send the same images, in the same places, to their model, so pick a vision-capable `assistance_models` entry for such a dataset.
 
 ### Dataset-level metadata (optional)
 
@@ -56,17 +80,30 @@ Parquet preserves column types, so `options` can be a typed `list<string>` and `
 
 #### Formatting rules
 
-- **`description`** supports markdown — same renderer as the Prolific study description: `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists, blank-line paragraphs.
-- The four other fields are plain text. Line breaks are preserved.
+- **`description`** supports markdown. Prolific only renders `# H1`, `## H2`, `**bold**`, `*italic*`, `~~strike~~`, `-`/`1.` lists and blank-line paragraphs; anything else (links, tables, deeper headings) renders on the rater intro screen but shows as literal text on a Prolific listing. It is the rater instructions: raters read it on the intro screen in every round. The Prolific listing is separate text, set per round on the Launch tab; it starts from the dataset card, or from a copy of this when the card has none.
+- The four other fields are plain text, with line breaks preserved. The prefix and suffix are the exception when `render_markdown` is on: they then render as Markdown with the questions.
+- **`render_math`** (`true` or `false`, optional) typesets TeX between `$…$`, `$$…$$`, `\(…\)` or `\[…\]` in the question text, its MC options, its context and the document; the prefix/suffix and assistance text stay as written. Leave it off for datasets that use `$` for money. It combines with Markdown: formulas are typeset inside the rendered Markdown, and anything in a code block or code span stays as written. It is also a checkbox under **Question rendering**.
+- **`render_markdown`** (`true` or `false`, optional) renders the questions, and the prefix and suffix around them, as Markdown: code blocks, tables, etc. become styled elements. MC options render the same way, except that links show as plain text, so an option like `# of items` becomes a heading. It can be on together with `render_math`. It is the **Render questions as Markdown** checkbox under **Question rendering**.
 - **CSV only:** newlines inside any value must be encoded as `\n` escapes, because the whole JSON object has to fit on one line. `json.dumps(...)` handles this automatically. Parquet stores the metadata as bytes in the schema, so this constraint doesn't apply there.
 
 #### Multiple uploads + conflicts
 
-The **first** upload that declares a value populates the experiment. Later uploads that declare the same key with a *different* value are flagged in the Dataset Metadata section but never overwrite saved values. To change a saved value, edit it directly in the admin form.
+The **first** upload that declares a value populates the experiment. Later uploads that declare the same key with a *different* value are flagged beside the field on the Instructions & settings step but never overwrite saved values. To change a saved value, edit it directly in the admin form.
+
+### The Instructions & settings step
+
+The step is a list of sections (intro text, question framing, question display, rater rules, AI prompt, consent and content, notes). Each heading shows a one-line summary of what the section holds and collapses it. One **Save settings** button at the foot saves every section together, and leaving the step with unsaved changes asks first.
+
+**Rater rules** holds two switches, both off by default and both locked once the experiment launches:
+
+- **Block copy and paste on the rating screen.** Raters can't select, copy or cut anything on the rating screen, or paste into an answer. It makes lifting a question into another tool slower; it doesn't stop a screenshot.
+- **Strictly forbid internet and AI tools.** The "Before you start" box normally tells raters to use the internet and AI tools however they like, except to look for a published answer. With this on it says both are strictly forbidden: no web search, no AI tool, answer from the study and your own knowledge only. In a study with an assistance method, the ban exempts the assistance built into the study. The section quotes the exact sentence raters will read. It changes the instruction text only; nothing checks what a rater does in another tab.
+
+Uploads can't set these; an API client sets `block_copy_paste` and `forbid_outside_tools` when it creates the experiment or with a PATCH.
 
 ### Always preview
 
-Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect.
+Before publishing on Prolific, click **Preview as Participant** in the Prolific Workflow section. It's the only reliable way to check that the splash markdown renders right, the prefix/suffix read naturally on each question, and the assistance method behaves as you expect. The [pilot check](#run-the-pilot-check) on the Launch tab automates the first pass over a sample of questions; the preview is still how you look at one with your own eyes.
 
 ## 3. Pick an assistance method (optional)
 
@@ -82,19 +119,29 @@ Keep the **estimated completion time** at or under the session length. It is the
 
 The pilot can't be created until the experiment has at least one uploaded question, rater instructions, an internal study name, and (when assisted) an assistance model. The prompt prefix and suffix are optional. The pilot form lists anything missing and how to fix it.
 
-### Dataset cards and the one-click pilot
+`preview-testing` is a reserved tag. The inference pipeline's `scripts/create_human_rating_study.py --mode testing` sets it on its `-TESTONLY` drafts, which hold a subsample of the real questions for clicking through. An experiment with that tag can't go to Prolific at all: no pilot, no new round and no publish. The Launch tab says so: before the pilot with the pilot form's list of blockers, and after it with a banner over the rounds, whose Publish and Create Round buttons are turned off. That covers a tag added after a pilot draft was made. Create the real study with `--mode prod`. If an experiment carries the tag by mistake, remove the tag to launch it.
+
+### Run the pilot check
+
+The check starts on its own as soon as an experiment is ready to launch: the upload or edit that gives it questions, rater instructions, an internal name and (for an assisted arm) a model kicks it off, whether that is you on this page or the inference pipeline uploading an export. The **Pilot check** card at the top of the Launch tab shows it running, and **Run check** starts one by hand. It samples a handful of questions (15 by default), builds exactly what a rater would see for each, runs the assistance method on it, and reports anything a rater would trip over: a missing or placeholder consent statement, Markdown that will show as literal symbols, a choice question with no options, assistance that comes back empty or with every subtask at 0% confidence, instructions that describe a different task than the questions pose. Deterministic rules catch the structural problems; an LLM judge reads the instructions, each sampled question and its assistance for the rest. A run takes about a minute.
+
+Findings are grouped by check with a severity each; a problem shared by several questions is one line that links to each of them in the participant preview. The card says when the check was last run and by whom. Editing the instructions, prompts, Markdown switch, assistance settings or questions makes the run **stale** and starts a new one; an edit that lands while a run is going is picked up by a follow-up run once it finishes.
+
+Creating a pilot or a round without a clean run (none, stale, still running, or with warnings or errors) opens a confirmation. You can create the draft anyway, and the round records who did. Nothing refuses a draft; a deployment can only turn the confirmation off. The sample size, the judge model, the gate mode and per-check severities live under `[pilot_check]` in `backend/config.toml`.
+
+### Dataset cards and the pilot form
 
 A grouped experiment's dataset has a **card**: a public study name, an internal name template, a Prolific blurb, the estimated completion time, the per-participant reward, the ratings target, and optionally a study label and screeners. Edit it from the **card** chip on any of the dataset's groups in the Experiments page's **Grouped** view; the chip and the editor show whether it's complete. A new experiment copies the card's names and ratings target when it's created; the create form shows them as placeholders, and anything you type there wins.
 
 The public name takes no placeholders: raters see it, so it mustn't give away the dataset, wave or arm. Arms are told apart by internal name, which can use `{dataset}`, `{wave}` and `{method}`; if another experiment already has the result, the new one gets " (2)", " (3)" and so on.
 
-A card is **complete** once it has both names, the blurb, the time and the reward; an incomplete card names what it's missing. That's about the card only: the experiment still needs everything listed above before a pilot. With a complete card, the Launch tab offers **Create pilot draft from the card**: one click instead of the pilot form, publishing still separate. It automatically excludes the participants of every other experiment in the dataset's groups (any wave, any status, even one with no study yet), and lists them by internal name before you confirm. The confirm quotes the card's current time and reward. Create all of a wave's arms before piloting any: an arm added later isn't excluded by the pilots before it (see the one-way note below). The draft can still be edited before you publish it.
+A card is **complete** once it has both names, the blurb, the time and the reward; an incomplete card names what it's missing. That's about the card only: the experiment still needs everything listed above before a pilot. The Launch tab's pilot form starts from the card: its blurb, time, reward, label and screeners are filled in, and a line above the form names any of the first three the card doesn't have yet. The exclusion picker starts on every other experiment in the dataset's groups (any wave, any status, even one with no study yet). Check the values, change what you need, and click **Create pilot draft**; publishing is still separate. Create all of a wave's arms before piloting any: an arm added later isn't excluded by the pilots before it (see the one-way note below).
 
-A dataset's first study usually goes through the pilot form. Once that pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, so the next study can use the one-click pilot.
+Once a dataset's first pilot is published and has ratings in, the Launch tab offers to save its time and reward to the card, so the next study's pilot form starts from them.
 
 ### Excluding prior participants
 
-> ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form (a one-click pilot picks the ones in the dataset's groups for you). Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.
+> ⚠️ **Required whenever a dataset is used in more than one experiment.** If you're launching a follow-up on a dataset that a prior experiment already ran on — e.g. a baseline first, then the same dataset again with an assistance method, or a new assistance-method variant — you **must** pick every prior experiment on that dataset in the **Exclude prior participants from** field on the pilot form (the ones in the dataset's groups start selected; add any that sit outside them). Skipping this lets raters who already saw the questions rate them again with new context, which biases the comparison and wastes budget.
 
 The picker searches over experiment names and dataset filenames — use the dataset filename to quickly find all experiments that share a dataset. Prolific hides the study from anyone who joined any selected experiment, so each experiment gets a clean, disjoint cohort. Main rounds automatically inherit the pilot's exclusion list.
 
@@ -114,7 +161,7 @@ The **Overview** section shows live progress. From there you can open analytics 
 
 Besides the CSV export, there's a read-only **`/api/v1`** API for scripts and inference pipelines that need to pull experiment data directly (e.g. running a model over your questions and comparing against human ratings).
 
-Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time.
+Create a key on the **API Keys** tab (top nav). The full key is shown **once** on creation — copy it then; afterwards only a masked prefix is visible. You can **regenerate** a key (rotate its secret) or **revoke** it at any time. You see only the keys you created; other admins can't see, regenerate or revoke yours.
 
 Use it as a bearer token:
 
@@ -124,6 +171,8 @@ curl -H "Authorization: Bearer <your-key>" \
 ```
 
 Available endpoints: list/batch experiments, single experiment detail, and paginated raw ratings (with full question text and ground truth). Treat keys like passwords — anyone with a key can read all experiment data.
+
+A key is **Read only** unless you pick **Admin** under **Access** when you create it. An admin key also works on the `/api/admin` routes the dashboard itself uses, so a CLI can create datasets, groups and experiments and upload questions — the inference pipeline's `scripts/create_human_rating_study.py` needs one. It can't manage API keys or do anything on Prolific (create a pilot or round, publish, close), so it never spends money. A key's access is fixed when it is created: regenerating keeps it.
 
 ---
 

@@ -42,10 +42,16 @@ from config import LLMSettings
 
 logger = logging.getLogger(__name__)
 
-Message = dict[str, str]  # {"role": "user"|"assistant"|"system", "content": "..."}
+# {"role": "user"|"assistant"|"system", "content": "..."}. A user message's
+# content may instead be a list of chat-completions parts, text and
+# image_url (services/media/prompt.py): a chat completion takes them as
+# is, the Responses API in its own spelling (`_responses_input`).
+Message = dict[str, Any]
 
 # Shared by foreground calls and preparation fan-out on the same event loop.
 # Speculation uses at most half the slots, leaving capacity for visible work.
+PROVIDER_SLOTS = 8
+SPECULATIVE_SLOTS = 4
 speculative_call: ContextVar[bool] = ContextVar("speculative_call", default=False)
 _call_limits: WeakKeyDictionary = WeakKeyDictionary()
 _provider_context: ContextVar[dict | None] = ContextVar("provider_context", default=None)
@@ -65,7 +71,10 @@ def provider_context(**attributes):
 async def provider_slot():
     loop = asyncio.get_running_loop()
     if loop not in _call_limits:
-        _call_limits[loop] = (asyncio.Semaphore(8), asyncio.Semaphore(4))
+        _call_limits[loop] = (
+            asyncio.Semaphore(PROVIDER_SLOTS),
+            asyncio.Semaphore(SPECULATIVE_SLOTS),
+        )
     total, speculative = _call_limits[loop]
     if speculative_call.get():
         async with speculative, total:
@@ -211,7 +220,7 @@ class _OpenAI(Provider):
         """
         kwargs: dict[str, Any] = {
             "model": model_id,
-            "input": messages,
+            "input": _responses_input(messages),
             "tools": self.tool_specs(tools),
             "max_output_tokens": settings.max_tokens,
             # Not kept on OpenAI's side, as a chat completion is not.
@@ -229,6 +238,36 @@ class _OpenAI(Provider):
         if text:
             kwargs["text"] = text
         return kwargs
+
+
+def _responses_input(messages: list[Message]) -> list[Message]:
+    """The chat messages as Responses API input.
+
+    A string content passes through. Chat-completions parts are respelled
+    the way the Responses API reads them: `text` as `input_text`, and
+    `image_url` as `input_image` with the data URL as a plain string (the
+    inference pipeline's OpenAI provider makes the same translation).
+    """
+    converted: list[Message] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            converted.append(message)
+            continue
+        parts: list[dict[str, Any]] = []
+        for part in content:
+            if part["type"] == "text":
+                parts.append({"type": "input_text", "text": part["text"]})
+            elif part["type"] == "image_url":
+                image = part["image_url"]
+                respelled: dict[str, Any] = {"type": "input_image", "image_url": image["url"]}
+                if "detail" in image:
+                    respelled["detail"] = image["detail"]
+                parts.append(respelled)
+            else:
+                parts.append(part)
+        converted.append({**message, "content": parts})
+    return converted
 
 
 def _text_format(response_format: dict) -> dict:
@@ -322,7 +361,8 @@ async def complete(
     request) and return the response text.
 
     Args:
-        messages:         List of {"role": ..., "content": ...} dicts.
+        messages:         List of {"role": ..., "content": ...} dicts; content is
+                          a string, or for a user message a list of parts.
         settings:         LLMSettings instance (pass get_settings().llm).
         model:            Override the model. Defaults to settings.default_model.
                           Must be "<provider>/<model-id>".

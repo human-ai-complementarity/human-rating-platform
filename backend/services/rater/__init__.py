@@ -7,6 +7,7 @@ from .operations import (
     get_session_status,
     record_consent,
     start_session,
+    submit_feedback,
     submit_rating,
 )
 
@@ -18,4 +19,5 @@ __all__ = [
     "submit_rating",
     "get_session_status",
     "end_session",
+    "submit_feedback",
 ]

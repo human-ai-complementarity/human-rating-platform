@@ -65,12 +65,14 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
-input[type="checkbox"]:focus {
+input[type="checkbox"]:focus,
+.toggle-switch:focus {
   outline: none;
   box-shadow: none;
 }
 
-input[type="checkbox"]:focus-visible {
+input[type="checkbox"]:focus-visible,
+.toggle-switch:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }
@@ -150,23 +152,78 @@ button:disabled {
   padding: 40px 44px 60px;
 }
 
-/* Rater-view floating timer. */
-.timer {
-  position: fixed;
-  top: 20px;
-  right: 20px;
-  background: var(--ink);
-  color: var(--bg);
-  padding: 10px 16px;
-  border-radius: var(--radius-sm);
-  font: 600 15px var(--font-mono);
-  letter-spacing: 0.02em;
-  z-index: 30;
+/* Rater-view floating status panel. It sits over the page's top-right corner,
+   so at rest it is see-through; it turns solid when the rater points at it or
+   when one of its clocks is asking for attention. */
+.rater-status-panel {
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+  backdrop-filter: blur(3px);
+  box-shadow: none;
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
-.timer.warning {
-  background: var(--danger);
-  animation: pulse 1s infinite;
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, [data-alert='true'])) {
+  min-width: 190px;
+  background: var(--ink);
+  box-shadow: 0 6px 18px rgba(40, 36, 32, 0.18);
+}
+
+/* At rest the panel is as small as it can be: short labels, clocks only. The
+   full labels and the remaining rows appear with the solid state. */
+.rater-status-panel .rsp-full,
+.rater-status-panel [data-hide-at-rest='true'] {
+  display: none;
+}
+
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, [data-alert='true'])) .rsp-rest {
+  display: none;
+}
+
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, [data-alert='true'])) .rsp-full {
+  display: inline;
+}
+
+.rater-status-panel:is(:hover, :has(.rsp-readout:focus, [data-alert='true'])) [data-hide-at-rest='true'] {
+  display: block;
+}
+
+.rater-status-panel .rsp-readout:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: -2px;
+}
+
+/* The Instructions button floating below the clocks: see-through like the
+   resting panel, solid when pointed at. */
+.rater-instructions-button {
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+  backdrop-filter: blur(3px);
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.rater-instructions-button:hover {
+  background: var(--ink);
+  box-shadow: 0 6px 18px rgba(40, 36, 32, 0.18);
+}
+
+.rater-instructions-button:focus-visible {
+  background: var(--ink);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The Instructions dialog's scrolling body takes focus so the keyboard can
+   scroll it; mark it only when the keyboard put it there. */
+.study-instructions-body:focus {
+  outline: none;
+}
+
+.study-instructions-body:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 @keyframes pulse {
@@ -195,10 +252,23 @@ button:disabled {
   }
 }
 
+/* The pilot check stepper's current stage. */
+@keyframes pilot-step-glow {
+  0%, 100% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--step-color) 22%, transparent), 0 0 10px var(--step-color); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--step-color) 22%, transparent), 0 0 22px var(--step-color); }
+}
+
+.pilot-step-active {
+  animation: pilot-step-glow 1.6s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .indeterminate-bar {
     width: 100%;
     animation: pulse 1.4s ease-in-out infinite;
+  }
+  .pilot-step-active {
+    animation: none;
   }
 }
 
@@ -491,44 +561,96 @@ button:disabled {
   margin-bottom: 0;
 }
 
-.question-markdown p,
-.question-markdown ul,
-.question-markdown ol,
-.question-markdown blockquote,
-.question-markdown pre,
-.question-markdown .question-markdown-table-scroll {
-  margin: 0 0 0.7em 0;
-}
-
-.question-markdown h1,
-.question-markdown h2,
-.question-markdown h3,
-.question-markdown h4 {
-  font-family: var(--font-head);
-  font-size: 1.1em;
-  font-weight: 600;
-  margin: 0 0 0.5em 0;
-}
-
-.question-markdown ul,
-.question-markdown ol {
-  padding-left: 1.4em;
-}
-
-.question-markdown li {
-  margin-bottom: 0.25em;
-}
-
-.question-markdown code {
-  font-size: 0.82em;
-}
-
-.question-markdown pre {
+/* A fenced code block: line numbers in a gutter, the code scrolling beside
+   it. Both share one font and line height so they stay level line for line. */
+.question-markdown .code-block {
+  display: flex;
   border: 1px solid var(--faint);
-  overflow-x: auto;
-  font-size: 14px;
-  font-weight: 400;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font: 400 var(--text-secondary) / 1.5 var(--font-mono);
   letter-spacing: 0;
+}
+
+.question-markdown .code-gutter {
+  flex: none;
+  padding: 12px 10px 12px 14px;
+  border-right: 1px solid var(--faint);
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+}
+
+/* Drawn as generated content so the numbers are never selected or copied. */
+.question-markdown .code-gutter::before {
+  content: attr(data-lines);
+  white-space: pre;
+}
+
+.question-markdown .code-block pre {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  overflow-x: auto;
+}
+
+/* Syntax colours for highlighted code (highlight.js token classes), each at
+   least 4.5:1 against the code block's background. */
+.question-markdown .hljs-comment,
+.question-markdown .hljs-quote {
+  color: #6b6458;
+  font-style: italic;
+}
+
+.question-markdown .hljs-keyword,
+.question-markdown .hljs-selector-tag,
+.question-markdown .hljs-doctag {
+  color: #7a3e9d;
+}
+
+.question-markdown .hljs-string,
+.question-markdown .hljs-regexp,
+.question-markdown .hljs-addition {
+  color: #2f5548;
+}
+
+.question-markdown .hljs-number,
+.question-markdown .hljs-literal,
+.question-markdown .hljs-symbol,
+.question-markdown .hljs-bullet {
+  color: #96480a;
+}
+
+.question-markdown .hljs-title,
+.question-markdown .hljs-section,
+.question-markdown .hljs-selector-id,
+.question-markdown .hljs-selector-class {
+  color: #1f5a8a;
+}
+
+.question-markdown .hljs-built_in,
+.question-markdown .hljs-type,
+.question-markdown .hljs-attr,
+.question-markdown .hljs-attribute,
+.question-markdown .hljs-variable,
+.question-markdown .hljs-template-variable {
+  color: #0f6464;
+}
+
+.question-markdown .hljs-meta,
+.question-markdown .hljs-deletion {
+  color: #9e3b2c;
+}
+
+.question-markdown .hljs-emphasis {
+  font-style: italic;
+}
+
+.question-markdown .hljs-strong {
+  font-weight: 600;
 }
 
 .question-markdown .question-markdown-table-scroll {
@@ -536,7 +658,6 @@ button:disabled {
 }
 
 .question-markdown table {
-  font: 400 15px/1.5 var(--font-body);
   letter-spacing: 0;
   /* Cells keep their natural width; the wrapper above scrolls. */
   overflow-wrap: normal;
@@ -582,34 +703,1064 @@ button:disabled {
   box-shadow: 0 0 0 3px rgba(61, 107, 92, 0.18);
 }
 
-/* Consent statement on the rater's first screen. Server-rendered HTML from
-   the Prolific-markdown converter (h1/h2, lists, bold), so the scale is set
-   here rather than inline. */
-.rater-consent-statement h1,
-.rater-consent-statement h2 {
+/* Long-form text on every rater screen: the consent and debrief statements,
+   the study description and Markdown questions, context and instructions,
+   all rendered by react-markdown. One rule set,
+   so a heading, list or table looks the same wherever a rater meets it. The
+   global reset would otherwise strip every margin and the list indent.
+   Headings are in em: they scale with the text they sit in, which is body
+   size everywhere except a plain-text question, which is set as a heading. */
+.rater-prose {
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.rater-prose :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-head);
+  font-weight: 600;
+  line-height: var(--leading-heading);
+  margin: 22px 0 8px;
+}
+.rater-prose h1 {
+  font-size: 1.25em;
+}
+.rater-prose h2 {
+  font-size: 1.125em;
+}
+.rater-prose :is(h3, h4, h5, h6) {
+  font-size: 1em;
+}
+.rater-prose :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+/* :where keeps this below the per-surface first/last-child margin resets. */
+.rater-prose :where(p, ul, ol, blockquote, pre, .code-block, .question-markdown-table-scroll) {
+  margin: 0 0 12px;
+}
+.rater-prose :is(ul, ol) {
+  padding-left: 24px;
+}
+.rater-prose li {
+  margin-bottom: 4px;
+}
+/* In an MC option the list number sits in the text, not out in the indent,
+   so a wide one ("2018.") does not run over the radio circle. Nested lists
+   keep their indent. */
+.question-option .question-markdown > :is(ul, ol) {
+  list-style-position: inside;
+  padding-left: 0;
+}
+/* A nested list's own indent holds its marker, so a wrapped line lines up
+   with the text, not under the bullet. */
+.question-option li :is(ul, ol) {
+  list-style-position: outside;
+  padding-left: 2.5em;
+}
+.rater-prose code {
+  font-size: 0.875em;
+}
+.rater-prose pre {
+  font-size: var(--text-secondary);
+  /* A long line scrolls inside the block instead of widening the page. */
+  overflow-x: auto;
+}
+.rater-prose table {
+  font: 400 var(--text-body) / 1.5 var(--font-body);
+}
+/* Five scale labels do not fit across a phone-width card. The end labels
+   stay; the selected value is always shown above the slider. */
+@media (max-width: 480px) {
+  .confidence-mid-label {
+    display: none;
+  }
+}
+/* The confidence slider shows no thumb until the rater has chosen a value. */
+input[type="range"].confidence-unset::-webkit-slider-thumb {
+  opacity: 0;
+}
+input[type="range"].confidence-unset::-moz-range-thumb {
+  opacity: 0;
+}
+
+/* The intro sets the gap below the description on its container. */
+.rater-intro-description > :last-child {
+  margin-bottom: 0;
+}
+
+/* ── Responsive admin shell + experiment detail ──────────────────────────
+   Two cut-offs: ≤1024px (tablet: tighter gutters, actions wrap under the
+   title, step tabs scroll with an edge fade) and ≤640px (phone: stacked
+   actions, step tabs collapse into one section <select>, 2-col stats). */
+
+.admin-nav {
+  display: flex;
+  align-items: center;
+}
+
+.xd-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px 40px;
+  margin-bottom: 26px;
+}
+.xd-title {
+  flex: 1 1 520px;
+  min-width: 0;
+}
+.xd-h1 {
+  font-size: 28px;
+}
+.xd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.xd-btn {
+  min-height: 40px;
+  white-space: nowrap;
+}
+.xd-meta {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  align-items: center;
+  margin: 14px 0 0;
+  font-size: 13.5px;
+}
+.xd-meta dt {
+  color: var(--muted);
+}
+.xd-meta dd {
+  margin: 0;
+  min-width: 0;
+}
+
+/* Header dropdowns (<details>-based so items stay in the DOM). */
+.xd-menu {
+  position: relative;
+}
+.xd-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.xd-menu > summary::-webkit-details-marker {
+  display: none;
+}
+.xd-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  /* Above the sticky section tabs (.xd-tabs-wrap), which sit right below. */
+  z-index: 40;
+  min-width: 270px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+}
+.xd-menu-panel--left {
+  left: 0;
+}
+.xd-menu-panel--right {
+  right: 0;
+}
+.xd-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  font: 600 13.5px var(--font-body);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.xd-menu-item:hover {
+  background: var(--surface-2);
+  text-decoration: none;
+}
+.xd-menu-item small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.xd-menu-item--danger {
+  color: var(--danger);
+}
+.xd-menu-item--danger:hover {
+  background: var(--danger-soft);
+}
+
+.xd-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 18px;
+  border-bottom: 1px solid var(--faint);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.xd-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+/* Divided stat strip shared by the experiment page and analytics; each page
+   sets its own column count (.xd-stats, .an-stats). */
+.stat-strip {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.stat-strip > div {
+  background: var(--surface);
+  padding: 18px 22px;
+  min-width: 0;
+}
+.stat-value {
+  font: 600 30px/1.1 var(--font-head);
+  font-variant-numeric: tabular-nums;
+}
+.stat-label {
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: 600 13px var(--font-body);
+  color: var(--muted);
+  cursor: pointer;
+}
+.back-link:hover {
+  color: var(--ink);
+}
+.xd-stats {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.xd-setup-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 1024px) {
+  .admin-page {
+    padding: 32px 24px 56px;
+  }
+  /* Tabs stay on screen while a long section scrolls under them. */
+  .xd-tabs-wrap {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--page-bg);
+  }
+  /* Tabs scroll sideways here; fade the right edge so it reads as scrollable. */
+  .xd-tabs {
+    padding-right: 32px;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+  }
+}
+
+@media (max-width: 640px) {
+  .admin-page {
+    padding: 16px 16px 48px;
+  }
+  .admin-header {
+    flex-wrap: wrap;
+    row-gap: 14px;
+    padding: 14px 16px !important;
+  }
+  .admin-nav {
+    order: 3;
+    flex: 1 1 100%;
+  }
+  .admin-nav > :first-child {
+    margin-left: 0 !important;
+  }
+
+  .xd-h1 {
+    font-size: 22px;
+  }
+  .xd-actions {
+    width: 100%;
+  }
+  .xd-actions > * {
+    flex: 1 1 auto;
+  }
+  .xd-actions > .xd-primary {
+    order: -1;
+    flex-basis: 100%;
+  }
+  .xd-actions > .xd-icon {
+    flex: 0 0 44px;
+  }
+  .xd-actions .xd-btn {
+    min-height: 44px;
+  }
+  /* Buttons grow via flex; summaries need an explicit fill. */
+  .xd-actions > details > summary {
+    width: 100%;
+  }
+  .xd-actions > .xd-icon > summary {
+    width: 44px !important;
+  }
+  .xd-meta {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 2px;
+  }
+  .xd-meta dd {
+    margin-bottom: 8px;
+  }
+
+  /* Same scrolling tab row as tablets, run edge to edge. */
+  .xd-tabs-wrap {
+    margin: 0 -16px;
+  }
+  .xd-tabs {
+    gap: 14px;
+    padding-left: 16px;
+  }
+
+  .xd-preview {
+    justify-content: space-between !important;
+  }
+  .stat-strip > div {
+    padding: 14px 16px;
+  }
+  .stat-value {
+    font-size: 24px;
+  }
+  .xd-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .xd-stats > :last-child {
+    grid-column: 1 / -1;
+  }
+  .xd-setup-steps {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* ── Experiments list ─────────────────────────────────────────────────────
+   The create form lives in a side panel (.xl-drawer) so the list keeps the
+   page width; on phones the panel goes full screen and rows put the spend
+   under the name instead of beside it. */
+.xl-pagehead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  margin-bottom: 24px;
+}
+.xl-h1 {
+  font-family: var(--font-head);
+  font-weight: 600;
+  font-size: 30px;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+.xl-new-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 0 18px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 600 14px var(--font-body);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.xl-seg {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.xl-seg::-webkit-scrollbar {
+  display: none;
+}
+.xl-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+  background: rgba(40, 36, 32, 0.28);
+}
+.xl-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 901;
+  width: min(680px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  box-shadow: -18px 0 40px -20px rgba(40, 36, 32, 0.35);
+}
+.xl-drawer[hidden] {
+  display: none;
+}
+.xl-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 14px 14px 28px;
+  border-bottom: 1px solid var(--line);
+}
+.xl-drawer-body {
+  flex: 1 1 auto;
+  /* Without this the flex item grows to its content and never scrolls. */
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.xl-create-form {
+  padding: 24px 28px 0;
+}
+/* The submit row sticks to the bottom of the scrolling body. */
+.xl-create-footer {
+  position: sticky;
+  bottom: 0;
+  margin: 0 -28px;
+  padding: 12px 28px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+/* Tablets and phones: the panel is a full-screen sheet, not a side pane. */
+@media (max-width: 1024px) {
+  .xl-drawer {
+    left: 0;
+    width: auto;
+    box-shadow: none;
+  }
+  .xl-scrim {
+    display: none;
+  }
+  .xl-drawer-body > * {
+    max-width: 720px;
+    margin: 0 auto;
+  }
+}
+.xl-icon-btn {
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.xl-icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+@media (max-width: 640px) {
+  .xl-h1 {
+    font-size: 24px;
+  }
+  .xl-pagehead {
+    margin-bottom: 18px;
+  }
+  .xl-new-btn {
+    width: 100%;
+    min-height: 44px;
+  }
+  .xl-drawer-head {
+    padding-left: 16px;
+  }
+  .xl-create-form {
+    padding: 18px 16px 0;
+  }
+  .xl-create-footer {
+    margin: 0 -16px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .xl-grouphead {
+    padding: 16px 14px 12px !important;
+  }
+  .xl-group-arms {
+    padding: 0 14px 14px 36px !important;
+  }
+  .xl-group-arms > button {
+    margin-left: 0 !important;
+  }
+  .xl-row {
+    flex-wrap: wrap;
+    gap: 8px 12px !important;
+    padding: 14px 12px 14px 14px !important;
+  }
+  .xl-row-main {
+    flex: 1 1 100%;
+  }
+  .xl-row-side {
+    flex: 1 1 100%;
+    justify-content: space-between;
+    padding-left: 19px;
+  }
+  .xl-row-spend {
+    width: auto !important;
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    text-align: left !important;
+  }
+}
+
+/* ── Experiment detail: launch tab + collapsing grids ─────────────────────
+   The launch tab's rounds column and side column (completion URL, card)
+   share a wrapping row so the side column drops below on narrow screens.
+   .xd-grid-collapse marks 2- and 3-up grids that go single-column on phones;
+   inline styles set the desktop columns, so the override needs !important. */
+.xd-sechead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 24px;
+}
+.xd-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.xd-split-main {
+  flex: 999 1 560px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.xd-split-side {
+  flex: 1 1 300px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.xd-split-side:empty {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .xd-grid-collapse {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .xd-sechead > button {
+    width: 100%;
+    min-height: 44px;
+  }
+  .xd-round-head {
+    padding: 14px 16px !important;
+  }
+  .xd-round-head > button {
+    flex: 1 1 auto;
+    min-height: 40px;
+  }
+}
+
+/* ── Analytics ────────────────────────────────────────────────────────────
+   Same header language as the experiment page: back link, eyebrow + title,
+   one stat strip, underline tabs. Tables scroll inside their card on desktop
+   and are swapped for stacked cards on phones. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.an-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px 32px;
+  margin-bottom: 22px;
+}
+.an-head > :first-child {
+  flex: 1 1 480px;
+}
+.an-eyebrow {
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.an-title {
+  margin: 8px 0 0;
   font-family: var(--font-head);
   font-weight: 600;
   line-height: 1.25;
-  margin: 22px 0 8px;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
-.rater-consent-statement h1 {
-  font-size: 22px;
+.an-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
 }
-.rater-consent-statement h2 {
-  font-size: 18px;
+.an-stats {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
-.rater-consent-statement h1:first-child,
-.rater-consent-statement h2:first-child {
+.an-tabs {
+  display: flex;
+  gap: 28px;
+  margin: 28px 0 16px;
+  border-bottom: 1px solid var(--faint);
+}
+.an-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 46px;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font: 600 14px var(--font-body);
+  color: var(--muted);
+  cursor: pointer;
+}
+.an-tabs button[aria-selected='true'] {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.an-count {
+  font: 400 12px var(--font-mono);
+  color: var(--muted);
+}
+.an-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.an-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--muted);
+}
+.an-tablebox {
+  overflow-x: auto;
+}
+.an-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+}
+.an-table th {
+  padding: 11px 16px;
+  text-align: left;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.an-table td {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+.an-table tr:last-child td {
+  border-bottom: 0;
+}
+.an-table .an-num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.an-mono {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+.an-qid {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+.an-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.an-chip {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+/* Phones get .an-cards in place of the table (Analytics renders one or the
+   other, at the same 640px breakpoint as the rules below). */
+.an-cards {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.an-cards > li {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.an-cards > li:last-child {
+  border-bottom: 0;
+}
+.an-card-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.an-kv {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px 12px;
+  margin: 10px 0 0;
+  font-size: 12.5px;
+}
+.an-kv dt {
+  color: var(--muted);
+}
+.an-kv dd {
+  margin: 0;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+@media (max-width: 1024px) {
+  .an-stats {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .an-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .an-actions {
+    width: 100%;
+  }
+  .an-actions > button {
+    margin-left: auto;
+  }
+}
+
+/* ── API keys ─────────────────────────────────────────────────────────────
+   Desktop keeps create beside the key list; narrower screens stack them. */
+@media (max-width: 900px) {
+  .ak-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+/* ── Documentation ────────────────────────────────────────────────────────
+   A sticky contents list beside the guide; on narrow screens it folds into a
+   sticky "On this page" bar that opens the same list over the guide. Tables
+   scroll inside .docs-tablebox. */
+.docs-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 24px 40px;
+}
+.docs-toc {
+  flex: 0 0 240px;
+  position: sticky;
+  top: 24px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.docs-toc-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-left: 1px solid var(--faint);
+}
+.docs-toc-list a {
+  display: block;
+  margin-left: -1px;
+  padding: 6px 0 6px 14px;
+  border-left: 2px solid transparent;
+  color: var(--muted);
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+.docs-toc-list a:hover {
+  color: var(--ink);
+}
+.docs-toc-list a[aria-current='true'] {
+  color: var(--ink);
+  font-weight: 600;
+  border-left-color: var(--accent);
+}
+.docs-toc-list .docs-toc-part a {
+  margin-top: 10px;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.docs-toc-list .docs-toc-part:first-child a {
   margin-top: 0;
 }
-.rater-consent-statement p {
-  margin: 0 0 12px;
+.docs-toc-sm {
+  display: none;
+  position: sticky;
+  top: 8px;
+  z-index: 20;
+  /* Lets a long section title truncate instead of widening the page. */
+  min-width: 0;
 }
-.rater-consent-statement ul,
-.rater-consent-statement ol {
-  margin: 0 0 12px;
-  padding-left: 24px;
+.docs-toc-sm-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font: 14px var(--font-body);
+  text-align: left;
+  cursor: pointer;
 }
-.rater-consent-statement li {
-  margin-bottom: 4px;
+.docs-toc-sm-label {
+  flex: 0 0 auto;
+  font: 600 11px var(--font-mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.docs-toc-sm-current {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.docs-toc-sm-toggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.docs-toc-sm-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: min(60vh, 480px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  border: 1px solid var(--faint);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: 0 12px 32px -12px rgba(40, 36, 32, 0.35);
+}
+.docs-toc-sm-menu .docs-toc-list li:not(.docs-toc-part) a {
+  padding-top: 10px;
+  padding-bottom: 10px;
+  font-size: 15px;
+}
+.docs-article {
+  flex: 999 1 560px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 36px 44px;
+}
+.admin-docs .docs-anchor {
+  scroll-margin-top: 24px;
+}
+.admin-docs h1.docs-anchor:not(:first-child) {
+  margin-top: 48px;
+}
+.docs-tablebox {
+  overflow-x: auto;
+  margin: 0 0 14px;
+}
+.docs-tablebox table {
+  min-width: 560px;
+  margin: 0;
+}
+
+@media (max-width: 900px) {
+  .docs-toc {
+    display: none;
+  }
+  .docs-toc-sm {
+    display: block;
+    flex: 1 1 100%;
+  }
+  /* Clear the sticky bar when jumping to a heading. */
+  .admin-docs .docs-anchor {
+    scroll-margin-top: 72px;
+  }
+}
+
+@media (max-width: 640px) {
+  .docs-article {
+    padding: 22px 18px;
+  }
+  .ak-row {
+    padding: 16px !important;
+  }
+}
+
+/* Fields stay selectable so a rater can still edit an answer. */
+.rater-no-copy {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.rater-no-copy input,
+.rater-no-copy textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Instructions & settings step. */
+.xd-settings-section {
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.xd-settings-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px 14px;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 15px 22px;
+  border: 0;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.xd-settings-title {
+  font: 600 15px/1.3 var(--font-body);
+}
+
+.xd-settings-summary {
+  flex: 1 1 0;
+  min-width: 0;
+  font: 400 13px/1.4 var(--font-body);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.xd-settings-chevron {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg);
+  transition: transform 0.15s;
+}
+
+.xd-settings-head[aria-expanded='true'] .xd-settings-chevron {
+  transform: rotate(-135deg);
+}
+
+.xd-settings-body {
+  padding: 18px 22px 6px;
+  border-top: 1px solid var(--line);
+}
+
+.xd-settings-body > :last-child {
+  margin-bottom: 12px;
+}
+
+.xd-settings-row {
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.xd-settings-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.xd-settings-savebar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--faint);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px -12px rgba(40, 36, 32, 0.35);
+}
+
+@media (max-width: 640px) {
+  .xd-settings-head,
+  .xd-settings-body {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .xd-settings-title {
+    flex: 1 1 0;
+  }
+  .xd-settings-summary {
+    flex-basis: 100%;
+    order: 3;
+  }
+  .xd-settings-savebar button {
+    width: 100%;
+    min-height: 44px;
+  }
 }

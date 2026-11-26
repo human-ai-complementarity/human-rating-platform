@@ -2,25 +2,42 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from models import Question
+from fastapi import HTTPException
+
+from config import get_settings
+from models import Experiment, Question
 from schemas import QuestionResponse, RaterStartResponse
-from services.prolific_markdown import to_prolific_html
+from services import media
 from services.terms import RaterTerms
 from session_policy import SessionPolicy
 
 
-def build_question_response(
+async def build_question_response(
     question: Question,
-    is_markdown: bool,
+    experiment: Experiment,
     parent_question_text: str | None = None,
 ) -> QuestionResponse:
+    """The question as a rater sees it.
+
+    Each image block is rendered to a URL the browser can fetch; a media
+    source that cannot mint one is a 503, since the question would otherwise
+    be served with its images missing.
+    """
+    settings = get_settings()
+    secret = settings.effective_rater_session_secret
+    try:
+        content = media.render_blocks(settings.media, secret, media.load_content(question.content))
+    except media.MediaSourceError as exc:
+        raise HTTPException(status_code=503, detail=f"Question media unavailable: {exc}") from exc
     return QuestionResponse(
         id=question.id,
         question_text=question.question_text,
         options=question.options,
         question_type=question.question_type,
         parent_question_text=parent_question_text,
-        is_markdown=is_markdown,
+        content=content,
+        is_markdown=experiment.is_markdown,
+        render_math=experiment.render_math,
     )
 
 
@@ -39,28 +56,28 @@ def build_rater_start_response(
     consented_at: datetime | None,
     assistance_method: str = "none",
     assistance_instructions: str | None = None,
+    block_copy_paste: bool = False,
+    forbid_outside_tools: bool = False,
 ) -> RaterStartResponse:
-    # Render the description through the same converter used for the Prolific
-    # study description, so what raters see matches what participants see on
-    # Prolific's listing. Empty/whitespace markdown produces "" — collapse to
-    # None so the frontend can cleanly omit the section.
-    description_html = (
-        to_prolific_html(experiment_description) if experiment_description else ""
-    ) or None
+    # Sent as Markdown; the frontend renders it. Blank collapses to None so
+    # the frontend can cleanly omit the section.
+    description_markdown = (experiment_description or "").strip() or None
     return RaterStartResponse(
         rater_id=rater_id,
         session_start=session_start,
         session_end_time=policy.deadline(session_start),
         session_grace_seconds=policy.grace_minutes * 60,
         experiment_name=experiment_name,
-        experiment_description_html=description_html,
+        experiment_description_markdown=description_markdown,
         human_prompt_prefix=human_prompt_prefix,
         human_prompt_suffix=human_prompt_suffix,
         completion_url=completion_url,
         rater_session_token=rater_session_token,
         assistance_method=assistance_method,
         assistance_instructions=assistance_instructions,
-        consent_statement_html=terms.consent_html,
+        block_copy_paste=block_copy_paste,
+        forbid_outside_tools=forbid_outside_tools,
+        consent_statement_markdown=terms.consent_markdown,
         consented_at=consented_at,
-        debrief_html=terms.debrief_html,
+        debrief_markdown=terms.debrief_markdown,
     )

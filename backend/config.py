@@ -8,11 +8,12 @@ Design goals for contributors:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
@@ -138,25 +139,33 @@ class ProlificSettings(_StrictModel):
         return bool(self.api_token.strip())
 
 
-class TermsSettings(_StrictModel):
-    # Where rater consent and debrief statements live: `gs://bucket/prefix`
-    # (a private bucket, read with Application Default Credentials), an
-    # `https://` prefix, or a `file://` path relative to the backend
-    # directory. Read live when an admin configures or publishes an
-    # experiment; whatever an experiment pins is archived in the database.
-    # The platform deliberately ships no statement text of its own: unset, the
-    # consent screen shows a placeholder saying so. Layout: services/terms/source.py.
-    source_url: str = ""
-    # Keyless access to a gs:// source through Workload Identity Federation:
-    # the host (Render's managed OIDC) writes a short-lived identity token to
-    # a file, and the platform exchanges it for Google credentials. Set the
-    # provider's audience ("//iam.googleapis.com/projects/<n>/locations/global/
-    # workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
-    # token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
-    # account, when given, is impersonated so the bucket grant stays on it.
+class GcsAccessSettings(_StrictModel):
+    """How a reader reaches a private gs:// bucket (services/gcs.py).
+
+    Keyless access through Workload Identity Federation: the host (Render's
+    managed OIDC) writes a short-lived identity token to a file, and the
+    platform exchanges it for Google credentials. Set the provider's audience
+    ("//iam.googleapis.com/projects/<n>/locations/global/
+    workloadIdentityPools/<pool>/providers/<provider>") to turn this on; the
+    token file defaults to Render's AWS_WEB_IDENTITY_TOKEN_FILE. The service
+    account, when given, is impersonated so the bucket grant stays on it.
+    Unset, Application Default Credentials are used instead.
+    """
+
     gcs_wif_audience: str = ""
     gcs_wif_token_file: str = ""
     gcs_impersonate_service_account: str = ""
+
+
+class TermsSettings(GcsAccessSettings):
+    # Where rater consent and debrief statements live: `gs://bucket/prefix`
+    # (a private bucket, read with the credentials above), an `https://`
+    # prefix, or a `file://` path relative to the backend directory. Read
+    # live when an admin configures or publishes an experiment; whatever an
+    # experiment pins is archived in the database. The platform deliberately
+    # ships no statement text of its own: unset, the consent screen shows a
+    # placeholder saying so. Layout: services/terms/source.py.
+    source_url: str = ""
 
 
 class SlackSettings(_StrictModel):
@@ -166,6 +175,34 @@ class SlackSettings(_StrictModel):
     @property
     def enabled(self) -> bool:
         return bool(self.webhook_url.strip())
+
+
+class MediaSettings(GcsAccessSettings):
+    # Where the images that question `content` blocks reference live:
+    # `gs://bucket/prefix` (a private bucket, read with the credentials
+    # above) or `file://folder` (local dev and tests; relative to the
+    # backend directory). Each object is named by the SHA-256 hex digest of
+    # its bytes, the layout of the inference pipeline's media store, so that
+    # store syncs to the bucket as is. Unset means uploads carrying image
+    # blocks are refused. Layout: services/media/source.py.
+    source_url: str = ""
+    # Largest image an upload admits, in bytes. The assistance models get each
+    # image inline, and the strictest provider limit in use (Claude: 10 MB of
+    # base64, about 7.5 MB raw) would otherwise fail at assistance time, where
+    # it is hard to see. Checked at upload from the source's object sizes.
+    max_image_bytes: int = 7_000_000
+
+    @field_validator("source_url")
+    @classmethod
+    def _source_url_scheme(cls, value: str) -> str:
+        value = value.strip()
+        if value and not value.startswith(("gs://", "file://")):
+            raise ValueError(
+                f"MEDIA__SOURCE_URL must be gs://bucket/prefix or file://folder, got {value!r}"
+            )
+        if value.startswith("gs://") and not value[len("gs://") :].split("/", 1)[0]:
+            raise ValueError("MEDIA__SOURCE_URL gs:// needs a bucket name")
+        return value
 
 
 class LLMModels:
@@ -196,6 +233,38 @@ class LLMSettings(_StrictModel):
     max_retries: int = 2
 
 
+PilotCheckSeverity = Literal["error", "warning", "info"]
+
+
+class PilotCheckSettings(_StrictModel):
+    """The pilot check (docs/pilot-check.md). A hash of these values is stored
+    on every run, so changing one marks earlier runs stale; `gate_mode` and
+    `auto_start` are left out, they change what a launch asks and when a
+    run starts, not what a run looked at."""
+
+    # Served questions drawn per run (parent rows are header-only and skipped).
+    sample_size: int = Field(default=15, ge=1, le=50)
+    # <provider>/<model-id>, the same spelling as assistance_models entries.
+    judge_model: str = "openrouter/anthropic/claude-sonnet-4-6"
+    # "warn": creating a study asks the admin to confirm when the latest run is
+    #         missing, stale, running, or has a warning or error. The check
+    #         never refuses a launch: a judge will always find something.
+    # "off":  creating a study ignores the check (the UI still shows it).
+    gate_mode: Literal["warn", "off"] = "warn"
+    # Start a run on its own when an upload or an edit leaves the experiment
+    # ready to launch, so the result is there by the time an admin reaches the
+    # launch step. Skipped while a run is in progress or the latest run
+    # already covers the experiment as it is.
+    auto_start: bool = True
+    # Per-check severity overrides, keyed by check name; each check has a
+    # default in code (services/pilot_check/checks).
+    severities: dict[str, PilotCheckSeverity] = Field(default_factory=dict)
+
+    def sha256(self) -> str:
+        material = self.model_dump_json(exclude={"gate_mode", "auto_start"})
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 class PrefetchSettings(_StrictModel):
     enable_all: bool = False
     worker_count: int = Field(default=8, ge=2, le=64)
@@ -221,13 +290,22 @@ class Settings(BaseSettings):
     terms: TermsSettings = Field(default_factory=TermsSettings)
     slack: SlackSettings = Field(default_factory=SlackSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)
     prefetch: PrefetchSettings = Field(default_factory=PrefetchSettings)
+    pilot_check: PilotCheckSettings = Field(default_factory=PilotCheckSettings)
 
     # Admin/session config (mapped from flat env vars for ergonomics)
     admin_auth_enabled: bool = Field(default=True)
     admin_allowlist: Annotated[list[str], NoDecode] = Field(
         default_factory=list,
         description="Comma-separated list of allowlisted admin emails.",
+    )
+    # Google Groups whose people (nested groups included) are admitted like
+    # admin_allowlist. Read as the platform's service account; see
+    # services/admin_groups.py. Empty => the allowlist is the only gate.
+    admin_groups: Annotated[list[str], NoDecode] = Field(
+        default_factory=list,
+        description="Comma-separated list of Google Group emails whose members are admins.",
     )
     # Bearer keys for the programmatic /api/v1 read API (CLI / inference
     # pipelines). Comma-separated or JSON array so keys can be rotated by
@@ -276,7 +354,7 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
-    @field_validator("admin_allowlist", mode="before")
+    @field_validator("admin_allowlist", "admin_groups", mode="before")
     @classmethod
     def parse_admin_allowlist(cls, value: object) -> list[str]:
         if value is None:

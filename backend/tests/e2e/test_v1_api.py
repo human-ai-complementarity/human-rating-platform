@@ -263,6 +263,7 @@ _INTERNAL_FIELDS = {
     "launch_ready",
     "launch_blockers",
     "launch_blocker_fixes",
+    "launch_blocker_summary",
 }
 
 

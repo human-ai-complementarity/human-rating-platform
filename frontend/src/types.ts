@@ -53,6 +53,9 @@ export interface Experiment {
   consent_statement_ref: string | null;
   debrief_statement_ref: string | null;
   is_markdown: boolean;
+  render_math: boolean;
+  block_copy_paste: boolean;
+  forbid_outside_tools: boolean;
   prolific_pool: string | null;
   status: ExperimentStatus;
   // Non-null ISO timestamp when the experiment has been archived (soft-hidden
@@ -83,6 +86,97 @@ export interface Experiment {
   launch_blockers: string[];
   // How to fix each blocker, one per blocker in the same order.
   launch_blocker_fixes: string[];
+  // The blockers as one clause ("this experiment is missing questions"), as
+  // the launch 400 words it. Null when ready.
+  launch_blocker_summary: string | null;
+  // The latest pilot check's state (docs/pilot-check.md), computed with the
+  // launch gate's own function so the UI nags exactly when the API would 409.
+  // Absent on responses from older endpoints; treat as unknown.
+  pilot_check?: PilotCheckSummary | null;
+}
+
+// ── Pilot check (docs/pilot-check.md) ────────────────────────────────────
+
+export type PilotCheckState =
+  | 'not_run'
+  | 'running'
+  | 'stale'
+  | 'passed'
+  | 'warnings'
+  | 'failed'
+  | 'aborted';
+
+export type PilotCheckSeverity = 'error' | 'warning' | 'info';
+
+export interface PilotCheckSummary {
+  state: PilotCheckState;
+  run_id: number | null;
+  created_at: string | null;
+  finished_at: string | null;
+  counts: Record<PilotCheckSeverity, number>;
+  // True when creating a study answers 409 until the request carries
+  // acknowledge_pilot_check: the admin is asked to confirm, never refused.
+  needs_acknowledgement: boolean;
+  // One sentence on why, or null when the run is clean.
+  reason: string | null;
+}
+
+export interface PilotCheckFinding {
+  check: string;
+  check_label: string;
+  severity: PilotCheckSeverity;
+  message: string;
+  // Every question the finding applies to; empty for an experiment-level one.
+  question_ids: number[];
+  detail: string | null;
+}
+
+export interface PilotCheckProbe {
+  question_id: number;
+  step_type: string;
+  payload: Record<string, unknown>;
+  failure_reason: string | null;
+  failure_detail: string | null;
+  latency_ms: number;
+}
+
+// sampling | assistance | checks | <judged check name> | done, labelled
+// by the backend so the card never has to know the check names.
+export interface PilotCheckStage {
+  id: string;
+  label: string;
+}
+
+export interface PilotCheckRun {
+  id: number;
+  experiment_id: number;
+  status: 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  // Where the run is and the stages it goes through (the card's stepper).
+  stage: string | null;
+  stage_detail: string | null;
+  stages: PilotCheckStage[];
+  requested_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+  fingerprint: string;
+  config_sha256: string;
+  terms_ref: string | null;
+  sample_question_ids: number[];
+  findings: PilotCheckFinding[];
+  // null on a control arm: no method ran.
+  assistance_steps: PilotCheckProbe[] | null;
+  judge_model: string | null;
+  error: string | null;
+  // The experiment changed since this run looked at it.
+  stale: boolean;
+  sample_size: number;
+}
+
+// The structured body of the launch gate's 409.
+export interface PilotCheckRefusal {
+  code: 'pilot_check';
+  message: string;
+  pilot_check: PilotCheckSummary;
 }
 
 // A group whose wave is not the platform's current one.
@@ -166,12 +260,16 @@ export const UPLOAD_META_KEYS = [
   ...DATASET_META_FIELDS,
   'assistance_models.top_n',
   'assistance_models.human_as_a_tool',
+  'render_math',
+  'render_markdown',
 ] as const;
 export type UploadMetaKey = (typeof UPLOAD_META_KEYS)[number];
 // What an upload declared; `assistance_models` maps method to an entry. Rows
 // uploaded before entries carried options hold a bare model id.
 export type DatasetMeta = Partial<Record<DatasetMetaField, string>> & {
   assistance_models?: Record<string, AssistanceModelEntry | string>;
+  render_math?: boolean;
+  render_markdown?: boolean;
 };
 
 export type StudyLabel =
@@ -248,10 +346,17 @@ export interface TermsStatus {
 export interface TermsPreview {
   pinned: boolean;
   consent_ref: string;
-  consent_html: string;
+  consent_markdown: string;
   debrief_ref: string | null;
-  debrief_html: string | null;
+  debrief_markdown: string | null;
 }
+
+// One piece of a question's stimulus. Text blocks are rendered like
+// question_text; an image block's `url` is fetchable until it expires (a
+// signed GCS URL, or an API path the client prefixes with its API host).
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; mime_type: string };
 
 export interface Question {
   assignment_id?: number | null;
@@ -261,7 +366,11 @@ export interface Question {
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  // The stimulus as blocks when it carries images; null means render the
+  // text field.
+  content?: ContentBlock[] | null;
   is_markdown: boolean;
+  render_math: boolean;
 }
 
 export interface ExperimentStats {
@@ -306,9 +415,8 @@ export interface Session {
   // screen may still be submitted. New questions stop at session_end_time.
   session_grace_seconds: number;
   experiment_name: string;
-  // Pre-rendered HTML (via the same Prolific-markdown converter the external
-  // study description uses). Render with dangerouslySetInnerHTML on the splash.
-  experiment_description_html: string | null;
+  // The researcher's study description, as Markdown.
+  experiment_description_markdown: string | null;
   // Per-question framing rendered above (prefix) and below (suffix) the
   // question text. Constant for the session.
   human_prompt_prefix: string | null;
@@ -317,13 +425,16 @@ export interface Session {
   rater_session_token: string;
   assistance_method: string;
   assistance_instructions: string | null;
-  // Pre-rendered consent statement with the study's placeholders filled.
+  // Absent on a session stored before these existed, which reads as off.
+  block_copy_paste?: boolean;
+  forbid_outside_tools?: boolean;
+  // The consent statement with the study's placeholders filled, as Markdown.
   // Shown until `consented_at` is set.
-  consent_statement_html: string;
+  consent_statement_markdown: string;
   consented_at: string | null;
   // Only deception studies have a debrief; when present the completion
   // screen shows it and the redirect to Prolific is manual.
-  debrief_html: string | null;
+  debrief_markdown: string | null;
 }
 
 export interface ConsentResponse {
@@ -424,6 +535,8 @@ export interface RaterAnalytics {
   study_id: string | null;
   session_start: string | null;
   timed_out: boolean;
+  // What they wrote on the optional end-of-session screen; null if skipped.
+  feedback: string | null;
   // "standard v1" and when they agreed; null for raters from before consent
   // was recorded.
   consent_version: string | null;
@@ -501,6 +614,10 @@ export interface ExperimentRound {
   // working. Null until the round has been synced from Prolific.
   submissions_completed: number | null;
   submissions_in_progress: number | null;
+  // The pilot check run this round was launched against, and who launched
+  // past a check the gate would have stopped (docs/pilot-check.md).
+  pilot_check_run_id?: number | null;
+  pilot_check_acknowledged_by?: string | null;
 }
 
 export interface ExperimentRoundUpdate {
@@ -523,11 +640,8 @@ export interface PilotStudyCreate {
   study_label: StudyLabel;
   screeners: Screener[];
   excluded_experiment_ids: number[];
-}
-
-// What a one-click launch excludes: every other experiment on the dataset.
-export interface LaunchPreview {
-  excluded_experiments: { id: number; name: string; internal_name: string | null }[];
+  // The admin saw the pilot check's refusal and chose to launch anyway.
+  acknowledge_pilot_check?: boolean;
 }
 
 export interface RecommendationResponse {
@@ -537,6 +651,10 @@ export interface RecommendationResponse {
   recommended_places: number;
   is_complete: boolean;
 }
+
+// `read` reaches /api/v1 only; `admin` also passes the /api/admin gate, for
+// CLIs that create studies and upload questions.
+export type ApiKeyScope = 'read' | 'admin';
 
 export interface ApiKey {
   id: number;
@@ -548,6 +666,7 @@ export interface ApiKey {
   last_used_at: string | null;
   revoked_at: string | null;
   created_by: string | null;
+  scope: ApiKeyScope;
   is_active: boolean;
 }
 

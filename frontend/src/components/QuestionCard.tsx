@@ -2,8 +2,15 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import type { CSSProperties } from 'react';
 import ReactMarkdown from 'react-markdown';
 import type { Components } from 'react-markdown';
+import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
-import type { Question } from '../types';
+import type { ContentBlock, Question } from '../types';
+import { resolveMediaUrl } from '../api';
+import { hasCodeFence, loadCodeHighlighter, useCodeHighlighter } from '../codeHighlight';
+import { FORMULA_PROPERTY, maskMath, remarkMaskedMath, splitMath, useMathRenderer } from '../math';
+import type { MathRenderer } from '../math';
+import { CodeBlock } from './CodeBlock';
+import { MarkdownLink } from './ProseMarkdown';
 import { primaryButton, textareaStyle } from './experiment-detail/ui';
 import tokensCss from '../styles/tokens.css?raw';
 import appCss from '../index.css?raw';
@@ -14,9 +21,26 @@ import appCss from '../index.css?raw';
 // of characters, a long-context document runs six figures), so the exact value
 // only matters if a dataset ever lands in between.
 const INLINE_CONTEXT_MAX_CHARS = 2000;
+// A plain question is a line or two, set as a heading. A Markdown question is
+// a page of reading text (a PR, a transcript, code and a summary), so it takes
+// the body size of the prose around it and keeps the serif for its headings.
+const QUESTION_HEADING_STYLE: CSSProperties = {
+  fontFamily: 'var(--font-head)',
+  fontSize: 'var(--text-heading)',
+  lineHeight: 1.4,
+  letterSpacing: '-0.005em',
+  color: 'var(--ink)',
+};
+const QUESTION_PROSE_STYLE: CSSProperties = { color: 'var(--ink)' };
 const OPTION_LABEL_PATTERN = /(?:^|\r?\n)\s*(?:\(?[A-Z]\)?[.)]|[A-Z]:)\s+/g;
 // 5-point unipolar Likert scale for self-reported confidence (index 0 -> value 1).
-const CONFIDENCE_LABELS = ['Not at all', 'Slightly', 'Moderately', 'Very', 'Completely'];
+const CONFIDENCE_LABELS = [
+  'Not at all confident',
+  'Slightly confident',
+  'Moderately confident',
+  'Very confident',
+  'Extremely confident',
+];
 
 interface QuestionCardProps {
   question: Question;
@@ -29,6 +53,7 @@ interface QuestionCardProps {
   // constant for the session and either may be null.
   humanPromptPrefix?: string | null;
   humanPromptSuffix?: string | null;
+  blockCopy?: boolean;
 }
 
 type QuestionDisplay = {
@@ -37,6 +62,7 @@ type QuestionDisplay = {
   /** Rendered inline in the "Context" box above the question. */
   inlineContext: string | null;
   questionText: string;
+  questionBlocks: ContentBlock[] | null;
 };
 
 function escapeHtml(value: string): string {
@@ -49,28 +75,230 @@ function escapeHtml(value: string): string {
 }
 
 const MARKDOWN_COMPONENTS: Components = {
-  a: ({ href, title, children }) => {
-    // Open external links in a new tab to avoid losing in-progress work.
-    const inPage = href?.startsWith('#') === true;
-    return (
-      <a
-        href={href}
-        title={title}
-        target={inPage ? undefined : '_blank'}
-        rel={inPage ? undefined : 'noopener noreferrer'}
-      >
-        {children}
-      </a>
-    );
-  },
+  a: MarkdownLink,
   table: ({ children }) => (
     <div className="question-markdown-table-scroll">
       <table>{children}</table>
     </div>
   ),
+  pre: CodeBlock,
 };
 
+// A formula keeps its full height in the line, so a tall \dfrac pushes the
+// next line down instead of overlapping it, and is set in the system's math
+// font: MathML sizes fractions and scripts from a math font's metrics, which
+// the card's text fonts lack. Inline styles, because the plain document tab
+// carries none of the app's stylesheets.
+const INLINE_MATH_STYLE: CSSProperties = {
+  display: 'inline-block',
+  lineHeight: 'normal',
+  fontFamily: 'math',
+  // Stacked fractions on consecutive lines would otherwise touch.
+  margin: '0.15em 0',
+};
+const DISPLAY_MATH_STYLE: CSSProperties = { ...INLINE_MATH_STYLE, display: 'block' };
+
+// Plain text with its math typeset. KaTeX escapes the TeX it is given and,
+// untrusted by default, renders no links or raw HTML, so its markup is safe to
+// inject. Typeset once per text: the card re-renders on every keystroke in the
+// free-text box.
+function MathText({ text, math }: { text: string; math: MathRenderer }) {
+  const parts = useMemo(
+    () =>
+      splitMath(text).map((segment) =>
+        segment.kind === 'text'
+          ? segment
+          : { ...segment, html: math.toHtml(segment.tex, segment.display) },
+      ),
+    [text, math],
+  );
+  return (
+    <>
+      {parts.map((part, index) =>
+        part.kind === 'text' ? (
+          part.text
+        ) : (
+          <span
+            key={index}
+            style={part.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
+            dangerouslySetInnerHTML={{ __html: part.html }}
+          />
+        ),
+      )}
+    </>
+  );
+}
+
+const MARKDOWN_PLUGINS = [remarkGfm, remarkBreaks];
+
+// An MC option renders like the question, except that a link inside the
+// button would open instead of selecting the option, so it shows as its text.
+const OPTION_MARKDOWN_COMPONENTS: Components = {
+  ...MARKDOWN_COMPONENTS,
+  a: ({ children }) => <>{children}</>,
+};
+
+// Markdown, with its math typeset when `math` is given. The formulas are
+// masked out of the source before Markdown parses it and typeset where their
+// tokens come out (see `maskMath`), once per text like `MathText`.
+function MarkdownBody({
+  text,
+  math,
+  components: baseComponents = MARKDOWN_COMPONENTS,
+  style,
+}: {
+  text: string;
+  math: MathRenderer | null;
+  components?: Components;
+  style?: CSSProperties;
+}) {
+  const rendering = useMemo(() => {
+    if (!math) return { source: text, plugins: MARKDOWN_PLUGINS, components: baseComponents };
+    const { markdown, formulas } = maskMath(text);
+    const typeset = formulas.map((formula) => ({
+      display: formula.display,
+      html: math.toHtml(formula.tex, formula.display),
+    }));
+    const components: Components = {
+      ...baseComponents,
+      // A span is a formula or, in a code block, a highlighted token.
+      span: ({ node, className, children }) => {
+        const formula = typeset[Number(node?.properties[FORMULA_PROPERTY])];
+        if (!formula) return <span className={className}>{children}</span>;
+        return (
+          <span
+            style={formula.display ? DISPLAY_MATH_STYLE : INLINE_MATH_STYLE}
+            dangerouslySetInnerHTML={{ __html: formula.html }}
+          />
+        );
+      },
+    };
+    return {
+      source: markdown,
+      plugins: [...MARKDOWN_PLUGINS, remarkMaskedMath(formulas)],
+      components,
+    };
+  }, [text, math, baseComponents]);
+  const codePlugins = useCodeHighlighter(hasCodeFence(text));
+  // One element per source: the card re-renders on every keystroke in the
+  // free-text box, and React skips an element it has already rendered, so the
+  // Markdown is not parsed and highlighted again each time.
+  const rendered = useMemo(
+    () => (
+      <ReactMarkdown
+        remarkPlugins={rendering.plugins}
+        rehypePlugins={codePlugins ?? undefined}
+        components={rendering.components}
+      >
+        {rendering.source}
+      </ReactMarkdown>
+    ),
+    [rendering, codePlugins],
+  );
+  return (
+    <div className="question-markdown markdown rater-prose" style={style}>
+      {rendered}
+    </div>
+  );
+}
+
+// The question text, or an MC option, following both rendering flags.
 function QuestionBody({
+  text,
+  markdown,
+  math,
+  components,
+  style,
+}: {
+  text: string;
+  markdown: boolean;
+  // Null when the experiment does not render math, or KaTeX failed to load.
+  math: MathRenderer | null;
+  components?: Components;
+  style?: CSSProperties;
+}) {
+  if (markdown) {
+    return <MarkdownBody text={text} math={math} components={components} style={style} />;
+  }
+  // Line breaks kept, and a long unbroken token wraps instead of widening the card.
+  return (
+    <p style={{ ...style, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+      {math ? <MathText text={text} math={math} /> : text}
+    </p>
+  );
+}
+
+function ContentImage({ url, index }: { url: string; index: number }) {
+  const src = resolveMediaUrl(url);
+  return (
+    <a
+      href={src}
+      target="_blank"
+      rel="noreferrer"
+      title="Open image in new tab"
+      style={{ display: 'block', margin: '12px 0' }}
+    >
+      <img
+        src={src}
+        alt={`Question image ${index}`}
+        loading="lazy"
+        style={{
+          display: 'block',
+          maxWidth: '100%',
+          height: 'auto',
+          border: '1px solid #e6e1d5',
+          borderRadius: 9,
+          background: '#ffffff',
+        }}
+      />
+    </a>
+  );
+}
+
+/**
+ * A stimulus with images: its blocks in order, text rendered as the plain
+ * question text would be, each image full width and opening at full size in
+ * a new tab. Inline styles throughout, so the same markup works in the
+ * standalone document popup.
+ */
+function ContentBlocks({
+  blocks,
+  markdown,
+  math,
+  textStyle,
+}: {
+  blocks: ContentBlock[];
+  markdown: boolean;
+  math: MathRenderer | null;
+  textStyle?: CSSProperties;
+}) {
+  let imageIndex = 0;
+  return (
+    <div className="question-content">
+      {blocks.map((block, i) =>
+        block.type === 'image' ? (
+          <ContentImage key={i} url={block.url} index={++imageIndex} />
+        ) : (
+          <QuestionBody
+            key={i}
+            text={block.text}
+            markdown={markdown}
+            math={math}
+            style={textStyle}
+          />
+        ),
+      )}
+    </div>
+  );
+}
+
+// Researcher-supplied framing is instructional, not decorative: raters are
+// expected to read it before answering, so it gets a callout rather than muted
+// italics. The callout carries no heading: a prefix or suffix may be
+// instructions, context or the question itself, so no one label fits. It
+// follows the experiment's Markdown flag like the question does; math stays
+// off, the framing is shown as written.
+function PromptFraming({
   text,
   markdown,
   style,
@@ -79,22 +307,6 @@ function QuestionBody({
   markdown: boolean;
   style?: CSSProperties;
 }) {
-  if (!markdown) {
-    return <p style={{ ...style, whiteSpace: 'pre-wrap' }}>{text}</p>;
-  }
-  return (
-    <div className="question-markdown markdown" style={style}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-        {text}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
-// Researcher-supplied framing is instructional, not decorative: raters are
-// expected to read it before answering, so it gets a labelled callout rather
-// than muted italics.
-function PromptFraming({ text, style }: { text: string; style?: CSSProperties }) {
   return (
     <div
       style={{
@@ -105,29 +317,12 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
         ...style,
       }}
     >
-      <div
-        style={{
-          fontFamily: 'var(--font-mono)',
-          fontSize: 11,
-          letterSpacing: '0.1em',
-          textTransform: 'uppercase',
-          color: 'var(--accent-soft-ink)',
-          marginBottom: 7,
-        }}
-      >
-        Instructions
-      </div>
-      <p
-        style={{
-          fontSize: 16,
-          lineHeight: 1.6,
-          color: 'var(--ink)',
-          margin: 0,
-          whiteSpace: 'pre-wrap',
-        }}
-      >
-        {text}
-      </p>
+      <QuestionBody
+        text={text}
+        markdown={markdown}
+        math={null}
+        style={{ fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)', color: 'var(--ink)', margin: 0 }}
+      />
     </div>
   );
 }
@@ -144,11 +339,13 @@ function PromptFraming({ text, style }: { text: string; style?: CSSProperties })
 function parseQuestionDisplay(question: Question): QuestionDisplay {
   const parent = question.parent_question_text?.trim() || null;
   const parentIsDocument = parent !== null && parent.length > INLINE_CONTEXT_MAX_CHARS;
+  const questionBlocks = question.content?.length ? question.content : null;
 
   return {
     documentText: parentIsDocument ? parent : null,
     inlineContext: parentIsDocument ? null : parent,
     questionText: question.question_text,
+    questionBlocks,
   };
 }
 
@@ -179,20 +376,32 @@ function parseOptions(rawOptions: string | null): string[] {
 
 // The title is deliberately generic: it shows up in the popup's tab, and the
 // external question id would tell a rater which dataset the item came from.
+const NO_COPY_BODY_ATTRS =
+  ' oncopy="return false" oncut="return false" ondragstart="return false" style="-webkit-user-select: none; user-select: none"';
+
 async function buildLongContextDocumentHtml(
   documentText: string,
   isMarkdown: boolean,
+  math: MathRenderer | null,
+  blockCopy: boolean,
 ): Promise<string> {
   const title = 'Document';
   // The window is a standalone HTML string, so the card's Markdown component is
   // pre-rendered into it and the stylesheets its classes need are inlined.
   let body = `<pre>${escapeHtml(documentText)}</pre>`;
   let appStyles = '';
-  if (isMarkdown) {
+  if (isMarkdown || math) {
     // Lazy import so 'react-dom/server' isn't included in every bundle
     const { renderToStaticMarkup } = await import('react-dom/server');
-    body = renderToStaticMarkup(<QuestionBody text={documentText} markdown />);
-    appStyles = `<style>${tokensCss}${appCss}</style>`;
+    if (isMarkdown) {
+      // A static render runs no effects, so the highlighter has to be loaded
+      // before it; a failed load leaves the document's code uncoloured.
+      if (hasCodeFence(documentText)) await loadCodeHighlighter().catch(() => null);
+      body = renderToStaticMarkup(<QuestionBody text={documentText} markdown math={math} />);
+      appStyles = `<style>${tokensCss}${appCss}</style>`;
+    } else if (math) {
+      body = `<pre>${renderToStaticMarkup(<MathText text={documentText} math={math} />)}</pre>`;
+    }
   }
 
   return `<!doctype html>
@@ -216,7 +425,7 @@ async function buildLongContextDocumentHtml(
     h1 {
       margin: 0 0 20px;
       font-family: "Source Serif 4", Georgia, serif;
-      font-size: 26px;
+      font-size: 1.75rem;
       line-height: 1.25;
       font-weight: 600;
       letter-spacing: -0.01em;
@@ -239,7 +448,7 @@ async function buildLongContextDocumentHtml(
     }
   </style>
 </head>
-<body>
+<body${blockCopy ? NO_COPY_BODY_ATTRS : ''}>
   <main>
     <h1>${escapeHtml(title)}</h1>
     ${body}
@@ -248,10 +457,12 @@ async function buildLongContextDocumentHtml(
 </html>`;
 }
 
-function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false, humanPromptPrefix = null, humanPromptSuffix = null }: QuestionCardProps) {
+function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer = null, assistanceActive = false, humanPromptPrefix = null, humanPromptSuffix = null, blockCopy = false }: QuestionCardProps) {
   const [selectedAnswer, setSelectedAnswer] = useState('');
   const [freeTextAnswer, setFreeTextAnswer] = useState('');
-  const [confidence, setConfidence] = useState(3);
+  // Starts unset and is required: a preset value would be recorded as the
+  // rater's confidence even when they never looked at the scale.
+  const [confidence, setConfidence] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [documentUrl, setDocumentUrl] = useState<string | null>(null);
   const timeStartedRef = useRef(new Date().toISOString());
@@ -260,6 +471,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     [question]
   );
   const options = useMemo(() => parseOptions(question.options), [question.options]);
+  const { ready: mathReady, renderer: math } = useMathRenderer(question.render_math, question.id);
+  const questionStyle = question.is_markdown ? QUESTION_PROSE_STYLE : QUESTION_HEADING_STYLE;
 
   // An MC question with no usable options falls back to the free-text input, so
   // every answer read below has to follow the input that is actually rendered.
@@ -268,31 +481,39 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
   useEffect(() => {
     setSelectedAnswer('');
     setFreeTextAnswer('');
-    setConfidence(3);
+    setConfidence(null);
     setSubmitting(false);
     timeStartedRef.current = new Date().toISOString();
   }, [question.id]);
 
+  // The card waits for KaTeX on the first math question, so the clock starts
+  // when the question is shown, not when it arrived.
   useEffect(() => {
-    if (!display.documentText) {
+    if (mathReady) timeStartedRef.current = new Date().toISOString();
+  }, [mathReady]);
+
+  useEffect(() => {
+    if (!display.documentText || !mathReady) {
       setDocumentUrl(null);
       return;
     }
 
     let url: string | null = null;
     let cancelled = false;
-    void buildLongContextDocumentHtml(display.documentText, question.is_markdown).then((html) => {
-      if (cancelled) return;
-      url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
-      setDocumentUrl(url);
-    });
+    void buildLongContextDocumentHtml(display.documentText, question.is_markdown, math, blockCopy).then(
+      (html) => {
+        if (cancelled) return;
+        url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+        setDocumentUrl(url);
+      },
+    );
 
     return () => {
       cancelled = true;
       if (url) URL.revokeObjectURL(url);
       setDocumentUrl(null);
     };
-  }, [display.documentText, question.is_markdown]);
+  }, [display.documentText, question.is_markdown, mathReady, math, blockCopy]);
 
   // Prefill with AI's suggested answer when assistance completes
   useEffect(() => {
@@ -311,6 +532,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       alert('Please provide an answer');
       return;
     }
+    if (confidence === null) return;
 
     setSubmitting(true);
     try {
@@ -320,21 +542,31 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
     }
   };
 
-  const canSubmit = !disabled && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
+  const canSubmit =
+    !disabled && confidence !== null && (isMC ? !!selectedAnswer : !!freeTextAnswer.trim());
+
+  const cardStyle: CSSProperties = {
+    background: 'var(--surface)',
+    borderRadius: 'var(--radius)',
+    border: '1px solid var(--faint)',
+    boxShadow: 'var(--shadow)',
+    padding: 'clamp(20px, 5vw, 32px)',
+  };
+
+  // Rather than raw TeX that reflows once KaTeX arrives (first math question).
+  if (!mathReady) {
+    return (
+      <div style={cardStyle} aria-busy="true">
+        <p style={{ color: 'var(--muted)', margin: 0 }}>Loading…</p>
+      </div>
+    );
+  }
 
   return (
-    <div
-      style={{
-        background: 'var(--surface)',
-        borderRadius: 'var(--radius)',
-        border: '1px solid var(--faint)',
-        boxShadow: 'var(--shadow)',
-        padding: 32,
-      }}
-    >
+    <div style={cardStyle}>
       <div
         style={{
-          font: '600 11px/1 var(--font-mono)',
+          font: '600 var(--text-label)/1 var(--font-mono)',
           letterSpacing: '0.16em',
           textTransform: 'uppercase',
           color: 'var(--muted)',
@@ -356,7 +588,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
         >
           <div
             style={{
-              font: '600 10px/1 var(--font-mono)',
+              font: '600 var(--text-label)/1 var(--font-mono)',
               letterSpacing: '0.16em',
               textTransform: 'uppercase',
               color: 'var(--muted)',
@@ -368,7 +600,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           <QuestionBody
             text={display.inlineContext}
             markdown={question.is_markdown}
-            style={{ fontSize: 15, lineHeight: 1.55, color: 'var(--ink)', margin: 0 }}
+            math={math}
+            style={{ fontSize: 'var(--text-body)', lineHeight: 'var(--leading-body)', color: 'var(--ink)', margin: 0 }}
           />
         </div>
       )}
@@ -386,7 +619,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             border: '1px solid var(--accent)',
             borderRadius: 'var(--radius-sm)',
             color: 'var(--accent-ink)',
-            fontSize: 15,
+            fontSize: 'var(--text-body)',
             fontWeight: 600,
             textDecoration: 'none',
             marginBottom: 20,
@@ -397,29 +630,41 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
       )}
 
       {humanPromptPrefix && humanPromptPrefix.trim() && (
-        <PromptFraming text={humanPromptPrefix} style={{ marginBottom: 20 }} />
+        <PromptFraming
+          text={humanPromptPrefix}
+          markdown={question.is_markdown}
+          style={{ marginBottom: 20 }}
+        />
       )}
 
-      <QuestionBody
-        text={display.questionText}
-        markdown={question.is_markdown}
-        style={{
-          fontFamily: 'var(--font-head)',
-          fontSize: 22,
-          lineHeight: 1.35,
-          letterSpacing: '-0.005em',
-          color: 'var(--ink)',
-          marginTop: 0,
-          marginBottom: 24,
-        }}
-      />
+      {display.questionBlocks ? (
+        <div style={{ marginBottom: 24 }}>
+          <ContentBlocks
+            blocks={display.questionBlocks}
+            markdown={question.is_markdown}
+            math={math}
+            textStyle={{ ...questionStyle, margin: 0 }}
+          />
+        </div>
+      ) : (
+        <QuestionBody
+          text={display.questionText}
+          markdown={question.is_markdown}
+          math={math}
+          style={{ ...questionStyle, marginTop: 0, marginBottom: 24 }}
+        />
+      )}
 
       {humanPromptSuffix && humanPromptSuffix.trim() && (
-        <PromptFraming text={humanPromptSuffix} style={{ marginTop: -4, marginBottom: 24 }} />
+        <PromptFraming
+          text={humanPromptSuffix}
+          markdown={question.is_markdown}
+          style={{ marginTop: -4, marginBottom: 24 }}
+        />
       )}
 
       {assistanceActive && assistanceAnswer == null && (
-        <p style={{ fontSize: 14, color: 'var(--muted)', fontStyle: 'italic', marginBottom: 16 }}>
+        <p style={{ fontSize: 'var(--text-secondary)', color: 'var(--muted)', fontStyle: 'italic', marginBottom: 16 }}>
           Answer the questions on the right to help inform your response.
         </p>
       )}
@@ -439,6 +684,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
               <button
                 key={index}
                 type="button"
+                className="question-option"
                 aria-pressed={selected}
                 onClick={() => setSelectedAnswer(option)}
                 onMouseEnter={(e) => {
@@ -456,10 +702,9 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                   border: `1px solid ${selected ? 'var(--accent)' : 'var(--faint)'}`,
                   borderRadius: 'var(--radius-sm)',
                   cursor: 'pointer',
-                  fontSize: 15,
                   textAlign: 'left',
                   color: 'var(--ink)',
-                  font: '500 15px/1.5 var(--font-body)',
+                  font: '500 var(--text-body)/1.5 var(--font-body)',
                   transition: 'background 0.12s, border-color 0.12s',
                 }}
               >
@@ -489,7 +734,14 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
                     />
                   )}
                 </span>
-                <span style={{ flex: 1 }}>{option}</span>
+                {/* Display only: the answer submitted is the option as written. */}
+                <QuestionBody
+                  text={option}
+                  markdown={question.is_markdown}
+                  math={math}
+                  components={OPTION_MARKDOWN_COMPONENTS}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
               </button>
             );
           })}
@@ -500,7 +752,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           onChange={(e) => setFreeTextAnswer(e.target.value)}
           placeholder="Type your answer here..."
           rows={4}
-          style={{ ...textareaStyle, marginBottom: 26 }}
+          style={{ ...textareaStyle, fontSize: 'var(--text-body)', marginBottom: 26 }}
         />
       ))}
 
@@ -523,31 +775,41 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             }}
           >
             <span
+              id={`confidence-label-${question.id}`}
               style={{
-                font: '600 10px/1 var(--font-mono)',
-                letterSpacing: '0.16em',
-                textTransform: 'uppercase',
-                color: 'var(--muted)',
+                font: '600 var(--text-body)/1.4 var(--font-body)',
+                color: 'var(--ink)',
               }}
             >
-              Confidence
+              How confident are you that your answer is correct?
             </span>
             <span
               style={{
-                fontSize: 14,
-                fontWeight: 600,
-                color: 'var(--accent-soft-ink)',
+                fontSize: 'var(--text-secondary)',
+                fontWeight: confidence === null ? 400 : 600,
+                color: confidence === null ? 'var(--muted)' : 'var(--accent-soft-ink)',
+                whiteSpace: 'nowrap',
+                marginLeft: 12,
               }}
             >
-              {CONFIDENCE_LABELS[confidence - 1]}
+              {confidence === null ? 'Required' : CONFIDENCE_LABELS[confidence - 1]}
             </span>
           </div>
+          {/* A range input always holds a value, so "unset" is our own state:
+              the thumb stays hidden until the rater clicks or drags. onChange
+              misses a click on the middle of the track (the value it already
+              holds), so onClick records the choice as well. */}
           <input
             type="range"
             min="1"
             max="5"
-            value={confidence}
+            aria-labelledby={`confidence-label-${question.id}`}
+            aria-required
+            aria-valuetext={confidence === null ? 'Not chosen' : CONFIDENCE_LABELS[confidence - 1]}
+            className={confidence === null ? 'confidence-unset' : undefined}
+            value={confidence ?? 3}
             onChange={(e) => setConfidence(parseInt(e.target.value))}
+            onClick={(e) => setConfidence(parseInt(e.currentTarget.value))}
             style={{
               width: '100%',
               height: 6,
@@ -561,9 +823,8 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
           <div
             style={{
               position: 'relative',
-              height: 14,
+              height: 32,
               marginTop: 10,
-              fontSize: 11,
             }}
           >
             {CONFIDENCE_LABELS.map((label, i) => {
@@ -572,22 +833,35 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
               const isLast = i === CONFIDENCE_LABELS.length - 1;
               const isActive = confidence === i + 1;
               return (
-                <span
+                <button
                   key={label}
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setConfidence(i + 1)}
+                  className={isFirst || isLast ? undefined : 'confidence-mid-label'}
                   style={{
                     position: 'absolute',
                     whiteSpace: 'nowrap',
                     left: `${pct}%`,
                     transform: isFirst ? 'none' : isLast ? 'translateX(-100%)' : 'translateX(-50%)',
+                    padding: 0,
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontFamily: 'var(--font-body)',
                     fontWeight: isActive ? 700 : 500,
                     color: isActive ? 'var(--accent-soft-ink)' : 'var(--muted)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 10,
-                    letterSpacing: '0.04em',
+                    fontSize: 'var(--text-label)',
+                    lineHeight: 1.3,
+                    textAlign: isFirst ? 'left' : isLast ? 'right' : 'center',
                   }}
+                  aria-label={label}
                 >
-                  {label}
-                </span>
+                  {/* Two lines, so five full labels fit under the track. */}
+                  {label.replace(' confident', '')}
+                  <br />
+                  confident
+                </button>
               );
             })}
           </div>
@@ -603,7 +877,7 @@ function QuestionCard({ question, onSubmit, disabled = false, assistanceAnswer =
             ...primaryButton,
             width: '100%',
             padding: '14px 22px',
-            fontSize: 15,
+            fontSize: 'var(--text-body)',
             background: canSubmit ? 'var(--accent)' : 'var(--faint)',
             color: canSubmit ? 'var(--accent-ink)' : 'var(--muted)',
             cursor: canSubmit ? 'pointer' : 'not-allowed',

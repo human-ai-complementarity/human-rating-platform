@@ -34,7 +34,7 @@ from .registry import get_method, record_role_models
 from .events import _call_method, _record_call, _last_human_input
 from .session_values import optional_json, step_columns
 from .preparation import PreparationContext, QuestionSnapshot
-from .runner import PreparationRunner, CLAIM_SECONDS, EXECUTION_SECONDS
+from .runner import PreparationRunner, CLAIM_SECONDS, EXECUTION_SECONDS, start_method
 from session_policy import resolve_session_policy
 
 logger = logging.getLogger(__name__)
@@ -222,32 +222,17 @@ async def start_assistance(
     recorded_params = record_role_models(method_name, params)
     await db.commit()
     try:
-
-        async def invoke():
-            with provider_context(
-                rater_id=rater_id,
-                question_id=question_id,
-                experiment_id=question_snapshot.experiment_id,
-                session_id=session_id,
-                method=method_name,
-            ):
-                async with asyncio.timeout(EXECUTION_SECONDS):
-                    return await method.start(
-                        question_snapshot,
-                        params,
-                        parent_question_text=parent_question_text,
-                        experiment_system_prompt=system_prompt,
-                    )
-
-        call = await _call_method(
-            invoke,
-            fallback=StepType.NONE,
-            log_message="Assistance start failed; continuing without assistance",
-            log_attributes={
-                "rater_id": rater_id,
-                "question_id": question_id,
-                "method": method_name,
-            },
+        call = await start_method(
+            method,
+            question_snapshot,
+            params,
+            parent_question_text=parent_question_text,
+            system_prompt=system_prompt,
+            rater_id=rater_id,
+            question_id=question_id,
+            experiment_id=question_snapshot.experiment_id,
+            session_id=session_id,
+            method=method_name,
         )
         rater = await lock_rater(rater_id, db)
         if rater.session_start != generation:

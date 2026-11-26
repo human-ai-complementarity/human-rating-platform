@@ -35,8 +35,8 @@ background process, so under a tool that waits for completion they will **not
 return** until the frontend later stops — they get moved to the background. That
 is expected.
 
-- Start them with `run_in_background: true` (or let them move to background).
-- **Do not** `TaskStop` the `dev.up`/`dev.restart` task to "clean up" — the
+- Start them as a background command (or let them move to background).
+- **Do not** stop or kill the `dev.up`/`dev.restart` task to "clean up" — the
   frontend can share its process group, so killing the task kills the frontend.
   Stop servers with `make dev.down` instead.
 - To confirm readiness, poll rather than reading the make output:

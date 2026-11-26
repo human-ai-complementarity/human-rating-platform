@@ -5,10 +5,10 @@ from datetime import UTC, datetime
 from typing import Any
 
 from models import Experiment, Question, Rating, Rater, Upload
-from schemas import ExperimentResponse, ResolvedModel
+from schemas import ExperimentResponse, PilotCheckSummary, ResolvedModel
 from services.assistance.registry import resolved_models
 from .groups import GroupSnapshot
-from .status import experiment_launch_blockers, launch_blocker_fixes
+from .status import experiment_launch_blockers, launch_blocker_fixes, launch_blocker_summary
 
 QUESTION_PREVIEW_LENGTH = 100
 
@@ -38,10 +38,13 @@ def build_experiment_response(
     tags: list[str] | None = None,
     consent_statement_ref: str | None = None,
     debrief_statement_ref: str | None = None,
+    pilot_check: PilotCheckSummary | None = None,
 ) -> ExperimentResponse:
     params = json.loads(experiment.assistance_params) if experiment.assistance_params else None
     resolved = resolved_models(params if isinstance(params, dict) else {})
-    launch_blockers = experiment_launch_blockers(experiment, question_count=question_count)
+    launch_blockers = experiment_launch_blockers(
+        experiment, question_count=question_count, tags=list(tags or [])
+    )
     return ExperimentResponse(
         id=experiment.id,
         name=experiment.name,
@@ -67,6 +70,9 @@ def build_experiment_response(
         consent_statement_ref=consent_statement_ref,
         debrief_statement_ref=debrief_statement_ref,
         is_markdown=experiment.is_markdown,
+        render_math=experiment.render_math,
+        block_copy_paste=experiment.block_copy_paste,
+        forbid_outside_tools=experiment.forbid_outside_tools,
         prolific_pool=experiment.prolific_pool,
         status=experiment.status,
         archived_at=experiment.archived_at,
@@ -84,7 +90,9 @@ def build_experiment_response(
         # the launch button with exactly the list the API would reject with.
         launch_blockers=launch_blockers,
         launch_blocker_fixes=launch_blocker_fixes(launch_blockers),
+        launch_blocker_summary=launch_blocker_summary(launch_blockers),
         launch_ready=not launch_blockers,
+        pilot_check=pilot_check,
     )
 
 
@@ -152,6 +160,7 @@ def build_rater_stats_bucket(
         "session_end": isoformat_utc(rater.session_end),
         "is_active": rater.is_active,
         "timed_out": rater.timed_out,
+        "feedback": rater.feedback,
         # None on raters from before consent was recorded: "not recorded",
         # never "declined".
         "consent_version": consent[0] if consent else None,
@@ -196,6 +205,7 @@ def build_rater_analytics_item(stats: dict[str, Any]) -> dict[str, Any]:
         "session_end": stats["session_end"],
         "is_active": stats["is_active"],
         "timed_out": stats["timed_out"],
+        "feedback": stats["feedback"],
         "consent_version": stats["consent_version"],
         "consented_at": stats["consented_at"],
         "num_ratings": stats["num_ratings"],

@@ -57,6 +57,9 @@ class PilotStudyCreate(BaseModel):
         default_factory=lambda: ["ai_taskers", "fact_checkers", "approval_rate"]
     )
     excluded_experiment_ids: list[int] = Field(default_factory=list)
+    # The admin saw the pilot check's 409 and chose to launch anyway
+    # (docs/pilot-check.md). Recorded on the round.
+    acknowledge_pilot_check: bool = False
 
     @field_validator("excluded_experiment_ids")
     @classmethod
@@ -64,32 +67,9 @@ class PilotStudyCreate(BaseModel):
         return _dedupe_preserve_order(v)
 
 
-class OneClickLaunchRequest(BaseModel):
-    """Launch a pilot straight from the dataset card (#96).
-
-    Everything else comes from the card; `places` is the one knob worth
-    overriding per launch.
-    """
-
-    places: Optional[int] = Field(default=None, ge=1)
-
-
-class ExperimentRef(BaseModel):
-    id: int
-    name: str
-    # The admin UI shows `internal_name || name`; public names can be generic.
-    internal_name: Optional[str] = None
-
-
-class OneClickLaunchPreview(BaseModel):
-    """What a one-click launch would do beyond the card: the experiments
-    whose participants it excludes."""
-
-    excluded_experiments: list[ExperimentRef] = Field(default_factory=list)
-
-
 class ExperimentRoundCreate(BaseModel):
     places: int = Field(ge=1)
+    acknowledge_pilot_check: bool = False
 
 
 class ExperimentRoundUpdate(BaseModel):
@@ -146,6 +126,10 @@ class ExperimentRoundResponse(BaseModel):
     excluded_experiment_ids: list[int] = Field(default_factory=list)
     created_at: datetime
     prolific_study_url: str
+    # The pilot check run this round was launched against, and who launched
+    # past a check the gate would have stopped (docs/pilot-check.md).
+    pilot_check_run_id: Optional[int] = None
+    pilot_check_acknowledged_by: Optional[str] = None
     # Prolific's own `total_cost` for this round's study (rewards + fee + VAT),
     # in minor units. Null until the round has been synced from Prolific.
     total_cost: Optional[int] = None
@@ -187,6 +171,12 @@ TagName = Annotated[str, Field(min_length=1, max_length=64)]
 # under different casing is not over the limit. Enforced in set_experiment_tags,
 # after normalization and before any tag rows are touched.
 MAX_TAGS_PER_EXPERIMENT = 20
+# Reserved tag: a preview-only draft that must never reach Prolific (#174).
+# A contract with the inference pipeline's `scripts/create_human_rating_study.py`,
+# whose `--mode testing` sets it on `-TESTONLY` drafts holding a subsample of
+# the questions. Matched case-insensitively, like every tag name. The launch
+# gate lists it as a blocker, and the round routes refuse it too.
+PREVIEW_TESTING_TAG = "preview-testing"
 
 
 class TagResponse(BaseModel):
@@ -222,6 +212,8 @@ class ExperimentCreate(BaseModel):
     # Rater terms; see ExperimentUpdate. Empty flags for an ordinary study.
     study_flags: list[StudyFlag] = Field(default_factory=list)
     content_warning_details: Optional[str] = None
+    block_copy_paste: bool = False
+    forbid_outside_tools: bool = False
 
 
 class ResolvedModel(BaseModel):
@@ -236,6 +228,77 @@ class ResolvedModel(BaseModel):
     tools: list[str] = Field(default_factory=list)
     # "assistance_models": the experiment's own entry. "default": the platform's.
     source: Literal["assistance_models", "default"]
+
+
+# Pilot check schemas (docs/pilot-check.md)
+PilotCheckState = Literal["not_run", "running", "stale", "passed", "warnings", "failed", "aborted"]
+
+
+class PilotCheckSummary(BaseModel):
+    """The latest run's state as the experiment page shows it and the launch
+    gate reads it, computed by one function so the two agree."""
+
+    state: PilotCheckState
+    run_id: Optional[int] = None
+    created_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    counts: dict[str, int] = Field(default_factory=lambda: {"error": 0, "warning": 0, "info": 0})
+    # True when creating a study answers 409 until the request carries
+    # `acknowledge_pilot_check`: the admin is asked to confirm, never refused.
+    needs_acknowledgement: bool
+    # One sentence on why, or None when the run is clean.
+    reason: Optional[str] = None
+
+
+class PilotCheckFinding(BaseModel):
+    check: str
+    check_label: str = ""
+    severity: Literal["error", "warning", "info"]
+    message: str
+    # Every question the finding applies to; empty for an experiment-level one.
+    question_ids: list[int] = Field(default_factory=list)
+    detail: Optional[str] = None
+
+
+class PilotCheckProbe(BaseModel):
+    question_id: int
+    step_type: str
+    payload: dict
+    failure_reason: Optional[str] = None
+    failure_detail: Optional[str] = None
+    latency_ms: int
+
+
+class PilotCheckStage(BaseModel):
+    # sampling | assistance | checks | <judged check name> | done
+    id: str
+    label: str
+
+
+class PilotCheckRunResponse(BaseModel):
+    id: int
+    experiment_id: int
+    status: Literal["running", "passed", "warnings", "failed", "aborted"]
+    # Where the run is, a short detail for that stage while it runs, and the
+    # stages a run of this experiment goes through, for the card's stepper.
+    stage: Optional[str] = None
+    stage_detail: Optional[str] = None
+    stages: list[PilotCheckStage] = Field(default_factory=list)
+    requested_by: Optional[str] = None
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+    fingerprint: str
+    config_sha256: str
+    terms_ref: Optional[str] = None
+    sample_question_ids: list[int] = Field(default_factory=list)
+    findings: list[PilotCheckFinding] = Field(default_factory=list)
+    # None on a control arm: no method ran.
+    assistance_steps: Optional[list[PilotCheckProbe]] = None
+    judge_model: Optional[str] = None
+    error: Optional[str] = None
+    # The experiment changed since this run looked at it.
+    stale: bool = False
+    sample_size: int = 0
 
 
 class ExperimentResponse(BaseModel):
@@ -264,6 +327,9 @@ class ExperimentResponse(BaseModel):
     consent_statement_ref: Optional[str] = None
     debrief_statement_ref: Optional[str] = None
     is_markdown: bool = False
+    render_math: bool = False
+    block_copy_paste: bool = False
+    forbid_outside_tools: bool = False
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     status: ExperimentStatus = ExperimentStatus.DRAFT
     # Non-null when the experiment has been archived (soft-hidden from the
@@ -300,8 +366,15 @@ class ExperimentResponse(BaseModel):
     # ready. Not needed to upload or analyse — only to launch.
     launch_ready: bool = True
     launch_blockers: list[str] = Field(default_factory=list)
+    # The latest pilot check's state (docs/pilot-check.md). Computed with the
+    # launch gate's own function, so the UI nags exactly when the API would 409.
+    pilot_check: Optional[PilotCheckSummary] = None
     # How to fix each blocker, one per blocker in the same order.
     launch_blocker_fixes: list[str] = Field(default_factory=list)
+    # The blockers as one clause ("this experiment is missing questions"), the
+    # wording the launch 400 uses, so the UI need not compose its own. None
+    # when ready.
+    launch_blocker_summary: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -338,6 +411,9 @@ class ExperimentUpdate(BaseModel):
     study_flags: Optional[list[StudyFlag]] = None
     content_warning_details: Optional[str] = None
     is_markdown: Optional[bool] = None
+    render_math: Optional[bool] = None
+    block_copy_paste: Optional[bool] = None
+    forbid_outside_tools: Optional[bool] = None
     prolific_pool: Optional[str] = Field(default=None, max_length=255)
     # None means "leave unchanged". Locked once the experiment leaves DRAFT:
     # raters already in a session hold a session_end_time computed from the old
@@ -355,6 +431,22 @@ class ExperimentUpdate(BaseModel):
 
 
 # Question schemas
+class TextBlockOut(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+class ImageBlockOut(BaseModel):
+    """An image a rater's browser can fetch at `url` until it expires."""
+
+    type: Literal["image"]
+    url: str
+    mime_type: str
+
+
+ContentBlockOut = Annotated[TextBlockOut | ImageBlockOut, Field(discriminator="type")]
+
+
 class QuestionResponse(BaseModel):
     assignment_id: Optional[int] = None
     assignment_generation: Optional[int] = None
@@ -365,7 +457,11 @@ class QuestionResponse(BaseModel):
     options: Optional[str] = None
     question_type: str
     parent_question_text: Optional[str] = None
+    # The stimulus as blocks when it carries images, text blocks as stored
+    # and each image by a URL. None means render question_text.
+    content: Optional[list[ContentBlockOut]] = None
     is_markdown: bool = False
+    render_math: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -380,10 +476,9 @@ class RaterStartResponse(BaseModel):
     # screen may still be submitted. New questions stop at session_end_time.
     session_grace_seconds: int = 0
     experiment_name: str
-    # Pre-rendered HTML for the rater intro screen (markdown converted via
-    # `to_prolific_html` so the splash matches what Prolific shows externally).
-    # None when no description is set; "" never appears.
-    experiment_description_html: Optional[str] = None
+    # The study description for the rater intro screen, as Markdown the
+    # frontend renders. None when no description is set; "" never appears.
+    experiment_description_markdown: Optional[str] = None
     # Per-question framing. `human_prompt_prefix` is rendered above each question,
     # `human_prompt_suffix` below it. Constant for the session, sent once at start.
     human_prompt_prefix: Optional[str] = None
@@ -392,15 +487,17 @@ class RaterStartResponse(BaseModel):
     rater_session_token: str
     assistance_method: str = "none"
     assistance_instructions: Optional[str] = None
+    block_copy_paste: bool = False
+    forbid_outside_tools: bool = False
     # The consent statement this rater must agree to, rendered with the
-    # study's placeholders filled, pre-rendered like the description.
-    consent_statement_html: str
+    # study's placeholders filled, as Markdown like the description.
+    consent_statement_markdown: str
     # None until the rater agrees. The frontend shows the consent screen while
     # this is None; the backend refuses questions until it is set.
     consented_at: Optional[datetime] = None
     # Debrief shown on the completion screen. Only deception studies have
     # one; when present the completion redirect is manual.
-    debrief_html: Optional[str] = None
+    debrief_markdown: Optional[str] = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -410,6 +507,13 @@ class SessionStatusResponse(BaseModel):
     # plus the grace period while the session is live, then counts down alone.
     grace_seconds_remaining: int = 0
     questions_completed: int
+
+
+RATER_FEEDBACK_MAX_LENGTH = 5000
+
+
+class RaterFeedbackSubmit(BaseModel):
+    feedback: str = Field(max_length=RATER_FEEDBACK_MAX_LENGTH)
 
 
 class ConsentResponse(BaseModel):
@@ -439,9 +543,9 @@ class TermsPreviewResponse(BaseModel):
 
     pinned: bool
     consent_ref: str
-    consent_html: str
+    consent_markdown: str
     debrief_ref: Optional[str] = None
-    debrief_html: Optional[str] = None
+    debrief_markdown: Optional[str] = None
 
 
 # Rating schemas
@@ -675,11 +779,17 @@ class ExperimentGroupResponse(BaseModel):
 
 
 # --- API key management (dashboard, cookie-authed) -------------------------
+# `read` keys reach /api/v1 only; `admin` keys also pass the /api/admin gate.
+ApiKeyScope = Literal["read", "admin"]
+
+
 class ApiKeyCreate(BaseModel):
     # Strip before length validation so a whitespace-only name (" ") is rejected
     # as empty rather than stored as a blank, unlabeled key.
     model_config = ConfigDict(str_strip_whitespace=True)
     name: str = Field(min_length=1, max_length=255)
+    # Least privilege by default: write access is asked for, never assumed.
+    scope: ApiKeyScope = "read"
 
 
 class ApiKeyResponse(BaseModel):
@@ -692,6 +802,7 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[datetime] = None
     revoked_at: Optional[datetime] = None
     created_by: Optional[str] = None
+    scope: ApiKeyScope = "read"
     is_active: bool
 
 

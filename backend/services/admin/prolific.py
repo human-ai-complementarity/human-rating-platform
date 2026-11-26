@@ -8,6 +8,8 @@ integration is enabled.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import secrets
 import string
@@ -387,6 +389,25 @@ async def get_study_submission_counts(
         )
 
     return summarize_submissions(results)
+
+
+async def get_study_participant_countries(
+    *,
+    settings: ProlificSettings,
+    study_id: str,
+) -> dict[str, str]:
+    """Map each participant in a study to their country of residence."""
+    if not settings.enabled:
+        raise RuntimeError("get_study_participant_countries called while Prolific is disabled")
+
+    async with _build_client(settings) as client:
+        response = await client.post(
+            f"/studies/{study_id}/demographic-export/", json={"filters": []}
+        )
+        _raise_for_status(response)
+
+    reader = csv.DictReader(io.StringIO(response.text))
+    return {row["Participant id"]: row["Country of residence"] for row in reader}
 
 
 async def get_project(

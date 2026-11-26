@@ -23,6 +23,8 @@ function App() {
   return (
     <Routes>
       <Route path="/sso-callback" element={<AuthenticateWithRedirectCallback />} />
+      {/* The e2e bypass is always signed in, so the login page needs its own door. */}
+      {isE2eAuthBypassed() && <Route path="/e2e/login" element={<LoginPage />} />}
       <Route path="/rate" element={<RaterView />} />
       <Route
         path="/"
@@ -170,7 +172,7 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [ADMIN_JWT_TEMPLATE, isLoaded, isSignedIn, email, getToken]);
+  }, [isLoaded, isSignedIn, email, getToken]);
 
   if (!isLoaded || state === 'loading' || state === 'idle') {
     return (
@@ -185,7 +187,7 @@ function AdminPage({ children }: { children?: React.ReactNode }) {
       <AdminShell>
         <InfoCard
           title="You don't have admin access."
-          body="Please contact Juliana, Andrew, or Sander to have your email added to the allowlist."
+          body="Ask a platform admin to add this email to the admin group."
         />
       </AdminShell>
     );
@@ -215,6 +217,7 @@ function AdminShell({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--page-bg)' }}>
       <header
+        className="admin-header"
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -250,9 +253,12 @@ function AdminShell({ children }: { children: React.ReactNode }) {
           />
           <span style={{ font: '600 16px/1 var(--font-head)' }}>Complementarities Platform</span>
         </button>
-        <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
-        <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
-        <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
+        {/* On phones this row drops below the brand (see .admin-nav in index.css). */}
+        <nav className="admin-nav" aria-label="Admin sections">
+          <NavTab active={isExperiments} onClick={() => navigate('/admin')} label="Experiments" />
+          <NavTab active={isApiKeys} onClick={() => navigate('/admin/api-keys')} label="API Keys" />
+          <NavTab active={isDocs} onClick={() => navigate('/admin/docs')} label="Documentation" />
+        </nav>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
           <UserButton afterSignOutUrl="/" />
         </div>

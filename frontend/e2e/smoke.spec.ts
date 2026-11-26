@@ -5,6 +5,7 @@ type ExperimentRecord = {
   id: number;
   name: string;
   internal_name: string | null;
+  dataset_filenames: string[];
   created_at: string;
   num_ratings_per_question: number;
   session_duration_minutes: number;
@@ -14,6 +15,9 @@ type ExperimentRecord = {
   status: 'DRAFT' | 'LAUNCH' | 'FINISHED';
   archived_at: string | null;
   is_markdown: boolean;
+  render_math: boolean;
+  block_copy_paste: boolean;
+  forbid_outside_tools: boolean;
   assistance_method: string;
   resolved_models?: Record<
     string,
@@ -39,6 +43,10 @@ type ExperimentRecord = {
   content_warning_details: string | null;
   consent_statement_ref: string | null;
   debrief_statement_ref: string | null;
+  launch_ready?: boolean;
+  launch_blockers?: string[];
+  launch_blocker_fixes?: string[];
+  pilot_check: PilotCheckSummaryRecord;
 };
 
 const MOCK_TERMS_STATUS = {
@@ -46,6 +54,67 @@ const MOCK_TERMS_STATUS = {
   ok: true,
   error: null,
   documents: { 'consent/standard': 1, 'consent/warned': 1, debrief: 1 },
+};
+
+// The pilot check (docs/pilot-check.md): the summary the experiment carries
+// and the run the Launch tab's card fetches.
+type PilotCheckSummaryRecord = {
+  state: 'not_run' | 'running' | 'stale' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  run_id: number | null;
+  created_at: string | null;
+  finished_at: string | null;
+  counts: { error: number; warning: number; info: number };
+  needs_acknowledgement: boolean;
+  reason: string | null;
+};
+
+type PilotCheckRunRecord = {
+  id: number;
+  experiment_id: number;
+  status: 'running' | 'passed' | 'warnings' | 'failed' | 'aborted';
+  stage: string | null;
+  stage_detail: string | null;
+  stages: { id: string; label: string }[];
+  requested_by: string | null;
+  created_at: string;
+  finished_at: string | null;
+  fingerprint: string;
+  config_sha256: string;
+  terms_ref: string | null;
+  sample_question_ids: number[];
+  findings: {
+    check: string;
+    check_label: string;
+    severity: 'error' | 'warning' | 'info';
+    message: string;
+    question_ids: number[];
+    detail: string | null;
+  }[];
+  assistance_steps: null;
+  judge_model: string | null;
+  error: string | null;
+  stale: boolean;
+  sample_size: number;
+};
+
+const PILOT_CHECK_PASSED: PilotCheckSummaryRecord = {
+  state: 'passed',
+  run_id: 1,
+  created_at: '2026-03-09T00:03:00Z',
+  finished_at: '2026-03-09T00:04:00Z',
+  counts: { error: 0, warning: 0, info: 2 },
+  needs_acknowledgement: false,
+  reason: null,
+};
+
+const PILOT_CHECK_NOT_RUN: PilotCheckSummaryRecord = {
+  state: 'not_run',
+  run_id: null,
+  created_at: null,
+  finished_at: null,
+  counts: { error: 0, warning: 0, info: 0 },
+  needs_acknowledgement: true,
+  reason: 'The pilot check has not been run.',
 };
 
 type DatasetRecord = {
@@ -129,17 +198,27 @@ type RaterSessionRecord = {
   session_end_time: string;
   session_grace_seconds?: number;
   experiment_name: string;
-  experiment_description_html?: string | null;
+  experiment_description_markdown?: string | null;
   completion_url: string | null;
   rater_session_token: string;
   // Omitted: the mock serves a stub statement with consent not yet given, so
   // every rater flow goes through the consent screen the way real ones do.
-  consent_statement_html?: string;
+  consent_statement_markdown?: string;
   consented_at?: string | null;
-  debrief_html?: string | null;
+  debrief_markdown?: string | null;
+  human_prompt_prefix?: string | null;
+  human_prompt_suffix?: string | null;
+  block_copy_paste?: boolean;
+  forbid_outside_tools?: boolean;
 };
 
-const MOCK_CONSENT_HTML = '<h2>Purpose of the study</h2><p>Mock consent statement.</p>';
+// The create form lives in a side panel opened from the page header.
+async function openCreatePanel(page: Page) {
+  await page.getByTestId('new-experiment-button').click();
+  await expect(page.getByTestId('create-drawer')).toBeVisible();
+}
+
+const MOCK_CONSENT_MARKDOWN = '## Purpose of the study\n\nMock consent statement.\n\n';
 
 // Ticks the box and agrees on the consent screen, the first thing every rater
 // sees. Waits for the screen to be gone so the caller can go straight to
@@ -181,14 +260,30 @@ type AnalyticsRecord = {
   raters: RaterAnalyticsRecord[];
 };
 
+type RaterContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; mime_type: string };
+
 type RaterQuestionRecord = {
   id: number;
   question_text: string;
   options: string | null;
   question_type: string;
   parent_question_text?: string | null;
+  content?: RaterContentBlock[] | null;
+  parent_content?: RaterContentBlock[] | null;
   is_markdown: boolean;
+  render_math?: boolean;
 };
+
+// A 1x1 PNG: enough for the browser to decode, which is what proves the
+// image bytes came back through the API path the backend handed out.
+const ONE_PIXEL_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+);
+const MEDIA_DIGEST = 'a'.repeat(64);
+const MEDIA_URL = `/api/raters/media/${MEDIA_DIGEST}?exp=4102444800&sig=0123456789abcdef0123456789abcdef`;
 
 type MockState = {
   experiments: ExperimentRecord[];
@@ -201,17 +296,24 @@ type MockState = {
   recommendationRequests: string[];
   datasetPatches: Record<string, unknown>[];
   experimentCreates: Record<string, unknown>[];
-  launchRequests: number[];
-  launchError: string | null;
-  // What GET /launch/preview reports a one-click launch would exclude.
-  launchExcluded: { id: number; name: string; internal_name: string | null }[];
+  // Every pilot create's body, in order.
+  pilotPayloads: Record<string, unknown>[];
+  // Pilot check runs per experiment, and every study creation's
+  // acknowledge_pilot_check flag, in order.
+  pilotCheckRuns: Record<number, PilotCheckRunRecord>;
+  pilotCheckRequests: number[];
+  // How many GET polls still see the started run in flight before it lands.
+  pilotCheckRunningPolls: number;
+  launchAcknowledgements: boolean[];
   startRequests: string[];
   previewStartRequests: string[];
   nextQuestionSessionTokens: string[];
+  mediaRequests: string[];
   consentSessionTokens: string[];
   experimentPatches: Record<string, unknown>[];
   pinnedQuestionRequests: number[];
   submittedRatings: Record<string, unknown>[];
+  submittedFeedback: string[];
   sessionsByExperimentId: Record<number, RaterSessionRecord>;
   analyticsByExperimentId: Record<number, AnalyticsRecord>;
   statsByExperimentId: Record<number, Record<string, unknown>>;
@@ -228,6 +330,7 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     id: state.nextExperimentId++,
     name: 'Smoke Test Experiment',
     internal_name: null,
+    dataset_filenames: [],
     created_at: '2026-03-09T00:00:00Z',
     num_ratings_per_question: 3,
     session_duration_minutes: 60,
@@ -237,6 +340,9 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     status: 'DRAFT',
     archived_at: null,
     is_markdown: false,
+    render_math: false,
+    block_copy_paste: false,
+    forbid_outside_tools: false,
     assistance_method: 'none',
     needs_attention: false,
     attention_reason: null,
@@ -252,12 +358,94 @@ function buildExperiment(state: MockState, partial: Partial<ExperimentRecord> = 
     launch_ready: true,
     launch_blockers: [],
     launch_blocker_fixes: [],
+    launch_blocker_summary: null,
     study_flags: [],
     content_warning_details: null,
     consent_statement_ref: null,
     debrief_statement_ref: null,
+    // Clean by default so existing launch coverage is unaffected; the gate
+    // has its own tests below.
+    pilot_check: PILOT_CHECK_PASSED,
     ...partial,
   };
+}
+
+/** The same run while still probing assistance: what the stepper shows mid-run. */
+function inFlight(run: PilotCheckRunRecord): PilotCheckRunRecord {
+  return {
+    ...run,
+    status: 'running',
+    stage: 'assistance',
+    stage_detail: '3 of 15 questions probed',
+    finished_at: null,
+    findings: [],
+  };
+}
+
+function buildPilotCheckRun(
+  experimentId: number,
+  partial: Partial<PilotCheckRunRecord> = {},
+): PilotCheckRunRecord {
+  return {
+    id: 1,
+    experiment_id: experimentId,
+    status: 'passed',
+    stage: 'done',
+    stage_detail: null,
+    stages: [
+      { id: 'sampling', label: 'Sample questions' },
+      { id: 'assistance', label: 'Probe assistance' },
+      { id: 'checks', label: 'Check rendering' },
+      { id: 'instructions_coherent', label: 'Review instructions' },
+      { id: 'question_coherent', label: 'Review question coherence' },
+      { id: 'assistance_useful', label: 'Review assistance usefulness' },
+      { id: 'done', label: 'Result' },
+    ],
+    requested_by: 'dev@local',
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: '2026-03-09T00:04:00Z',
+    fingerprint: 'fp',
+    config_sha256: 'cfg',
+    terms_ref: 'standard v1:abc',
+    sample_question_ids: [11, 12],
+    findings: [
+      {
+        check: 'consent_configured',
+        check_label: 'Consent statement',
+        severity: 'info',
+        message: 'Raters will be shown the standard v1 consent statement.',
+        question_ids: [],
+        detail: null,
+      },
+    ],
+    assistance_steps: null,
+    judge_model: 'openrouter/anthropic/claude-sonnet-4-6',
+    error: null,
+    stale: false,
+    sample_size: 15,
+    ...partial,
+  };
+}
+
+// The gate's 409 (docs/pilot-check.md): refused unless acknowledged.
+async function refuseUnlessAcknowledged(
+  route: Route,
+  state: MockState,
+  experiment: ExperimentRecord | undefined,
+  payload: { acknowledge_pilot_check?: boolean },
+): Promise<boolean> {
+  const acknowledged = payload.acknowledge_pilot_check === true;
+  state.launchAcknowledgements.push(acknowledged);
+  if (!experiment || !experiment.pilot_check.needs_acknowledgement) return false;
+  if (acknowledged) return false;
+  await fulfillJson(route, 409, {
+    detail: {
+      code: 'pilot_check',
+      message: `${experiment.pilot_check.reason} Run the pilot check first, or acknowledge and create the draft anyway.`,
+      pilot_check: experiment.pilot_check,
+    },
+  });
+  return true;
 }
 
 function listTagRecords(state: MockState): { name: string; usage_count: number }[] {
@@ -288,16 +476,20 @@ function createMockState(): MockState {
     recommendationRequests: [],
     datasetPatches: [],
     experimentCreates: [],
-    launchRequests: [],
-    launchError: null,
-    launchExcluded: [],
+    pilotPayloads: [],
+    pilotCheckRuns: {},
+    pilotCheckRequests: [],
+    pilotCheckRunningPolls: 0,
+    launchAcknowledgements: [],
     startRequests: [],
     previewStartRequests: [],
     nextQuestionSessionTokens: [],
+    mediaRequests: [],
     consentSessionTokens: [],
     experimentPatches: [],
     pinnedQuestionRequests: [],
     submittedRatings: [],
+    submittedFeedback: [],
     sessionsByExperimentId: {},
     analyticsByExperimentId: {},
     statsByExperimentId: {},
@@ -488,7 +680,10 @@ async function installApiMocks(
         : archivedOnly
           ? state.experiments.filter((item) => item.archived_at !== null)
           : state.experiments.filter((item) => item.archived_at === null);
-      await fulfillJson(route, 200, rows);
+      // Page like the backend does: 100 rows unless the caller asks for more.
+      const skip = Number(url.searchParams.get('skip') ?? 0);
+      const limit = Number(url.searchParams.get('limit') ?? 100);
+      await fulfillJson(route, 200, rows.slice(skip, skip + limit));
       return;
     }
 
@@ -646,7 +841,19 @@ async function installApiMocks(
       const body = payload as Record<string, unknown>;
       state.experimentPatches.push(body);
       // Mirrors the backend: only fields present in the body change.
-      for (const key of ['study_flags', 'content_warning_details'] as const) {
+      for (const key of [
+        'study_flags',
+        'content_warning_details',
+        'description',
+        'system_prompt',
+        'human_prompt_prefix',
+        'human_prompt_suffix',
+        'prolific_pool',
+        'is_markdown',
+        'render_math',
+        'block_copy_paste',
+        'forbid_outside_tools',
+      ] as const) {
         if (body[key] !== undefined) {
           (experiment as Record<string, unknown>)[key] = body[key];
         }
@@ -680,9 +887,9 @@ async function installApiMocks(
       await fulfillJson(route, 200, {
         pinned,
         consent_ref: warned ? 'warned v1' : 'standard v1',
-        consent_html: `<h2>Preview consent</h2><p>${(warned && selected.content_warning_details) || 'No warning.'}</p>`,
+        consent_markdown: `## Preview consent\n\n${(warned && selected.content_warning_details) || 'No warning.'}\n\n`,
         debrief_ref: debrief ? 'debrief v1' : null,
-        debrief_html: debrief ? '<h2>Preview debrief</h2><p>Continue to Prolific.</p>' : null,
+        debrief_markdown: debrief ? '## Preview debrief\n\nContinue to Prolific.\n\n' : null,
       });
       return;
     }
@@ -757,6 +964,67 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname.endsWith('/pilot-check') && method === 'GET') {
+      const experimentId = extractExperimentId(url);
+      const run = state.pilotCheckRuns[experimentId];
+      if (!run) {
+        await fulfillJson(route, 200, null);
+        return;
+      }
+      if (state.pilotCheckRunningPolls > 0) {
+        state.pilotCheckRunningPolls -= 1;
+        await fulfillJson(route, 200, inFlight(run));
+        return;
+      }
+      await fulfillJson(route, 200, run);
+      return;
+    }
+
+    if (pathname.endsWith('/pilot-check') && method === 'POST') {
+      // The run lands at once: the card's next poll sees it finished.
+      const experimentId = extractExperimentId(url);
+      state.pilotCheckRequests.push(experimentId);
+      const run = buildPilotCheckRun(experimentId, {
+        id: state.pilotCheckRequests.length,
+        status: 'warnings',
+        findings: [
+          {
+            check: 'question_renders',
+            check_label: 'Question rendering',
+            severity: 'warning',
+            message: 'The options contain duplicates.',
+            question_ids: [12],
+            detail: 'Yes|Yes',
+          },
+          {
+            check: 'consent_configured',
+            check_label: 'Consent statement',
+            severity: 'info',
+            message: 'Raters will be shown the standard v1 consent statement.',
+            question_ids: [],
+            detail: null,
+          },
+        ],
+      });
+      state.pilotCheckRuns[experimentId] = run;
+      const experiment = state.experiments.find((item) => item.id === experimentId);
+      if (experiment) {
+        experiment.pilot_check = {
+          state: 'warnings',
+          run_id: run.id,
+          created_at: run.created_at,
+          finished_at: run.finished_at,
+          counts: { error: 0, warning: 1, info: 1 },
+          needs_acknowledgement: true,
+          reason: 'The last pilot check found 0 error(s) and 1 warning(s).',
+        };
+      }
+      // The card sees the run probing assistance once, then lands on the next poll.
+      state.pilotCheckRunningPolls = 1;
+      await fulfillJson(route, 202, inFlight(run));
+      return;
+    }
+
     if (pathname.endsWith('/prolific/rounds') && method === 'GET') {
       const experimentId = extractExperimentId(url);
       await fulfillJson(route, 200, state.rounds[experimentId] || []);
@@ -775,7 +1043,11 @@ async function installApiMocks(
         estimated_completion_time: number;
         reward: number;
         pilot_places: number;
+        acknowledge_pilot_check?: boolean;
       };
+      state.pilotPayloads.push(payload);
+      const gated = state.experiments.find((item) => item.id === experimentId);
+      if (await refuseUnlessAcknowledged(route, state, gated, payload)) return;
       const pilot = buildRound(state, {
         round_number: 0,
         prolific_study_id: 'study-pilot-1',
@@ -796,32 +1068,6 @@ async function installApiMocks(
         experiment.prolific_completion_url = 'https://app.prolific.com/submissions/complete?cc=TEST1234';
       }
       await fulfillJson(route, 200, pilot);
-      return;
-    }
-
-    if (pathname.endsWith('/launch') && method === 'POST') {
-      const experimentId = extractExperimentId(url);
-      state.launchRequests.push(experimentId);
-      if (state.launchError) {
-        await fulfillJson(route, 400, { detail: state.launchError });
-        return;
-      }
-      const experiment = state.experiments.find((item) => item.id === experimentId);
-      const card = state.datasets.find((item) => item.id === experiment?.group_dataset_id);
-      const pilot = buildRound(state, {
-        round_number: 0,
-        places_requested: 5,
-        description: card?.study_blurb ?? '',
-        estimated_completion_time: card?.estimated_completion_time ?? 0,
-        reward: card?.reward ?? 0,
-      });
-      state.rounds[experimentId] = [pilot];
-      await fulfillJson(route, 200, pilot);
-      return;
-    }
-
-    if (pathname.endsWith('/launch/preview') && method === 'GET') {
-      await fulfillJson(route, 200, { excluded_experiments: state.launchExcluded });
       return;
     }
 
@@ -886,9 +1132,9 @@ async function installApiMocks(
           rater_session_token: `token-exp-${experimentId || 'default'}`,
         };
       await fulfillJson(route, 200, {
-        consent_statement_html: MOCK_CONSENT_HTML,
+        consent_statement_markdown: MOCK_CONSENT_MARKDOWN,
         consented_at: null,
-        debrief_html: null,
+        debrief_markdown: null,
         ...session,
       });
       return;
@@ -909,6 +1155,17 @@ async function installApiMocks(
         session_end_time: consentedSession?.session_end_time ?? '2099-03-09T01:02:30Z',
         session_grace_seconds: consentedSession?.session_grace_seconds ?? 0,
         rater_session_token: token,
+      });
+      return;
+    }
+
+    if (pathname.startsWith('/api/raters/media/') && method === 'GET') {
+      state.mediaRequests.push(`${pathname}?${url.searchParams.toString()}`);
+      await route.fulfill({
+        status: 200,
+        contentType: 'image/png',
+        headers: { 'cache-control': 'private, max-age=600' },
+        body: ONE_PIXEL_PNG,
       });
       return;
     }
@@ -966,6 +1223,12 @@ async function installApiMocks(
       return;
     }
 
+    if (pathname === '/api/raters/feedback' && method === 'POST') {
+      state.submittedFeedback.push(request.postDataJSON().feedback);
+      await fulfillJson(route, 200, { message: 'ok' });
+      return;
+    }
+
     throw new Error(`Unhandled API request: ${method} ${pathname}`);
   });
 }
@@ -980,6 +1243,7 @@ test('a long-context experiment is created with its own session length', async (
 
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('Two Hour Reading Task');
   await page.getByTestId('ratings-per-question-input').fill('3');
   await page.getByTestId('session-duration-input').fill('120');
@@ -1058,7 +1322,7 @@ test('the rater intro states the session length before they commit', async ({ pa
     session_end_time: new Date(start.getTime() + 110 * 60000).toISOString(),
     session_grace_seconds: 300,
     experiment_name: 'Expectations Experiment',
-    experiment_description_html: '<p>Read each passage carefully.</p>',
+    experiment_description_markdown: 'Read each passage carefully.\n\n',
     completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
     rater_session_token: 'token-expectations',
   };
@@ -1077,8 +1341,154 @@ test('the rater intro states the session length before they commit', async ({ pa
 
   const expectations = page.getByTestId('session-expectations');
   await expect(expectations).toBeVisible();
-  await expect(expectations).toContainText('You have 1 hour 50 minutes.');
-  await expect(expectations).toContainText('5 more minutes');
+  await expect(expectations).toContainText('Before you start');
+  await expect(expectations).toContainText('you have 1 hour 50 minutes in total.');
+  await expect(expectations).toContainText('If the time runs out');
+  await expect(expectations).toContainText('an extra 5 minutes to finish and submit it.');
+});
+
+// Whether a copy / cut / paste / drop on the text goes through (true) or is
+// cancelled by the page (false).
+const clipboardAllowed = (page: Page, text: string) =>
+  page.getByText(text).evaluate((el) =>
+    ['copy', 'cut', 'paste', 'drop'].map((type) =>
+      el.dispatchEvent(new Event(type, { bubbles: true, cancelable: true })),
+    ),
+  );
+
+test('a rater may use AI tools and copy the question unless the experiment restricts them', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 703,
+    question_text: 'Is this question open to copying?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+  state.sessionsByExperimentId[1].experiment_description_markdown = 'Rate each item.';
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+  await expect(page.getByTestId('outside-tools-policy')).toContainText('use them however you like');
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  await expect(page.getByText('Is this question open to copying?')).toBeVisible();
+  await expect(page.locator('.rater-no-copy')).toHaveCount(0);
+  expect(await clipboardAllowed(page, 'Is this question open to copying?')).toEqual([true, true, true, true]);
+});
+
+test('a restricted experiment forbids AI tools on the intro and blocks copy and paste while rating', async ({ page, context }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 704,
+    question_text: 'Is this question closed to copying?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+    parent_question_text: `RESTRICTED DOCUMENT ${'padding '.repeat(400)}`,
+  });
+  // No description: the ban alone is enough to show the intro screen.
+  state.sessionsByExperimentId[1].block_copy_paste = true;
+  state.sessionsByExperimentId[1].forbid_outside_tools = true;
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+  const policy = page.getByTestId('outside-tools-policy');
+  await expect(policy).toContainText('Internet and AI tools: strictly forbidden. Do not use web search');
+  await expect(policy).not.toContainText('built into this study');
+  await expect(page.getByTestId('session-expectations')).not.toContainText('however you like');
+  await page.getByRole('button', { name: 'Continue' }).click();
+
+  const question = page.getByText('Is this question closed to copying?');
+  await expect(question).toBeVisible();
+  expect(await question.evaluate((el) => getComputedStyle(el).userSelect)).toBe('none');
+  expect(await clipboardAllowed(page, 'Is this question closed to copying?')).toEqual([false, false, false, false]);
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('link', { name: 'Open document in new tab' }).click();
+  const popup = await popupPromise;
+  expect((await clipboardAllowed(popup, 'RESTRICTED DOCUMENT'))[0]).toBe(false);
+
+  // The ban stays readable from the rating screen.
+  await page.getByTestId('instructions-button').click();
+  await expect(page.getByRole('dialog').getByTestId('outside-tools-policy')).toContainText('strictly forbidden');
+});
+
+test('the rating screen reopens the intro instructions in a scrollable dialog', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 702,
+    question_text: 'Can the instructions be reopened?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+  state.sessionsByExperimentId[1].experiment_description_markdown =
+    `## Guidelines\n\n${'A long paragraph of study guidance for the rater.\n\n'.repeat(40)}Final guideline.\n\n`;
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByText('Can the instructions be reopened?')).toBeVisible();
+
+  // The button floats below the status panel, not in it; pointing at it
+  // leaves the clocks collapsed and their help closed.
+  await expect(page.getByTestId('rater-status-panel').getByTestId('instructions-button')).toHaveCount(0);
+  const opener = page.getByTestId('instructions-button');
+  await opener.hover();
+  await expect(page.getByTestId('rater-status-help')).toHaveCount(0);
+  await expect(page.getByTestId('completed-count')).toBeHidden();
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: state.sessionsByExperimentId[1].experiment_name });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('session-expectations')).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Guidelines' })).toBeVisible();
+
+  // The instructions scroll inside the dialog; the page behind stays put.
+  // They open focused, so the keyboard scrolls them straight away.
+  const body = dialog.getByTestId('study-instructions-body');
+  await expect(body).toBeFocused();
+  expect(await body.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+  await page.keyboard.press('PageDown');
+  await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('hidden');
+  await dialog.getByText('Final guideline.').scrollIntoViewIfNeeded();
+  const back = dialog.getByRole('button', { name: 'Back to rating' });
+  const close = dialog.getByRole('button', { name: 'Close instructions' });
+  await expect(back).toBeInViewport();
+
+  // Tab wraps around inside the dialog in both directions.
+  await back.focus();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(back).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+  expect(await page.evaluate(() => document.body.style.overflow)).toBe('');
+
+  // The close button returns focus to the opener too.
+  await opener.click();
+  await close.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  // A right-click on the backdrop leaves the dialog open; a left click closes it.
+  await opener.click();
+  await page.mouse.click(5, 5, { button: 'right' });
+  await expect(dialog).toBeVisible();
+  await page.mouse.click(5, 5);
+  await expect(dialog).toHaveCount(0);
+
+  await opener.click();
+  await back.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText('Can the instructions be reopened?')).toBeVisible();
 });
 
 test('create experiment and upload CSV shows the upload and success toast', async ({ page }) => {
@@ -1087,6 +1497,7 @@ test('create experiment and upload CSV shows the upload and success toast', asyn
 
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('Hour Breakdown Smoke Test');
   await page.getByTestId('ratings-per-question-input').fill('3');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
@@ -1126,6 +1537,7 @@ test('a slow upload shows progress and re-enables the form when it finishes', as
   });
 
   await page.goto('/admin');
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('Slow Upload Test');
   await page.getByTestId('ratings-per-question-input').fill('3');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
@@ -1195,15 +1607,16 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
   await page.getByTestId('pilot-places-input').fill('5');
   await page.getByTestId('run-pilot-button').click();
 
+  // The default mock experiment has a passed pilot check, so no gate dialog.
   await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();
+  await expect(page.getByTestId('pilot-check-dialog')).toHaveCount(0);
+  expect(state.launchAcknowledgements).toEqual([false]);
   await expect(page.getByTestId('publish-round-0')).toBeVisible();
-  await expect(page.getByTestId('recommendation-panel')).toContainText('Recommendation for next round');
   await expect(page.getByTestId('completion-url-input')).toContainText(
     'https://app.prolific.com/submissions/complete?cc=TEST1234'
   );
-  // Button is hidden (not just disabled) while the previous round is open,
-  // matching the pre-pilot state — we don't render mockable buttons.
-  await expect(page.getByTestId('launch-round-button')).toHaveCount(0);
+  // No next round is recommended while the previous one is still open.
+  await expect(page.getByTestId('recommendation-panel')).toHaveCount(0);
 
   await page.getByTestId('publish-round-0').click();
   await expect(page.getByTestId('close-round-0')).toBeVisible();
@@ -1211,6 +1624,7 @@ test('run pilot, close it, and launch a round from an experiment with uploaded q
 
   await page.getByTestId('close-round-0').click();
   await expect(page.getByTestId('study-rounds-list').getByText('AWAITING_REVIEW')).toBeVisible();
+  await expect(page.getByTestId('recommendation-panel')).toContainText('Recommendation for next round');
   await expect(page.getByTestId('launch-round-button')).toBeVisible();
 
   await page.getByTestId('launch-round-button').click();
@@ -1338,9 +1752,103 @@ test('the question in hand survives the deadline and can still be submitted', as
   await expect(page.getByText('Does the grace window keep this answer?')).toBeVisible();
 
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
 
+  // The optional feedback screen comes first, and holds the redirect: well
+  // past the completion card's 3 seconds the rater is still here.
+  await page.route('https://app.prolific.com/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'text/html', body: 'prolific' }),
+  );
+  await expect(page.getByTestId('feedback-screen')).toBeVisible();
+  await expect(page.getByTestId('feedback-prolific-note')).toBeVisible();
+  await expect(page.getByTestId('feedback-submit')).toBeDisabled();
+  await page.waitForTimeout(3500);
+  await expect(page).toHaveURL(/\/rate\?/);
+  await page.getByTestId('feedback-input').fill('The timer was hard to see.');
+  await page.getByTestId('feedback-submit').click();
+
   await expect(page.getByRole('heading', { name: 'Session Complete' })).toBeVisible();
+  expect(state.submittedFeedback).toEqual(['The timer was hard to see.']);
+  // Then the usual automatic return to Prolific, completion code intact.
+  await page.waitForURL('https://app.prolific.com/submissions/complete?cc=TEST1234');
+});
+
+test('twenty minutes on one question warns the rater but still takes the answer', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Question Timer Experiment',
+      question_count: 1,
+      prolific_completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  state.sessionsByExperimentId[1] = {
+    rater_id: 304,
+    session_start: new Date().toISOString(),
+    session_end_time: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    session_grace_seconds: 300,
+    experiment_name: 'Question Timer Experiment',
+    completion_url: 'https://app.prolific.com/submissions/complete?cc=TEST1234',
+    rater_session_token: 'token-question-timer',
+  };
+  state.questionsBySessionToken['token-question-timer'] = {
+    id: 602,
+    question_id: 'slow-q',
+    question_text: 'Is this question taking too long?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // A fresh question counts down with no warning.
+  await expect(page.getByText('Is this question taking too long?')).toBeVisible();
+  await expect(page.getByTestId('question-timer')).toBeVisible();
+  await expect(page.getByTestId('question-time-banner')).toHaveCount(0);
+
+  // Hovering the readout explains both clocks.
+  await page.getByTestId('rater-status-panel').hover();
+  await expect(page.getByTestId('rater-status-help')).toContainText('no more than 20 minutes');
+  await expect(page.getByTestId('rater-status-help')).toContainText('5 more minutes');
+  await page.mouse.move(0, 0);
+  await expect(page.getByTestId('rater-status-help')).toHaveCount(0);
+
+  // The rater has been on it for 21 minutes; the start time survives a reload.
+  await page.evaluate(() => {
+    sessionStorage.setItem(
+      'hrp_question_started',
+      JSON.stringify({ id: 602, at: Date.now() - 21 * 60 * 1000 })
+    );
+  });
+  await page.reload();
+
+  await expect(page.getByTestId('question-timer-over')).toBeVisible();
+  await expect(page.getByTestId('question-time-banner')).toContainText('more than 20 minutes');
+  // The session clock is nowhere near done, so this is the only warning.
+  await expect(page.getByTestId('grace-banner')).toHaveCount(0);
+
+  // Advisory only: the answer is still accepted.
+  await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
+  await page.getByRole('button', { name: /submit/i }).click();
+  await expect(page.getByTestId('question-time-banner')).toHaveCount(0);
 });
 
 // Seeds a rater session serving exactly one question, for the parent-context
@@ -1491,8 +1999,21 @@ test('the experiment markdown flag switches the rater card between rendered and 
 
   await expect(page.locator('pre code')).toContainText('def f(n):');
   await expect(page.getByText('```python')).toHaveCount(0);
+
+  // The fence's language colours the code, and each line is numbered in a
+  // gutter that is not part of the text, so copying the block gives clean code.
+  await expect(page.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(page.locator('.code-gutter')).toHaveAttribute('data-lines', '1\n2');
+  const copied = await page.locator('.code-block').evaluate((block) => {
+    const selection = window.getSelection()!;
+    selection.selectAllChildren(block);
+    return selection.toString();
+  });
+  expect(copied.trim()).toBe('def f(n):\n    return n');
   await expect(page.getByText('Keep <b>this</b> literal.')).toBeVisible();
   await expect(page.locator('b, strong')).toHaveCount(0);
+  // A Markdown question is reading text: body size, not the heading size.
+  await expect(page.getByText('Keep <b>this</b> literal.')).toHaveCSS('font-size', '16px');
 
   // The wide table scrolls inside the card instead of widening the page.
   await expect(page.getByRole('columnheader', { name: 'Column 12 heading' })).toBeAttached();
@@ -1508,8 +2029,68 @@ test('the experiment markdown flag switches the rater card between rendered and 
   question.is_markdown = false;
   await page.reload();
   await expect(page.getByText('```python')).toBeVisible();
+  await expect(page.getByText('```python')).toHaveCSS('font-size', '20px');
   await expect(page.locator('pre code')).toHaveCount(0);
   await expect(page.getByRole('table')).toHaveCount(0);
+});
+
+test('the markdown flag also applies to the question prefix and suffix', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 508,
+    question_text: 'Is the statement true?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: true,
+  };
+  seedRaterWithQuestion(state, question);
+  state.sessionsByExperimentId[1].human_prompt_prefix = 'Read the **whole** passage first.';
+  state.sessionsByExperimentId[1].human_prompt_suffix = '- Answer `Yes`\n- or `No`';
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.locator('strong')).toHaveText('whole');
+  await expect(page.getByRole('listitem')).toHaveCount(2);
+  await expect(page.locator('li code').first()).toHaveText('Yes');
+  await expect(page.getByText('**whole**')).toHaveCount(0);
+
+  // Flag off: both render as the literal text the researcher typed.
+  question.is_markdown = false;
+  await page.reload();
+  await expect(page.getByText('Read the **whole** passage first.')).toBeVisible();
+  await expect(page.getByText('- Answer `Yes`')).toBeVisible();
+  await expect(page.locator('strong')).toHaveCount(0);
+  await expect(page.getByRole('listitem')).toHaveCount(0);
+});
+
+test('the intro description keeps heading, paragraph and list spacing', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 509,
+    question_text: 'Ready?',
+    options: 'Yes|No',
+    question_type: 'MC',
+    is_markdown: false,
+  });
+  state.sessionsByExperimentId[1].experiment_description_markdown =
+    'First paragraph.\n\n## Puzzle types\n\n- One\n- Two\n\nLast.\n\n';
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // The global reset zeroes all of these; the description restores them.
+  const px = (selector: string, property: string) =>
+    page
+      .locator(`.rater-intro-description ${selector}`)
+      .first()
+      .evaluate((el, prop) => getComputedStyle(el).getPropertyValue(prop), property);
+  expect(await px('ul', 'padding-left')).toBe('24px');
+  expect(await px('p', 'margin-bottom')).toBe('12px');
+  expect(await px('h2', 'margin-top')).toBe('22px');
+  expect(await px('p:last-child', 'margin-bottom')).toBe('0px');
 });
 
 test('the markdown flag also applies to the long-context document window', async ({
@@ -1517,7 +2098,7 @@ test('the markdown flag also applies to the long-context document window', async
   context,
 }) => {
   const state = createMockState();
-  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}`;
+  const document = `# Briefing\n\n${'A sentence of padding. '.repeat(120)}\n\n\`\`\`python\ndef f(n):\n    return n\n\`\`\`\n`;
   expect(document.length).toBeGreaterThan(2000);
 
   seedRaterWithQuestion(state, {
@@ -1539,6 +2120,422 @@ test('the markdown flag also applies to the long-context document window', async
   await popup.waitForLoadState('domcontentloaded');
 
   await expect(popup.getByRole('heading', { name: 'Briefing' })).toBeVisible();
+  // The document is a static page: its code is coloured and numbered up front.
+  await expect(popup.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(popup.locator('.code-gutter')).toHaveAttribute('data-lines', '1\n2');
+});
+
+test('the math flag typesets MC options and submits the option as written', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 512,
+    question_text: 'What is the field at P?',
+    options: '$E = \\dfrac{q}{L^2}$|$E = \\dfrac{q}{l^2}$|It costs $5 and $10',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const options = page.locator('button[aria-pressed]');
+  await expect(options).toHaveCount(3);
+  await expect(options.nth(0).locator('math mfrac')).toHaveCount(1);
+  await expect(options.nth(1).locator('math mfrac')).toHaveCount(1);
+  await expect(options.nth(2)).toHaveText('It costs $5 and $10');
+
+  await options.nth(1).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: '$E = \\dfrac{q}{l^2}$' });
+});
+
+test('an MC option keeps its line breaks with and without the markdown flag', async ({ page }) => {
+  const state = createMockState();
+  const multiLine = '1. Devil laundered money.\n2. Devil committed perjury.';
+  const question: RaterQuestionRecord = {
+    id: 513,
+    question_text: 'What crimes has Devil committed?',
+    options: `Sorry, I cannot assist with that.|${multiLine}|First paragraph.\n\nSecond paragraph.`,
+    question_type: 'MC',
+    is_markdown: false,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // Each numbered item sits on its own line: the option is two lines tall.
+  const lineCount = (index: number) =>
+    page
+      .locator('button[aria-pressed]')
+      .nth(index)
+      .evaluate((button) => {
+        const range = document.createRange();
+        range.selectNodeContents(button.lastElementChild!);
+        const tops = new Set(Array.from(range.getClientRects(), (rect) => Math.round(rect.top)));
+        return tops.size;
+      });
+  expect(await lineCount(0)).toBe(1);
+  expect(await lineCount(1)).toBe(2);
+
+  // Markdown on: the items are a list and the blank line separates paragraphs.
+  question.is_markdown = true;
+  await page.reload();
+  const options = page.locator('button[aria-pressed]');
+  await expect(options).toHaveCount(3);
+  await expect(options.nth(1).getByRole('listitem')).toHaveCount(2);
+  await expect(options.nth(2).locator('p')).toHaveCount(2);
+
+  // The answer submitted is the option as written, newline included.
+  await page.locator('button[aria-pressed]').nth(1).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: multiLine });
+});
+
+test('a long unbroken token wraps inside its MC option', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 514,
+    question_text: 'Which hash matches?',
+    options: `Token: ${'a3f5c9e1b7d2'.repeat(20)}|None of them`,
+    question_type: 'MC',
+    is_markdown: false,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const overflows = () =>
+    page
+      .locator('button[aria-pressed]')
+      .first()
+      .evaluate((button) => button.scrollWidth > button.clientWidth);
+  expect(await overflows()).toBe(false);
+
+  question.is_markdown = true;
+  await page.reload();
+  await expect(page.locator('button[aria-pressed]')).toHaveCount(2);
+  expect(await overflows()).toBe(false);
+});
+
+test('the math flag typesets TeX in plain text and leaves prices as text', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 508,
+    question_text: [
+      'A sphere of radius $R$ has field $E = \\dfrac{q}{4 \\pi \\epsilon_0 L^2}$.',
+      'The kit costs $5 and $10.',
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.locator('math')).toHaveCount(2);
+  await expect(page.locator('math mfrac')).toHaveCount(1);
+  await expect(page.getByText('The kit costs $5 and $10.')).toBeVisible();
+  await expect(page.getByText('$R$')).toHaveCount(0);
+
+  // Same question with the flag off: the TeX is literal text.
+  question.render_math = false;
+  await page.reload();
+  await expect(page.getByText('A sphere of radius $R$')).toBeVisible();
+  await expect(page.locator('math')).toHaveCount(0);
+});
+
+test('the card waits for KaTeX instead of showing raw TeX first', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 511,
+    question_text: 'A sphere of radius $R$ carries charge $q$.',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => (release = resolve));
+  await page.route(/\/katex\.js(\?|$)/, async (route) => {
+    await released;
+    await route.continue();
+  });
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('Loading…')).toBeVisible();
+  await expect(page.getByText('$R$', { exact: false })).toHaveCount(0);
+  release();
+  await expect(page.locator('math')).toHaveCount(2);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+});
+
+test('a question whose KaTeX fails to load shows its TeX as written', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 509,
+    question_text: 'A sphere of radius $R$ carries charge $q$.',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  // Vite serves the pre-bundled dependency as .vite/deps/katex.js.
+  await page.route(/\/katex\.js(\?|$)/, (route) => route.abort());
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('A sphere of radius $R$ carries charge $q$.')).toBeVisible();
+  await expect(page.locator('math')).toHaveCount(0);
+  await expect(page.getByText('Loading…')).toHaveCount(0);
+});
+
+test('Markdown and math typeset together, leaving code and prices as written', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 513,
+    question_text: [
+      '## Field of a **charged** sphere',
+      '',
+      'With $a_1 + b_1 = c_1$ and \\(E = \\dfrac{q}{L^2}\\), the kit costs $5 and $10.',
+      '',
+      '$$',
+      '\\int_0^1 x^2 \\, dx',
+      '$$',
+      '',
+      '| Symbol | Meaning |',
+      '| --- | --- |',
+      '| $|x|$ | magnitude |',
+      '',
+      'Run `echo $HOME and $PATH` first.',
+      '',
+      '```',
+      'cost = $x$',
+      '```',
+      '',
+      '```python',
+      'def cost(x):',
+      '    return "$x$"',
+      '```',
+    ].join('\n'),
+    options: '$x^2$|B',
+    question_type: 'MC',
+    is_markdown: true,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  // The question; the options after it render Markdown too.
+  const body = page.locator('div.question-markdown').first();
+  await expect(body.getByRole('heading', { name: 'Field of a charged sphere' })).toBeVisible();
+  await expect(body.locator('strong')).toHaveText('charged');
+  // Subscripts are not read as emphasis, \( keeps its backslash.
+  await expect(body.locator('em')).toHaveCount(0);
+  await expect(body.locator('p math')).toHaveCount(3);
+  await expect(body.locator('p math msub')).toHaveCount(3);
+  await expect(body.locator('p math mfrac')).toHaveCount(1);
+  await expect(body.locator('p math mo', { hasText: '∫' })).toHaveCount(1);
+  await expect(body.getByText('the kit costs $5 and $10.')).toBeVisible();
+  // A | inside a formula does not split the table cell.
+  await expect(body.locator('td')).toHaveCount(2);
+  await expect(body.locator('td math')).toHaveCount(1);
+  await expect(body.locator('code').first()).toHaveText('echo $HOME and $PATH');
+  await expect(body.locator('pre code').first()).toHaveText('cost = $x$\n');
+  await expect(body.locator('code math')).toHaveCount(0);
+  // Code is still coloured with math on: a token keeps its highlight class.
+  await expect(body.locator('pre code .hljs-keyword').first()).toHaveText('def');
+  await expect(page.locator('button[aria-pressed]').first().locator('math')).toHaveCount(1);
+});
+
+test('Markdown with math keeps code, escapes and link references intact', async ({ page }) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 515,
+    question_text: [
+      'Pay \\$5 for $x$, see [the note][$k$], and ``a ` $y$`` stays code.',
+      '',
+      '[$k$]: https://example.com/note',
+      '',
+      '~~~',
+      'tilde = $t$',
+      '~~~',
+      '',
+      '    indented = $i$',
+      '',
+      'After $z$.',
+      '',
+      '```',
+      'unclosed = $u$',
+    ].join('\n'),
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: true,
+    render_math: true,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const body = page.locator('div.question-markdown').first();
+  // $x$ and $z$ are typeset; nothing inside code is.
+  await expect(body.locator('math')).toHaveCount(2);
+  await expect(body.locator('code math')).toHaveCount(0);
+  await expect(body.getByText('Pay $5 for')).toBeVisible();
+  // The same formula labels the reference and its definition, so it resolves.
+  await expect(body.getByRole('link', { name: 'the note' })).toHaveAttribute(
+    'href',
+    'https://example.com/note',
+  );
+  await expect(body.locator('p code')).toHaveText('a ` $y$');
+  await expect(body.locator('pre code')).toHaveText([
+    'tilde = $t$\n',
+    'indented = $i$\n',
+    'unclosed = $u$\n',
+  ]);
+});
+
+test('MC options render Markdown like the question, without links', async ({ page }) => {
+  const state = createMockState();
+  const question: RaterQuestionRecord = {
+    id: 516,
+    question_text: 'Pick one.',
+    options: [
+      '**Bold** and $x^2$',
+      '1. Paris',
+      '# of items',
+      'List<int> or `code`',
+      '[site](https://example.com)',
+      '```python\ndef f(n):\n    return n\n```',
+    ].join('|'),
+    question_type: 'MC',
+    is_markdown: true,
+    render_math: true,
+  };
+  seedRaterWithQuestion(state, question);
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const options = page.locator('button[aria-pressed]');
+  await expect(options).toHaveCount(6);
+  await expect(options.nth(0).locator('strong')).toHaveText('Bold');
+  await expect(options.nth(0).locator('math msup')).toHaveCount(1);
+  // Block syntax renders as it does in the question.
+  await expect(options.nth(1).locator('ol li')).toHaveText('Paris');
+  await expect(options.nth(2).locator('h1')).toHaveText('of items');
+  await expect(options.nth(5).locator('pre code .hljs-keyword').first()).toHaveText('def');
+  // Raw HTML stays text, and a link shows as its text: it would open, not select.
+  await expect(options.nth(3)).toHaveText('List<int> or code');
+  await expect(options.nth(3).locator('code')).toHaveText('code');
+  await expect(options.nth(4)).toHaveText('site');
+  await expect(options.locator('a')).toHaveCount(0);
+
+  await options.nth(0).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
+  await page.getByRole('button', { name: 'Submit answer' }).click();
+  await expect.poll(() => state.submittedRatings.length).toBe(1);
+  expect(state.submittedRatings[0]).toMatchObject({ answer: '**Bold** and $x^2$' });
+
+  // Markdown off: the option is shown as written, math still typeset.
+  question.is_markdown = false;
+  await page.reload();
+  await expect(options.nth(0)).toContainText('**Bold** and');
+  await expect(options.nth(0).locator('math')).toHaveCount(1);
+});
+
+test('the Markdown and math checkboxes combine and show an upload that disagrees', async ({
+  page,
+}) => {
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'Math Rendering Experiment', question_count: 1 }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [
+    {
+      id: 1,
+      filename: 'gpqa_n20.csv',
+      uploaded_at: '2026-11-05T00:00:00Z',
+      question_count: 1,
+      dataset_meta: { render_math: true },
+    },
+  ];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  const markdown = page.getByLabel('Render questions as Markdown');
+  const math = page.getByLabel('Render math');
+  // The experiment has math off; the upload declared it on.
+  await expect(page.getByText('Declared differently by: gpqa_n20.csv.')).toBeVisible();
+
+  await markdown.check();
+  await math.check();
+  await expect(markdown).toBeChecked();
+  await expect(math).toBeChecked();
+});
+
+test('the math flag also typesets the long-context document window', async ({
+  page,
+  context,
+}) => {
+  const state = createMockState();
+  const document = `The energy is $E = mc^2$.\n${'A sentence of padding. '.repeat(120)}`;
+  expect(document.length).toBeGreaterThan(2000);
+
+  seedRaterWithQuestion(state, {
+    id: 510,
+    question_text: 'Which answer follows from the document?',
+    options: 'A|B',
+    question_type: 'MC',
+    is_markdown: false,
+    render_math: true,
+    parent_question_text: document,
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  const popupPromise = context.waitForEvent('page');
+  await page.getByRole('link', { name: 'Open document in new tab' }).click();
+  const popup = await popupPromise;
+  await popup.waitForLoadState('domcontentloaded');
+
+  await expect(popup.locator('pre math')).toHaveCount(1);
+  await expect(popup.getByText('$E = mc^2$')).toHaveCount(0);
 });
 
 test('an MC question with no options submits the typed free-text answer', async ({ page }) => {
@@ -1567,10 +2564,18 @@ test('an MC question with no options submits the typed free-text answer', async 
   const answer = page.getByPlaceholder('Type your answer here...');
   await expect(answer).toBeVisible();
   await answer.fill('It recommends staged rollout.');
-  await page.getByRole('button', { name: 'Submit answer' }).click();
+  // Confidence starts unset and is required before the answer can be sent.
+  const submit = page.getByRole('button', { name: 'Submit answer' });
+  await expect(page.getByRole('slider')).toHaveClass('confidence-unset');
+  await expect(submit).toBeDisabled();
+  await page.getByRole('slider').fill('4');
+  await submit.click();
 
   await expect.poll(() => state.submittedRatings.length).toBe(1);
-  expect(state.submittedRatings[0]).toMatchObject({ answer: 'It recommends staged rollout.' });
+  expect(state.submittedRatings[0]).toMatchObject({
+    answer: 'It recommends staged rollout.',
+    confidence: 4,
+  });
   expect(dialogs).toEqual([]);
 });
 
@@ -1951,15 +2956,18 @@ test('round and next-round costs include Prolific\'s fee and VAT', async ({ page
     '12 completed · 3 in progress · 48 left'
   );
 
-  // Next round: 30 places at the pilot's £15.00, fee and VAT on top. Rewards
-  // alone would read £450.00.
-  await expect(page.getByTestId('recommendation-cost')).toHaveText('~£630.00');
-
   // The same figure has to be estimable before launch, so editing the round
   // breaks out rewards, fee and VAT rather than showing rewards alone.
   await page.getByTestId('edit-round-0').click();
   await expect(page.getByText(/Est\. Prolific total: £1323\.00 for 63 raters/)).toBeVisible();
   await expect(page.getByText(/£945\.00 rewards \+ £315\.00 fee \+ £63\.00 VAT/)).toBeVisible();
+
+  // Once the round closes, the next round: 30 places at the pilot's £15.00,
+  // fee and VAT on top. Rewards alone would read £450.00.
+  state.rounds[1][0].prolific_study_status = 'AWAITING_REVIEW';
+  await page.reload();
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByTestId('recommendation-cost')).toHaveText('~£630.00');
 });
 
 // Locale and timezone are pinned so the rendered timestamp is comparable.
@@ -2024,7 +3032,7 @@ test.describe('analytics raters tab', () => {
     await expect(page).toHaveURL('/admin/experiments/1/analytics');
     await expect(page.getByRole('heading', { name: 'Analytics: Analytics Internal Name' })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Raters', exact: true }).click();
+    await page.getByRole('tab', { name: 'Raters' }).click();
     await expect(page).toHaveURL('/admin/experiments/1/analytics/raters');
 
     const raterRow = page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' });
@@ -2133,10 +3141,14 @@ test.describe('analytics raters tab', () => {
     await expect(page.getByRole('heading', { name: 'Analytics: Analytics Internal Name' })).toBeVisible();
     await expect(page.getByRole('row').filter({ hasText: '660d6a1f4a7f1337de235daa' })).toBeVisible();
 
-    // Unknown tab segments fall back to the overview URL.
+    // Unknown tab segments (and the retired overview tab) fall back to the
+    // canonical URL, which shows the summary strip and the questions tab.
     await page.goto('/admin/experiments/1/analytics/bogus');
     await expect(page).toHaveURL('/admin/experiments/1/analytics');
-    await expect(page.getByText('Total Ratings')).toBeVisible();
+    await expect(page.getByText('Ran out of time')).toBeVisible();
+    await expect(page.getByRole('tab', { name: 'Questions' })).toHaveAttribute('aria-selected', 'true');
+    await page.goto('/admin/experiments/1/analytics/overview');
+    await expect(page).toHaveURL('/admin/experiments/1/analytics');
   });
 });
 
@@ -2223,6 +3235,7 @@ test('grouped list cards, wave chips, and create-panel group picker', async ({ p
   await expect(page.getByText('Ungrouped · scratch work')).toBeVisible();
 
   await page.getByTestId('grouped-toggle').click();
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-option-1').click();
   await expect(page.getByTestId('group-picker')).toContainText('MedQA Fall');
@@ -2288,6 +3301,47 @@ test('duplicating into an older wave group warns on the copy', async ({ page }) 
   await expect(warning).toContainText('move it to a fall26 group before launch');
   // The loud warning replaces the small notice rather than doubling it.
   await expect(page.getByTestId('draft-wave-notice')).toHaveCount(0);
+});
+
+test('on a phone the section tabs scroll sideways and stay on screen', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Phone Tabs', question_count: 2 })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // One tab row at every width: no separate section dropdown on phones.
+  await expect(page.getByTestId('tab-overview')).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Section' })).toHaveCount(0);
+
+  // The last tab starts off-screen; picking it scrolls it fully into view.
+  const launch = page.getByTestId('tab-launch');
+  await launch.click();
+  await expect(launch).toBeInViewport({ ratio: 1 });
+
+  // Scrolling a long section keeps the tab row pinned to the top.
+  await page.getByTestId('tab-instructions').click();
+  await page.mouse.wheel(0, 1500);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(300);
+  await expect(page.getByTestId('tab-instructions')).toBeInViewport();
+
+  // Switching tabs from down the page starts the new section at its top.
+  await page.getByTestId('tab-questions').click();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(600);
+  await expect(page.getByTestId('tab-questions')).toBeInViewport();
+
+  // Nothing pushes the page wider than the phone.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
 
 test('a DRAFT in an older wave group keeps a small wave notice', async ({ page }) => {
@@ -2469,7 +3523,7 @@ test('saving other fields leaves the group out of the PATCH', async ({ page }) =
   const rename = page.waitForRequest(isExperimentPatch(1));
   await page.getByRole('button', { name: 'Save name' }).click();
   expect((await rename).postDataJSON()).not.toHaveProperty('group_id');
-  await expect(page.getByText('Public name (shown to raters): Spring draft v2')).toBeVisible();
+  await expect(page.getByTestId('public-name')).toHaveText('Spring draft v2');
   await expect(page.getByTestId('group-current')).toHaveText('MedQA Spring · medqa × sp26');
   expect(state.experiments[0].group_id).toBe(1);
 });
@@ -2589,7 +3643,7 @@ test('a launched experiment shows its group without move controls', async ({ pag
   await page.goto('/admin/experiments/1');
   const control = page.getByTestId('group-control');
   await expect(control).toContainText('MedQA Spring · medqa × sp26');
-  await expect(control.getByTestId('group-locked')).toHaveText('(locked after launch)');
+  await expect(control.getByTestId('group-locked')).toHaveText('Locked');
   await expect(control.getByTestId('group-move-button')).toHaveCount(0);
   await expect(page.getByTestId('move-to-current-wave')).toHaveCount(0);
 
@@ -2597,7 +3651,7 @@ test('a launched experiment shows its group without move controls', async ({ pag
   await page.getByRole('button', { name: 'Edit public name' }).click();
   await page.getByRole('textbox', { name: 'Public name' }).fill('Spring launched v2');
   await page.getByRole('button', { name: 'Save name' }).click();
-  await expect(page.getByText('Public name (shown to raters): Spring launched v2')).toBeVisible();
+  await expect(page.getByTestId('public-name')).toHaveText('Spring launched v2');
   await expect(control).toContainText('MedQA Spring · medqa × sp26');
 });
 
@@ -2634,6 +3688,7 @@ test('group picker keyboard: type-ahead commits the match, not "No group"', asyn
 
   // Typing to a single match and pressing Enter picks that match. The highlight
   // used to stay pinned to the "No group" row, so this silently ungrouped.
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-input').fill('MedQA Fall');
   await page.getByTestId('group-picker-input').press('Enter');
@@ -2662,6 +3717,7 @@ test('new dataset collects wave tokens one at a time', async ({ page }) => {
   await installApiMocks(page, state);
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-create').click();
   await page.getByTestId('new-group-name-input').fill('MedQA Spring');
@@ -2702,6 +3758,7 @@ test('failed experiment create reuses the group already made', async ({ page }) 
   await installApiMocks(page, state);
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-picker-create').click();
   await page.getByTestId('new-group-name-input').fill('MedQA Spring');
@@ -2727,6 +3784,7 @@ test('a validation error shows each field and message, not the raw JSON body', a
   await installApiMocks(page, state);
   await page.goto('/admin');
 
+  await openCreatePanel(page);
   await page.getByTestId('experiment-name-input').fill('TRIGGER-422');
   await page.getByRole('button', { name: 'Create Experiment' }).click();
 
@@ -2741,12 +3799,47 @@ test('a validation error shows each field and message, not the raw JSON body', a
   await expect(alert).not.toContainText('three');
 });
 
+test('the new-experiment panel opens from the header and closes on Escape', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  const opener = page.getByTestId('new-experiment-button');
+  const appInert = () => page.evaluate(() => document.getElementById('root')?.inert ?? null);
+  await expect(page.getByTestId('create-drawer')).toBeHidden();
+  await opener.click();
+  await expect(page.getByRole('dialog', { name: 'New experiment' })).toBeVisible();
+  await expect(page.getByTestId('experiment-name-input')).toBeFocused();
+  // The page behind the panel is out of the tab order while it is open.
+  expect(await appInert()).toBe(true);
+
+  // Escape inside the group picker closes the picker, not the whole panel.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').press('Escape');
+  await expect(page.getByTestId('create-drawer')).toBeVisible();
+
+  // A half-built new group survives closing and reopening the panel.
+  await page.getByTestId('group-picker').click();
+  await page.getByTestId('group-picker-input').fill('Draft group');
+  await page.getByTestId('group-picker-input').press('Enter');
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('Draft group');
+
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('create-drawer')).toBeHidden();
+  await expect(opener).toBeFocused();
+  expect(await appInert()).toBe(false);
+
+  await opener.click();
+  await expect(page.getByTestId('new-group-name-input')).toHaveValue('Draft group');
+});
+
 test('tag input enforces the length and count limits while typing', async ({ page }) => {
   const state = createMockState();
   // One existing tag, so there is a suggestion chip for the full state to hide.
   state.experiments = [buildExperiment(state, { name: 'Tagged', tags: ['needs-review'] })];
   await installApiMocks(page, state);
   await page.goto('/admin');
+  await openCreatePanel(page);
 
   const input = page.getByTestId('experiment-tags-input');
   const suggestion = page.getByTestId('tag-suggestion-needs-review');
@@ -2795,11 +3888,6 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
   await installApiMocks(page, state);
   await page.goto('/admin');
 
-  await expect(page.getByTestId('tag-suggestion-needs-review')).toBeVisible();
-  await expect(page.getByTestId('tag-suggestion-alpha')).toBeVisible();
-  await expect(page.getByTestId('tag-suggestion-pilot-batch-2')).toBeVisible();
-  await expect(page.getByTestId('tag-suggestion-needs-review')).toContainText('3');
-
   await page.getByTestId('experiment-tag-needs-review').first().click();
   await expect(page.getByTestId('tag-filter-chip')).toContainText('needs-review');
   await expect(page.getByText('Scratch draft')).toHaveCount(0);
@@ -2808,6 +3896,11 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
   await page.getByRole('button', { name: 'Clear filters' }).click();
   await expect(page.getByText('Scratch draft')).toBeVisible();
 
+  await openCreatePanel(page);
+  await expect(page.getByTestId('tag-suggestion-needs-review')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-alpha')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-pilot-batch-2')).toBeVisible();
+  await expect(page.getByTestId('tag-suggestion-needs-review')).toContainText('3');
   await page.getByTestId('tag-suggestion-needs-review').click();
   await expect(page.getByTestId('selected-tag-needs-review')).toBeVisible();
 
@@ -2823,11 +3916,108 @@ test('tag suggestions rank by usage, row chips filter, and create adds a new tag
 });
 
 
+test('a testing preview cannot start a pilot, and the banner says why', async ({ page }) => {
+  // #174: a `preview-testing` draft isn't missing anything, so the banner
+  // doesn't say it is; it names what is missing after that.
+  const fixes = [
+    'Testing preview only: this experiment is tagged preview-testing.',
+    'Questions: upload questions on the Questions tab.',
+  ];
+  const state = createMockState();
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Passages fall25 control-TESTONLY',
+      question_count: 0,
+      tags: ['preview-testing'],
+      launch_ready: false,
+      launch_blockers: ['testing preview', 'questions'],
+      launch_blocker_fixes: fixes,
+      launch_blocker_summary: 'this experiment is a testing preview and is missing questions',
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  const banner = page.getByTestId('launch-blockers');
+  await expect(banner).toContainText(
+    "The pilot draft can't be created yet: this experiment is a testing preview and is missing questions.",
+  );
+  for (const fix of fixes) {
+    await expect(banner).toContainText(fix);
+  }
+  await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
+});
+
+// A tag added after the pilot: the pilot form is gone, but the API still
+// refuses to publish or start a round, so the rounds view says so too.
+for (const [label, round, control] of [
+  ['publish its draft', { prolific_study_status: 'UNPUBLISHED' }, 'publish-round-0'],
+  ['start a new round', { prolific_study_status: 'AWAITING_REVIEW' }, 'launch-round-button'],
+] as const) {
+  test(`a testing preview past its pilot cannot ${label}`, async ({ page }) => {
+    const fix = 'Testing preview only: this experiment is tagged preview-testing.';
+    const state = createMockState();
+    state.experiments = [
+      buildExperiment(state, {
+        id: 1,
+        name: 'Passages fall25 control-TESTONLY',
+        tags: ['preview-testing'],
+        launch_ready: false,
+        launch_blockers: ['testing preview'],
+        launch_blocker_fixes: [fix],
+        launch_blocker_summary: 'this experiment is a testing preview',
+      }),
+    ];
+    state.nextExperimentId = 2;
+    state.uploads[1] = [];
+    state.rounds[1] = [buildRound(state, { round_number: 0, places_requested: 5, ...round })];
+    state.recommendations[1] = {
+      avg_time_per_question_seconds: 60,
+      remaining_rating_actions: 10,
+      total_hours_remaining: 1,
+      recommended_places: 4,
+      is_complete: false,
+    };
+
+    await installApiMocks(page, state);
+    await page.goto('/admin/experiments/1');
+    await page.getByTestId('tab-launch').click();
+
+    const banner = page.getByTestId('testing-preview-rounds');
+    await expect(banner).toContainText(
+      "This experiment is a testing preview, so it can't publish a draft or start a new round.",
+    );
+    await expect(banner).toContainText(fix);
+    await expect(page.getByTestId(control)).toBeDisabled();
+  });
+}
+
+test('a ready experiment past its pilot shows no testing-preview banner', async ({ page }) => {
+  const state = createMockState();
+  state.experiments = [buildExperiment(state, { id: 1, name: 'Ready' })];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [buildRound(state, { round_number: 0, places_requested: 5 })];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await expect(page.getByTestId('publish-round-0')).toBeEnabled();
+  await expect(page.getByTestId('testing-preview-rounds')).toHaveCount(0);
+});
+
 test('an experiment missing launch fields cannot start a pilot', async ({ page }) => {
   // Served by the API (status.py), one per blocker; the page renders them as given.
   const fixes = [
     'Questions: upload questions on the Questions tab.',
-    'Rater instructions: set them under Instructions & prompts.',
+    'Rater instructions: set them under Instructions & settings.',
     'Internal study name: set it with the pencil by its title.',
     'Assistance model: PATCH assistance_params.assistance_models.<method>.',
   ];
@@ -2840,6 +4030,8 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
       launch_ready: false,
       launch_blockers: ['questions', 'rater instructions', 'internal study name', 'assistance model'],
       launch_blocker_fixes: fixes,
+      launch_blocker_summary:
+        'this experiment is missing questions, rater instructions, internal study name, assistance model',
     }),
   ];
   state.nextExperimentId = 2;
@@ -2861,8 +4053,8 @@ test('an experiment missing launch fields cannot start a pilot', async ({ page }
     await expect(banner).toContainText(fix);
   }
   await expect(page.getByTestId('run-pilot-button')).toBeDisabled();
-  // Ungrouped, so no dataset card and no one-click.
-  await expect(page.locator('[data-testid^="one-click"]')).toHaveCount(0);
+  // Ungrouped, so no dataset card to fill the form from.
+  await expect(page.getByTestId('pilot-card-prefill')).toHaveCount(0);
 
   // The pencil the internal-name fix points to doesn't call it optional.
   await page.getByRole('button', { name: 'Edit internal name' }).click();
@@ -2948,11 +4140,46 @@ test("a pilot's time and reward can be saved to the dataset card", async ({ page
 
   // Copied unconverted: minutes, and minor units per participant.
   await expect(page.getByTestId('card-readiness')).toHaveText(
-    'Card complete: one-click pilots can use it.',
+    'Card complete: the pilot form fills in from it.',
   );
   expect(state.datasetPatches).toEqual([{ estimated_completion_time: 20, reward: 900 }]);
   await expect(page.getByTestId('save-to-card-button')).toHaveCount(0);
   await expect(panel).toContainText('The passages card carries the same.');
+});
+
+test('the launch tab hides panels with nothing to offer', async ({ page }) => {
+  const state = createMockState();
+  seedCardExperiment(state, { ...COMPLETE_CARD, estimated_completion_time: 20, reward: 900 });
+  const pilot = buildRound(state, {
+    round_number: 0,
+    prolific_study_status: 'AWAITING_REVIEW',
+    places_requested: 5,
+    estimated_completion_time: 20,
+    reward: 900,
+  });
+  state.rounds[1] = [pilot];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 42,
+    remaining_rating_actions: 300,
+    total_hours_remaining: 3.5,
+    recommended_places: 4,
+    is_complete: false,
+  };
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  // The card already carries the pilot's time and reward: nothing to save.
+  await expect(page.getByTestId('launch-round-button')).toBeVisible();
+  await expect(page.getByTestId('save-to-card-panel')).toHaveCount(0);
+
+  // A round still open: no next round to recommend yet.
+  state.rounds[1] = [pilot, buildRound(state, { round_number: 1, prolific_study_status: 'UNPUBLISHED' })];
+  await page.reload();
+  await page.getByTestId('tab-launch').click();
+  await expect(page.getByTestId('publish-round-1')).toBeVisible();
+  await expect(page.getByTestId('recommendation-panel')).toHaveCount(0);
 });
 
 test('an ungrouped experiment has no dataset card to save the pilot to', async ({ page }) => {
@@ -3020,151 +4247,156 @@ function seedCardExperiment(
   };
 }
 
-test('a complete dataset card creates the pilot draft in one click', async ({ page }) => {
+test("the pilot form starts from the dataset card and the dataset's other experiments", async ({
+  page,
+}) => {
   const state = createMockState();
-  seedCardExperiment(state, COMPLETE_CARD);
-  state.launchError = 'A pilot study has already been run for this experiment';
-  // Named by internal name where there is one; arms share the public name.
-  state.launchExcluded = [
-    { id: 7, name: 'Passage rating', internal_name: 'passages fall24 control' },
-    { id: 9, name: 'Passages fall25 top_n', internal_name: null },
-  ];
+  // Not the form's own default reward, so the card's is what shows.
+  seedCardExperiment(state, { ...COMPLETE_CARD, reward: 1250 });
+  // A sibling arm still in DRAFT, and an unfinished experiment on no dataset.
+  state.experiments.push(
+    buildExperiment(state, {
+      id: 7,
+      name: 'Passages top_n',
+      group_id: 1,
+      group_name: 'passages fall25',
+      group_dataset_id: 1,
+      group_dataset_name: 'passages',
+      wave: 'fall25',
+    }),
+    buildExperiment(state, { id: 9, name: 'Unrelated draft' }),
+  );
 
   await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
   await page.goto('/admin/experiments/1');
   await page.getByTestId('tab-launch').click();
 
-  const card = page.getByTestId('one-click-card');
-  await expect(card).toContainText('30 min');
-  await expect(card).toContainText('£9.00 per participant');
-  await expect(card).toContainText('Rate short passages.');
-  await expect(card).toContainText('Participants of passages fall24 control, Passages fall25 top_n');
-  // The pilot form stays as the alternative.
-  await expect(page.getByTestId('run-pilot-button')).toBeVisible();
-
-  // A refusal shows the API's own detail.
-  await page.getByTestId('one-click-launch-button').click();
-  await expect(page.getByTestId('one-click-panel')).toContainText(
-    'A pilot study has already been run for this experiment',
+  // A complete card shows as a summary; the pencil opens the form behind it.
+  await expect(page.getByTestId('pilot-card-prefill')).toHaveText(
+    "Filled in from the passages card, and set to exclude participants of the dataset's other " +
+      'experiments. Use the pencil to change anything before creating the draft.',
   );
+  const summary = page.getByTestId('pilot-summary');
+  await expect(summary).toContainText('Rate short passages.');
+  await expect(summary).toContainText('30 min');
+  await expect(summary).toContainText('£12.50 per participant');
+  await expect(summary).toContainText('Participants of Passages top_n');
+  await expect(page.getByTestId('pilot-description-input')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Edit pilot settings' }).click();
+  await expect(summary).toHaveCount(0);
 
-  state.launchError = null;
-  // A card edit and a sibling added since the panel loaded reach the confirm.
-  state.datasets[0] = { ...state.datasets[0], estimated_completion_time: 25, reward: 1000 };
-  state.launchExcluded = [
-    ...state.launchExcluded,
-    { id: 11, name: 'Passage rating', internal_name: 'passages fall25 decomp' },
-  ];
-  page.removeAllListeners('dialog');
-  let confirmMessage = '';
-  page.once('dialog', async (dialog) => {
-    confirmMessage = dialog.message();
-    await dialog.accept();
-  });
-  await page.getByTestId('one-click-launch-button').click();
+  await expect(page.getByTestId('pilot-card-prefill')).toContainText(
+    'Edit anything before creating the draft.',
+  );
+  await expect(page.getByTestId('pilot-description-input')).toHaveValue('Rate short passages.');
+  await expect(page.getByTestId('pilot-description-source')).toHaveText(
+    "Filled in from the passages card's Prolific listing description.",
+  );
+  await expect(page.getByTestId('pilot-estimated-completion-time-input')).toHaveValue('30');
+  await expect(page.getByTestId('pilot-reward-input')).toHaveValue('12.50');
 
+  // The sibling starts selected though it isn't finished, and can be taken off
+  // and put back. The unrelated draft can't be picked at all.
+  const sibling = page.getByTestId('pilot-exclusion-option-7');
+  await expect(sibling).toBeChecked();
+  await expect(page.getByText("Can't re-add until finished")).toHaveCount(0);
+  await expect(page.getByTestId('pilot-exclusion-option-9')).toHaveCount(0);
+  await sibling.uncheck();
+  await sibling.check();
+
+  await page.getByTestId('run-pilot-button').click();
   await expect(page.getByTestId('study-rounds-list')).toBeVisible();
-  expect(confirmMessage).toBe(
-    'Create a pilot draft from the passages card: 25 min, £10.00 per participant?\n' +
-      'It excludes participants of: passages fall24 control, Passages fall25 top_n, ' +
-      'passages fall25 decomp.\n' +
-      'You can still edit the draft before publishing.',
-  );
-  await expect(page.getByTestId('one-click-panel')).toHaveCount(0);
-  expect(state.launchRequests).toEqual([1, 1]);
+  expect(state.pilotPayloads).toHaveLength(1);
+  expect(state.pilotPayloads[0]).toMatchObject({
+    description: 'Rate short passages.',
+    estimated_completion_time: 30,
+    reward: 1250,
+    pilot_places: 5,
+    excluded_experiment_ids: [7],
+  });
 });
 
-test('cancelling the one-click confirm sends no launch request', async ({ page }) => {
+test('a complete dataset card creates the pilot draft straight from the summary', async ({
+  page,
+}) => {
   const state = createMockState();
-  seedCardExperiment(state, COMPLETE_CARD);
-
-  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
-  const launchPosts: string[] = [];
-  page.on('request', (request) => {
-    if (request.method() === 'POST' && new URL(request.url()).pathname.endsWith('/launch')) {
-      launchPosts.push(request.url());
-    }
-  });
-  await page.goto('/admin/experiments/1');
-  await page.getByTestId('tab-launch').click();
-  await expect(page.getByTestId('one-click-card')).toContainText(
-    'Nobody: the dataset has no other grouped experiments',
-  );
-
-  page.removeAllListeners('dialog');
-  let confirmMessage = '';
-  page.once('dialog', async (dialog) => {
-    confirmMessage = dialog.message();
-    await dialog.dismiss();
-  });
-  await page.getByTestId('one-click-launch-button').click();
-
-  await expect.poll(() => confirmMessage).toContain('so it excludes nobody.');
-  await expect(page.getByTestId('one-click-launch-button')).toBeEnabled();
-  await expect(page.getByTestId('one-click-panel')).toBeVisible();
-  expect(launchPosts).toEqual([]);
-  expect(state.launchRequests).toEqual([]);
-});
-
-test('a one-click draft whose refresh fails offers no second launch', async ({ page }) => {
-  const state = createMockState();
-  seedCardExperiment(state, COMPLETE_CARD);
+  seedCardExperiment(state, { ...COMPLETE_CARD, reward: 1250 });
 
   await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
   await page.goto('/admin/experiments/1');
   await page.getByTestId('tab-launch').click();
-  await expect(page.getByTestId('one-click-card')).toBeVisible();
 
-  // The launch succeeds, but the rounds reload that would show its draft fails.
-  await page.route('**/api/admin/experiments/1/prolific/rounds', async (route) => {
-    if (route.request().method() !== 'GET') return route.fallback();
-    await fulfillJson(route, 500, { detail: 'Round history unavailable' });
+  await expect(page.getByTestId('pilot-summary')).toContainText(
+    'Nobody: the dataset has no other experiments',
+  );
+  await page.getByTestId('run-pilot-button').click();
+  await expect(page.getByTestId('study-rounds-list')).toBeVisible();
+  expect(state.pilotPayloads[0]).toMatchObject({
+    description: 'Rate short passages.',
+    estimated_completion_time: 30,
+    reward: 1250,
+    pilot_places: 5,
+    excluded_experiment_ids: [],
   });
-  await page.getByTestId('one-click-launch-button').click();
-
-  await expect(page.getByTestId('one-click-created')).toHaveText(
-    'Pilot draft created — reload to see it.',
-  );
-  await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
-  await expect(page.getByTestId('one-click-launch-button')).toHaveText(
-    'Create pilot draft from the card',
-  );
-  await expect(page.getByTestId('one-click-panel').getByRole('alert')).toHaveCount(0);
-  expect(state.launchRequests).toEqual([1]);
 });
 
-test('an incomplete dataset card names what it lacks and offers no one-click', async ({ page }) => {
+test('the summary takes the card reward when the workspace currency is unknown', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedCardExperiment(state, { ...COMPLETE_CARD, reward: 1250 });
+
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await expect(page.getByTestId('pilot-summary')).toContainText('12.50 per participant');
+  await page.getByTestId('run-pilot-button').click();
+  await expect(page.getByTestId('study-rounds-list')).toBeVisible();
+  expect(state.pilotPayloads[0]).toMatchObject({ reward: 1250 });
+});
+
+test('a reward typed before the card loads is kept', async ({ page }) => {
+  const state = createMockState();
+  seedCardExperiment(state, { ...COMPLETE_CARD, reward: 1250 });
+
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
+  // Hold the card back until the reward has been typed.
+  let releaseCard = () => {};
+  const cardHeld = new Promise<void>((resolve) => {
+    releaseCard = resolve;
+  });
+  await page.route('**/api/admin/datasets/1', async (route) => {
+    await cardHeld;
+    await route.fallback();
+  });
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+
+  await page.getByTestId('pilot-reward-input').fill('7.00');
+  releaseCard();
+
+  await expect(page.getByTestId('pilot-card-prefill')).toBeVisible();
+  await expect(page.getByTestId('pilot-estimated-completion-time-input')).toHaveValue('30');
+  await expect(page.getByTestId('pilot-reward-input')).toHaveValue('7.00');
+});
+
+test('an incomplete dataset card fills in what it has and names what it lacks', async ({ page }) => {
   const state = createMockState();
   seedCardExperiment(state, { ...COMPLETE_CARD, estimated_completion_time: null, reward: null });
 
-  await installApiMocks(page, state);
+  await installApiMocks(page, state, { currencyCode: 'GBP', currencySymbol: '£' });
   await page.goto('/admin/experiments/1');
   await page.getByTestId('tab-launch').click();
 
-  await expect(page.getByTestId('one-click-incomplete')).toHaveText(
-    "One-click launch needs a complete passages card; it's missing estimated completion time, " +
-      'reward. Use the pilot form below.',
+  await expect(page.getByTestId('pilot-card-prefill')).toContainText(
+    'The card has no estimated completion time or reward yet, so check those.',
   );
-  await expect(page.getByTestId('one-click-launch-button')).toHaveCount(0);
+  await expect(page.getByTestId('pilot-description-input')).toHaveValue('Rate short passages.');
+  // The form's own defaults stand in for what the card lacks.
+  await expect(page.getByTestId('pilot-estimated-completion-time-input')).toHaveValue('60');
+  await expect(page.getByTestId('pilot-reward-input')).toHaveValue('9.00');
   await expect(page.getByTestId('run-pilot-button')).toBeEnabled();
-});
-
-test('launch blockers disable the one-click pilot', async ({ page }) => {
-  const state = createMockState();
-  seedCardExperiment(state, COMPLETE_CARD, {
-    launch_ready: false,
-    launch_blockers: ['rater instructions', 'internal study name'],
-  });
-
-  await installApiMocks(page, state);
-  await page.goto('/admin/experiments/1');
-  await page.getByTestId('tab-launch').click();
-
-  await expect(page.getByTestId('one-click-blockers')).toContainText(
-    'missing rater instructions, internal study name',
-  );
-  await expect(page.getByTestId('one-click-launch-button')).toBeDisabled();
-  await expect(page.getByTestId('launch-blockers')).toBeVisible();
 });
 
 test('the dataset card editor saves what changed and shows whether the card is complete', async ({
@@ -3187,7 +4419,7 @@ test('the dataset card editor saves what changed and shows whether the card is c
   await page.getByTestId('group-card-edit-1').click();
   const editor = page.getByTestId('dataset-card-editor');
   await expect(editor.getByTestId('card-complete')).toHaveText(
-    'Card incomplete: missing internal study name, study blurb.',
+    'Card incomplete: missing internal study name, Prolific listing description.',
   );
   // Minor units per participant, entered as the pilot form's reward is.
   await expect(editor.getByTestId('card-reward-input')).toHaveValue('9.00');
@@ -3205,7 +4437,7 @@ test('the dataset card editor saves what changed and shows whether the card is c
   await editor.getByTestId('card-save-button').click();
 
   await expect(editor.getByTestId('card-complete')).toHaveText(
-    'Card complete: one-click pilots can use it.',
+    'Card complete: the pilot form fills in from it.',
   );
   // Only what changed is sent, and a cleared field is an explicit null.
   expect(state.datasetPatches).toEqual([
@@ -3325,6 +4557,7 @@ test('the create form leaves names and the ratings target to the card unless typ
 
   await installApiMocks(page, state);
   await page.goto('/admin');
+  await openCreatePanel(page);
   const name = page.getByTestId('experiment-name-input');
   const internalName = page.getByTestId('experiment-internal-name-input');
   const ratings = page.getByTestId('ratings-per-question-input');
@@ -3356,6 +4589,7 @@ test('the create form leaves names and the ratings target to the card unless typ
 
   // Typed values win.
   await page.goto('/admin');
+  await openCreatePanel(page);
   await page.getByTestId('group-picker').click();
   await page.getByTestId('group-option-1').click();
   await name.fill('Long passage rating');
@@ -3390,8 +4624,8 @@ test('a deception study ends on the debrief and never auto-redirects', async ({ 
     experiment_name: 'Deception Experiment',
     completion_url: 'https://app.prolific.com/submissions/complete?cc=DEC1234',
     rater_session_token: 'token-deception',
-    consent_statement_html: '<h2>Purpose of the study</h2><p>Mock consent.</p>',
-    debrief_html: '<h2>Thank you</h2><p>Some of what you were told was not accurate.</p>',
+    consent_statement_markdown: '## Purpose of the study\n\nMock consent.\n\n',
+    debrief_markdown: '## Thank you\n\nSome of what you were told was not accurate.\n\n',
   };
   state.questionsBySessionToken['token-deception'] = {
     id: 801,
@@ -3410,7 +4644,12 @@ test('a deception study ends on the debrief and never auto-redirects', async ({ 
   // No more questions after this one, so the session completes on submit.
   state.questionsBySessionToken['token-deception'] = {} as RaterQuestionRecord;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
+
+  // Skipping the optional feedback sends nothing and moves straight on.
+  await page.getByTestId('feedback-skip').click();
+  expect(state.submittedFeedback).toEqual([]);
 
   const debrief = page.getByTestId('debrief-screen');
   await expect(debrief).toBeVisible();
@@ -3444,9 +4683,9 @@ test('a sensitive study shows the warning in its consent and ends normally', asy
     experiment_name: 'Sensitive Experiment',
     completion_url: null,
     rater_session_token: 'token-sensitive',
-    consent_statement_html:
-      '<h2>Content warning</h2><p>Some passages describe violence.</p><p>Mock consent.</p>',
-    debrief_html: null,
+    consent_statement_markdown:
+      '## Content warning\n\nSome passages describe violence.\n\nMock consent. Read the [privacy notice](https://example.org/privacy).\n\n',
+    debrief_markdown: null,
   };
   state.questionsBySessionToken['token-sensitive'] = {
     id: 802,
@@ -3462,13 +4701,134 @@ test('a sensitive study shows the warning in its consent and ends normally', asy
 
   // The warning is part of the consent text itself.
   await expect(page.getByTestId('consent-screen')).toContainText('Some passages describe violence.');
+  // The statement is rendered Markdown: a heading, and a link that opens in
+  // a new tab so the rater does not leave the study.
+  await expect(page.getByRole('heading', { name: 'Content warning' })).toBeVisible();
+  const notice = page.getByRole('link', { name: 'privacy notice' });
+  await expect(notice).toHaveAttribute('href', 'https://example.org/privacy');
+  await expect(notice).toHaveAttribute('target', '_blank');
   await agreeToConsent(page);
   await expect(page.getByText('Is this passage disturbing?')).toBeVisible();
   state.questionsBySessionToken['token-sensitive'] = {} as RaterQuestionRecord;
   await page.getByRole('button', { name: 'Yes', exact: true }).click();
+  await page.getByRole('button', { name: 'Moderately confident' }).click();
   await page.getByRole('button', { name: /submit/i }).click();
   // No debrief for a content warning alone: the ordinary completion card.
   await expect(page.getByTestId('debrief-screen')).toHaveCount(0);
+});
+
+function seedSettingsExperiment(state: MockState, overrides: Partial<ExperimentRecord> = {}) {
+  state.experiments = [
+    buildExperiment(state, { id: 1, name: 'Settings Experiment', question_count: 2, ...overrides }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+}
+
+test('one Save on the settings step covers text, switches and consent together', async ({ page }) => {
+  const state = createMockState();
+  seedSettingsExperiment(state);
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  await expect(page.getByTestId('settings-status')).toHaveText('All changes saved');
+  await expect(page.getByRole('button', { name: /^Save/ })).toHaveCount(1);
+
+  // The rule quotes the sentence raters will read, and it follows the switch.
+  const quoted = page.getByTestId('outside-tools-preview');
+  await expect(quoted).toContainText('use them however you like');
+  await page.getByTestId('meta-forbid_outside_tools').click();
+  await expect(quoted).toContainText('strictly forbidden. Do not use web search');
+  await expect(quoted).not.toContainText('built into this study');
+  await page.getByTestId('meta-block_copy_paste').click();
+  await page.locator('#meta-description').fill('Rate each passage.');
+  await page.getByTestId('ethics-flag-deception').check();
+
+  // Each section's heading sums up what it holds.
+  await expect(page.getByTestId('settings-summary-rules')).toHaveText(
+    'Internet and AI tools forbidden · Copy and paste blocked',
+  );
+  await expect(page.getByTestId('settings-summary-intro')).toHaveText('3 words');
+  await expect(page.getByTestId('settings-summary-consent')).toContainText('Deception');
+  await expect(page.getByTestId('settings-status')).toHaveText('Unsaved changes');
+
+  await page.getByTestId('settings-save').click();
+  await expect(page.getByTestId('settings-status')).toHaveText('All changes saved');
+  expect(state.experimentPatches).toHaveLength(1);
+  expect(state.experimentPatches[0]).toMatchObject({
+    description: 'Rate each passage.',
+    forbid_outside_tools: true,
+    block_copy_paste: true,
+    is_markdown: false,
+    study_flags: ['deception'],
+  });
+});
+
+test('leaving the settings step with unsaved changes asks first', async ({ page }) => {
+  const state = createMockState();
+  seedSettingsExperiment(state);
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  // Nothing changed: Continue goes straight on.
+  await page.getByRole('button', { name: 'Continue: Rater assistance →' }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.getByTestId('tab-instructions').click();
+
+  await page.locator('#meta-description').fill('Unsaved text');
+  await page.getByRole('button', { name: 'Continue: Rater assistance →' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Leave without saving?' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Keep editing' })).toBeFocused();
+
+  // Keep editing: still on the step, the edit intact.
+  await dialog.getByRole('button', { name: 'Keep editing' }).click();
+  await expect(page.locator('#meta-description')).toHaveValue('Unsaved text');
+
+  // The step tabs are guarded the same way; confirming discards the edit.
+  await page.getByTestId('tab-questions').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Continue without saving' }).click();
+  await expect(page.locator('#meta-description')).toHaveCount(0);
+  expect(state.experimentPatches).toHaveLength(0);
+  await page.getByTestId('tab-instructions').click();
+  await expect(page.locator('#meta-description')).toHaveValue('');
+  await expect(page.getByTestId('settings-status')).toHaveText('All changes saved');
+});
+
+test('the settings step collapses sections and fits a phone', async ({ page }) => {
+  const state = createMockState();
+  seedSettingsExperiment(state, { assistance_method: 'top_n' });
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-instructions').click();
+
+  // An assisted study's ban exempts the assistance it provides.
+  await page.getByTestId('meta-forbid_outside_tools').click();
+  await expect(page.getByTestId('outside-tools-preview')).toContainText('built into this study');
+
+  const framing = page.getByTestId('settings-section-framing');
+  await framing.getByRole('button', { name: /Question framing/ }).click();
+  await expect(page.locator('#meta-human_prompt_prefix')).toBeHidden();
+  await framing.getByRole('button', { name: /Question framing/ }).click();
+  await expect(page.locator('#meta-human_prompt_prefix')).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 800 });
+  // Nothing overflows sideways and the prefix and suffix stack.
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const prefix = await page.locator('#meta-human_prompt_prefix').boundingBox();
+  const suffix = await page.locator('#meta-human_prompt_suffix').boundingBox();
+  expect(suffix!.y).toBeGreaterThan(prefix!.y + prefix!.height);
+  await expect(page.getByTestId('settings-save')).toBeInViewport();
 });
 
 test('the consent section saves the flags and details, and previews the statements', async ({
@@ -3499,7 +4859,8 @@ test('the consent section saves the flags and details, and previews the statemen
   // Sensitive switches to the warned consent and requires details before saving.
   await page.getByTestId('ethics-flag-sensitive').check();
   await expect(page.getByTestId('ethics-documents')).toContainText('warned consent v1');
-  await expect(page.getByTestId('ethics-save')).toBeDisabled();
+  await expect(page.getByTestId('settings-save')).toBeDisabled();
+  await expect(page.getByTestId('settings-status')).toContainText('Content warning details are required');
   await page.getByTestId('ethics-details').fill('Some passages describe violence.');
   // Deception adds the debrief on top.
   await page.getByTestId('ethics-flag-deception').check();
@@ -3512,9 +4873,9 @@ test('the consent section saves the flags and details, and previews the statemen
   await expect(unsaved).toContainText('Some passages describe violence.');
   await unsaved.getByRole('button', { name: 'Close' }).click();
   expect(state.experimentPatches).toHaveLength(0);
-  await page.getByTestId('ethics-save').click();
+  await page.getByTestId('settings-save').click();
 
-  await expect(page.getByText('Consent settings saved.')).toBeVisible();
+  await expect(page.getByText('Settings saved.')).toBeVisible();
   expect(state.experimentPatches).toHaveLength(1);
   expect(state.experimentPatches[0]).toMatchObject({
     study_flags: ['sensitive', 'deception'],
@@ -3537,7 +4898,297 @@ test('the consent section saves the flags and details, and previews the statemen
   await expect(cleared).toContainText('standard v1');
   await expect(cleared).not.toContainText('Some passages describe violence.');
   await cleared.getByRole('button', { name: 'Close' }).click();
-  await page.getByTestId('ethics-save').click();
-  await expect(page.getByText('Consent settings saved.')).toBeVisible();
+  await page.getByTestId('settings-save').click();
+  await expect.poll(() => state.experimentPatches.length).toBe(2);
   expect(state.experimentPatches[1]).toMatchObject({ study_flags: [], content_warning_details: '' });
+});
+
+test('the docs contents list follows the section scrolled to', async ({ page }) => {
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin/docs');
+
+  const toc = page.getByRole('navigation', { name: 'On this page' });
+  // Two scrolls in a row: the second only registers if the headings the
+  // scroll-spy observes survive the re-render the first one causes.
+  for (const id of ['2-upload-questions', '4-pilot-on-prolific']) {
+    await page.evaluate((target) => document.getElementById(target)?.scrollIntoView(), id);
+    await expect(toc.locator(`a[href="#${id}"]`)).toHaveAttribute('aria-current', 'true');
+  }
+});
+
+test('on a phone the docs contents open from a bar and close after a jump', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  await installApiMocks(page, state);
+  await page.goto('/admin/docs');
+
+  const toggle = page.getByRole('button', { name: /On this page/ });
+  await toggle.click();
+  const menu = page.locator('#docs-toc-sm-menu');
+  await expect(menu).toBeVisible();
+  await menu.getByRole('link', { name: '4. Pilot on Prolific' }).click();
+  await expect(menu).toHaveCount(0);
+  await expect(toggle).toContainText('4. Pilot on Prolific');
+  await expect(page.locator('[id="4-pilot-on-prolific"]')).toBeInViewport();
+});
+
+test('a long dataset name never widens the experiments list on a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  const name = 'Multidimensional Difference Awareness';
+  seedCardExperiment(state, { name }, { group_dataset_name: name });
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  // The name truncates; the card status stays readable.
+  await expect(page.getByTestId('group-card-edit-1')).toContainText('incomplete');
+  const widths = await page.evaluate(() => ({
+    scroll: document.documentElement.scrollWidth,
+    viewport: document.documentElement.clientWidth,
+  }));
+  expect(widths.scroll).toBeLessThanOrEqual(widths.viewport);
+
+  // The create panel fills the screen with its submit button in reach.
+  await openCreatePanel(page);
+  const box = await page.getByTestId('create-drawer').boundingBox();
+  expect(box).toMatchObject({ x: 0, width: 390 });
+  await expect(page.getByRole('button', { name: 'Create experiment' })).toBeInViewport();
+});
+
+test('on a phone the header menus open above the sticky section tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = createMockState();
+  seedCardExperiment(state, {});
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // Both menus open over the tab row just below them; a click on an item must
+  // land on the item, not on a tab painted over it.
+  for (const menu of ['export-menu', 'more-menu']) {
+    await page.getByTestId(menu).locator('summary').click();
+    const itemOnTop = await page.evaluate((testId) => {
+      const item = document.querySelector(`[data-testid="${testId}"] .xd-menu-item`)!;
+      const r = item.getBoundingClientRect();
+      return item.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2));
+    }, menu);
+    expect(itemOnTop).toBe(true);
+    await page.keyboard.press('Escape');
+  }
+});
+
+test('a question with image content renders its blocks in order and fetches the image', async ({
+  page,
+}) => {
+  const state = createMockState();
+  seedRaterWithQuestion(state, {
+    id: 507,
+    question_text: 'Screen after step 1:\n\nShould the next action be allowed?',
+    options: 'allow|deny',
+    question_type: 'MC',
+    is_markdown: false,
+    content: [
+      { type: 'text', text: 'Screen after step 1:' },
+      { type: 'image', url: MEDIA_URL, mime_type: 'image/png' },
+      { type: 'text', text: 'Should the next action be allowed?' },
+    ],
+  });
+
+  await installApiMocks(page, state);
+  await page.goto(RATER_URL);
+  await agreeToConsent(page);
+
+  await expect(page.getByText('Screen after step 1:')).toBeVisible();
+  await expect(page.getByText('Should the next action be allowed?')).toBeVisible();
+  // Blocks replace the text form; it is not rendered a second time.
+  await expect(page.getByText('Screen after step 1:')).toHaveCount(1);
+
+  const image = page.getByRole('img', { name: 'Question image 1' });
+  await expect(image).toBeVisible();
+  // The API path the backend handed out is what the browser fetched, with
+  // its token intact, and the bytes decoded.
+  await expect.poll(() => state.mediaRequests).toContain(MEDIA_URL);
+  await expect
+    .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBe(1);
+  // Full size opens in a new tab rather than navigating away from the question.
+  await expect(page.getByRole('link', { name: 'Question image 1' })).toHaveAttribute(
+    'target',
+    '_blank',
+  );
+  await expect(page.getByRole('button', { name: 'allow' })).toBeVisible();
+});
+
+test('the dashboard loads experiments past the first page, so search and total spend cover them', async ({
+  page,
+}) => {
+  const state = createMockState();
+  // The list is newest first, so the oldest experiment sits past row 100.
+  state.experiments = [
+    ...Array.from({ length: 100 }, (_, index) =>
+      buildExperiment(state, { name: `Recent draft ${index + 1}` }),
+    ),
+    buildExperiment(state, { name: 'Spring collection', status: 'FINISHED', spend_minor_units: 1250 }),
+  ];
+
+  await installApiMocks(page, state);
+  await page.goto('/admin');
+
+  await expect(page.getByText('Total spent')).toContainText('12.50');
+  await page.getByPlaceholder('Search experiments, groups, datasets…').fill('Spring collection');
+  await expect(page.getByText('Spring collection')).toBeVisible();
+});
+
+// ── Pilot check (docs/pilot-check.md) ─────────────────────────────────────
+
+function pilotCheckExperiment(state: MockState, pilot_check: PilotCheckSummaryRecord) {
+  state.experiments = [
+    buildExperiment(state, {
+      id: 1,
+      name: 'Checked Experiment',
+      question_count: 2,
+      pilot_check,
+    }),
+  ];
+  state.nextExperimentId = 2;
+  state.uploads[1] = [];
+  state.rounds[1] = [];
+  state.recommendations[1] = {
+    avg_time_per_question_seconds: 0,
+    remaining_rating_actions: 0,
+    total_hours_remaining: 0,
+    recommended_places: 0,
+    is_complete: false,
+  };
+}
+
+async function fillPilotForm(page: Page) {
+  await page.getByTestId('pilot-description-input').fill('Pilot description');
+  await page.getByTestId('pilot-estimated-completion-time-input').fill('30');
+  await page.getByTestId('pilot-reward-input').fill('900');
+  await page.getByTestId('pilot-places-input').fill('5');
+}
+
+test('the launch tab nags about an unrun pilot check and shows a run as it lands', async ({ page }) => {
+  const state = createMockState();
+  pilotCheckExperiment(state, PILOT_CHECK_NOT_RUN);
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+
+  // The overview says so too, and sends the admin to the Launch tab.
+  const overview = page.getByTestId('overview-pilot-check');
+  await expect(overview).toContainText('The pilot check has not been run.');
+  await overview.getByRole('button', { name: 'Run the pilot check' }).click();
+
+  const card = page.getByTestId('pilot-check-card');
+  await expect(card.getByTestId('pilot-check-state')).toHaveText('Not run');
+  // The card starts collapsed to its title, state and reason; the title opens it.
+  const toggle = card.getByTestId('pilot-check-toggle');
+  await expect(toggle).toContainText('The pilot check has not been run.');
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveCount(0);
+  await toggle.click();
+  await expect(card.getByTestId('pilot-check-banner')).toContainText(
+    'Launching will ask you to acknowledge this.',
+  );
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Run check');
+
+  await card.getByTestId('run-pilot-check-button').click();
+  await expect.poll(() => state.pilotCheckRequests).toEqual([1]);
+
+  // While it runs, the stepper lights the stages done so far, pulses the
+  // current one and shows its progress line.
+  const stepper = card.getByTestId('pilot-check-stepper');
+  await expect(stepper.getByTestId('pilot-check-step-sampling')).toHaveAttribute('data-status', 'done');
+  await expect(stepper.getByTestId('pilot-check-step-assistance')).toHaveAttribute('data-status', 'active');
+  await expect(stepper.getByTestId('pilot-check-stage-detail')).toHaveText('3 of 15 questions probed');
+  await expect(stepper.getByTestId('pilot-check-step-question_coherent')).toHaveAttribute(
+    'data-status',
+    'pending',
+  );
+
+  // The mock's run lands on the next poll, with its findings grouped by check
+  // and the question-level one linking into the participant preview. The
+  // stepper follows the card's own poll, so wait on it before the pill, which
+  // the mock flips as soon as the run is requested.
+  await expect(stepper.getByTestId('pilot-check-step-done')).toHaveAttribute('data-status', 'done', {
+    timeout: 10_000,
+  });
+  await expect(card.getByTestId('pilot-check-state')).toHaveText('Warnings');
+  await expect(stepper.getByTestId('pilot-check-stage-detail')).toHaveCount(0);
+  const findings = card.getByTestId('pilot-check-findings');
+  await expect(findings).toContainText('Question rendering');
+  await expect(findings).toContainText('The options contain duplicates.');
+  await expect(findings).toContainText('Yes|Yes');
+  await expect(findings.getByRole('link', { name: 'Open question 12 in preview' })).toHaveAttribute(
+    'href',
+    /\/rate\?.*experiment_id=1.*question_id=12/,
+  );
+  await expect(card.getByTestId('pilot-check-banner')).toContainText('1 warning');
+  await expect(card.getByTestId('pilot-check-banner')).toContainText('by dev@local');
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
+});
+
+test('a run that started on its own and landed before the Launch tab opened settles the card', async ({ page }) => {
+  // An upload or an edit starts a run (docs/pilot-check.md); the page hears
+  // of it through its summary and still says running once the run has
+  // landed. The card finds the landed run on its first fetch and has the
+  // page refresh, rather than showing the result under a running pill.
+  const state = createMockState();
+  pilotCheckExperiment(state, {
+    state: 'running',
+    run_id: 1,
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: null,
+    counts: { error: 0, warning: 0, info: 0 },
+    needs_acknowledgement: true,
+    reason: 'The pilot check is still running.',
+  });
+  state.pilotCheckRuns[1] = buildPilotCheckRun(1, { status: 'warnings' });
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await expect(page.getByTestId('overview-pilot-check')).toContainText('still running');
+
+  // The run lands server-side while the admin is on another tab.
+  state.experiments[0].pilot_check = {
+    state: 'warnings',
+    run_id: 1,
+    created_at: '2026-03-09T00:03:00Z',
+    finished_at: '2026-03-09T00:04:00Z',
+    counts: { error: 0, warning: 0, info: 1 },
+    needs_acknowledgement: true,
+    reason: 'The last pilot check found 0 error(s) and 0 warning(s).',
+  };
+  await page.getByTestId('tab-launch').click();
+  const card = page.getByTestId('pilot-check-card');
+  await expect(card.getByTestId('pilot-check-state')).toHaveText('Warnings');
+  await card.getByTestId('pilot-check-toggle').click();
+  await expect(card.getByTestId('run-pilot-check-button')).toHaveText('Re-run check');
+  await expect(card.getByTestId('pilot-check-findings')).toContainText('Consent statement');
+});
+
+test('creating a pilot without a clean pilot check asks before launching anyway', async ({ page }) => {
+  const state = createMockState();
+  pilotCheckExperiment(state, PILOT_CHECK_NOT_RUN);
+  await installApiMocks(page, state);
+  await page.goto('/admin/experiments/1');
+  await page.getByTestId('tab-launch').click();
+  await fillPilotForm(page);
+  await page.getByTestId('run-pilot-button').click();
+
+  // The 409's own sentence; "run the check first" backs out without launching.
+  const dialog = page.getByTestId('pilot-check-dialog');
+  await expect(dialog).toContainText('Create the draft without a clean pilot check?');
+  await expect(dialog).toContainText('The pilot check has not been run.');
+  await dialog.getByRole('button', { name: 'Run the check first' }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(state.launchAcknowledgements).toEqual([false]);
+  expect(state.rounds[1]).toEqual([]);
+
+  // Trying again and launching anyway sends a second request carrying the
+  // acknowledgement.
+  await page.getByTestId('run-pilot-button').click();
+  await dialog.getByRole('button', { name: 'Create draft anyway' }).click();
+  await expect(page.getByText('Pilot Round', { exact: true })).toBeVisible();
+  expect(state.launchAcknowledgements).toEqual([false, false, true]);
+  expect(state.rounds[1]).toHaveLength(1);
 });

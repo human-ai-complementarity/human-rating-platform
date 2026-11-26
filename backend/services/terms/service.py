@@ -30,7 +30,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import get_settings
 from models import Experiment, TermsStatement
 from schemas import TermsPreviewResponse, TermsStatusResponse
-from services.prolific_markdown import to_prolific_html
 from session_policy import resolve_session_policy
 
 from .flags import StudyRequirements, parse_flags, requirements_for
@@ -100,14 +99,13 @@ class StatementText:
 
 @dataclass(frozen=True)
 class RaterTerms:
-    """What the rater endpoints need: rendered HTML plus the consent source."""
+    """What the rater endpoints need: rendered Markdown plus the consent source."""
 
     consent: StatementText
     # The consent statement with placeholders filled: what the rater sees,
     # stored verbatim on their consent record.
     consent_markdown: str
-    consent_html: str
-    debrief_html: str | None
+    debrief_markdown: str | None
 
 
 @dataclass(frozen=True)
@@ -277,8 +275,7 @@ async def terms_for_rater(experiment: Experiment, db: AsyncSession) -> RaterTerm
     return RaterTerms(
         consent=consent,
         consent_markdown=consent_markdown,
-        consent_html=to_prolific_html(consent_markdown),
-        debrief_html=to_prolific_html(_render(debrief, experiment)) if debrief else None,
+        debrief_markdown=_render(debrief, experiment) if debrief else None,
     )
 
 
@@ -422,7 +419,7 @@ async def terms_preview(
     return TermsPreviewResponse(
         pinned=experiment.consent_statement_id is not None,
         consent_ref=consent.ref,
-        consent_html=to_prolific_html(_render(consent, experiment)),
+        consent_markdown=_render(consent, experiment),
         debrief_ref=debrief.ref if debrief else None,
-        debrief_html=to_prolific_html(_render(debrief, experiment)) if debrief else None,
+        debrief_markdown=_render(debrief, experiment) if debrief else None,
     )

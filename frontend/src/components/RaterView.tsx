@@ -2,11 +2,16 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 import Timer from './Timer';
+import QuestionTimer, { clearQuestionTimer, QUESTION_TIME_LIMIT_MINUTES } from './QuestionTimer';
+import TimerChip from './TimerChip';
+import RaterStatusPanel from './RaterStatusPanel';
 import QuestionCard from './QuestionCard';
 import AssistancePanel from './AssistancePanel';
 import RaterIntro from './RaterIntro';
+import StudyInstructionsDialog from './StudyInstructionsDialog';
 import RaterConsent from './RaterConsent';
 import RaterDebrief from './RaterDebrief';
+import RaterFeedback from './RaterFeedback';
 import type { Session } from '../types';
 import { useRaterQueue } from '../hooks/useRaterQueue';
 import { minutesBetween } from '../time';
@@ -42,9 +47,9 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     typeof value.session_start === 'string' &&
     typeof value.session_end_time === 'string' &&
     typeof value.experiment_name === 'string' &&
-    (value.experiment_description_html === null ||
-      value.experiment_description_html === undefined ||
-      typeof value.experiment_description_html === 'string') &&
+    (value.experiment_description_markdown === null ||
+      value.experiment_description_markdown === undefined ||
+      typeof value.experiment_description_markdown === 'string') &&
     (value.completion_url === null || typeof value.completion_url === 'string') &&
     (value.rater_session_token === undefined || typeof value.rater_session_token === 'string') &&
     (value.assistance_instructions === null ||
@@ -53,11 +58,11 @@ function isSessionPayload(value: unknown): value is SessionPayload {
     // Required, not optional: a session stored before the consent step has
     // no statement to show, so it is re-fetched via /start (which resumes the
     // same rater) rather than restored.
-    typeof value.consent_statement_html === 'string' &&
+    typeof value.consent_statement_markdown === 'string' &&
     (value.consented_at === null || typeof value.consented_at === 'string') &&
-    (value.debrief_html === null ||
-      value.debrief_html === undefined ||
-      typeof value.debrief_html === 'string')
+    (value.debrief_markdown === null ||
+      value.debrief_markdown === undefined ||
+      typeof value.debrief_markdown === 'string')
   );
 }
 
@@ -79,9 +84,9 @@ function parseStoredSession(raw: string): StoredSession | null {
     const session: Session = {
       ...sessionPayload,
       rater_session_token: token,
-      experiment_description_html: sessionPayload.experiment_description_html ?? null,
+      experiment_description_markdown: sessionPayload.experiment_description_markdown ?? null,
       assistance_instructions: sessionPayload.assistance_instructions ?? null,
-      debrief_html: sessionPayload.debrief_html ?? null,
+      debrief_markdown: sessionPayload.debrief_markdown ?? null,
     };
 
     return {
@@ -125,8 +130,22 @@ function getProlificSessionParams(params: {
   };
 }
 
+const blockClipboard = (event: { preventDefault: () => void }) => event.preventDefault();
+const NO_COPY_PROPS = {
+  className: 'rater-no-copy',
+  onCopy: blockClipboard,
+  onCut: blockClipboard,
+  onPaste: blockClipboard,
+  onDragStart: blockClipboard,
+  onDrop: blockClipboard,
+};
+
 function hasIntroContent(session: Session): boolean {
-  return Boolean(session.experiment_description_html || session.assistance_instructions);
+  return Boolean(
+    session.experiment_description_markdown ||
+      session.assistance_instructions ||
+      session.forbid_outside_tools,
+  );
 }
 
 function RaterView() {
@@ -146,12 +165,26 @@ function RaterView() {
   // one already on screen can still be finished and submitted.
   const [deadlinePassed, setDeadlinePassed] = useState(false);
   const [allDone, setAllDone] = useState(false);
+  // Advisory only: past the per-question limit the rater is told to move on,
+  // never made to.
+  const [questionOverLimit, setQuestionOverLimit] = useState(false);
   const [showIntro, setShowIntro] = useState(false);
+  // The intro's instructions, reopened on demand from the rating screen.
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const openInstructions = useCallback(() => setInstructionsOpen(true), []);
+  const closeInstructions = useCallback(() => setInstructionsOpen(false), []);
   // Consent comes before everything else, the intro included. Driven by
   // `session.consented_at`; the backend refuses questions until it is set.
   const [showConsent, setShowConsent] = useState(false);
   const [consentSubmitting, setConsentSubmitting] = useState(false);
   const [consentError, setConsentError] = useState<string | null>(null);
+  // The optional feedback screen sits between the last question and the
+  // completion card; true once the rater has sent something or skipped.
+  const [feedbackDone, setFeedbackDone] = useState(false);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  // Set when a reload lands on a session the server has already closed, so
+  // end-session is not sent again (it would restamp session_end).
+  const endedBeforeReloadRef = useRef(false);
 
   const experimentId = searchParams.get('experiment_id');
   const prolificId = searchParams.get('PROLIFIC_PID');
@@ -183,6 +216,7 @@ function RaterView() {
     } catch {
       // Ignore storage failures (private mode, quota, etc.)
     }
+    clearQuestionTimer();
   }, []);
 
   const persistSession = useCallback((nextSession: Session, introAcknowledged: boolean) => {
@@ -270,6 +304,14 @@ function RaterView() {
     try {
       const status = await api.getSessionStatus(storedSession.token).catch(() => null);
       if (status) setQuestionsCompleted(status.questions_completed);
+      // Reloaded on the feedback screen: the stored session is kept until
+      // that screen is done precisely so this lands back on it, with the
+      // completion link intact, instead of on an error.
+      if (status && !status.is_active) {
+        endedBeforeReloadRef.current = true;
+        setSessionExpired(true);
+        return;
+      }
       const needsIntro = !storedSession.introAcknowledged &&
         (status?.questions_completed ?? 0) === 0 && hasIntroContent(storedSession.session);
       if (needsIntro) setShowIntro(true);
@@ -390,10 +432,21 @@ function RaterView() {
     clearStoredSession,
   ]);
 
+  const sessionOver = sessionExpired || allDone;
+  const awaitingFeedback = sessionOver && !feedbackDone && Boolean(sessionToken);
+
   useEffect(() => {
-    if (!(sessionExpired || allDone)) return;
+    if (!sessionOver) return;
     clear();
-    if (sessionToken) void api.endSession(sessionToken).catch(() => {});
+    if (sessionToken && !endedBeforeReloadRef.current) {
+      void api.endSession(sessionToken).catch(() => {});
+    }
+  }, [sessionOver, sessionToken, clear]);
+
+  useEffect(() => {
+    // Nothing below runs while the feedback screen is up: the stored session
+    // survives a reload there, and the redirect waits for the rater.
+    if (!sessionOver || awaitingFeedback) return;
     const completionUrl = session?.completion_url;
 
     // Clear persisted session once we're done or expired (always)
@@ -403,16 +456,30 @@ function RaterView() {
     // A study with a debrief (deception) must not bounce the rater past
     // it: Prolific requires the debrief before the completion code. The
     // debrief screen carries the link instead.
-    if (session?.debrief_html) return;
+    if (session?.debrief_markdown) return;
 
     const timer = setTimeout(() => {
       window.location.href = completionUrl;
     }, 3000);
     return () => clearTimeout(timer);
-  }, [sessionExpired, allDone, session?.completion_url, session?.debrief_html, sessionToken, clearStoredSession, clear]);
+  }, [sessionOver, awaitingFeedback, session?.completion_url, session?.debrief_markdown, clearStoredSession]);
+
+  const handleFeedbackSubmit = useCallback(async (feedback: string) => {
+    if (sessionToken && feedback.trim()) {
+      setFeedbackSubmitting(true);
+      // Feedback is a courtesy. A failed save (the token dies shortly after
+      // a timed-out session) must not keep the rater from the completion code.
+      await api.submitFeedback(sessionToken, feedback).catch(() => {});
+      setFeedbackSubmitting(false);
+    }
+    setFeedbackDone(true);
+  }, [sessionToken]);
+
+  const handleFeedbackSkip = useCallback(() => setFeedbackDone(true), []);
 
   const afterSubmitted = async () => {
     setQuestionsCompleted(prev => prev + 1);
+    clearQuestionTimer();
     if (deadlinePassed) {
       clear();
       setSessionExpired(true);
@@ -477,9 +544,9 @@ function RaterView() {
 
   const styles = {
     container: {
-      maxWidth: hasAssistance ? '1200px' : '720px',
+      maxWidth: hasAssistance ? '1200px' : 'var(--rater-measure)',
       margin: '0 auto',
-      padding: '32px 24px',
+      padding: '32px var(--rater-gutter)',
       minHeight: '100vh',
     },
     header: {
@@ -495,62 +562,42 @@ function RaterView() {
     },
     experimentName: {
       fontFamily: 'var(--font-head)',
-      fontSize: 20,
+      fontSize: 'var(--text-heading)',
       fontWeight: 600,
       color: 'var(--ink)',
       letterSpacing: '-0.005em',
       margin: 0,
-    },
-    progress: {
-      fontSize: 13,
-      color: 'var(--muted)',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 10,
-      fontFamily: 'var(--font-mono)',
-      letterSpacing: '0.06em',
-      textTransform: 'uppercase' as const,
-    },
-    progressCount: {
-      background: 'var(--accent-soft)',
-      color: 'var(--accent-soft-ink)',
-      padding: '4px 12px',
-      borderRadius: 999,
-      fontWeight: 700,
-      fontFamily: 'var(--font-mono)',
-      letterSpacing: '0.03em',
-      fontSize: 13,
     },
     completionCard: {
       background: 'var(--surface)',
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '64px 40px',
+      padding: '64px var(--rater-card-pad)',
       textAlign: 'center' as const,
     },
     completionTitle: {
       fontFamily: 'var(--font-head)',
-      fontSize: 34,
+      fontSize: 'var(--text-title)',
       fontWeight: 600,
       color: 'var(--accent-soft-ink)',
       letterSpacing: '-0.01em',
       marginBottom: 14,
     },
     completionText: {
-      fontSize: 16,
+      fontSize: 'var(--text-body)',
       color: 'var(--muted)',
       marginBottom: 26,
-      lineHeight: 1.55,
+      lineHeight: 'var(--leading-body)',
     },
     completionStats: {
-      fontSize: 15,
+      fontSize: 'var(--text-body)',
       color: 'var(--ink)',
       marginBottom: 32,
     },
     completionCount: {
       fontFamily: 'var(--font-head)',
-      fontSize: 52,
+      fontSize: '3.25rem',
       fontWeight: 600,
       color: 'var(--accent)',
       display: 'block',
@@ -558,7 +605,7 @@ function RaterView() {
       letterSpacing: '-0.02em',
     },
     redirectText: {
-      fontSize: 13,
+      fontSize: 'var(--text-secondary)',
       color: 'var(--muted)',
       lineHeight: 1.6,
     },
@@ -577,18 +624,18 @@ function RaterView() {
     },
     errorText: {
       color: 'var(--danger)',
-      fontSize: 15,
-      lineHeight: 1.55,
+      fontSize: 'var(--text-body)',
+      lineHeight: 'var(--leading-body)',
     },
     loadingCard: {
       background: 'var(--surface)',
       borderRadius: 'var(--radius)',
       border: '1px solid var(--faint)',
       boxShadow: 'var(--shadow)',
-      padding: '64px 40px',
+      padding: '64px var(--rater-card-pad)',
       textAlign: 'center' as const,
       color: 'var(--muted)',
-      fontSize: 15,
+      fontSize: 'var(--text-body)',
     },
   };
 
@@ -598,7 +645,7 @@ function RaterView() {
     borderRadius: 'var(--radius-sm)',
     padding: '11px 16px',
     marginBottom: 16,
-    fontSize: 13,
+    fontSize: 'var(--text-secondary)',
     color: 'var(--danger)',
     lineHeight: 1.5,
   };
@@ -609,7 +656,7 @@ function RaterView() {
     borderRadius: 'var(--radius-sm)',
     padding: '11px 16px',
     marginBottom: 16,
-    fontSize: 13,
+    fontSize: 'var(--text-secondary)',
     color: 'var(--warn)',
     lineHeight: 1.5,
   };
@@ -625,14 +672,27 @@ function RaterView() {
     );
   }
 
-  if (sessionExpired || allDone) {
+  if (awaitingFeedback) {
+    return (
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
+        <RaterFeedback
+          submitting={feedbackSubmitting}
+          returnsToProlific={Boolean(session?.completion_url)}
+          onSubmit={(feedback) => void handleFeedbackSubmit(feedback)}
+          onSkip={handleFeedbackSkip}
+        />
+      </div>
+    );
+  }
+
+  if (sessionOver) {
     const completionUrl = session?.completion_url;
 
-    if (session?.debrief_html) {
+    if (session?.debrief_markdown) {
       return (
-        <div style={{ ...styles.container, maxWidth: '720px' }}>
+        <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
           <RaterDebrief
-            statementHtml={session.debrief_html}
+            statementMarkdown={session.debrief_markdown}
             completionUrl={completionUrl ?? null}
             questionsCompleted={questionsCompleted}
           />
@@ -685,7 +745,7 @@ function RaterView() {
 
   if (showConsent) {
     return (
-      <div style={{ ...styles.container, maxWidth: '720px' }}>
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.
@@ -693,7 +753,7 @@ function RaterView() {
         )}
         <RaterConsent
           experimentName={session.experiment_name}
-          statementHtml={session.consent_statement_html}
+          statementMarkdown={session.consent_statement_markdown}
           submitting={consentSubmitting}
           error={consentError}
           onAgree={() => void handleConsentAgree()}
@@ -704,7 +764,7 @@ function RaterView() {
 
   if (showIntro) {
     return (
-      <div style={{ ...styles.container, maxWidth: '720px' }}>
+      <div style={{ ...styles.container, maxWidth: 'var(--rater-measure)' }}>
         {isPreview && (
           <div style={previewBannerStyle}>
             Preview mode — ratings submitted here are real and will appear in your data.
@@ -712,8 +772,10 @@ function RaterView() {
         )}
         <RaterIntro
           experimentName={session.experiment_name}
-          descriptionHtml={session.experiment_description_html}
+          descriptionMarkdown={session.experiment_description_markdown}
           assistanceInstructions={session.assistance_instructions}
+          forbidOutsideTools={session.forbid_outside_tools === true}
+          studyProvidesAi={Boolean(hasAssistance)}
           sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
           graceMinutes={Math.round(session.session_grace_seconds / 60)}
           onContinue={handleIntroContinue}
@@ -723,18 +785,58 @@ function RaterView() {
   }
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} {...(session.block_copy_paste ? NO_COPY_PROPS : {})}>
       {isPreview && (
         <div style={previewBannerStyle}>
           Preview mode — ratings submitted here are real and will appear in your data.
         </div>
       )}
-      <Timer
-        sessionEndTime={session.session_end_time}
-        graceSeconds={session.session_grace_seconds}
-        onDeadline={handleDeadlineReached}
-        onExpire={handleSessionExpired}
-      />
+      {/* One floating readout for everything the rater tracks. The count lives
+          here rather than in the header so the panel never sits on top of it. */}
+      <RaterStatusPanel
+        graceMinutes={Math.round(session.session_grace_seconds / 60)}
+        // Only studies that had an intro screen have instructions to reopen.
+        onOpenInstructions={hasIntroContent(session) ? openInstructions : undefined}
+      >
+        <Timer
+          sessionEndTime={session.session_end_time}
+          graceSeconds={session.session_grace_seconds}
+          onDeadline={handleDeadlineReached}
+          onExpire={handleSessionExpired}
+        />
+        {/* Once the session clock is out the only message is "finish this
+            one", so the per-question nudge steps aside. */}
+        {question && !deadlinePassed && (
+          <QuestionTimer
+            key={question.id}
+            questionId={question.id}
+            onOverLimitChange={setQuestionOverLimit}
+          />
+        )}
+        <TimerChip
+          label="Completed"
+          time={String(questionsCompleted)}
+          testId="completed-count"
+          hideAtRest
+        />
+      </RaterStatusPanel>
+
+      <div style={styles.header}>
+        <h2 style={styles.experimentName}>{session.experiment_name}</h2>
+      </div>
+
+      {instructionsOpen && (
+        <StudyInstructionsDialog
+          experimentName={session.experiment_name}
+          descriptionMarkdown={session.experiment_description_markdown}
+          assistanceInstructions={session.assistance_instructions}
+          forbidOutsideTools={session.forbid_outside_tools === true}
+          studyProvidesAi={Boolean(hasAssistance)}
+          sessionMinutes={minutesBetween(session.session_start, session.session_end_time)}
+          graceMinutes={Math.round(session.session_grace_seconds / 60)}
+          onClose={closeInstructions}
+        />
+      )}
 
       {queue.submissionError && (
         <div role="alert" style={graceBannerStyle}>
@@ -751,13 +853,12 @@ function RaterView() {
         </div>
       )}
 
-      <div style={styles.header}>
-        <h2 style={styles.experimentName}>{session.experiment_name}</h2>
-        <div style={styles.progress}>
-          Completed
-          <span style={styles.progressCount}>{questionsCompleted}</span>
+      {questionOverLimit && question && !deadlinePassed && (
+        <div role="alert" style={graceBannerStyle} data-testid="question-time-banner">
+          You have spent more than {QUESTION_TIME_LIMIT_MINUTES} minutes on this question. Please
+          give your best answer and move on to the next one.
         </div>
-      </div>
+      )}
 
       {hasAssistance && question && sessionToken ? (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', alignItems: 'start' }}>
@@ -770,6 +871,7 @@ function RaterView() {
               assistanceAnswer={assistanceStep?.payload.synthesis?.answer ?? null}
               humanPromptPrefix={session?.human_prompt_prefix ?? null}
               humanPromptSuffix={session?.human_prompt_suffix ?? null}
+              blockCopy={session.block_copy_paste === true}
             />
             </fieldset>
           </div>
@@ -784,6 +886,7 @@ function RaterView() {
               onSubmit={handleSubmit}
               humanPromptPrefix={session?.human_prompt_prefix ?? null}
               humanPromptSuffix={session?.human_prompt_suffix ?? null}
+              blockCopy={session.block_copy_paste === true}
             />
             </fieldset>
           )}

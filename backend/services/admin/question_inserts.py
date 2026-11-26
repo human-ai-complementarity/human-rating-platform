@@ -22,6 +22,7 @@ def _question_payload_size(question: Question) -> int:
             question.gt_answer,
             question.options,
             question.extra_data,
+            question.content,
             question.exclusion_key,
         )
         if value

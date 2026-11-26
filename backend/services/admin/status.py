@@ -16,15 +16,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import (
     ROUND_TERMINAL_STATUSES,
     Experiment,
+    ExperimentGroup,
     ExperimentRound,
     ExperimentStatus,
     ProlificStudyStatus,
 )
 from config import get_settings
+from schemas import PREVIEW_TESTING_TAG
 from services.assistance.llm import missing_key_env_var
 from services.assistance.model_resolution import pinned_model
 
 from .queries import fetch_total_questions_for_experiment
+from .tags import fetch_tag_names_for_experiment
 
 
 def is_locked(experiment: Experiment) -> bool:
@@ -37,6 +40,7 @@ def compute_attention_reason(
     status: ExperimentStatus,
     remaining_actions: int,
     round_statuses: list[ProlificStudyStatus],
+    pilot_check_pending: bool = False,
 ) -> str | None:
     """Short reason an experiment has a pending admin action, or None if not.
 
@@ -44,6 +48,7 @@ def compute_attention_reason(
     flag a row without loading round data per experiment:
 
       * An UNPUBLISHED round draft exists — publish it. (DRAFT or LAUNCH)
+      * DRAFT with questions but no clean pilot check — run the check.
       * LAUNCH, every round closed, target not met — launch another round.
       * LAUNCH, every round closed, target met — mark the experiment finished.
 
@@ -54,6 +59,9 @@ def compute_attention_reason(
         return None
     if ProlificStudyStatus.UNPUBLISHED in round_statuses:
         return "A round draft is waiting to be published on Prolific."
+    if status == ExperimentStatus.DRAFT and not round_statuses and pilot_check_pending:
+        # Questions are in but no clean pilot check backs them (docs/pilot-check.md).
+        return "Run the pilot check before launching."
     if status != ExperimentStatus.LAUNCH or not round_statuses:
         return None
     if any(s not in ROUND_TERMINAL_STATUSES for s in round_statuses):
@@ -80,12 +88,28 @@ _ROW_REQUIRED_TEXT: tuple[tuple[str, str], ...] = (
 )
 
 
-def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -> list[str]:
+# The blocker a `preview-testing` tag raises. Not something the experiment is
+# missing, so it reads apart from the rest (`launch_blocker_summary`).
+TESTING_PREVIEW_BLOCKER = "testing preview"
+
+
+def is_preview_testing(tags: list[str]) -> bool:
+    """True when the tags mark a preview-only draft (`PREVIEW_TESTING_TAG`)."""
+    return any(tag.lower() == PREVIEW_TESTING_TAG for tag in tags)
+
+
+def experiment_launch_blockers(
+    experiment: Experiment, *, question_count: int, tags: list[str]
+) -> list[str]:
     """What still stops this experiment launching a study, in report order.
+
+    A `preview-testing` tag comes first: it marks a preview-only draft holding
+    a subsample of the questions, which no amount of filling in makes
+    launchable (#174).
 
     `question_count` is `ExperimentResponse.question_count`, which skips parent
     rows (header-only, never served). Publishing with none would move the
-    experiment to LAUNCH, which blocks uploads. Reported first, since the
+    experiment to LAUNCH, which blocks uploads. First of what is missing, since the
     upload also brings the rater instructions and, when assisted, the model.
 
     `name` is not checked: it is required at create, so it is always present.
@@ -96,7 +120,9 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
     `pinned_model` finds one for the current method, the resolver's own test,
     so the gate and the model that runs cannot disagree.
     """
-    blockers = [] if question_count > 0 else ["questions"]
+    blockers = [TESTING_PREVIEW_BLOCKER] if is_preview_testing(tags) else []
+    if question_count == 0:
+        blockers.append("questions")
     blockers += [
         label for attr, label in _ROW_REQUIRED_TEXT if not (getattr(experiment, attr) or "").strip()
     ]
@@ -127,6 +153,12 @@ def experiment_launch_blockers(experiment: Experiment, *, question_count: int) -
 # card afterwards cannot fix an existing one. Served to the admin UI too
 # (`ExperimentResponse.launch_blocker_fixes`), so the wording names its fields.
 _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
+    TESTING_PREVIEW_BLOCKER: (
+        f"Testing preview only: this experiment is tagged {PREVIEW_TESTING_TAG}, which the "
+        "pipeline's create_human_rating_study.py --mode testing sets on drafts holding a "
+        "subsample of the questions, for clicking through. Create the study with --mode "
+        f"prod, or remove the {PREVIEW_TESTING_TAG} tag if this experiment really should run."
+    ),
     "questions": (
         "Questions: upload questions on the Questions tab. The pipeline export's metadata "
         "brings the rater instructions with them (and the model, on an assisted arm), so "
@@ -134,7 +166,7 @@ _LAUNCH_BLOCKER_FIXES: dict[str, str] = {
     ),
     "rater instructions": (
         "Rater instructions: part of the pipeline export's metadata, applied at upload. "
-        "If the upload lacked them, set them under Instructions & prompts; uploading "
+        "If the upload lacked them, set them under Instructions & settings; uploading "
         "the file again would add its questions twice."
     ),
     "internal study name": (
@@ -160,24 +192,68 @@ def launch_blocker_fixes(blockers: list[str]) -> list[str]:
     return [_LAUNCH_BLOCKER_FIXES[blocker] for blocker in blockers]
 
 
-async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> None:
+def launch_blocker_summary(blockers: list[str]) -> str | None:
+    """The blockers as one clause, or None when there are none:
+    "this experiment is a testing preview and is missing questions".
+
+    Every blocker but the testing preview is something the experiment lacks.
+    The launch 400 opens with it, and the admin UI's banners show it as served
+    (`ExperimentResponse.launch_blocker_summary`).
+    """
+    if not blockers:
+        return None
+    missing = [blocker for blocker in blockers if blocker != TESTING_PREVIEW_BLOCKER]
+    parts = ["is a testing preview"] if TESTING_PREVIEW_BLOCKER in blockers else []
+    if missing:
+        parts.append(f"is missing {', '.join(missing)}")
+    return "this experiment " + " and ".join(parts)
+
+
+async def assert_launch_ready(experiment: Experiment, db: AsyncSession) -> int:
     """Refuse to create a study for an experiment that isn't fully onboarded.
 
     Bites at first study creation — the last moment before a Prolific study
     object and real money exist. Not at experiment create (per Joshua on #96,
     headroom analysis must keep working on an unfinished card) and not at
     publish, where refusing would leave an orphan draft study to discard.
+    The testing-preview blocker alone also bites later on
+    (`assert_not_preview_testing`).
     """
     question_count = await fetch_total_questions_for_experiment(experiment.id, db)
-    blockers = experiment_launch_blockers(experiment, question_count=question_count)
+    blockers = experiment_launch_blockers(
+        experiment,
+        question_count=question_count,
+        tags=await fetch_tag_names_for_experiment(experiment.id, db),
+    )
     if blockers:
         raise HTTPException(
             status_code=400,
             detail=" ".join(
                 [
-                    f"Cannot launch: this experiment is missing {', '.join(blockers)}.",
+                    f"Cannot launch: {launch_blocker_summary(blockers)}.",
                     *launch_blocker_fixes(blockers),
                 ]
+            ),
+        )
+    return question_count
+
+
+async def assert_not_preview_testing(experiment: Experiment, db: AsyncSession, action: str) -> None:
+    """Refuse `action`, a Prolific write, on a `preview-testing` experiment (#174).
+
+    The launch gate stops the pilot. This covers what comes after it: a round
+    created, or a draft published, once the tag is on, whenever it went on.
+    The rest of the gate is not re-run here, since an experiment that passed
+    it at pilot time should not be stranded mid-collection by, say, a model
+    key rotated out since. Closing and discarding a round stay open: they
+    take a study off Prolific, which is the way out.
+    """
+    if is_preview_testing(await fetch_tag_names_for_experiment(experiment.id, db)):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Cannot {action}: this experiment is a testing preview. "
+                + _LAUNCH_BLOCKER_FIXES[TESTING_PREVIEW_BLOCKER]
             ),
         )
 
@@ -238,13 +314,33 @@ async def assert_can_finish(experiment: Experiment, db: AsyncSession) -> None:
         )
 
 
+async def _same_dataset_experiment_ids(experiment: Experiment, db: AsyncSession) -> set[int]:
+    """Every other experiment on `experiment`'s dataset, in any wave."""
+    if experiment.group_id is None:
+        return set()
+    dataset_id = (
+        select(ExperimentGroup.dataset_id)
+        .where(ExperimentGroup.id == experiment.group_id)
+        .scalar_subquery()
+    )
+    rows = await db.execute(
+        select(Experiment.id)
+        .join(ExperimentGroup, Experiment.group_id == ExperimentGroup.id)
+        .where(ExperimentGroup.dataset_id == dataset_id, Experiment.id != experiment.id)
+    )
+    return set(rows.scalars())
+
+
 async def validate_new_exclusion_targets(
+    experiment: Experiment,
     new_ids: list[int],
     *,
     previously_allowed_ids: list[int],
     db: AsyncSession,
 ) -> None:
-    """Ensure any newly-added exclusion target is a FINISHED experiment.
+    """Ensure any newly-added exclusion target is a FINISHED experiment, or
+    one on `experiment`'s own dataset in any status (a sibling arm still
+    collecting is exactly the one to block).
 
     IDs that were already present in `previously_allowed_ids` are grandfathered
     — they were legal when set, and we don't want a status change on the target
@@ -252,6 +348,9 @@ async def validate_new_exclusion_targets(
     (present in `new_ids` but not in `previously_allowed_ids`) are checked.
     """
     added = set(new_ids) - set(previously_allowed_ids)
+    if not added:
+        return
+    added -= await _same_dataset_experiment_ids(experiment, db)
     if not added:
         return
 
@@ -271,7 +370,7 @@ async def validate_new_exclusion_targets(
         raise HTTPException(
             status_code=400,
             detail=(
-                "Exclusion targets must be finished experiments. "
+                "Exclusion targets must be finished experiments or on the same dataset. "
                 f"Rejected: {', '.join(sorted(invalid))}."
             ),
         )

@@ -3,12 +3,12 @@ import type { Experiment } from '../../types';
 
 /**
  * Prior-participant exclusion picker used by both the pilot form and the
- * round-edit form. Only FINISHED experiments are valid new picks (their rater
- * set is fixed); any already-selected non-FINISHED experiment (from a prior
- * round, or a one-click pilot's own exclusions) is grandfathered — kept
- * visible with a tag warning that, once removed, it can't be re-added until
- * it finishes. Matches backend validation in
- * services/admin/status.py:validate_new_exclusion_targets.
+ * round-edit form. Valid new picks are FINISHED experiments (their rater set
+ * is fixed) and experiments on the same dataset in any status (a sibling arm
+ * still collecting is exactly the one to block). Any other already-selected
+ * experiment is grandfathered — kept visible with a tag warning that, once
+ * removed, it can't be re-added until it finishes. Matches backend validation
+ * in services/admin/status.py:validate_new_exclusion_targets.
  */
 function experimentSearchHaystack(exp: Experiment): string {
   return [exp.name, exp.internal_name ?? '', ...(exp.dataset_filenames ?? [])]
@@ -21,6 +21,8 @@ interface ExclusionPickerProps {
   selectedIds: number[];
   onChange: (ids: number[]) => void;
   testIdPrefix: string;
+  // The dataset of the experiment being launched; null when it is ungrouped.
+  datasetId: number | null;
 }
 
 export function ExperimentExclusionPicker({
@@ -28,12 +30,13 @@ export function ExperimentExclusionPicker({
   selectedIds,
   onChange,
   testIdPrefix,
+  datasetId,
 }: ExclusionPickerProps) {
   const [query, setQuery] = useState('');
   const q = query.trim().toLowerCase();
-  const selectable = experiments.filter(
-    (e) => e.status === 'FINISHED' || selectedIds.includes(e.id),
-  );
+  const pickable = (e: Experiment) =>
+    e.status === 'FINISHED' || (datasetId !== null && e.group_dataset_id === datasetId);
+  const selectable = experiments.filter((e) => pickable(e) || selectedIds.includes(e.id));
   const visible = q
     ? selectable.filter((e) => experimentSearchHaystack(e).includes(q))
     : selectable;
@@ -88,12 +91,14 @@ export function ExperimentExclusionPicker({
               padding: '4px 0',
             }}
           >
-            {selectable.length === 0 ? 'No finished experiments yet.' : 'No matches.'}
+            {selectable.length === 0
+              ? 'No finished or same-dataset experiments yet.'
+              : 'No matches.'}
           </div>
         )}
         {visible.map((exp) => {
           const checked = selectedIds.includes(exp.id);
-          const grandfathered = checked && exp.status !== 'FINISHED';
+          const grandfathered = checked && !pickable(exp);
           const subtitle = [
             exp.internal_name && exp.internal_name !== exp.name ? exp.internal_name : null,
             exp.dataset_filenames.length > 0 ? exp.dataset_filenames.join(', ') : null,

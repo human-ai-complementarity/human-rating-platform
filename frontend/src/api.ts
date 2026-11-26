@@ -8,6 +8,7 @@ import type {
   Analytics,
   ApiKey,
   ApiKeyCreated,
+  ApiKeyScope,
   AssistanceStep,
   ConsentResponse,
   StudyFlag,
@@ -24,7 +25,8 @@ import type {
   Tag,
   ExperimentStats,
   ExperimentStatus,
-  LaunchPreview,
+  PilotCheckRefusal,
+  PilotCheckRun,
   PilotStudyCreate,
   PlatformStatus,
   Question,
@@ -71,6 +73,8 @@ type RequestOptions = {
 
 const API_PREFIX = '/api';
 const JSON_CONTENT_TYPE = 'application/json';
+// The largest page the admin experiments list will serve (`limit` max).
+const EXPERIMENT_PAGE_SIZE = 1000;
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 // Paths are relative to the API mount point (/api). buildUrl() prepends the
@@ -99,8 +103,7 @@ const routes = {
     apiKeys: '/admin/api-keys',
     apiKeyRegenerate: (id: number) => `/admin/api-keys/${id}/regenerate`,
     apiKeyRevoke: (id: number) => `/admin/api-keys/${id}/revoke`,
-    launch: (id: number) => `/admin/experiments/${id}/launch`,
-    launchPreview: (id: number) => `/admin/experiments/${id}/launch/preview`,
+    pilotCheck: (id: number) => `/admin/experiments/${id}/pilot-check`,
     prolificPilot: (id: number) => `/admin/experiments/${id}/prolific/pilot`,
     prolificRecommend: (id: number) => `/admin/experiments/${id}/prolific/recommend`,
     prolificRounds: (id: number) => `/admin/experiments/${id}/prolific/rounds`,
@@ -123,6 +126,7 @@ const routes = {
     submit: '/raters/submit',
     sessionStatus: '/raters/session-status',
     endSession: '/raters/end-session',
+    feedback: '/raters/feedback',
     assistanceStart: '/raters/assistance/start',
     queue: '/raters/queue',
     assistanceObservation: '/raters/assistance/observation',
@@ -186,6 +190,19 @@ function buildUrl(path: string, query?: QueryParams): string {
   return qs ? `${API_BASE}${normalized}?${qs}` : `${API_BASE}${normalized}`;
 }
 
+// A question image's URL as the browser should fetch it. The backend hands out
+// either a signed storage URL (absolute, used as is) or one of its own paths
+// under /api, which has to go to the API host like every other request. The
+// result is always absolute, so it also works from a blob: document (the
+// "open document in new tab" popup), where relative URLs do not resolve.
+export function resolveMediaUrl(url: string): string {
+  if (!url.startsWith(`${API_PREFIX}/`)) {
+    return url;
+  }
+  const rebased = `${API_BASE}${url.slice(API_PREFIX.length)}`;
+  return new URL(rebased, window.location.origin).href;
+}
+
 // ── Error handling ───────────────────────────────────────────────────────────
 // The most common failure mode in deployment is routing misconfiguration: the
 // SPA serves index.html for unknown paths, so API calls get HTML back instead
@@ -215,45 +232,82 @@ async function readText(response: Response): Promise<string> {
   }
 }
 
-function httpErrorMessage(status: number, statusText: string, body: string, url: string): string {
+function httpErrorMessage(
+  status: number,
+  statusText: string,
+  body: string,
+  detail: unknown,
+  url: string
+): string {
   if (body && looksLikeHtml(body)) {
     return buildRoutingHint(url);
   }
 
-  const detail = extractDetail(body);
-  if (detail) {
-    return detail;
+  const message = describeDetail(detail);
+  if (message) {
+    return message;
   }
   const fallback = body.trim() || `${status} ${statusText}`;
   return `Request failed (${status}) for ${url}: ${fallback}`;
 }
 
+/**
+ * A non-2xx response. `message` is what the UI shows; `status` and `detail`
+ * let a caller recognise a structured refusal, such as the pilot check's 409
+ * (docs/pilot-check.md), and act on it instead of only displaying it.
+ */
 export class ApiError extends Error {
-  constructor(public readonly status: number, message: string) { super(message); }
+  readonly status: number;
+  readonly detail: unknown;
+
+  constructor(status: number, message: string, detail?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+// FastAPI's `detail`, when the body is JSON that carries one.
+function parseDetail(body: string): unknown {
+  const trimmed = body.trim();
+  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return undefined;
+  try {
+    return (JSON.parse(trimmed) as { detail?: unknown }).detail;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The launch gate's refusal, when `err` is one. */
+export function pilotCheckRefusal(err: unknown): PilotCheckRefusal | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const detail = err.detail as Partial<PilotCheckRefusal> | undefined;
+  if (!detail || typeof detail !== 'object' || !detail.pilot_check) return null;
+  if (detail.code !== 'pilot_check') return null;
+  return detail as PilotCheckRefusal;
 }
 
 async function throwHttpError(response: Response, url: string): Promise<never> {
   const body = await readText(response);
-  throw new ApiError(response.status, httpErrorMessage(response.status, response.statusText, body, url));
+  const detail = parseDetail(body);
+  throw new ApiError(
+    response.status,
+    httpErrorMessage(response.status, response.statusText, body, detail, url),
+    detail
+  );
 }
 
-// FastAPI's `detail` comes in two shapes: a string from HTTPException, and a
-// list of `{loc, msg, ...}` from request validation (Pydantic). Unwrap both so
-// users see the message instead of escaped JSON.
-function extractDetail(body: string): string | null {
-  const trimmed = body.trim();
-  if (!trimmed || (trimmed[0] !== '{' && trimmed[0] !== '[')) return null;
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (parsed && typeof parsed.detail?.message === 'string') return parsed.detail.message;
-    if (parsed && typeof parsed.detail === 'string' && parsed.detail.trim()) {
-      return parsed.detail.trim();
-    }
-    if (parsed && Array.isArray(parsed.detail)) {
-      return formatValidationErrors(parsed.detail);
-    }
-  } catch {
-    // not JSON — fall through to raw body fallback in caller
+// FastAPI's `detail` comes in three shapes: a string from HTTPException, a
+// list of `{loc, msg, ...}` from request validation (Pydantic), and an object
+// with a `message` for a structured refusal such as the pilot check's 409.
+// Unwrap each so users see the sentence instead of escaped JSON.
+function describeDetail(detail: unknown): string | null {
+  if (typeof detail === 'string' && detail.trim()) return detail.trim();
+  if (Array.isArray(detail)) return formatValidationErrors(detail);
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) return message.trim();
   }
   return null;
 }
@@ -426,7 +480,9 @@ function uploadFormData<T>(
       const body = xhr.responseText || '';
 
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new Error(httpErrorMessage(xhr.status, xhr.statusText, body, url)));
+        reject(
+          new Error(httpErrorMessage(xhr.status, xhr.statusText, body, parseDetail(body), url))
+        );
         return;
       }
 
@@ -480,13 +536,22 @@ export const api = {
     status?: ExperimentStatus;
     search?: string;
   } = {}): Promise<Experiment[]> {
-    return requestJson<Experiment[]>(routes.admin.experiments, {
-      query: {
-        ...(includeArchived ? { include_archived: 'true' } : archived ? { archived: 'true' } : {}),
-        ...(status ? { status } : {}),
-        ...(search ? { search } : {}),
-      },
-    });
+    // Callers search and total spend over the full set, and the server pages
+    // (100 newest by default), so walk every page instead of taking the first.
+    const all: Experiment[] = [];
+    for (;;) {
+      const page = await requestJson<Experiment[]>(routes.admin.experiments, {
+        query: {
+          skip: all.length,
+          limit: EXPERIMENT_PAGE_SIZE,
+          ...(includeArchived ? { include_archived: 'true' } : archived ? { archived: 'true' } : {}),
+          ...(status ? { status } : {}),
+          ...(search ? { search } : {}),
+        },
+      });
+      all.push(...page);
+      if (page.length < EXPERIMENT_PAGE_SIZE) return all;
+    }
   },
 
   // Single-experiment fetch. Resolves by id regardless of archived state, so
@@ -606,6 +671,9 @@ export const api = {
       study_flags?: StudyFlag[];
       content_warning_details?: string;
       is_markdown?: boolean;
+      render_math?: boolean;
+      block_copy_paste?: boolean;
+      forbid_outside_tools?: boolean;
       prolific_pool?: string;
       // Minutes per rater. Undefined means "leave unchanged"; locked once the
       // experiment leaves DRAFT.
@@ -655,17 +723,17 @@ export const api = {
     return requestJson<PlatformStatus>(routes.admin.platformStatus);
   },
 
-  // ── API keys (bearer credentials for the /api/v1 programmatic API) ─────────
+  // ── API keys (bearer credentials for /api/v1, and /api/admin when admin) ───
 
   async listApiKeys(): Promise<ApiKey[]> {
     return requestJson<ApiKey[]>(routes.admin.apiKeys);
   },
 
   // Returns the full plaintext key — surface it to the user once, then discard.
-  async createApiKey(name: string): Promise<ApiKeyCreated> {
+  async createApiKey(name: string, scope: ApiKeyScope = 'read'): Promise<ApiKeyCreated> {
     return requestJson<ApiKeyCreated>(routes.admin.apiKeys, {
       method: 'POST',
-      json: { name },
+      json: { name, scope },
     });
   },
 
@@ -689,19 +757,16 @@ export const api = {
     });
   },
 
-  // One-click: builds the pilot draft from the dataset card instead of the
-  // form. Only a complete card (economics included) qualifies, so a dataset's
-  // first study usually goes through the pilot form. Publishing is still separate.
-  // It excludes the dataset's other experiments; getLaunchPreview lists them.
-  async launchFromCard(experimentId: number, places?: number): Promise<ExperimentRound> {
-    return requestJson<ExperimentRound>(routes.admin.launch(experimentId), {
-      method: 'POST',
-      json: places != null ? { places } : {},
-    });
+  // ── Pilot check (docs/pilot-check.md) ─────────────────────────────────
+
+  // Starts a run; it finishes in the background. Poll getPilotCheck.
+  async runPilotCheck(experimentId: number): Promise<PilotCheckRun> {
+    return requestJson<PilotCheckRun>(routes.admin.pilotCheck(experimentId), { method: 'POST' });
   },
 
-  async getLaunchPreview(experimentId: number): Promise<LaunchPreview> {
-    return requestJson<LaunchPreview>(routes.admin.launchPreview(experimentId));
+  // The experiment's latest run, or null when none has been started.
+  async getPilotCheck(experimentId: number): Promise<PilotCheckRun | null> {
+    return requestJson<PilotCheckRun | null>(routes.admin.pilotCheck(experimentId));
   },
 
   async getRecommendation(
@@ -713,10 +778,14 @@ export const api = {
     });
   },
 
-  async runExperimentRound(experimentId: number, places: number): Promise<ExperimentRound> {
+  async runExperimentRound(
+    experimentId: number,
+    places: number,
+    { acknowledgePilotCheck = false }: { acknowledgePilotCheck?: boolean } = {}
+  ): Promise<ExperimentRound> {
     return requestJson<ExperimentRound>(routes.admin.prolificRounds(experimentId), {
       method: 'POST',
-      json: { places },
+      json: { places, ...(acknowledgePilotCheck ? { acknowledge_pilot_check: true } : {}) },
     });
   },
 
@@ -876,6 +945,14 @@ export const api = {
     return requestJson<MessageResponse>(routes.rater.endSession, {
       method: 'POST',
       headers: { 'X-Rater-Session': sessionToken },
+    });
+  },
+
+  async submitFeedback(sessionToken: string, feedback: string): Promise<MessageResponse> {
+    return requestJson<MessageResponse>(routes.rater.feedback, {
+      method: 'POST',
+      headers: { 'X-Rater-Session': sessionToken },
+      json: { feedback },
     });
   },
 
