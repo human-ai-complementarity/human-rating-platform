@@ -18,6 +18,7 @@ export async function startTracking(): Promise<void> {
   const { default: posthog } = await import('posthog-js');
   posthog.init(KEY, {
     api_host: (import.meta.env.VITE_PUBLIC_POSTHOG_HOST as string | undefined) || 'https://us.i.posthog.com',
+    ui_host: 'https://us.posthog.com', // Links back to PostHog when api_host is our own proxy path
     defaults: '2026-05-30',
     cookieless_mode: 'always',
     person_profiles: 'never',
